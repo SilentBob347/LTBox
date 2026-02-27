@@ -33,40 +33,43 @@
 
 该工具包设计为**完全自动化**。
 
-1.  **Download & Extract:** 下载最新版本并将其解压到文件夹（确保路径中不包含**空格或非 ASCII 字符**）。
-2.  **Run the Script:** 双击 `start.bat` 。
+1.  **下载并解压：** 下载最新版本并将其解压到文件夹（确保路径中不包含**空格或非 ASCII 字符**）。
+2.  **运行脚本：** 双击 `start.bat` 。
     * *首次运行时将自动安装依赖项。*
-3.  **Select Task:** 按照屏幕菜单选择您想要执行的操作。
+3.  **选择任务：** 按照屏幕菜单选择您想要执行的操作。
 
 ## 3. 对菜单的描述
 
 ### 3.1 主菜单
 
-**`1. Install firmware [WIPE DATA]`**
-一体化自动化任务。它执行所有步骤（转换、XML 准备、转储、修补、ARB 检查、刷写），并**清除所有用户数据**。
+**`1. 在 PRC/ROW 设备安装固件 [擦除数据]`**
+一体化自动化任务。它执行所有步骤（转换、XML 准备、转储、修补、ARB 检查、刷写），并**清除所有用户数据**。（菜单文本根据选定的目标区域而变化）。
 
-**`2. Update firmware [KEEP DATA]`**
+**`2. 在 PRC/ROW 设备安装固件 [保留数据]`**
 与选项 1 相同，但修改 XML 脚本以**保留用户数据** （跳过 `userdata` 和 `metadata` 分区）。
 
-**`3. Rescue after OTA`**
+**`3. OTA 更新后救砖`**
 尝试通过转储和修补重要分区来修复因在转换设备上进行完整 OTA 更新而导致的启动问题。
 
-**`4. Disable OTA`**
+**`4. 禁用 OTA`**
 以 ADB 模式连接到设备，并禁用系统更新包以防止自动更新。
 
-**`5. Root device`**
+**`5. Root 设备`**
 打开 root 提权方式选择菜单：
-* **LKM Mode:** 修补 `init_boot.img` 和 `vbmeta.img` （推荐用于较新的内核）。支持 Magisk、KernelSU Next 和 SukiSU。
+* **LKM Mode:** 修补 `init_boot.img` 和 `vbmeta.img` （推荐用于较新的内核）。支持 Magisk、KernelSU Next、SukiSU Ultra 和 ReSukiSU。
 * **GKI Mode:** 通过将 `boot.img` 的内核替换为 `GKI_KernelSU_SUSFS` 来修补 `boot.img` 。
 
-**`6. Unroot device`**
+**`6. 设备 Unroot`**
 通过从备份中刷入官方镜像，将设备恢复到未 root 状态。
 
-**`7. Sign & Flash Custom Recovery`**
+**`7. 签名并刷入第三方 Recovery`**
 使用测试密钥对自定义恢复映像（例如 TWRP）进行签名，并将其刷入恢复分区。
 
-**`0. Settings`**
+**`0. 设置`**
 打开设置子菜单以配置工具包（见下文）。
+
+**`a. 高级菜单`**
+打开高级菜单以进行手动控制和故障排除。
 
 ### 3.2 设置菜单
 
@@ -78,43 +81,43 @@
 
 ### 3.3 高级菜单
 
-Individual steps for manual control and troubleshooting.
+用于手动控制和故障排除的各个步骤。
 
-**`1. Convert ROM Region`**
-根据选定的区域设置转换 `vendor_boot.img` 并重建 `vbmeta.img` 。
+**`1. 为中国版 (PRC) / 全球版 (ROW) 设备更改固件区域`**
+根据选定的区域设置（PRC 或 ROW）转换 `vendor_boot.img` 并重建 `vbmeta.img` 。
 
-**`2. Dump devinfo/persist from device`**
+**`2. 从设备导出 devinfo/persist`**
 将 EDL 模式下设备的 `devinfo` 和 `persist` 分区转储到 `backup/` 文件夹。
 
-**`3. Patch devinfo/persist`**
+**`3. 修补 devinfo/persist 以更改国家代码`**
 修补 `devinfo.img` / `persist.img` 中的国家代码（例如，`CN`、`KR`）。
 
-**`4. Write devinfo/persist to device`**
+**`4. 将 devinfo/persist 写入设备`**
 通过 EDL 将修补后的镜像刷写到设备。
 
-**`5. Detect Anti-Rollback from device`**
+**`5. 从设备检测防回滚状态`**
 转储 `boot` 和 `vbmeta_system` ，以检查它们的回滚索引是否与新的 ROM 一致。
 
-**`6. Patch rollback indices in ROM`**
+**`6. 在 ROM 中修补回滚索引`**
 将新 ROM 的回滚索引与设备的索引同步，以绕过防回滚保护。
 
-**`7. Write Anti-Anti-Rollback patched image`**
+**`7. 将防回滚修补后的镜像写入设备`**
 将经过 ARB 修补的镜像文件刷入设备。
 
-**`8. Convert X files to XML`**
+**`8. 将 X 文件转换为 XML`**
 将 `.x` （加密）固件文件解密为 `.xml` 文件。
 
-**`9. Modify XML for Flashing [WIPE DATA]`**
+**`9. 修改 XML 用于刷机 [擦除数据]`**
 生成 `rawprogram` XML 文件，然后刷入已修补的镜像并**清除用户数据**。
 
-**`10. Modify XML for Flashing [KEEP DATA]`**
+**`10. 修改 XML 用于刷机 [保留数据]`**
 与步骤 9 相同，但修改 XML 以**保留用户数据**。
 
-**`11. Flash firmware to device`**
+**`11. 刷入固件到设备`**
 手动完整刷机。复制所有已修补的文件，并使用 `fh_loader` 刷入。
 
-**`12. Clean workspace`**
-删除所有临时输出文件夹和文件。备份文件将被保留。
+**`12. 刷入选定分区`**
+将选定的分区刷入设备。
 
 ## 4. 其他实用工具
 

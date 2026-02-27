@@ -42,10 +42,10 @@ The toolkit is designed to be fully automated.
 
 ### 3.1 Main Menu
 
-**`1. Install firmware [WIPE DATA]`**
-The all-in-one automated task. It performs all steps (Convert, XML Prepare, Dump, Patch, ARB Check, Flash) and **wipes all user data**.
+**`1. Install firmware to PRC/ROW device [WIPE DATA]`**
+The all-in-one automated task. It performs all steps (Convert, XML Prepare, Dump, Patch, ARB Check, Flash) and **wipes all user data**. (Menu text changes based on the selected target region).
 
-**`2. Update firmware [KEEP DATA]`**
+**`2. Install firmware to PRC/ROW device [KEEP DATA]`**
 Same as option 1, but modifies the XML scripts to **preserve user data** (skips `userdata` and `metadata` partitions).
 
 **`3. Rescue after OTA`**
@@ -56,7 +56,7 @@ Connects to the device in ADB mode and disables system update packages to preven
 
 **`5. Root device`**
 Opens the root selection menu:
-* **LKM Mode:** Patches `init_boot.img` & `vbmeta.img` (Recommended for newer kernels). Supports Magisk, KernelSU Next and SukiSU.
+* **LKM Mode:** Patches `init_boot.img` & `vbmeta.img` (Recommended for newer kernels). Supports Magisk, KernelSU Next, SukiSU Ultra, and ReSukiSU.
 * **GKI Mode:** Patches `boot.img` by replacing its kernel with [GKI_KernelSU_SUSFS](https://github.com/WildKernels/GKI_KernelSU_SUSFS).
 
 **`6. Unroot device`**
@@ -67,6 +67,9 @@ Signs a custom recovery image (e.g., TWRP) with test keys and flashes it to the 
 
 **`0. Settings`**
 Opens the settings submenu to configure the toolkit (see below).
+
+**`a. Advanced Menu`**
+Opens the advanced menu for individual steps, manual control, and troubleshooting.
 
 ### 3.2 Settings Menu
 
@@ -80,8 +83,8 @@ Opens the settings submenu to configure the toolkit (see below).
 
 Individual steps for manual control and troubleshooting.
 
-**`1. Convert ROM Region`**
-Converts `vendor_boot.img` and rebuilds `vbmeta.img` based on the selected region settings.
+**`1. Convert ROM Region to PRC/ROW`**
+Converts `vendor_boot.img` and remakes `vbmeta.img` based on the selected region settings (PRC or ROW).
 
 **`2. Dump devinfo/persist from device`**
 Dumps `devinfo` and `persist` partitions from the device in EDL mode to the `backup/` folder.
@@ -113,8 +116,8 @@ Same as Step 9, but modifies XMLs to **preserve user data**.
 **`11. Flash firmware to device`**
 Manual full flash. Copies all patched files and flashes them using `fh_loader`.
 
-**`12. Clean workspace`**
-Deletes all temporary output folders and files. Backups are preserved.
+**`12. Flash selected partitions`**
+Flashes selected partitions to the device.
 
 ## 4. Other Utilities
 
