@@ -107,6 +107,19 @@ def extract_image_avb_info(image_path: Path) -> Dict[str, Any]:
     return info
 
 
+def vbmeta_has_chain_partition(vbmeta_path: Path, partition_name: str) -> bool:
+    avbtool = utils.AvbToolWrapper()
+    info_proc = avbtool.run("info_image", "--image", vbmeta_path, capture=True)
+    output = info_proc.stdout
+
+    pattern = re.compile(
+        r"Chain Partition descriptor:\s*\n\s*Partition Name:\s*(\S+)",
+        re.MULTILINE,
+    )
+    descriptors = {m.group(1) for m in pattern.finditer(output)}
+    return partition_name in descriptors
+
+
 def _apply_hash_footer(
     image_path: Path,
     image_info: Dict[str, Any],

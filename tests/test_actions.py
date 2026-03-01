@@ -12,6 +12,7 @@ from ltbox import downloader, utils
 from ltbox.actions import edl
 from ltbox.actions import xml as xml_action
 from ltbox.actions.root import GkiRootStrategy, LkmRootStrategy, MagiskRootStrategy
+from ltbox.patch.avb import vbmeta_has_chain_partition
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../bin")))
 
@@ -442,3 +443,86 @@ def test_root_magisk(fw_pkg, tmp_path):
         assert (mock_dirs["OUTPUT_ROOT_MAGISK_DIR"] / "vbmeta.img").exists()
 
         print(f"[PASS] Magisk Integration Test Complete. Output: {final_output}")
+
+
+def test_gki_strategy_requires_vbmeta_file():
+    strategy = GkiRootStrategy()
+
+    assert const.FN_BOOT in strategy.required_files
+    assert const.FN_VBMETA in strategy.required_files
+
+
+def test_vbmeta_has_chain_partition_parses_descriptor(tmp_path):
+    vbmeta_img = tmp_path / "vbmeta.img"
+    vbmeta_img.write_bytes(b"dummy")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = """Descriptors:
+    Chain Partition descriptor:
+      Partition Name:          recovery
+    Chain Partition descriptor:
+      Partition Name:          boot
+"""
+
+    with patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool:
+        mock_avbtool.return_value.run.return_value = mock_proc
+
+        assert vbmeta_has_chain_partition(vbmeta_img, "boot") is True
+        assert vbmeta_has_chain_partition(vbmeta_img, "init_boot") is False
+
+
+def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):
+    strategy = GkiRootStrategy()
+    patched_boot = tmp_path / "boot_patched.img"
+    patched_boot.write_bytes(b"patched")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
+
+    with (
+        patch("ltbox.actions.root.process_boot_image_avb") as process_avb,
+        patch("ltbox.actions.root.vbmeta_has_chain_partition", return_value=False),
+        patch(
+            "ltbox.actions.root.rebuild_vbmeta_with_chained_images"
+        ) as rebuild_vbmeta,
+        patch("ltbox.actions.root.const.BASE_DIR", tmp_path),
+    ):
+        (tmp_path / const.FN_VBMETA_ROOT).write_bytes(b"new-vbmeta")
+
+        final_boot = strategy.finalize_patch(patched_boot, output_dir, backup_dir)
+
+    assert final_boot == output_dir / const.FN_BOOT
+    assert final_boot.exists()
+    process_avb.assert_called_once()
+    rebuild_vbmeta.assert_called_once()
+    assert (output_dir / const.FN_VBMETA).exists()
+
+
+def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path):
+    strategy = GkiRootStrategy()
+    patched_boot = tmp_path / "boot_patched.img"
+    patched_boot.write_bytes(b"patched")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
+
+    with (
+        patch("ltbox.actions.root.process_boot_image_avb") as process_avb,
+        patch("ltbox.actions.root.vbmeta_has_chain_partition", return_value=True),
+        patch(
+            "ltbox.actions.root.rebuild_vbmeta_with_chained_images"
+        ) as rebuild_vbmeta,
+    ):
+        final_boot = strategy.finalize_patch(patched_boot, output_dir, backup_dir)
+
+    assert final_boot == output_dir / const.FN_BOOT
+    assert final_boot.exists()
+    process_avb.assert_called_once()
+    rebuild_vbmeta.assert_not_called()
+    assert not (output_dir / const.FN_VBMETA).exists()

@@ -13,7 +13,11 @@ from ..errors import ToolError
 from ..i18n import get_string
 from ..menu import TerminalMenu
 from ..partition import ensure_params_or_fail
-from ..patch.avb import process_boot_image_avb, rebuild_vbmeta_with_chained_images
+from ..patch.avb import (
+    process_boot_image_avb,
+    rebuild_vbmeta_with_chained_images,
+    vbmeta_has_chain_partition,
+)
 from ..patch.root import patch_boot_with_root_algo
 from . import edl
 from .system import detect_active_slot_robust
@@ -280,7 +284,7 @@ class GkiRootStrategy(ConfigurableRootStrategy):
         backup_name=const.FN_BOOT_BAK,
         output_dir=const.OUTPUT_ROOT_DIR,
         backup_dir=const.BACKUP_BOOT_DIR,
-        required_files=[const.FN_BOOT],
+        required_files=[const.FN_BOOT, const.FN_VBMETA],
         main_partition="boot",
         display_name="GKI",
         unroot_detect_msg_key="act_unroot_gki_detected",
@@ -312,9 +316,27 @@ class GkiRootStrategy(ConfigurableRootStrategy):
     def finalize_patch(
         self, patched_boot: Path, output_dir: Path, backup_source_dir: Path
     ) -> Path:
-        process_boot_image_avb(patched_boot, gki=True, backup_dir=backup_source_dir)
+        vbmeta_bak = backup_source_dir / const.FN_VBMETA_BAK
+
+        if vbmeta_bak.exists() and not vbmeta_has_chain_partition(vbmeta_bak, "boot"):
+            process_boot_image_avb(patched_boot, gki=True, backup_dir=backup_source_dir)
+
+            patched_vbmeta_path = const.BASE_DIR / const.FN_VBMETA_ROOT
+            rebuild_vbmeta_with_chained_images(
+                output_path=patched_vbmeta_path,
+                original_vbmeta_path=vbmeta_bak,
+                chained_images=[patched_boot],
+            )
+        else:
+            process_boot_image_avb(patched_boot, gki=True, backup_dir=backup_source_dir)
+            patched_vbmeta_path = None
+
         final_boot = output_dir / self.image_name
         shutil.move(patched_boot, final_boot)
+
+        if patched_vbmeta_path and patched_vbmeta_path.exists():
+            shutil.move(patched_vbmeta_path, output_dir / const.FN_VBMETA)
+
         return final_boot
 
 
@@ -625,10 +647,12 @@ def _patch_root_image_from_image_folder(
     utils.ui.echo(get_string("act_wait_image").format(image=wait_image))
     const.IMAGE_DIR.mkdir(exist_ok=True)
 
+    requires_vbmeta = const.FN_VBMETA in strategy.required_files
+
     prompt = get_string("act_prompt_boot").format(name=const.IMAGE_DIR.name)
-    if not gki:
+    if requires_vbmeta:
         prompt = prompt.replace(
-            f"'{const.FN_BOOT}'", f"'{const.FN_INIT_BOOT}' and '{const.FN_VBMETA}'"
+            f"'{const.FN_BOOT}'", f"'{strategy.image_name}' and '{const.FN_VBMETA}'"
         )
 
     utils.wait_for_files(const.IMAGE_DIR, strategy.required_files, prompt)
@@ -652,7 +676,7 @@ def _patch_root_image_from_image_folder(
     shutil.copy(
         const.BASE_DIR / strategy.image_name, const.BASE_DIR / strategy.backup_name
     )
-    if not gki:
+    if requires_vbmeta:
         shutil.copy(
             const.BASE_DIR / const.FN_VBMETA, const.BASE_DIR / const.FN_VBMETA_BAK
         )
@@ -664,7 +688,7 @@ def _patch_root_image_from_image_folder(
         )
         (const.BASE_DIR / strategy.image_name).unlink()
 
-        if not gki:
+        if requires_vbmeta:
             (const.BASE_DIR / const.FN_VBMETA).unlink()
 
         if isinstance(strategy, LkmRootStrategy) and not lkm_kernel_version:
@@ -706,7 +730,7 @@ def _patch_root_image_from_image_folder(
                 name=strategy.image_name, dir=strategy.log_output_dir_name
             )
         )
-        if not gki:
+        if (strategy.output_dir / const.FN_VBMETA).exists():
             utils.ui.echo(
                 get_string("act_root_saved_file").format(
                     name=const.FN_VBMETA, dir=strategy.log_output_dir_name
@@ -782,8 +806,11 @@ def patch_root_image_file_and_flash(
         utils.ui.echo(get_string("act_warn_root_slot"))
         if gki:
             partition_map["main"] = "boot"
+            if const.FN_VBMETA in strategy.required_files:
+                partition_map["vbmeta"] = "vbmeta"
         else:
             partition_map["main"] = "init_boot"
+            partition_map["vbmeta"] = "vbmeta"
 
     _flash_root_image(dev, strategy, partition_map, gki)
 
@@ -867,7 +894,7 @@ def _dump_and_generate_root_image(
             try:
                 _dump_partition_to_workspace(dev, port, main_partition, dumped_main)
 
-                if not gki:
+                if const.FN_VBMETA in strategy.required_files:
                     vbmeta_partition = partition_map["vbmeta"]
                     dumped_vbmeta = const.WORKING_BOOT_DIR / const.FN_VBMETA
                     _dump_partition_to_workspace(
@@ -894,7 +921,7 @@ def _dump_and_generate_root_image(
             utils.ui.echo(get_string("act_temp_backup_avb"))
             shutil.copy(dumped_main, base_main_bak)
 
-            if not gki:
+            if const.FN_VBMETA in strategy.required_files:
                 shutil.copy(
                     const.WORKING_BOOT_DIR / const.FN_VBMETA,
                     strategy.backup_dir / const.FN_VBMETA,
@@ -933,12 +960,12 @@ def _dump_and_generate_root_image(
             else:
                 utils.ui.error(get_string("act_err_avb_footer").format(e=e))
             base_main_bak.unlink(missing_ok=True)
-            if not gki:
+            if const.FN_VBMETA in strategy.required_files:
                 (const.BASE_DIR / const.FN_VBMETA_BAK).unlink(missing_ok=True)
             raise
 
         base_main_bak.unlink(missing_ok=True)
-        if not gki:
+        if const.FN_VBMETA in strategy.required_files:
             (const.BASE_DIR / const.FN_VBMETA_BAK).unlink(missing_ok=True)
 
         return strategy.output_dir / strategy.image_name
@@ -977,8 +1004,8 @@ def _flash_root_image(
                 )
             )
 
-            if not gki:
-                final_vbmeta_path = strategy.output_dir / const.FN_VBMETA
+            final_vbmeta_path = strategy.output_dir / const.FN_VBMETA
+            if final_vbmeta_path.exists() and partition_map.get("vbmeta"):
                 vbmeta_part = partition_map["vbmeta"]
                 edl.flash_partition_target(dev, port, vbmeta_part, final_vbmeta_path)
                 utils.ui.echo(
@@ -1026,8 +1053,11 @@ def root_device(
         utils.ui.echo(get_string("act_warn_root_slot"))
         if gki:
             partition_map["main"] = "boot"
+            if const.FN_VBMETA in strategy.required_files:
+                partition_map["vbmeta"] = "vbmeta"
         else:
             partition_map["main"] = "init_boot"
+            partition_map["vbmeta"] = "vbmeta"
 
     utils.ui.echo(get_string("act_root_step2"))
 
