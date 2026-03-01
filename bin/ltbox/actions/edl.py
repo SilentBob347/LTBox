@@ -148,12 +148,14 @@ def flash_partition_labels(
         while True:
             width = utils.ui.get_term_width()
             utils.ui.echo("\n" + "=" * width)
-            utils.ui.echo("   Select Slot")
+            utils.ui.echo(f"   {get_string('menu_select_slot')}")
             utils.ui.echo("=" * width + "\n")
-            utils.ui.echo("   1. Slot A")
-            utils.ui.echo("   2. Slot B\n")
+            utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
+            utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
 
-            choice = utils.ui.prompt("Select: ").strip()
+            choice = utils.ui.prompt(
+                get_string("act_flash_partitions_select_prompt")
+            ).strip()
             if choice == "1":
                 slot_suffix = "a"
                 break
@@ -180,7 +182,9 @@ def flash_partition_labels(
             ):
                 if not t_entry:
                     utils.ui.error(
-                        f"Cannot find sector info for {base}_{target_slot}. Skipping."
+                        get_string("act_warn_missing_sector_info").format(
+                            partition=f"{base}_{target_slot}"
+                        )
                     )
                     continue
 

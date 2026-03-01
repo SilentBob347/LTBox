@@ -468,7 +468,7 @@ def ensure_avb_tools() -> None:
         )
         extract_archive_files(temp_tar_path, files_to_extract)
     except ToolError:
-        utils.ui.echo("[*] AVB archive download failed. Trying fallback archive...")
+        utils.ui.echo(get_string("dl_avb_fallback_repo"))
         try:
             download_resource(
                 fallback_archive_url,

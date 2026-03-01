@@ -694,5 +694,11 @@
   "xml_check_conflicts": "잠재적인 파일 충돌 확인 중...",
   "xml_cleaning_clean_decrypt": "깨끗한 복호화를 위해 기존 XML 파일을 모두 정리하는 중...",
   "xml_cleaning_pollution": "오염 방지를 위해 기존 XML 파일을 모두 정리하는 중...",
-  "xml_err_delete_fail": "경고: {name} 삭제 실패: {e}"
+  "xml_err_delete_fail": "경고: {name} 삭제 실패: {e}",
+  "warn_save_settings_failed": "경고: 설정 저장 실패: {e}",
+  "dl_avb_fallback_repo": "[*] AVB 아카이브 다운로드 실패. 대안을 시도합니다...",
+  "menu_select_slot": "슬롯 선택",
+  "menu_slot_a": "슬롯 A",
+  "menu_slot_b": "슬롯 B",
+  "act_warn_missing_sector_info": "{partition}의 섹터 정보를 찾을 수 없어 건너뜁니다."
 }

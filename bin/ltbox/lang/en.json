@@ -694,5 +694,11 @@
   "xml_check_conflicts": "Checking for potential file conflicts...",
   "xml_cleaning_clean_decrypt": "Cleaning up ALL existing XML files to ensure clean decryption...",
   "xml_cleaning_pollution": "Cleaning up ALL existing XML files to prevent pollution...",
-  "xml_err_delete_fail": "Warning: Failed to delete {name}: {e}"
+  "xml_err_delete_fail": "Warning: Failed to delete {name}: {e}",
+  "warn_save_settings_failed": "Warning: Failed to save settings: {e}",
+  "dl_avb_fallback_repo": "[*] AVB archive download failed. Trying fallback...",
+  "menu_select_slot": "Select Slot",
+  "menu_slot_a": "Slot A",
+  "menu_slot_b": "Slot B",
+  "act_warn_missing_sector_info": "Cannot find sector info for {partition}. Skipping."
 }

@@ -694,5 +694,11 @@
   "xml_check_conflicts": "正在检查潜在的文件冲突...",
   "xml_cleaning_clean_decrypt": "正在清理所有现有 XML 文件以确保干净的解密...",
   "xml_cleaning_pollution": "正在清理所有现有 XML 文件以防止数据污染...",
-  "xml_err_delete_fail": "警告：无法删除 {name}: {e}"
+  "xml_err_delete_fail": "警告：无法删除 {name}: {e}",
+  "warn_save_settings_failed": "警告: 保存设置失败: {e}",
+  "dl_avb_fallback_repo": "[*] AVB 压缩包下载失败。正在尝试备用...",
+  "menu_select_slot": "选择槽位",
+  "menu_slot_a": "槽位 A",
+  "menu_slot_b": "槽位 B",
+  "act_warn_missing_sector_info": "找不到 {partition} 的扇区信息，已跳过。"
 }

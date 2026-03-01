@@ -108,7 +108,7 @@ class SettingsStore:
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Warning: Failed to save settings: {e}", file=sys.stderr)
+            print(get_string("warn_save_settings_failed").format(e=e), file=sys.stderr)
         return AppSettings.from_dict(data)
 
 

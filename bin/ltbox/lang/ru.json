@@ -694,5 +694,11 @@
   "xml_check_conflicts": "Проверка потенциальных конфликтов файлов...",
   "xml_cleaning_clean_decrypt": "Очистка ВСЕХ существующих XML-файлов для чистого дешифрования...",
   "xml_cleaning_pollution": "Очистка ВСЕХ существующих XML-файлов для предотвращения конфликтов...",
-  "xml_err_delete_fail": "Предупреждение: Не удалось удалить {name}: {e}"
+  "xml_err_delete_fail": "Предупреждение: Не удалось удалить {name}: {e}",
+  "warn_save_settings_failed": "Предупреждение: не удалось сохранить настройки: {e}",
+  "dl_avb_fallback_repo": "[*] Не удалось скачать AVB-архив. Пробуем резервный...",
+  "menu_select_slot": "Выберите слот",
+  "menu_slot_a": "Слот A",
+  "menu_slot_b": "Слот B",
+  "act_warn_missing_sector_info": "Не найдена информация о секторах для {partition}. Пропуск."
 }
