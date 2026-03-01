@@ -104,6 +104,6 @@ def test_run_info_scan_creates_log(tmp_path):
     main.run_info_scan([str(image_dir), str(extra_img)], constants, avb_patch)
 
     assert len(calls) == 3
-    logs = list((tmp_path / "log").glob("image_info_*.txt"))
+    logs = list((tmp_path / "bin" / "log").glob("image_info_*.txt"))
     assert len(logs) == 1
     assert "FAKE-INFO" in logs[0].read_text(encoding="utf-8")

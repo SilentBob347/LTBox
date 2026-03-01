@@ -343,7 +343,7 @@ def run_info_scan(paths, constants, avb_patch):
     print(get_string("scan_start"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = constants.BASE_DIR.parent / "log"
+    log_dir = constants.BASE_DIR / "log"
     log_dir.mkdir(exist_ok=True)
     log_filename = log_dir / f"image_info_{timestamp}.txt"
 
