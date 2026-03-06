@@ -569,6 +569,7 @@ def test_root_folkpatch(fw_pkg, tmp_path):
         target_boot = work_dir / "boot.img"
         shutil.copy(boot_img, target_boot)
         shutil.copy(vbmeta_img, mock_dirs["BASE_DIR"] / "vbmeta.bak.img")
+        shutil.copy(boot_img, mock_dirs["BASE_DIR"] / "boot.bak.img")
 
         print("[INFO] [FOLKPATCH] Running ACTUAL patch process...")
 
