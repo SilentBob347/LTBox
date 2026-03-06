@@ -6,3 +6,4 @@ apkutils
 colorama
 tqdm
 questionary
+py7zr

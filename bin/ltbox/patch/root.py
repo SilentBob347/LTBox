@@ -1,6 +1,7 @@
 import re
 import shutil
 import sys
+import subprocess
 from pathlib import Path
 from typing import Optional, Union
 
@@ -41,6 +42,7 @@ def patch_boot_with_root_algo(
     lkm_kernel_version: Optional[str] = None,
     root_type: str = "ksu",
     skip_lkm_download: bool = False,
+    superkey: Optional[str] = None,
 ) -> Optional[Path]:
 
     img_name = const.FN_BOOT if gki else const.FN_INIT_BOOT
@@ -58,7 +60,93 @@ def patch_boot_with_root_algo(
 
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
-    if gki:
+    if root_type == "folkpatch":
+        kptools_exe = const.DOWNLOAD_DIR / "kptools.exe"
+        kpimg_file = work_dir / "kpimg"
+
+        utils.ui.echo(f"[*] Unpacking {img_name} for FolkPatch using kptools...")
+
+        cmd_unpack = [str(kptools_exe), "unpack", img_name]
+        res_unpack = subprocess.run(
+            cmd_unpack, cwd=work_dir, capture_output=True, text=True
+        )
+        if res_unpack.stdout:
+            utils.ui.echo(res_unpack.stdout.strip())
+
+        if res_unpack.returncode != 0:
+            utils.ui.error(f"kptools unpack failed:\n{res_unpack.stderr}")
+            return None
+
+        kernel_file = work_dir / "kernel"
+        kernel_ori = work_dir / "kernel.ori"
+
+        if not kernel_file.exists():
+            utils.ui.error("Unpack failed. 'kernel' file not found.")
+            return None
+
+        shutil.move(kernel_file, kernel_ori)
+
+        utils.ui.echo("[*] Checking kernel compatibility for APatch...")
+        cmd_check = [str(kptools_exe), "-i", str(kernel_ori), "-f"]
+        res_check = subprocess.run(
+            cmd_check, cwd=work_dir, capture_output=True, text=True
+        )
+
+        if "CONFIG_KALLSYMS=y" not in res_check.stdout:
+            utils.ui.error(
+                "APatch requires CONFIG_KALLSYMS to be Enabled in your kernel. Aborting."
+            )
+            return None
+        if "CONFIG_KALLSYMS_ALL=y" not in res_check.stdout:
+            utils.ui.echo(
+                " [93m[!] WARNING: CONFIG_KALLSYMS_ALL is not set! Device might not boot. [0m"
+            )
+
+        utils.ui.echo("[*] Patching kernel with kptools and SuperKey...")
+        cmd_patch = [
+            str(kptools_exe),
+            "-p",
+            "-i",
+            str(kernel_ori),
+            "-S",
+            superkey,
+            "-k",
+            str(kpimg_file),
+            "-o",
+            str(kernel_file),
+        ]
+        res_patch = subprocess.run(
+            cmd_patch, cwd=work_dir, capture_output=True, text=True
+        )
+        if res_patch.stdout:
+            utils.ui.echo(res_patch.stdout.strip())
+
+        if res_patch.returncode != 0:
+            utils.ui.error(f"kptools patch failed:\n{res_patch.stderr}")
+            return None
+
+        utils.ui.echo(f"[*] Repacking {img_name} for FolkPatch using kptools...")
+        cmd_repack = [str(kptools_exe), "repack", img_name]
+        res_repack = subprocess.run(
+            cmd_repack, cwd=work_dir, capture_output=True, text=True
+        )
+        if res_repack.stdout:
+            utils.ui.echo(res_repack.stdout.strip())
+
+        if res_repack.returncode != 0:
+            utils.ui.error(f"kptools repack failed:\n{res_repack.stderr}")
+            return None
+
+        patched_file = work_dir / "new-boot.img"
+        if not patched_file.exists():
+            utils.ui.error("Repack failed. 'new-boot.img' not found.")
+            return None
+
+        shutil.move(patched_file, patched_boot_path)
+        utils.ui.echo("[+] FolkPatch Repack successful.")
+        return patched_boot_path
+
+    elif gki:
         print(get_string("img_root_step1").format(name=img_name))
         mb.run("unpack", img_name, cwd=work_dir)
         if not (work_dir / "kernel").exists():

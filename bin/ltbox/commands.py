@@ -48,6 +48,27 @@ def register_all_commands() -> None:
             {"gki": True},
         ),
         (
+            "root_device_fp",
+            actions.root_device,
+            get_string("task_title_root_gki") + " (FolkPatch)",
+            True,
+            {"gki": True, "root_type": "folkpatch"},
+        ),
+        (
+            "patch_root_image_file_fp",
+            actions.patch_root_image_file,
+            get_string("task_title_root_file_gki") + " (FolkPatch)",
+            False,
+            {"gki": True, "root_type": "folkpatch"},
+        ),
+        (
+            "patch_root_image_file_flash_fp",
+            actions.patch_root_image_file_and_flash,
+            get_string("task_title_root_file_gki") + " (FolkPatch)",
+            True,
+            {"gki": True, "root_type": "folkpatch"},
+        ),
+        (
             "root_device_lkm",
             actions.root_device,
             get_string("task_title_root_lkm"),

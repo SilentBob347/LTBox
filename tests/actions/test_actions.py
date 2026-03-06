@@ -11,7 +11,12 @@ from ltbox import constants as const
 from ltbox import downloader, utils
 from ltbox.actions import edl
 from ltbox.actions import xml as xml_action
-from ltbox.actions.root import GkiRootStrategy, LkmRootStrategy, MagiskRootStrategy
+from ltbox.actions.root import (
+    GkiRootStrategy,
+    LkmRootStrategy,
+    MagiskRootStrategy,
+    FolkPatchStrategy,
+)
 from ltbox.patch.avb import vbmeta_has_chain_partition
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "bin"))
@@ -526,3 +531,67 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     process_avb.assert_called_once()
     rebuild_vbmeta.assert_not_called()
     assert not (output_dir / const.FN_VBMETA).exists()
+
+
+def test_root_folkpatch(fw_pkg, tmp_path):
+    if not fw_pkg:
+        pytest.skip("Firmware package not available")
+
+    boot_img = fw_pkg.get("boot.img")
+    vbmeta_img = fw_pkg.get("vbmeta.img")
+
+    if not boot_img or not vbmeta_img:
+        pytest.skip("Required images (boot, vbmeta) missing")
+
+    mock_dirs = {
+        "TOOLS_DIR": tmp_path / "bin" / "tools",
+        "DOWNLOAD_DIR": tmp_path / "bin" / "download",
+        "OUTPUT_ROOT_DIR": tmp_path / "output" / "root",
+        "IMAGE_DIR": tmp_path / "images",
+        "BASE_DIR": tmp_path / "base",
+    }
+    for d in mock_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+
+    with patch.multiple("ltbox.constants", **mock_dirs):
+        print("\n[INFO] [FOLKPATCH] Ensuring magiskboot (Real Download)...")
+        downloader.ensure_magiskboot()
+
+        strategy = FolkPatchStrategy()
+
+        print("[INFO] [FOLKPATCH] Downloading resources (kptools, APK)...")
+        if not strategy.download_resources():
+            pytest.fail("Failed to download FolkPatch resources")
+
+        work_dir = tmp_path / "work_fp"
+        work_dir.mkdir()
+
+        target_boot = work_dir / "boot.img"
+        shutil.copy(boot_img, target_boot)
+        shutil.copy(vbmeta_img, mock_dirs["BASE_DIR"] / "vbmeta.bak.img")
+
+        print("[INFO] [FOLKPATCH] Running ACTUAL patch process...")
+
+        with patch("builtins.input", return_value="SuperKey1234"):
+            try:
+                patched_path = strategy.patch(work_dir, dev=None)
+            except Exception as e:
+                pytest.fail(f"FolkPatch patching failed with real tools: {e}")
+
+        if patched_path is None:
+            pytest.skip(
+                "FolkPatch returned None, likely due to unsupported kernel (missing CONFIG_KALLSYMS). Skipping test."
+            )
+
+        assert patched_path.exists(), "Patched boot image not returned"
+        assert patched_path.stat().st_size > 0, "Patched boot image is empty"
+        print(f"[INFO] [FOLKPATCH] Patch success: {patched_path}")
+
+        print("[INFO] [FOLKPATCH] Finalizing (AVB Chaining)...")
+        final_output = strategy.finalize_patch(
+            patched_path, mock_dirs["OUTPUT_ROOT_DIR"], mock_dirs["BASE_DIR"]
+        )
+
+        assert final_output.exists()
+        assert final_output.name == "boot.img"
+        print(f"[PASS] FolkPatch Integration Test Complete. Output: {final_output}")

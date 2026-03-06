@@ -340,6 +340,101 @@ class GkiRootStrategy(ConfigurableRootStrategy):
         return final_boot
 
 
+class FolkPatchStrategy(GkiRootStrategy):
+    spec = RootStrategySpec(
+        image_name=const.FN_BOOT,
+        backup_name=const.FN_BOOT_BAK,
+        output_dir=const.OUTPUT_ROOT_DIR,
+        backup_dir=const.BACKUP_BOOT_DIR,
+        required_files=[const.FN_BOOT, const.FN_VBMETA],
+        main_partition="boot",
+        display_name="FolkPatch",
+        unroot_detect_msg_key="act_unroot_gki_detected",
+        unroot_menu_msg_key="act_unroot_menu_3_gki",
+        menu_shortcut="5",
+        patch_image_name="boot.img",
+        requires_kernel_version=False,
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.is_nightly = False
+        self.workflow_id = None
+        self._staging_dir = const.TOOLS_DIR / "folkpatch_staging"
+
+    def configure_source(self) -> None:
+        menu = TerminalMenu("FolkPatch Version", breadcrumbs="Root > FolkPatch")
+        menu.add_option("1", "Stable (GitHub Releases)")
+        menu.add_option("2", "Nightly (GitHub Actions)")
+        choice = menu.ask("Select: ", "Invalid selection")
+
+        if choice == "2":
+            self.is_nightly = True
+            utils.ui.clear()
+            width = utils.ui.get_term_width()
+            utils.ui.echo("-" * width)
+            utils.ui.echo("Enter FolkPatch GitHub Actions workflow ID:")
+            utils.ui.echo("-" * width)
+            self.workflow_id = input("> ").strip()
+        else:
+            self.is_nightly = False
+
+    def download_resources(self, kernel_version: Optional[str] = None) -> bool:
+        _cleanup_manager_apk(show_message=False)
+        utils.recreate_dir(self._staging_dir)
+        try:
+            downloader.download_kptools(const.DOWNLOAD_DIR)
+            if self.is_nightly and self.workflow_id:
+                downloader.download_folkpatch_nightly(
+                    self.workflow_id, self._staging_dir
+                )
+            else:
+                downloader.download_folkpatch_release(self._staging_dir)
+            return True
+        except Exception as e:
+            utils.ui.error(f"Failed to download FolkPatch resources: {e}")
+            return False
+
+    def patch(
+        self,
+        work_dir: Path,
+        dev: Optional[device.DeviceController] = None,
+        lkm_kernel_version: Optional[str] = None,
+    ) -> Optional[Path]:
+        magiskboot_exe = utils.get_platform_executable("magiskboot")
+        ensure_magiskboot()
+
+        utils.ui.echo(
+            "\nFolkPatch requires a SuperKey (8-63 characters, letters and numbers only)."
+        )
+        superkey = ""
+        while True:
+            superkey = input("Enter SuperKey: ").strip()
+            if 8 <= len(superkey) <= 63 and superkey.isalnum():
+                break
+            utils.ui.error(
+                "Invalid SuperKey. Must be 8-63 alphanumeric characters. Please try again."
+            )
+
+        kpimg_src = self._staging_dir / "kpimg"
+        if kpimg_src.exists():
+            import shutil
+
+            shutil.copy(kpimg_src, work_dir / "kpimg")
+        else:
+            utils.ui.error("kpimg not found in staging directory!")
+            return None
+
+        return patch_boot_with_root_algo(
+            work_dir,
+            magiskboot_exe,
+            dev=dev,
+            gki=True,
+            root_type="folkpatch",
+            superkey=superkey,
+        )
+
+
 class MagiskRootStrategy(InitBootRootStrategy):
     spec = RootStrategySpec(
         image_name=const.FN_INIT_BOOT,
@@ -627,7 +722,9 @@ class LkmRootStrategy(InitBootRootStrategy):
 
 
 def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
-    if gki:
+    if root_type == "folkpatch":
+        return FolkPatchStrategy()
+    elif gki:
         return GkiRootStrategy()
     elif root_type == "magisk":
         return MagiskRootStrategy()
@@ -750,7 +847,7 @@ def _patch_root_image_from_image_folder(
 def patch_root_image_file(gki: bool = False, root_type: str = "ksu") -> None:
     strategy = get_root_strategy(gki, root_type)
 
-    if isinstance(strategy, LkmRootStrategy):
+    if hasattr(strategy, "configure_source"):
         strategy.configure_source()
 
     utils.ui.echo(get_string("act_clean_dir").format(dir=strategy.log_output_dir_name))
@@ -767,7 +864,7 @@ def patch_root_image_file_and_flash(
 
     _cleanup_manager_apk()
 
-    if isinstance(strategy, LkmRootStrategy):
+    if hasattr(strategy, "configure_source"):
         strategy.configure_source()
 
     utils.ui.echo(get_string("act_clean_dir").format(dir=strategy.log_output_dir_name))
@@ -1025,7 +1122,7 @@ def root_device(
 
     _cleanup_manager_apk()
 
-    if isinstance(strategy, LkmRootStrategy):
+    if hasattr(strategy, "configure_source"):
         strategy.configure_source()
 
     _prepare_root_env(strategy)

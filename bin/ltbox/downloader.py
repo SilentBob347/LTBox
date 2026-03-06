@@ -854,6 +854,130 @@ def get_lkm_kernel_release(target_path: Path, kernel_version: str) -> None:
         raise ToolError(str(e))
 
 
+def download_kptools(target_dir: Path):
+    kptools_exe = target_dir / "kptools.exe"
+    if kptools_exe.exists():
+        return
+
+    utils.ui.echo("Downloading kptools-msys2-win.7z from bmax121/KernelPatch...")
+    import requests
+
+    releases_url = "https://api.github.com/repos/bmax121/KernelPatch/releases"
+    try:
+        response = requests.get(releases_url, timeout=15)
+        response.raise_for_status()
+        releases = response.json()
+    except requests.RequestException as e:
+        raise ToolError(f"Failed to fetch KernelPatch releases: {e}")
+
+    asset_url = None
+    for release in releases:
+        if release.get("draft"):
+            continue
+        for asset in release.get("assets", []):
+            if "kptools-msys2-win.7z" in asset["name"]:
+                asset_url = asset["browser_download_url"]
+                break
+        if asset_url:
+            break
+
+    if not asset_url:
+        raise ToolError(
+            "kptools-msys2-win.7z not found in bmax121/KernelPatch releases."
+        )
+
+    temp_7z = target_dir / "kptools-msys2-win.7z"
+    download_resource(asset_url, temp_7z)
+
+    import py7zr
+
+    try:
+        utils.ui.echo("Extracting kptools.7z...")
+        with py7zr.SevenZipFile(temp_7z, mode="r") as z:
+            z.extractall(path=target_dir)
+    finally:
+        if temp_7z.exists():
+            temp_7z.unlink()
+
+    if not kptools_exe.exists():
+        extracted_exe = next(target_dir.rglob("kptools.exe"), None)
+        if extracted_exe:
+            exe_dir = extracted_exe.parent
+            for item in exe_dir.iterdir():
+                dest = target_dir / item.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(target_dir))
+
+            try:
+                exe_dir.rmdir()
+            except OSError:
+                pass
+        else:
+            raise ToolError("kptools.exe was not found after extraction.")
+    utils.ui.echo("kptools ready.")
+
+
+def download_folkpatch_release(target_dir: Path):
+    utils.ui.echo("Downloading FolkPatch Stable (Latest Release)...")
+    apk_path = target_dir / "FolkPatch.apk"
+    _download_and_move_github_asset(
+        "matsuzaka-yuki/FolkPatch", "latest", r".*\.apk$", apk_path
+    )
+    _extract_folkpatch_kpimg(apk_path, target_dir)
+
+
+def download_folkpatch_nightly(workflow_id: str, target_dir: Path):
+    utils.ui.echo(f"Downloading FolkPatch Nightly from workflow {workflow_id}...")
+    repo = "matsuzaka-yuki/FolkPatch"
+    artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
+
+    target_artifact = next(
+        (name for name in artifact_names if name.lower().startswith("folkpatch")), None
+    )
+    if not target_artifact:
+        raise ToolError(
+            f"No FolkPatch artifact found in workflow {workflow_id}. Available: {artifact_names}"
+        )
+
+    base_url = (
+        f"https://nightly.link/{repo}/actions/runs/{workflow_id}/{target_artifact}.zip"
+    )
+    temp_zip = target_dir / f"{target_artifact}.zip"
+
+    try:
+        download_resource(base_url, temp_zip)
+        apk_path = target_dir / "FolkPatch.apk"
+        with zipfile.ZipFile(temp_zip, "r") as zf:
+            apk_member = next((m for m in zf.namelist() if m.endswith(".apk")), None)
+            if not apk_member:
+                raise ToolError("FolkPatch APK not found in nightly zip.")
+            with zf.open(apk_member) as src, open(apk_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+    finally:
+        if temp_zip.exists():
+            temp_zip.unlink()
+
+    _extract_folkpatch_kpimg(apk_path, target_dir)
+
+
+def _extract_folkpatch_kpimg(apk_path: Path, target_dir: Path):
+    kpimg_path = target_dir / "kpimg"
+    with zipfile.ZipFile(apk_path, "r") as zf:
+        try:
+            with zf.open("assets/kpimg") as src, open(kpimg_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            utils.ui.echo("kpimg extracted successfully.")
+        except KeyError:
+            raise ToolError("assets/kpimg not found in the downloaded FolkPatch APK.")
+
+    manager_apk = const.TOOLS_DIR / "manager.apk"
+    shutil.copy(apk_path, manager_apk)
+
+
 def install_base_tools(lang_code: str = "en"):
     i18n_load_lang(lang_code)
 

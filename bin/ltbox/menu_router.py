@@ -51,11 +51,11 @@ def _root_action_menu(
     dev: Any, registry: Any, gki: bool, root_type: str, breadcrumbs: str
 ):
     def _handler(action: str):
-        extras: Dict[str, Any] = {"root_type": root_type} if not gki else {}
+        extras: Dict[str, Any] = {"root_type": root_type}
         run_task(action, dev, registry, extra_kwargs=extras)
 
     res = _loop_menu(
-        lambda: menu_data.get_root_menu_data(gki),
+        lambda: menu_data.get_root_menu_data(gki, root_type=root_type),
         "menu_root_title",
         breadcrumbs,
         _handler,
@@ -108,6 +108,9 @@ def root_menu(dev: Any, registry: Any):
         "4": lambda: _root_action_menu(
             dev, registry, gki=False, root_type="resukisu", breadcrumbs=type_breadcrumbs
         ),
+        "5": lambda: _root_action_menu(
+            dev, registry, gki=True, root_type="folkpatch", breadcrumbs=type_breadcrumbs
+        ),
     }
 
     while True:
@@ -118,6 +121,7 @@ def root_menu(dev: Any, registry: Any):
         mode_menu.add_option("2", get_string("menu_root_type_ksu_next"))
         mode_menu.add_option("3", get_string("menu_root_type_sukisu"))
         mode_menu.add_option("4", get_string("menu_root_type_resukisu"))
+        mode_menu.add_option("5", "FolkPatch")
         mode_menu.add_separator()
         mode_menu.add_option("b", get_string("menu_back"))
         mode_menu.add_option("x", get_string("menu_main_exit"))

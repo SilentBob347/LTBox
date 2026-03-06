@@ -200,9 +200,27 @@ def get_root_mode_menu_data() -> List[MenuItem]:
     return _build_menu(specs)
 
 
-def get_root_menu_data(gki: bool) -> List[MenuItem]:
+def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
     specs: List[MenuSpec] = []
-    if gki:
+
+    if root_type == "folkpatch":
+        specs.extend(
+            [
+                MenuSpec(
+                    "option",
+                    key="1",
+                    text=lambda: "Root device (FolkPatch)",
+                    action="root_device_fp",
+                ),
+                MenuSpec(
+                    "option",
+                    key="2",
+                    text=lambda: "Patch Image File & Flash (FolkPatch)",
+                    action="patch_root_image_file_flash_fp",
+                ),
+            ]
+        )
+    elif gki:
         specs.extend(
             [
                 MenuSpec(
