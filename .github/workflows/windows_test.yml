@@ -28,7 +28,18 @@ jobs:
         PYTHONPATH=bin
       run-command: |
         python -m compileall bin/ltbox
-        pytest -s tests/ -m "not integration" --cov=bin/ltbox --cov-report=term-missing
+        pytest -s tests/ -m "not integration and not architecture" --cov=bin/ltbox --cov-report=term-missing
+
+  architecture-test:
+    uses: ./.github/workflows/python-command.yml
+    with:
+      runner: ubuntu-latest
+      python-version: '3.14'
+      extra-env: |
+        PYTHONUNBUFFERED=1
+        PYTHONPATH=bin
+      run-command: |
+        pytest -s tests/core/test_exports.py -m architecture
 
   integration-test:
     needs: unit-test

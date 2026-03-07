@@ -4,6 +4,8 @@ from typing import Optional
 
 import pytest
 
+pytestmark = pytest.mark.architecture
+
 
 def _module_name_for_path(file_path: Path, package_root: Path) -> str:
     rel_path = file_path.relative_to(package_root)
