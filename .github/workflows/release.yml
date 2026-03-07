@@ -24,23 +24,10 @@ jobs:
 
       - name: Resolve Tag Name
         id: resolve-tag
-        run: |
-          $tag = "${{ github.ref_name }}"
-
-          "TAG_NAME=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        run: ./.github/scripts/release/resolve-tag.ps1 -Tag "${{ github.ref_name }}"
 
       - name: Verify Version Match
-        run: |
-          $configVersion = (Get-Content bin/ltbox/config.json | ConvertFrom-Json).version
-
-          Write-Host "Tag: $env:TAG_NAME"
-          Write-Host "Config: $configVersion"
-
-          if ($env:TAG_NAME -ne $configVersion) {
-            Write-Error "Error: Git tag ($env:TAG_NAME) does not match config.json version ($configVersion)."
-            exit 1
-          }
+        run: ./.github/scripts/release/verify-version-match.ps1 -TagName "$env:TAG_NAME"
 
       - name: Setup Environment & FW Cache
         uses: ./.github/actions/setup-fw-env
@@ -48,13 +35,7 @@ jobs:
           fw-password: ${{ secrets.TEST_FW_PASSWORD }}
 
       - name: Install Tools from Cache
-        run: |
-          New-Item -ItemType Directory -Force -Path bin/tools | Out-Null
-
-          Get-ChildItem -Path tests/data/extracted -Recurse -Filter "fh_loader.exe" | Copy-Item -Destination bin/tools -Force
-          Get-ChildItem -Path tests/data/extracted -Recurse -Filter "QSaharaServer.exe" | Copy-Item -Destination bin/tools -Force
-
-          Get-ChildItem -Path bin/tools -Filter "*.exe" | Format-Table -AutoSize
+        run: ./.github/scripts/release/install-tools-from-cache.ps1
 
       - name: Download magiskboot artifact from test job
         uses: actions/download-artifact@v8
@@ -63,31 +44,10 @@ jobs:
           path: bin/tools/
 
       - name: Create Archive
-        run: |
-          $archive = "LTBox-win_amd64-$($env:TAG_NAME).zip"
-          $excludes = @(
-            ".git",
-            ".git\\*",
-            ".github",
-            ".github\\*",
-            ".gitignore",
-            ".gitattributes",
-            ".editorconfig",
-            ".pre-commit-config.yaml",
-            "bin\\requirements-dev.txt",
-            "pytest.ini",
-            "tests",
-            "tests\\*"
-          )
-
-          $excludeArgs = $excludes | ForEach-Object { "-xr!$_" }
-          & 7z a $archive "." @excludeArgs
+        run: ./.github/scripts/release/create-archive.ps1 -TagName "$env:TAG_NAME"
 
       - name: Generate Checksums
-        run: |
-          $archive = "LTBox-win_amd64-$($env:TAG_NAME).zip"
-          $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
-          "$hash  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ascii
+        run: ./.github/scripts/release/generate-checksums.ps1 -TagName "$env:TAG_NAME"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
