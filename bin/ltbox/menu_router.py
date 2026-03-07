@@ -241,7 +241,7 @@ def prompt_for_language(
 
                 if saved_lang in avail_codes:
                     return saved_lang
-            except Exception:
+            except RuntimeError:
                 pass
 
     i18n.load_lang("en")

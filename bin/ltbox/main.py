@@ -87,7 +87,7 @@ class SettingsStore:
         try:
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             print(get_string("warn_save_settings_failed").format(e=e), file=sys.stderr)
         return AppSettings.from_dict(data)
 
@@ -146,7 +146,7 @@ def setup_console():
 
         os.system("mode con: cols=80 lines=40")
 
-    except Exception as e:
+    except (ImportError, OSError, AttributeError) as e:
         print(get_string("warn_set_console_title").format(e=e), file=sys.stderr)
 
 
@@ -227,7 +227,7 @@ def run_info_scan(paths, constants, avb_patch):
                     )
 
                 logger.info("\n" + "=" * ui.get_term_width() + "\n")
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 error_msg = get_string("scan_failed").format(filename=f.name, e=e)
                 print(error_msg, file=sys.stderr)
                 logger.info(error_msg)
