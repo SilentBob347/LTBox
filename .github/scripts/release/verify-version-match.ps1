@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$TagName,
 
     [string]$ConfigPath = 'bin/ltbox/config.json'
@@ -8,11 +9,21 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$configVersion = (Get-Content $ConfigPath | ConvertFrom-Json).version
+if (-not (Test-Path $ConfigPath)) {
+    throw "[release][verify] Config file not found: $ConfigPath"
+}
 
-Write-Host "Tag: $TagName"
-Write-Host "Config: $configVersion"
+$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+if (-not $config.version) {
+    throw "[release][verify] 'version' field missing in $ConfigPath"
+}
+
+$configVersion = $config.version
+Write-Host "[release][verify] Tag version: $TagName"
+Write-Host "[release][verify] Config version: $configVersion"
 
 if ($TagName -ne $configVersion) {
-    throw "Error: Git tag ($TagName) does not match config.json version ($configVersion)."
+    throw "[release][verify] Git tag ($TagName) does not match config.json version ($configVersion)."
 }
+
+Write-Host '[release][verify] Version check passed.'
