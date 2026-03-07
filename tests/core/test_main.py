@@ -1,12 +1,9 @@
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from ltbox import main, menu_router
-
-sys.path.append(str(Path(__file__).resolve().parents[2] / "bin"))
 
 
 class TestApp:

@@ -1,7 +1,6 @@
 import hashlib
 import json
 import subprocess
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -9,8 +8,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from ltbox import crypto, downloader, utils
-
-sys.path.append(str(Path(__file__).resolve().parents[2] / "bin"))
 
 
 class TestUtils:
