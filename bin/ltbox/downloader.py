@@ -517,43 +517,6 @@ def ensure_avb_tools() -> None:
     utils.ui.echo(get_string("dl_avb_ready"))
 
 
-def ensure_openssl() -> None:
-    openssl_exe = const.DOWNLOAD_DIR / "openssl.exe"
-    if openssl_exe.exists():
-        return
-
-    utils.ui.echo(get_string("dl_downloading").format(filename="OpenSSL"))
-
-    settings = const.load_settings_raw()
-    url = settings.get("tools", {}).get("openssl_url")
-    temp_zip = const.DOWNLOAD_DIR / "openssl.zip"
-
-    try:
-        download_resource(url, temp_zip)
-
-        with zipfile.ZipFile(temp_zip, "r") as zf:
-            for member in zf.infolist():
-                if member.is_dir():
-                    continue
-
-                if "x64/bin/" in member.filename:
-                    filename = Path(member.filename).name
-                    if not filename:
-                        continue
-
-                    target_path = const.DOWNLOAD_DIR / filename
-                    _extract_zip_member(zf, member, target_path)
-
-        utils.ui.echo(get_string("dl_tool_success").format(tool_name="OpenSSL"))
-
-    except (ToolError, zipfile.BadZipFile, OSError) as e:
-        utils.ui.error(get_string("dl_err_openssl_download").format(e=e))
-        raise ToolError(get_string("dl_err_openssl_generic"))
-    finally:
-        if temp_zip.exists():
-            temp_zip.unlink()
-
-
 def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:
     utils.ui.echo(get_string("dl_gki_downloading"))
 
@@ -975,7 +938,6 @@ def install_base_tools(lang_code: str = "en"):
 
         ensure_platform_tools()
         ensure_avb_tools()
-        ensure_openssl()
 
         utils.ui.echo(get_string("dl_base_complete"))
     except Exception as e:

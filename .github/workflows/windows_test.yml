@@ -61,4 +61,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: magiskboot-exe
-          path: bin/tools/magiskboot.exe
+          path: |
+            bin/tools/magiskboot.exe
+            bin/tools/openssl.exe
+            bin/tools/*.dll

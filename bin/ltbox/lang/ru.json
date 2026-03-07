@@ -366,8 +366,6 @@
   "dl_err_ksuinit_download_variants": "Не удалось скачать ksuinit (пробованы варианты).",
   "dl_err_ksuinit_not_found": "ksuinit не найден в артефакте workflow.",
   "dl_err_latest_release_tag": "Не удалось определить тег последнего релиза.",
-  "dl_err_openssl_download": "Не удалось загрузить OpenSSL: {e}",
-  "dl_err_openssl_generic": "Ошибка загрузки OpenSSL",
   "dl_err_workflow_run_for_tag": "Не удалось найти запуск workflow для тега {tag}.",
   "dl_extract_failed": "[!] Не удалось извлечь {filename}: {error}",
   "dl_extracted_file": "  > Извлечёно: {filename}",

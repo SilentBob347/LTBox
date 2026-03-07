@@ -44,7 +44,7 @@ def setup_external_tools(request):
     try:
         downloader.ensure_avb_tools()
 
-        from tests.scripts.build_magiskboot import build
+        from tests.scripts.build_tools import build
 
         build()
 

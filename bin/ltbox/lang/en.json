@@ -366,8 +366,6 @@
   "dl_err_ksuinit_download_variants": "Failed to download ksuinit (tried variants).",
   "dl_err_ksuinit_not_found": "ksuinit not found in workflow artifact.",
   "dl_err_latest_release_tag": "Failed to resolve latest release tag.",
-  "dl_err_openssl_download": "Failed to download OpenSSL: {e}",
-  "dl_err_openssl_generic": "OpenSSL download failed",
   "dl_err_workflow_run_for_tag": "Failed to find workflow run for tag {tag}.",
   "dl_extract_failed": "[!] Failed to extract {filename}: {error}",
   "dl_extracted_file": "  > Extracted {filename}",

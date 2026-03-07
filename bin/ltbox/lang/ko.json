@@ -366,8 +366,6 @@
   "dl_err_ksuinit_download_variants": "ksuinit 다운로드에 실패했습니다 (시도한 변형 포함).",
   "dl_err_ksuinit_not_found": "워크플로 아티팩트에서 ksuinit을 찾지 못했습니다.",
   "dl_err_latest_release_tag": "최신 릴리스 태그를 확인하지 못했습니다.",
-  "dl_err_openssl_download": "OpenSSL 다운로드 실패: {e}",
-  "dl_err_openssl_generic": "OpenSSL 다운로드에 실패했습니다.",
   "dl_err_workflow_run_for_tag": "태그 {tag}에 대한 워크플로 실행을 찾지 못했습니다.",
   "dl_extract_failed": "[!] {filename} 추출 실패: {error}",
   "dl_extracted_file": "  > {filename} 추출됨.",

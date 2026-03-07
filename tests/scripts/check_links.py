@@ -94,8 +94,6 @@ def main() -> None:
             print("AVB archive check failed, but fallback repository is reachable.")
         else:
             has_error = True
-    if not check_url(tools.get("openssl_url"), "OpenSSL"):
-        has_error = True
 
     # 2. KernelSU-Next (GitHub Release)
     print("\n--- KernelSU-Next ---")

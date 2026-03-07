@@ -366,8 +366,6 @@
   "dl_err_ksuinit_download_variants": "下载 ksuinit 失败（已尝试多个变体）。",
   "dl_err_ksuinit_not_found": "在工作流产物中未找到 ksuinit。",
   "dl_err_latest_release_tag": "无法解析最新发布标签。",
-  "dl_err_openssl_download": "无法下载 OpenSSL: {e}",
-  "dl_err_openssl_generic": "OpenSSL 下载失败",
   "dl_err_workflow_run_for_tag": "未找到标签 {tag} 对应的工作流运行。",
   "dl_extract_failed": "[!] 无法提取 {filename}: {error}",
   "dl_extracted_file": "  > 已提取 {filename}",

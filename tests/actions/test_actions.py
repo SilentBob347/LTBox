@@ -211,10 +211,8 @@ def test_root_gki(fw_pkg, tmp_path):
         if real_magiskboot.exists():
             shutil.copy(real_magiskboot, magiskboot_exe)
 
-            for dll in ["msys-2.0.dll", "msys-z.dll"]:
-                real_dll = real_magiskboot.parent / dll
-                if real_dll.exists():
-                    shutil.copy(real_dll, mock_dirs["TOOLS_DIR"] / dll)
+            for dll_file in real_magiskboot.parent.glob("*.dll"):
+                shutil.copy(dll_file, mock_dirs["TOOLS_DIR"] / dll_file.name)
         else:
             pytest.skip("magiskboot.exe not found in bin/tools. Please build it first.")
 
@@ -316,10 +314,8 @@ def test_root_lkm(fw_pkg, tmp_path):
         if real_magiskboot.exists():
             shutil.copy(real_magiskboot, magiskboot_exe)
 
-            for dll in ["msys-2.0.dll", "msys-z.dll"]:
-                real_dll = real_magiskboot.parent / dll
-                if real_dll.exists():
-                    shutil.copy(real_dll, mock_dirs["TOOLS_DIR"] / dll)
+            for dll_file in real_magiskboot.parent.glob("*.dll"):
+                shutil.copy(dll_file, mock_dirs["TOOLS_DIR"] / dll_file.name)
         else:
             pytest.skip("magiskboot.exe not found in bin/tools. Please build it first.")
 
@@ -422,10 +418,8 @@ def test_root_magisk(fw_pkg, tmp_path):
         if real_magiskboot.exists():
             shutil.copy(real_magiskboot, magiskboot_exe)
 
-            for dll in ["msys-2.0.dll", "msys-z.dll"]:
-                real_dll = real_magiskboot.parent / dll
-                if real_dll.exists():
-                    shutil.copy(real_dll, mock_dirs["TOOLS_DIR"] / dll)
+            for dll_file in real_magiskboot.parent.glob("*.dll"):
+                shutil.copy(dll_file, mock_dirs["TOOLS_DIR"] / dll_file.name)
         else:
             pytest.skip("magiskboot.exe not found in bin/tools. Please build it first.")
 
@@ -578,10 +572,8 @@ def test_root_folkpatch(fw_pkg, tmp_path):
         if real_magiskboot.exists():
             shutil.copy(real_magiskboot, magiskboot_exe)
 
-            for dll in ["msys-2.0.dll", "msys-z.dll"]:
-                real_dll = real_magiskboot.parent / dll
-                if real_dll.exists():
-                    shutil.copy(real_dll, mock_dirs["TOOLS_DIR"] / dll)
+            for dll_file in real_magiskboot.parent.glob("*.dll"):
+                shutil.copy(dll_file, mock_dirs["TOOLS_DIR"] / dll_file.name)
         else:
             pytest.skip("magiskboot.exe not found in bin/tools. Please build it first.")
 
