@@ -318,7 +318,7 @@ def main_loop(
             )
         )
 
-    menu_handlers = {
+    menu_handlers: Dict[str, Callable[[], Any]] = {
         MainMenuAction.SETTINGS: _run_settings,
         MainMenuAction.ROOT: lambda: root_menu(dev, registry),
         MainMenuAction.ADVANCED: lambda: advanced_menu(
