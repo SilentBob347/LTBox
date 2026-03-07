@@ -303,9 +303,14 @@ def patch_boot_with_root_algo(
             if not ramdisk_backup.exists():
                 shutil.copy(work_dir / "ramdisk.cpio", ramdisk_backup)
 
-            for fname in ["magisk", "stub.apk", "init-ld"]:
-                src_path = work_dir / fname
-                dst_path = work_dir / f"{fname}.xz"
+            compressed_payloads = {
+                "magisk": "magisk.xz",
+                "stub.apk": "stub.xz",
+                "init-ld": "init-ld.xz",
+            }
+            for src_name, dst_name in compressed_payloads.items():
+                src_path = work_dir / src_name
+                dst_path = work_dir / dst_name
                 with (
                     open(src_path, "rb") as f_in,
                     lzma.open(dst_path, "wb", format=lzma.FORMAT_XZ) as f_out,
