@@ -270,7 +270,7 @@ def _get_latest_release_tag(owner_repo: str) -> str:
 
     tag_name = release_data.get("tag_name")
     if not tag_name:
-        raise ToolError("Failed to resolve latest release tag.")
+        raise ToolError(get_string("dl_err_latest_release_tag"))
     return tag_name
 
 
@@ -334,7 +334,7 @@ def _get_workflow_run_id_for_tag(owner_repo: str, tag: str) -> str:
         utils.ui.error(get_string("dl_err_check_network"))
         raise ToolError(get_string("dl_github_failed").format(e=e))
 
-    raise ToolError(f"Failed to find workflow run for tag {tag}.")
+    raise ToolError(get_string("dl_err_workflow_run_for_tag").format(tag=tag))
 
 
 def _get_workflow_run_artifacts(owner_repo: str, run_id: str) -> list[str]:
@@ -613,7 +613,7 @@ def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:
 
     except Exception as e:
         utils.ui.echo(get_string("dl_gki_download_fail").format(version=tag))
-        raise ToolError(f"{e}")
+        raise ToolError(str(e))
 
 
 def download_nightly_artifacts(
@@ -634,7 +634,9 @@ def download_nightly_artifacts(
     ksuinit_dest = target_dir / "ksuinit"
     lkm_dest = target_dir / "lkm.zip"
 
-    utils.ui.info(f"Fetching artifacts from Workflow {workflow_id}...")
+    utils.ui.info(
+        get_string("dl_fetching_workflow_artifacts").format(workflow_id=workflow_id)
+    )
 
     try:
         manager_candidates = [manager_name]
@@ -726,7 +728,7 @@ def download_nightly_artifacts(
                 continue
 
         if not ksuinit_downloaded:
-            raise ToolError("Failed to download ksuinit (tried variants)")
+            raise ToolError(get_string("dl_err_ksuinit_download_variants"))
 
         download_resource(lkm_url, lkm_dest)
 
@@ -821,7 +823,7 @@ def download_ksuinit_release(target_path: Path) -> None:
                     ksuinit_member = member
                     break
             if not ksuinit_member:
-                raise ToolError("ksuinit not found in workflow artifact.")
+                raise ToolError(get_string("dl_err_ksuinit_not_found"))
 
             with zf.open(ksuinit_member) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -859,7 +861,7 @@ def download_kptools(target_dir: Path):
     if kptools_exe.exists():
         return
 
-    utils.ui.echo("Downloading kptools-msys2-win.7z from bmax121/KernelPatch...")
+    utils.ui.echo(get_string("dl_kptools_downloading"))
     import requests
 
     releases_url = "https://api.github.com/repos/bmax121/KernelPatch/releases"
@@ -868,7 +870,7 @@ def download_kptools(target_dir: Path):
         response.raise_for_status()
         releases = response.json()
     except requests.RequestException as e:
-        raise ToolError(f"Failed to fetch KernelPatch releases: {e}")
+        raise ToolError(get_string("dl_err_kptools_fetch_releases").format(e=e))
 
     asset_url = None
     for release in releases:
@@ -882,9 +884,7 @@ def download_kptools(target_dir: Path):
             break
 
     if not asset_url:
-        raise ToolError(
-            "kptools-msys2-win.7z not found in bmax121/KernelPatch releases."
-        )
+        raise ToolError(get_string("dl_err_kptools_asset_not_found"))
 
     temp_7z = target_dir / "kptools-msys2-win.7z"
     download_resource(asset_url, temp_7z)
@@ -892,7 +892,7 @@ def download_kptools(target_dir: Path):
     import py7zr
 
     try:
-        utils.ui.echo("Extracting kptools.7z...")
+        utils.ui.echo(get_string("dl_kptools_extracting"))
         with py7zr.SevenZipFile(temp_7z, mode="r") as z:
             z.extractall(path=target_dir)
     finally:
@@ -917,12 +917,12 @@ def download_kptools(target_dir: Path):
             except OSError:
                 pass
         else:
-            raise ToolError("kptools.exe was not found after extraction.")
-    utils.ui.echo("kptools ready.")
+            raise ToolError(get_string("dl_err_kptools_exe_not_found"))
+    utils.ui.echo(get_string("dl_kptools_ready"))
 
 
 def download_folkpatch_release(target_dir: Path):
-    utils.ui.echo("Downloading FolkPatch Stable (Latest Release)...")
+    utils.ui.echo(get_string("dl_folkpatch_stable_downloading"))
     apk_path = target_dir / "FolkPatch.apk"
     _download_and_move_github_asset(
         "matsuzaka-yuki/FolkPatch", "latest", r".*\.apk$", apk_path
@@ -931,7 +931,9 @@ def download_folkpatch_release(target_dir: Path):
 
 
 def download_folkpatch_nightly(workflow_id: str, target_dir: Path):
-    utils.ui.echo(f"Downloading FolkPatch Nightly from workflow {workflow_id}...")
+    utils.ui.echo(
+        get_string("dl_folkpatch_nightly_downloading").format(workflow_id=workflow_id)
+    )
     repo = "matsuzaka-yuki/FolkPatch"
     artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
 
@@ -940,7 +942,9 @@ def download_folkpatch_nightly(workflow_id: str, target_dir: Path):
     )
     if not target_artifact:
         raise ToolError(
-            f"No FolkPatch artifact found in workflow {workflow_id}. Available: {artifact_names}"
+            get_string("dl_err_folkpatch_artifact_missing").format(
+                workflow_id=workflow_id, artifacts=artifact_names
+            )
         )
 
     base_url = (
@@ -954,7 +958,7 @@ def download_folkpatch_nightly(workflow_id: str, target_dir: Path):
         with zipfile.ZipFile(temp_zip, "r") as zf:
             apk_member = next((m for m in zf.namelist() if m.endswith(".apk")), None)
             if not apk_member:
-                raise ToolError("FolkPatch APK not found in nightly zip.")
+                raise ToolError(get_string("dl_err_folkpatch_apk_missing_in_nightly"))
             with zf.open(apk_member) as src, open(apk_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     finally:
@@ -970,9 +974,9 @@ def _extract_folkpatch_kpimg(apk_path: Path, target_dir: Path):
         try:
             with zf.open("assets/kpimg") as src, open(kpimg_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            utils.ui.echo("kpimg extracted successfully.")
+            utils.ui.echo(get_string("dl_folkpatch_kpimg_extracted"))
         except KeyError:
-            raise ToolError("assets/kpimg not found in the downloaded FolkPatch APK.")
+            raise ToolError(get_string("dl_err_folkpatch_kpimg_missing"))
 
     manager_apk = const.TOOLS_DIR / "manager.apk"
     shutil.copy(apk_path, manager_apk)
