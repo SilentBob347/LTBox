@@ -156,6 +156,14 @@ def _get_latest_version(
         return None, None, None
 
 
+def get_update_status() -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    current_version = _read_current_version()
+    latest_version, latest_release, latest_prerelease = _get_latest_version(
+        current_version
+    )
+    return current_version, latest_version, latest_release, latest_prerelease
+
+
 def _abort_platform_check(messages: List[str]) -> None:
     for message in messages:
         print(message, file=sys.stderr)
@@ -408,9 +416,9 @@ def _resolve_language_code(
     return "en" if is_info_mode else prompt_for_language(settings_store=settings_store)
 
 
-def _prompt_for_update(current_version: str, latest_version: Optional[str]) -> None:
+def _prompt_for_update(current_version: str, latest_version: Optional[str]) -> bool:
     if not latest_version:
-        return
+        return False
 
     ui.echo(get_string("update_avail_title"))
 
@@ -512,8 +520,7 @@ def _setup_language(is_info_mode: bool) -> str:
 
 def _check_updates() -> None:
     ui.clear()
-    current_version = _read_current_version()
-    latest_version, _, _ = _get_latest_version(current_version)
+    current_version, latest_version, _, _ = get_update_status()
     _prompt_for_update(current_version, latest_version)
 
 

@@ -1,12 +1,16 @@
 import sys
-import webbrowser
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import i18n, menu_data
 from .i18n import get_string
 from .menu import TerminalMenu, select_menu_action
 from .utils import ui
-from .main import run_task, _read_current_version, _get_latest_version, SETTINGS_STORE
+from .main import (
+    run_task,
+    _prompt_for_update,
+    get_update_status,
+    SETTINGS_STORE,
+)
 
 
 def _loop_menu(
@@ -147,21 +151,12 @@ def _handle_update_check():
     ui.clear()
     ui.echo(get_string("act_update_checking"))
 
-    current_version = _read_current_version()
-    latest_version, latest_release, latest_prerelease = _get_latest_version(
-        current_version
+    current_version, latest_version, latest_release, latest_prerelease = (
+        get_update_status()
     )
 
     if latest_version:
-        ui.echo(get_string("update_avail_title"))
-        prompt_msg = get_string("update_avail_prompt").format(
-            curr=current_version, new=latest_version
-        )
-        choice = input(prompt_msg).strip().lower()
-        if choice == "y":
-            ui.echo(get_string("update_open_web"))
-            webbrowser.open("https://github.com/miner7222/LTBox/releases")
-            sys.exit(0)
+        _prompt_for_update(current_version, latest_version)
     else:
         if latest_release or latest_prerelease:
             ui.echo(get_string("act_update_not_found").format(version=current_version))
