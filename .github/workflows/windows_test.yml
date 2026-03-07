@@ -16,7 +16,30 @@ on:
   workflow_call:
 
 jobs:
-  test:
+  unit-test:
+    runs-on: windows-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "bin"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python & Dependencies
+        uses: ./.github/actions/setup-python-deps
+        with:
+          python-version: '3.14'
+
+      - name: Smoke Test (Compile)
+        run: |
+          python -m compileall bin/ltbox
+
+      - name: Run Unit Tests
+        run: |
+          pytest -s tests/ -m "not integration" --cov=bin/ltbox --cov-report=term-missing
+
+  integration-test:
+    needs: unit-test
     runs-on: windows-latest
     env:
       TEST_FW_URL: ${{ secrets.TEST_FW_URL }}
@@ -38,10 +61,6 @@ jobs:
         with:
           fw-password: ${{ secrets.TEST_FW_PASSWORD }}
 
-      - name: Smoke Test (Compile)
-        run: |
-          python -m compileall bin/ltbox
-
       - name: Cache and Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -49,13 +68,9 @@ jobs:
           install: gcc cmake make zlib-devel git
           cache: true
 
-      - name: Run Unit Tests
-        run: |
-          pytest -s tests/ -m "not integration" --cov=bin/ltbox --cov-report=term-missing
-
       - name: Run Integration Tests
         run: |
-          pytest -s tests/ -m integration --run-integration --cov=bin/ltbox --cov-report=term-missing --cov-append
+          pytest -s tests/ -m integration --run-integration --cov=bin/ltbox --cov-report=term-missing
 
       - name: Upload magiskboot artifact
         uses: actions/upload-artifact@v7
