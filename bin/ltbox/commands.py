@@ -1,9 +1,20 @@
-from typing import Any, Callable, Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 from . import actions, workflow
 from .i18n import get_string
 from .registry import REGISTRY
 from .utils import ui
+
+
+@dataclass(frozen=True)
+class CommandDefinition:
+    name: str
+    func: Callable[..., Any]
+    title: str
+    require_dev: bool = True
+    default_kwargs: Dict[str, Any] = field(default_factory=dict)
+    result_handler: Optional[Callable[[Any], None]] = None
 
 
 def _handle_read_anti_rollback_result(result: Any) -> None:
@@ -17,209 +28,182 @@ def _handle_read_anti_rollback_result(result: Any) -> None:
     ui.echo(get_string("act_curr_vbmeta_idx").format(idx=result[2]))
 
 
-def register_all_commands() -> None:
-    command_specs: List[Tuple[str, Callable[..., Any], str, bool, Dict[str, Any]]] = [
-        (
-            "convert",
-            actions.convert_region_images,
-            get_string("task_title_convert_rom"),
-            True,
-            {},
+def _build_command_definitions() -> List[CommandDefinition]:
+    return [
+        CommandDefinition(
+            name="convert",
+            func=actions.convert_region_images,
+            title=get_string("task_title_convert_rom"),
         ),
-        (
-            "root_device_gki",
-            actions.root_device,
-            get_string("task_title_root_gki"),
-            True,
-            {"gki": True},
+        CommandDefinition(
+            name="root_device_gki",
+            func=actions.root_device,
+            title=get_string("task_title_root_gki"),
+            default_kwargs={"gki": True},
         ),
-        (
-            "patch_root_image_file_gki",
-            actions.patch_root_image_file,
-            get_string("task_title_root_file_gki"),
-            False,
-            {"gki": True},
+        CommandDefinition(
+            name="patch_root_image_file_gki",
+            func=actions.patch_root_image_file,
+            title=get_string("task_title_root_file_gki"),
+            require_dev=False,
+            default_kwargs={"gki": True},
         ),
-        (
-            "patch_root_image_file_flash_gki",
-            actions.patch_root_image_file_and_flash,
-            get_string("task_title_root_file_gki"),
-            True,
-            {"gki": True},
+        CommandDefinition(
+            name="patch_root_image_file_flash_gki",
+            func=actions.patch_root_image_file_and_flash,
+            title=get_string("task_title_root_file_gki"),
+            default_kwargs={"gki": True},
         ),
-        (
-            "root_device_fp",
-            actions.root_device,
-            get_string("task_title_root_gki") + " (FolkPatch)",
-            True,
-            {"gki": True, "root_type": "folkpatch"},
+        CommandDefinition(
+            name="root_device_fp",
+            func=actions.root_device,
+            title=get_string("task_title_root_gki") + " (FolkPatch)",
+            default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
-        (
-            "patch_root_image_file_fp",
-            actions.patch_root_image_file,
-            get_string("task_title_root_file_gki") + " (FolkPatch)",
-            False,
-            {"gki": True, "root_type": "folkpatch"},
+        CommandDefinition(
+            name="patch_root_image_file_fp",
+            func=actions.patch_root_image_file,
+            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
+            require_dev=False,
+            default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
-        (
-            "patch_root_image_file_flash_fp",
-            actions.patch_root_image_file_and_flash,
-            get_string("task_title_root_file_gki") + " (FolkPatch)",
-            True,
-            {"gki": True, "root_type": "folkpatch"},
+        CommandDefinition(
+            name="patch_root_image_file_flash_fp",
+            func=actions.patch_root_image_file_and_flash,
+            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
+            default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
-        (
-            "root_device_lkm",
-            actions.root_device,
-            get_string("task_title_root_lkm"),
-            True,
-            {"gki": False},
+        CommandDefinition(
+            name="root_device_lkm",
+            func=actions.root_device,
+            title=get_string("task_title_root_lkm"),
+            default_kwargs={"gki": False},
         ),
-        (
-            "patch_root_image_file_lkm",
-            actions.patch_root_image_file,
-            get_string("task_title_root_file_lkm"),
-            False,
-            {"gki": False},
+        CommandDefinition(
+            name="patch_root_image_file_lkm",
+            func=actions.patch_root_image_file,
+            title=get_string("task_title_root_file_lkm"),
+            require_dev=False,
+            default_kwargs={"gki": False},
         ),
-        (
-            "patch_root_image_file_flash_lkm",
-            actions.patch_root_image_file_and_flash,
-            get_string("task_title_root_file_lkm"),
-            True,
-            {"gki": False},
+        CommandDefinition(
+            name="patch_root_image_file_flash_lkm",
+            func=actions.patch_root_image_file_and_flash,
+            title=get_string("task_title_root_file_lkm"),
+            default_kwargs={"gki": False},
         ),
-        (
-            "unroot_device",
-            actions.unroot_device,
-            get_string("task_title_unroot"),
-            True,
-            {},
+        CommandDefinition(
+            name="unroot_device",
+            func=actions.unroot_device,
+            title=get_string("task_title_unroot"),
         ),
-        (
-            "sign_and_flash_twrp",
-            actions.sign_and_flash_twrp,
-            get_string("task_title_rec_flash"),
-            True,
-            {},
+        CommandDefinition(
+            name="sign_and_flash_twrp",
+            func=actions.sign_and_flash_twrp,
+            title=get_string("task_title_rec_flash"),
         ),
-        (
-            "disable_ota",
-            actions.disable_ota,
-            get_string("task_title_disable_ota"),
-            True,
-            {},
+        CommandDefinition(
+            name="disable_ota",
+            func=actions.disable_ota,
+            title=get_string("task_title_disable_ota"),
         ),
-        (
-            "rescue_ota",
-            actions.rescue_after_ota,
-            get_string("task_title_rescue"),
-            True,
-            {},
+        CommandDefinition(
+            name="rescue_ota",
+            func=actions.rescue_after_ota,
+            title=get_string("task_title_rescue"),
         ),
-        (
-            "edit_dp",
-            actions.edit_devinfo_persist,
-            get_string("task_title_patch_devinfo"),
-            False,
-            {},
+        CommandDefinition(
+            name="edit_dp",
+            func=actions.edit_devinfo_persist,
+            title=get_string("task_title_patch_devinfo"),
+            require_dev=False,
         ),
-        (
-            "dump_partitions",
-            actions.dump_partitions,
-            get_string("task_title_dump_devinfo"),
-            True,
-            {},
+        CommandDefinition(
+            name="dump_partitions",
+            func=actions.dump_partitions,
+            title=get_string("task_title_dump_devinfo"),
         ),
-        (
-            "flash_partitions",
-            actions.flash_partitions,
-            get_string("task_title_write_devinfo"),
-            True,
-            {},
+        CommandDefinition(
+            name="flash_partitions",
+            func=actions.flash_partitions,
+            title=get_string("task_title_write_devinfo"),
         ),
-        (
-            "read_anti_rollback",
-            actions.read_anti_rollback_from_device,
-            get_string("task_title_read_arb"),
-            True,
-            {},
+        CommandDefinition(
+            name="read_anti_rollback",
+            func=actions.read_anti_rollback_from_device,
+            title=get_string("task_title_read_arb"),
+            result_handler=_handle_read_anti_rollback_result,
         ),
-        (
-            "patch_anti_rollback",
-            actions.patch_anti_rollback_in_rom,
-            get_string("task_title_patch_arb"),
-            False,
-            {},
+        CommandDefinition(
+            name="patch_anti_rollback",
+            func=actions.patch_anti_rollback_in_rom,
+            title=get_string("task_title_patch_arb"),
+            require_dev=False,
         ),
-        (
-            "write_anti_rollback",
-            actions.write_anti_rollback,
-            get_string("task_title_write_arb"),
-            True,
-            {},
+        CommandDefinition(
+            name="write_anti_rollback",
+            func=actions.write_anti_rollback,
+            title=get_string("task_title_write_arb"),
         ),
-        (
-            "decrypt_xml",
-            actions.decrypt_x_files,
-            get_string("task_title_decrypt_xml"),
-            False,
-            {},
+        CommandDefinition(
+            name="decrypt_xml",
+            func=actions.decrypt_x_files,
+            title=get_string("task_title_decrypt_xml"),
+            require_dev=False,
         ),
-        (
-            "modify_xml",
-            actions.modify_xml,
-            get_string("task_title_modify_xml_nowipe"),
-            False,
-            {"wipe": 0},
+        CommandDefinition(
+            name="modify_xml",
+            func=actions.modify_xml,
+            title=get_string("task_title_modify_xml_nowipe"),
+            require_dev=False,
+            default_kwargs={"wipe": 0},
         ),
-        (
-            "modify_xml_wipe",
-            actions.modify_xml,
-            get_string("task_title_modify_xml_wipe"),
-            False,
-            {"wipe": 1},
+        CommandDefinition(
+            name="modify_xml_wipe",
+            func=actions.modify_xml,
+            title=get_string("task_title_modify_xml_wipe"),
+            require_dev=False,
+            default_kwargs={"wipe": 1},
         ),
-        (
-            "flash_full_firmware",
-            actions.flash_full_firmware,
-            get_string("task_title_flash_full_firmware"),
-            True,
-            {},
+        CommandDefinition(
+            name="flash_full_firmware",
+            func=actions.flash_full_firmware,
+            title=get_string("task_title_flash_full_firmware"),
         ),
-        (
-            "flash_partition_labels",
-            actions.flash_partition_labels,
-            get_string("task_title_flash_partitions_label"),
-            True,
-            {},
+        CommandDefinition(
+            name="flash_partition_labels",
+            func=actions.flash_partition_labels,
+            title=get_string("task_title_flash_partitions_label"),
         ),
-        (
-            "patch_all",
-            workflow.patch_all,
-            get_string("task_title_install_nowipe"),
-            True,
-            {"wipe": 0},
+        CommandDefinition(
+            name="patch_all",
+            func=workflow.patch_all,
+            title=get_string("task_title_install_nowipe"),
+            default_kwargs={"wipe": 0},
         ),
-        (
-            "patch_all_wipe",
-            workflow.patch_all,
-            get_string("task_title_install_wipe"),
-            True,
-            {"wipe": 1},
+        CommandDefinition(
+            name="patch_all_wipe",
+            func=workflow.patch_all,
+            title=get_string("task_title_install_wipe"),
+            default_kwargs={"wipe": 1},
         ),
     ]
 
-    result_handlers = {
-        "read_anti_rollback": _handle_read_anti_rollback_result,
-    }
 
-    for name, func, title, require_dev, extra_kwargs in command_specs:
+def register_all_commands() -> None:
+    command_definitions = _build_command_definitions()
+
+    seen_names = set()
+    for command in command_definitions:
+        if command.name in seen_names:
+            raise ValueError(f"Duplicate command registration: {command.name}")
+        seen_names.add(command.name)
+
         REGISTRY.add(
-            name,
-            func,
-            title,
-            require_dev=require_dev,
-            result_handler=result_handlers.get(name),
-            **extra_kwargs,
+            command.name,
+            command.func,
+            command.title,
+            require_dev=command.require_dev,
+            result_handler=command.result_handler,
+            **command.default_kwargs,
         )
