@@ -28,13 +28,10 @@ def build():
         print(f"[WARN] Failed to fetch latest SHA: {e}")
         latest_sha = None
 
-    if (
-        MAGISKBOOT_EXE.exists()
-        and OPENSSL_EXE.exists()
-        and VERSION_FILE.exists()
-        and latest_sha
-    ):
-        if VERSION_FILE.read_text(encoding="utf-8").strip() == latest_sha:
+    openssl_ready = OPENSSL_EXE.exists() if os.name == "nt" else True
+    if MAGISKBOOT_EXE.exists() and VERSION_FILE.exists() and openssl_ready:
+        current_sha = VERSION_FILE.read_text(encoding="utf-8").strip()
+        if latest_sha is None or current_sha == latest_sha:
             print("[INFO] Tools are up-to-date. Skipping build.")
             return
 
