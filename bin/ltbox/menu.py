@@ -37,15 +37,18 @@ class TerminalMenu:
             elif item.item_type == "option" and item.key is not None:
                 self.add_option(str(item.key), item.text)
 
-    def show(self) -> None:
+    def _display_title(self) -> str:
+        return f"{self.breadcrumbs} > {self.title}" if self.breadcrumbs else self.title
+
+    def _render_header(self) -> None:
         width = ui.get_term_width()
         ui.clear()
         ui.echo("\n" + "=" * width)
-        display_title = (
-            f"{self.breadcrumbs} > {self.title}" if self.breadcrumbs else self.title
-        )
-        ui.echo(f"   {display_title}")
+        ui.echo(f"   {self._display_title()}")
         ui.echo("=" * width + "\n")
+
+    def show(self) -> None:
+        self._render_header()
 
         for key, text, is_selectable in self.options:
             if is_selectable:
@@ -56,19 +59,12 @@ class TerminalMenu:
                 else:
                     ui.echo("")
 
+        width = ui.get_term_width()
         ui.echo("\n" + "=" * width + "\n")
 
     def ask(self, prompt_msg: str, error_msg: str) -> str:
         if questionary:
-            width = ui.get_term_width()
-            ui.clear()
-            ui.echo("\n" + "=" * width)
-
-            display_title = (
-                f"{self.breadcrumbs} > {self.title}" if self.breadcrumbs else self.title
-            )
-            ui.echo(f"   {display_title}")
-            ui.echo("=" * width + "\n")
+            self._render_header()
 
             choices = []
             for key, text, is_selectable in self.options:
