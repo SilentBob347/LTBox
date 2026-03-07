@@ -29,6 +29,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore Python tool caches
+        uses: actions/cache@v5
+        with:
+          path: |
+            .mypy_cache
+            .ruff_cache
+            .pytest_cache
+          key: py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ inputs.python-version }}-${{ hashFiles('bin/requirements.txt', 'bin/requirements-dev.txt', '.github/workflows/python-command.yml') }}
+          restore-keys: |
+            py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ inputs.python-version }}-
+            py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Setup Python & Dependencies
         uses: ./.github/actions/setup-python-deps
         with:
