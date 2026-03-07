@@ -4,6 +4,10 @@ inputs:
   fw-password:
     description: 'Password for FW archive extraction'
     required: true
+  fw-url:
+    description: 'Firmware URL used to derive cache key fingerprint'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
@@ -12,6 +16,22 @@ runs:
       with:
         python-version: '3.14'
 
+    - name: Compute firmware cache key fingerprint
+      id: cache-key
+      shell: bash
+      env:
+        FW_URL: ${{ inputs.fw-url }}
+      run: |
+        python - <<'PY'
+        import hashlib
+        import os
+
+        fw_url = os.getenv("FW_URL", "")
+        digest = hashlib.sha256(fw_url.encode("utf-8")).hexdigest()[:16] if fw_url else "no-url"
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+            fh.write(f"fw_url_hash={digest}\n")
+        PY
+
     - name: Cache FW archive
       id: cache-fw
       uses: actions/cache@v5
@@ -19,9 +39,10 @@ runs:
         path: |
           tests/data/extracted
           tests/data/url.txt
-        key: fw-extracted-v1-${{ hashFiles('tests/scripts/cache_fw.py') }}
+        key: fw-extracted-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-key.outputs.fw_url_hash }}-${{ hashFiles('tests/scripts/cache_fw.py', 'bin/ltbox/config.json', '.github/actions/setup-fw-env/action.yml') }}
         restore-keys: |
-          fw-extracted-v1-
+          fw-extracted-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-key.outputs.fw_url_hash }}-
+          fw-extracted-v2-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Prefetch FW archive
       if: steps.cache-fw.outputs.cache-hit != 'true'

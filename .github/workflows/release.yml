@@ -33,6 +33,7 @@ jobs:
         uses: ./.github/actions/setup-fw-env
         with:
           fw-password: ${{ secrets.TEST_FW_PASSWORD }}
+          fw-url: ${{ secrets.TEST_FW_URL }}
 
       - name: Install Tools from Cache
         run: ./.github/scripts/release/install-tools-from-cache.ps1

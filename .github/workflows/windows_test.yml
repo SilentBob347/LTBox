@@ -60,6 +60,7 @@ jobs:
         uses: ./.github/actions/setup-fw-env
         with:
           fw-password: ${{ secrets.TEST_FW_PASSWORD }}
+          fw-url: ${{ secrets.TEST_FW_URL }}
 
       - name: Cache and Setup MSYS2
         uses: msys2/setup-msys2@v2
