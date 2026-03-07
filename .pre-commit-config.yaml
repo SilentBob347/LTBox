@@ -5,6 +5,9 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-added-large-files
+      - id: pretty-format-json
+        args: ["--autofix", "--no-ensure-ascii"]
+        files: ^bin/ltbox/lang/.*\.json$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.2
