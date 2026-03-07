@@ -209,13 +209,13 @@ def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
                 MenuSpec(
                     "option",
                     key="1",
-                    text=lambda: get_string("menu_root_1_folkpatch"),
+                    text=lambda: get_string("menu_root_1_gki"),
                     action="root_device_fp",
                 ),
                 MenuSpec(
                     "option",
                     key="2",
-                    text=lambda: get_string("menu_root_2_folkpatch"),
+                    text=lambda: get_string("menu_root_2_gki"),
                     action="patch_root_image_file_flash_fp",
                 ),
             ]

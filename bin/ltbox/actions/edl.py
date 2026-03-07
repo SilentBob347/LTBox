@@ -97,11 +97,7 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
         utils.ui.echo(f"   f. {get_string('act_flash_partitions_select_done')}")
         utils.ui.echo("\n" + "=" * width + "\n")
 
-        choice = (
-            utils.ui.prompt(get_string("act_flash_partitions_select_prompt"))
-            .strip()
-            .lower()
-        )
+        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
         if choice == "f":
             return [label for label in labels if label in selected]
 
@@ -153,9 +149,7 @@ def flash_partition_labels(
             utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
             utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
 
-            choice = utils.ui.prompt(
-                get_string("act_flash_partitions_select_prompt")
-            ).strip()
+            choice = utils.ui.prompt(get_string("prompt_select")).strip()
             if choice == "1":
                 slot_suffix = "a"
                 break

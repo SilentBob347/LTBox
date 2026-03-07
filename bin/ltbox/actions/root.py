@@ -367,8 +367,8 @@ class FolkPatchStrategy(GkiRootStrategy):
             get_string("folkpatch_menu_version_title"),
             breadcrumbs=get_string("folkpatch_menu_breadcrumbs"),
         )
-        menu.add_option("1", get_string("folkpatch_menu_stable"))
-        menu.add_option("2", get_string("folkpatch_menu_nightly"))
+        menu.add_option("1", get_string("menu_root_subtype_release"))
+        menu.add_option("2", get_string("menu_root_subtype_nightly"))
         choice = menu.ask(
             get_string("prompt_select"), get_string("err_invalid_selection")
         )
@@ -467,7 +467,7 @@ class MagiskRootStrategy(InitBootRootStrategy):
         return "magisk"
 
     def print_unroot_step(self, partition_map: Dict[str, str]) -> None:
-        utils.ui.echo(get_string("act_unroot_step4_magisk"))
+        utils.ui.echo(get_string("act_unroot_step4_lkm"))
 
     def download_resources(self, kernel_version: Optional[str] = None) -> bool:
         _cleanup_manager_apk(show_message=False)
@@ -1191,7 +1191,7 @@ def unroot_device(dev: device.DeviceController) -> None:
             menu.add_option(s.menu_shortcut, get_string(s.unroot_menu_msg_key))
 
         menu.add_separator()
-        menu.add_option("m", get_string("act_unroot_menu_m"))
+        menu.add_option("m", get_string("menu_root_m"))
 
         choice = menu.ask(
             get_string("prompt_select"), get_string("err_invalid_selection")
