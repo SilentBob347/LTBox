@@ -178,7 +178,30 @@ def check_path_encoding():
 # --- Task Execution ---
 
 
-def run_info_scan(paths, constants, avb_patch):
+def collect_info_scan_files(paths: List[str]) -> List[Path]:
+    files_to_scan: List[Path] = []
+
+    for path_str in paths:
+        candidate = Path(path_str)
+        if candidate.is_dir():
+            files_to_scan.extend(candidate.rglob("*.img"))
+        elif candidate.is_file() and candidate.suffix.lower() == ".img":
+            files_to_scan.append(candidate)
+
+    return files_to_scan
+
+
+def build_info_scan_command(image_path: Path, constants: Any) -> List[str]:
+    return [
+        str(constants.PYTHON_EXE),
+        str(constants.AVBTOOL_PY),
+        "info_image",
+        "--image",
+        str(image_path),
+    ]
+
+
+def run_info_scan(paths: List[str], constants: Any, avb_patch: Any) -> None:
     print(get_string("scan_start"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -186,13 +209,7 @@ def run_info_scan(paths, constants, avb_patch):
     log_dir.mkdir(parents=True, exist_ok=True)
     log_filename = log_dir / f"image_info_{timestamp}.txt"
 
-    files_to_scan = []
-    for path_str in paths:
-        p = Path(path_str)
-        if p.is_dir():
-            files_to_scan.extend(p.rglob("*.img"))
-        elif p.is_file() and p.suffix.lower() == ".img":
-            files_to_scan.append(p)
+    files_to_scan = collect_info_scan_files(paths)
 
     if not files_to_scan:
         print(get_string("scan_no_files"), file=sys.stderr)
@@ -201,21 +218,14 @@ def run_info_scan(paths, constants, avb_patch):
     print(get_string("scan_found_files").format(count=len(files_to_scan)))
 
     with logging_context(log_filename) as logger:
-        for f in files_to_scan:
-            header = get_string("scan_log_header").format(path=f.resolve())
+        for image_path in files_to_scan:
+            header = get_string("scan_log_header").format(path=image_path.resolve())
             logger.info(header)
-            print(get_string("scan_scanning_file").format(filename=f.name))
+            print(get_string("scan_scanning_file").format(filename=image_path.name))
 
             try:
-                cmd = [
-                    str(constants.PYTHON_EXE),
-                    str(constants.AVBTOOL_PY),
-                    "info_image",
-                    "--image",
-                    str(f),
-                ]
-
-                result = avb_patch.utils.run_command(cmd, capture=True, check=False)
+                command = build_info_scan_command(image_path, constants)
+                result = avb_patch.utils.run_command(command, capture=True, check=False)
 
                 logger.info(result.stdout.strip())
 
@@ -228,7 +238,9 @@ def run_info_scan(paths, constants, avb_patch):
 
                 logger.info("\n" + "=" * ui.get_term_width() + "\n")
             except (OSError, RuntimeError, ValueError, AttributeError) as e:
-                error_msg = get_string("scan_failed").format(filename=f.name, e=e)
+                error_msg = get_string("scan_failed").format(
+                    filename=image_path.name, e=e
+                )
                 print(error_msg, file=sys.stderr)
                 logger.info(error_msg)
 

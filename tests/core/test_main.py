@@ -77,6 +77,31 @@ def test_main_loop_settings_flow(monkeypatch, tmp_path):
     assert store.load().target_region == "ROW"
 
 
+def test_collect_info_scan_files_filters_img_only(tmp_path):
+    image_dir = tmp_path / "images"
+    nested = image_dir / "nested"
+    nested.mkdir(parents=True)
+    (image_dir / "boot.img").write_bytes(b"x")
+    (nested / "vendor.img").write_bytes(b"x")
+    non_img = tmp_path / "note.txt"
+    non_img.write_text("skip")
+
+    result = main.collect_info_scan_files([str(image_dir), str(non_img)])
+
+    names = sorted(p.name for p in result)
+    assert names == ["boot.img", "vendor.img"]
+
+
+def test_build_info_scan_command_uses_constants_paths():
+    constants = SimpleNamespace(
+        PYTHON_EXE=Path("python"), AVBTOOL_PY=Path("avbtool.py")
+    )
+
+    command = main.build_info_scan_command(Path("boot.img"), constants)
+
+    assert command == ["python", "avbtool.py", "info_image", "--image", "boot.img"]
+
+
 def test_run_info_scan_creates_log(tmp_path):
     image_dir = tmp_path / "images"
     image_dir.mkdir()
