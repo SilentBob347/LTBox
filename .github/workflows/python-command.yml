@@ -1,0 +1,47 @@
+name: Reusable Python Command
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label
+        required: false
+        type: string
+        default: ubuntu-latest
+      python-version:
+        description: Python version to install
+        required: false
+        type: string
+        default: '3.14'
+      run-command:
+        description: Shell command(s) to execute
+        required: true
+        type: string
+      extra-env:
+        description: Multiline KEY=VALUE pairs appended to GITHUB_ENV
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  run:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python & Dependencies
+        uses: ./.github/actions/setup-python-deps
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Apply extra environment variables
+        if: ${{ inputs.extra-env != '' }}
+        shell: bash
+        run: |
+          cat <<'EOF_ENV' >> "$GITHUB_ENV"
+          ${{ inputs.extra-env }}
+          EOF_ENV
+
+      - name: Run command
+        run: |
+          ${{ inputs.run-command }}

@@ -8,35 +8,27 @@ on:
       - 'bin/**'
       - 'tests/**'
       - '.github/workflows/windows_test.yml'
+      - '.github/workflows/python-command.yml'
   pull_request:
     paths:
       - 'bin/**'
       - 'tests/**'
       - '.github/workflows/windows_test.yml'
+      - '.github/workflows/python-command.yml'
   workflow_call:
 
 jobs:
   unit-test:
-    runs-on: windows-latest
-    env:
-      PYTHONUNBUFFERED: "1"
-      PYTHONPATH: "bin"
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Python & Dependencies
-        uses: ./.github/actions/setup-python-deps
-        with:
-          python-version: '3.14'
-
-      - name: Smoke Test (Compile)
-        run: |
-          python -m compileall bin/ltbox
-
-      - name: Run Unit Tests
-        run: |
-          pytest -s tests/ -m "not integration" --cov=bin/ltbox --cov-report=term-missing
+    uses: ./.github/workflows/python-command.yml
+    with:
+      runner: windows-latest
+      python-version: '3.14'
+      extra-env: |
+        PYTHONUNBUFFERED=1
+        PYTHONPATH=bin
+      run-command: |
+        python -m compileall bin/ltbox
+        pytest -s tests/ -m "not integration" --cov=bin/ltbox --cov-report=term-missing
 
   integration-test:
     needs: unit-test

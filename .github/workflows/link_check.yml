@@ -9,18 +9,13 @@ on:
       - 'bin/ltbox/config.json'
       - 'bin/ltbox/downloader.py'
       - '.github/workflows/link_check.yml'
+      - '.github/workflows/python-command.yml'
 
 jobs:
   check-urls:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Python & Dependencies
-        uses: ./.github/actions/setup-python-deps
-        with:
-          python-version: '3.14'
-
-      - name: Run URL Check Script
-        run: |
-          python tests/scripts/check_links.py
+    uses: ./.github/workflows/python-command.yml
+    with:
+      runner: ubuntu-latest
+      python-version: '3.14'
+      run-command: |
+        python tests/scripts/check_links.py
