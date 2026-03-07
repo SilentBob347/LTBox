@@ -280,10 +280,9 @@ def patch_boot_with_root_algo(
             print(get_string("img_root_magisk_add_files"))
             config_path = work_dir / "config"
             config_entries = [
-                "KEEPVERITY=false",
-                "KEEPFORCEENCRYPT=false",
+                "KEEPVERITY=true",
+                "KEEPFORCEENCRYPT=true",
                 "RECOVERYMODE=false",
-                "VENDORBOOT=false",
             ]
             preinit_device = _detect_preinit_device(dev)
             if preinit_device:
