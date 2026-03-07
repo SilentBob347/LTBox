@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from . import downloader, i18n, update_service, utils
 from .i18n import get_string
@@ -36,20 +36,30 @@ class AppSettings:
     language: Optional[str] = None
     target_region: str = "PRC"
 
+    _ALLOWED_TARGET_REGIONS: ClassVar[set[str]] = {"PRC", "ROW"}
+
+    @staticmethod
+    def validate_language(value: Any) -> Optional[str]:
+        return value if isinstance(value, str) else None
+
+    @classmethod
+    def validate_target_region(cls, value: Any) -> str:
+        return value if value in cls._ALLOWED_TARGET_REGIONS else "PRC"
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
-        language = data.get("language")
-        if not isinstance(language, str):
-            language = None
-
-        target_region = data.get("target_region", "PRC")
-        if target_region not in ("PRC", "ROW"):
-            target_region = "PRC"
-
-        return cls(language=language, target_region=target_region)
+        return cls(
+            language=cls.validate_language(data.get("language")),
+            target_region=cls.validate_target_region(data.get("target_region", "PRC")),
+        )
 
 
 class SettingsStore:
+    _UPDATE_VALIDATORS: ClassVar[Dict[str, Callable[[Any], bool]]] = {
+        "language": lambda value: isinstance(value, str),
+        "target_region": lambda value: value in AppSettings._ALLOWED_TARGET_REGIONS,
+    }
+
     def __init__(self, path: Path):
         self._path = path
 
@@ -66,19 +76,17 @@ class SettingsStore:
     def load(self) -> AppSettings:
         return AppSettings.from_dict(self.load_raw())
 
+    def _filter_valid_updates(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        validated: Dict[str, Any] = {}
+        for key, value in updates.items():
+            validator = self._UPDATE_VALIDATORS.get(key)
+            if validator and validator(value):
+                validated[key] = value
+        return validated
+
     def update(self, **updates: Any) -> AppSettings:
         data = self.load_raw()
-        validated = {}
-
-        if "language" in updates:
-            language = updates["language"]
-            if isinstance(language, str):
-                validated["language"] = language
-
-        if "target_region" in updates:
-            target_region = updates["target_region"]
-            if target_region in ("PRC", "ROW"):
-                validated["target_region"] = target_region
+        validated = self._filter_valid_updates(updates)
 
         if not validated:
             return AppSettings.from_dict(data)
