@@ -42,6 +42,15 @@ def build():
 
     subprocess.run(["git", "clone", REPO_URL, str(build_dir)], check=True)
 
+    cpio_cpp_path = build_dir / "src" / "cpio.cpp"
+    if cpio_cpp_path.exists():
+        content = cpio_cpp_path.read_text(encoding="utf-8")
+        content = content.replace(
+            '"/tmp/magiskboot-cpio-XXXXXX"', '"magiskboot-cpio-XXXXXX"'
+        )
+        cpio_cpp_path.write_text(content, encoding="utf-8")
+        print("[INFO] Patched hardcoded /tmp/ path in cpio.cpp")
+
     if os.name == "nt":
         msys_root = Path("C:/msys64")
         bash_exe = msys_root / "usr/bin/bash.exe"

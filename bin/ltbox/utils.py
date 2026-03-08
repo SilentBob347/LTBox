@@ -156,10 +156,18 @@ def run_command(
 
 
 def _get_subprocess_kwargs(env: dict, cwd: Optional[Union[str, Path]]) -> dict:
+    run_env = env.copy()
+
+    if cwd:
+        resolved_cwd = str(Path(cwd).resolve())
+        run_env["TMPDIR"] = resolved_cwd
+        run_env["TEMP"] = resolved_cwd
+        run_env["TMP"] = resolved_cwd
+
     return {
         "encoding": "utf-8",
         "errors": "ignore",
-        "env": env,
+        "env": run_env,
         "cwd": cwd,
     }
 
