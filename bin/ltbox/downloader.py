@@ -626,12 +626,12 @@ def download_nightly_artifacts(
         ksuinit_candidates = (
             [name for name in artifact_names if name.startswith("ksuinit")]
             if artifact_names
-            else (ksuinit_variants or ["ksuinit", "ksuinit-aarch64-linux-android"])
+            else (ksuinit_variants or ["ksuinit"])
         )
 
         preferred = [
-            "ksuinit-aarch64-linux-android",
             "ksuinit",
+            "ksuinit-aarch64-linux-android",
         ]
         ksuinit_candidates.sort(
             key=lambda name: (
