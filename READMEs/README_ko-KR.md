@@ -27,7 +27,9 @@ LTBox는 이러한 결함을 활용하여 부트로더가 잠긴 상태에서도
 * Lenovo Legion Y700 2세대, 3세대, 4세대 (Legion Tab)
 * Lenovo Yoga Pad Pro AI (Yoga Tab Plus AI)
 * Lenovo Xiaoxin Pad Pro GT (Yoga Tab 11.1 AI)
-* *...그 외 2023년 이후 출시된 퀄컴 칩셋 탑재 레노버 기기도 취약점을 보유하고 있을 수 있습니다.*
+* *...그 외 2023년부터 2026년 전까지 출시된 퀄컴 칩셋 탑재 레노버 기기들도 이 취약점을 가지고 있을 수 있습니다.*
+
+**참고: 2026년에 출시된 Legion Tab Y700 5세대부터 이 취약점은 해결되었으므로 이 도구는 사용이 불가능합니다.**
 
 ## 2. 사용 방법
 

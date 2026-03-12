@@ -27,7 +27,9 @@ This toolkit is an all-in-one collection of scripts that leverages this flaw to 
 * Lenovo Legion Y700 2nd, 3rd, 4th Gen (aka Legion Tab)
 * Lenovo Yoga Pad Pro AI (aka Yoga Tab Plus AI)
 * Lenovo Xiaoxin Pad Pro GT (aka Yoga Tab 11.1 AI)
-* *...Other recent Lenovo devices (released in 2023 or later with Qualcomm chipsets) may also be vulnerable.*
+* *...Other recent Lenovo devices (released between 2023 and before 2026 with Qualcomm chipsets) may also be vulnerable.*
+
+**Note: Starting from the Legion Tab Y700 5th Gen released in 2026, this vulnerability has been patched, so this tool cannot be used.**
 
 ## 2. How to Use
 
