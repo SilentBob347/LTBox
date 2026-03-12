@@ -20,7 +20,6 @@ class LTBoxConfig:
         self.output_dir = self.base_dir / "output"
         self.output_root_dir = self.base_dir / "output_root"
         self.output_root_lkm_dir = self.base_dir / "output_root_lkm"
-        self.output_root_magisk_dir = self.base_dir / "output_root_magisk"
         self.output_dp_dir = self.base_dir / "output_dp"
         self.output_twrp_dir = self.base_dir / "output_twrp"
         self.backup_dir = self.base_dir / "backup"
@@ -28,7 +27,6 @@ class LTBoxConfig:
 
         self.backup_boot_dir = self.base_dir / "backup_boot"
         self.backup_init_boot_dir = self.base_dir / "backup_init_boot"
-        self.backup_magisk_dir = self.base_dir / "backup_magisk"
         self.working_boot_dir = self.base_dir / "working_boot"
 
         self.output_anti_rollback_dir = self.base_dir / "output_anti_rollback"
@@ -111,14 +109,6 @@ class LTBoxConfig:
             return self._get_val("kernelsu-next", "tag")
         except RuntimeError:
             return self._get_val("kernelsu-next", "apk_tag")
-
-    @property
-    def magisk_repo(self) -> str:
-        return self._get_val("magisk", "repo")
-
-    @property
-    def magisk_tag(self) -> str:
-        return self._get_val("magisk", "tag")
 
     @property
     def sukisu_repo(self) -> str:
@@ -228,14 +218,12 @@ CONFIG_FILE = CONF.config_file
 OUTPUT_DIR = CONF.output_dir
 OUTPUT_ROOT_DIR = CONF.output_root_dir
 OUTPUT_ROOT_LKM_DIR = CONF.output_root_lkm_dir
-OUTPUT_ROOT_MAGISK_DIR = CONF.output_root_magisk_dir
 OUTPUT_DP_DIR = CONF.output_dp_dir
 OUTPUT_TWRP_DIR = CONF.output_twrp_dir
 BACKUP_DIR = CONF.backup_dir
 WORK_DIR = CONF.work_dir
 BACKUP_BOOT_DIR = CONF.backup_boot_dir
 BACKUP_INIT_BOOT_DIR = CONF.backup_init_boot_dir
-BACKUP_MAGISK_DIR = CONF.backup_magisk_dir
 WORKING_BOOT_DIR = CONF.working_boot_dir
 OUTPUT_ANTI_ROLLBACK_DIR = CONF.output_anti_rollback_dir
 IMAGE_DIR = CONF.image_dir
@@ -272,8 +260,6 @@ MAGISKBOOT_EXE = CONF.magiskboot_exe
 try:
     KSU_APK_REPO = CONF.ksu_apk_repo
     KSU_APK_TAG = CONF.ksu_apk_tag
-    MAGISK_REPO = CONF.magisk_repo
-    MAGISK_TAG = CONF.magisk_tag
     SUKISU_REPO = CONF.sukisu_repo
     SUKISU_WORKFLOW = CONF.sukisu_workflow
     RELEASE_OWNER = CONF.release_owner

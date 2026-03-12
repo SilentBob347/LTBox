@@ -2,37 +2,12 @@ import re
 import shutil
 import sys
 import subprocess
-import lzma
 from pathlib import Path
 from typing import Optional, Union
 
 from .. import constants as const
 from .. import device, downloader, utils
 from ..i18n import get_string
-
-
-def _detect_preinit_device(
-    dev: Optional[device.DeviceController],
-) -> Optional[str]:
-    if not dev or dev.skip_adb:
-        return None
-
-    try:
-        output = dev.adb.shell("magisk --preinit-device").strip()
-    except Exception:
-        return None
-
-    if not output:
-        return None
-
-    if "not found" in output.lower() or "no such file" in output.lower():
-        return None
-
-    if output.startswith("/dev/"):
-        return output
-
-    match = re.search(r"(/dev/[^\s]+)", output)
-    return match.group(1) if match else None
 
 
 def patch_boot_with_root_algo(
@@ -202,49 +177,39 @@ def patch_boot_with_root_algo(
 
         if not skip_lkm_download:
             try:
-                if root_type == "magisk":
-                    print(get_string("img_root_magisk_download"))
-                    apk_path = downloader.download_magisk_apk(work_dir)
-                    downloader.extract_magisk_libs(apk_path, work_dir)
+                print(get_string("img_root_lkm_download"))
+                ksuinit_path = work_dir / "init"
+                kmod_path = work_dir / "kernelsu.ko"
+
+                if root_type == "sukisu":
+                    if not lkm_kernel_version:
+                        print(get_string("img_root_lkm_no_dev"), file=sys.stderr)
+                        return None
+
+                    downloader.download_nightly_artifacts(
+                        repo=const.SUKISU_REPO,
+                        workflow_id=const.SUKISU_WORKFLOW,
+                        manager_name="Spoofed-Manager.zip",
+                        mapped_name=lkm_kernel_version,
+                        target_dir=work_dir,
+                    )
                 else:
-                    print(get_string("img_root_lkm_download"))
-                    ksuinit_path = work_dir / "init"
-                    kmod_path = work_dir / "kernelsu.ko"
-
-                    if root_type == "sukisu":
-                        if not lkm_kernel_version:
-                            print(get_string("img_root_lkm_no_dev"), file=sys.stderr)
-                            return None
-
-                        downloader.download_nightly_artifacts(
-                            repo=const.SUKISU_REPO,
-                            workflow_id=const.SUKISU_WORKFLOW,
-                            manager_name="Spoofed-Manager.zip",
-                            mapped_name=lkm_kernel_version,
-                            target_dir=work_dir,
-                        )
-                    else:
-                        downloader.download_ksuinit_release(ksuinit_path)
-                        if not lkm_kernel_version:
-                            print(get_string("img_root_lkm_no_dev"), file=sys.stderr)
-                            return None
-                        downloader.get_lkm_kernel_release(kmod_path, lkm_kernel_version)
+                    downloader.download_ksuinit_release(ksuinit_path)
+                    if not lkm_kernel_version:
+                        print(get_string("img_root_lkm_no_dev"), file=sys.stderr)
+                        return None
+                    downloader.get_lkm_kernel_release(kmod_path, lkm_kernel_version)
 
             except Exception as e:
-                error_key = (
-                    "img_root_magisk_download_fail"
-                    if root_type == "magisk"
-                    else "img_root_lkm_download_fail"
+                print(
+                    get_string("img_root_lkm_download_fail").format(e=e),
+                    file=sys.stderr,
                 )
-                print(get_string(error_key).format(e=e), file=sys.stderr)
                 return None
         else:
             print(get_string("img_root_skip_download"))
 
-        if root_type == "magisk":
-            print(get_string("img_root_magisk_patch"))
-        else:
-            print(get_string("img_root_lkm_patch"))
+        print(get_string("img_root_lkm_patch"))
 
         init_exists_proc = mb.run(
             "cpio",
@@ -255,99 +220,13 @@ def patch_boot_with_root_algo(
             capture=True,
         )
 
-        if init_exists_proc.returncode == 0 and root_type != "magisk":
+        if init_exists_proc.returncode == 0:
             print(get_string("img_root_lkm_backup_init"))
             mb.run("cpio", "ramdisk.cpio", "mv init init.real", cwd=work_dir)
 
-        if root_type == "magisk":
-            required_files = [
-                "magiskinit",
-                "magisk",
-                "init-ld",
-                "stub.apk",
-            ]
-            missing_files = [
-                name for name in required_files if not (work_dir / name).exists()
-            ]
-            if missing_files:
-                print(
-                    get_string("img_root_magisk_missing").format(
-                        files=", ".join(missing_files)
-                    ),
-                    file=sys.stderr,
-                )
-                return None
-
-            print(get_string("img_root_magisk_add_files"))
-            config_path = work_dir / "config"
-            config_entries = [
-                "KEEPVERITY=true",
-                "KEEPFORCEENCRYPT=true",
-                "RECOVERYMODE=false",
-            ]
-            preinit_device = _detect_preinit_device(dev)
-            if preinit_device:
-                config_entries.append(f"PREINITDEVICE={preinit_device}")
-            sha1_proc = mb.run(
-                "sha1", img_name, cwd=work_dir, check=False, capture=True
-            )
-            if sha1_proc.returncode == 0:
-                sha1 = sha1_proc.stdout.strip()
-                if sha1:
-                    config_entries.append(f"SHA1={sha1}")
-            config_path.write_text(
-                "\n".join(config_entries) + "\n",
-                encoding="utf-8",
-            )
-            ramdisk_backup = work_dir / "ramdisk.cpio.orig"
-            if not ramdisk_backup.exists():
-                shutil.copy(work_dir / "ramdisk.cpio", ramdisk_backup)
-
-            compressed_payloads = {
-                "magisk": "magisk.xz",
-                "stub.apk": "stub.xz",
-                "init-ld": "init-ld.xz",
-            }
-            for src_name, dst_name in compressed_payloads.items():
-                src_path = work_dir / src_name
-                dst_path = work_dir / dst_name
-                with (
-                    open(src_path, "rb") as f_in,
-                    lzma.open(dst_path, "wb", format=lzma.FORMAT_XZ) as f_out,
-                ):
-                    shutil.copyfileobj(f_in, f_out)
-
-            mb.run(
-                "cpio",
-                "ramdisk.cpio",
-                "add 0750 init magiskinit",
-                "mkdir 0750 overlay.d",
-                "mkdir 0750 overlay.d/sbin",
-                "add 0644 overlay.d/sbin/magisk.xz magisk.xz",
-                "add 0644 overlay.d/sbin/stub.xz stub.xz",
-                "add 0644 overlay.d/sbin/init-ld.xz init-ld.xz",
-                "patch",
-                "backup ramdisk.cpio.orig",
-                "mkdir 000 .backup",
-                "add 000 .backup/.magisk config",
-                cwd=work_dir,
-            )
-            for temp_name in [
-                "ramdisk.cpio.orig",
-                "config",
-                "magisk.xz",
-                "stub.xz",
-                "init-ld.xz",
-            ]:
-                temp_path = work_dir / temp_name
-                if temp_path.exists():
-                    temp_path.unlink()
-        else:
-            print(get_string("img_root_lkm_add_files"))
-            mb.run("cpio", "ramdisk.cpio", "add 0755 init init", cwd=work_dir)
-            mb.run(
-                "cpio", "ramdisk.cpio", "add 0755 kernelsu.ko kernelsu.ko", cwd=work_dir
-            )
+        print(get_string("img_root_lkm_add_files"))
+        mb.run("cpio", "ramdisk.cpio", "add 0755 init init", cwd=work_dir)
+        mb.run("cpio", "ramdisk.cpio", "add 0755 kernelsu.ko kernelsu.ko", cwd=work_dir)
 
         print(get_string("img_root_step6_init_boot").format(name=img_name))
         mb.run("repack", img_name, cwd=work_dir)

@@ -713,43 +713,6 @@ def download_ksu_manager_release(target_dir: Path) -> None:
     utils.ui.echo(get_string("dl_ksu_success"))
 
 
-def download_magisk_apk(target_dir: Path) -> Path:
-    utils.ui.echo(get_string("dl_magisk_downloading"))
-    target_file = target_dir / "magisk.apk"
-
-    _download_and_move_github_asset(
-        f"https://github.com/{const.MAGISK_REPO}",
-        const.MAGISK_TAG,
-        r"Magisk.*\.apk",
-        target_file,
-    )
-    utils.ui.echo(get_string("dl_magisk_success"))
-    return target_file
-
-
-def extract_magisk_libs(apk_path: Path, target_dir: Path) -> None:
-    extract_map = {
-        "lib/arm64-v8a/libmagiskinit.so": target_dir / "magiskinit",
-        "lib/arm64-v8a/libmagisk.so": target_dir / "magisk",
-        "lib/arm64-v8a/libinit-ld.so": target_dir / "init-ld",
-        "assets/stub.apk": target_dir / "stub.apk",
-    }
-
-    extract_archive_files(apk_path, extract_map)
-
-    missing = [
-        target_path.name
-        for target_path in extract_map.values()
-        if not target_path.exists()
-    ]
-    if missing:
-        raise ToolError(
-            get_string("dl_magisk_lib_missing").format(files=", ".join(missing))
-        )
-
-    utils.ui.echo(get_string("dl_magisk_extract_ok"))
-
-
 def download_ksuinit_release(target_path: Path) -> None:
     if target_path.exists():
         target_path.unlink()

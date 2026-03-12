@@ -241,14 +241,12 @@ class InitBootRootStrategy(ConfigurableRootStrategy):
         for name in self.payload_files:
             shutil.copy(self.staging_dir / name, work_dir / name)
 
-        kernel_ver_arg = lkm_kernel_version if self.root_type != "magisk" else None
-
         return patch_boot_with_root_algo(
             work_dir,
             magiskboot_exe,
             dev,
             gki=False,
-            lkm_kernel_version=kernel_ver_arg,
+            lkm_kernel_version=lkm_kernel_version,
             root_type=self.root_type,
             skip_lkm_download=True,
         )
@@ -430,58 +428,6 @@ class FolkPatchStrategy(GkiRootStrategy):
             root_type="folkpatch",
             superkey=superkey,
         )
-
-
-class MagiskRootStrategy(InitBootRootStrategy):
-    spec = RootStrategySpec(
-        image_name=const.FN_INIT_BOOT,
-        backup_name=const.FN_INIT_BOOT_BAK,
-        output_dir=const.OUTPUT_ROOT_MAGISK_DIR,
-        backup_dir=const.BACKUP_MAGISK_DIR,
-        required_files=[const.FN_INIT_BOOT, const.FN_VBMETA],
-        main_partition="init_boot",
-        display_name="Magisk",
-        unroot_detect_msg_key="act_unroot_magisk_detected",
-        unroot_menu_msg_key="act_unroot_menu_1_magisk",
-        menu_shortcut="1",
-        patch_image_name="init_boot.img",
-    )
-
-    def __init__(self) -> None:
-        self._staging_dir = const.TOOLS_DIR / "magisk_staging"
-
-    @property
-    def staging_dir(self) -> Path:
-        return self._staging_dir
-
-    @property
-    def payload_files(self) -> List[str]:
-        return ["magiskinit", "magisk", "init-ld", "stub.apk"]
-
-    @property
-    def root_type(self) -> str:
-        return "magisk"
-
-    def print_unroot_step(self, partition_map: Dict[str, str]) -> None:
-        utils.ui.echo(get_string("act_unroot_step4_lkm"))
-
-    def download_resources(self, kernel_version: Optional[str] = None) -> bool:
-        _cleanup_manager_apk(show_message=False)
-
-        utils.recreate_dir(self.staging_dir)
-
-        try:
-            apk_path = downloader.download_magisk_apk(self.staging_dir)
-            downloader.extract_magisk_libs(apk_path, self.staging_dir)
-        except Exception as e:
-            utils.ui.error(str(e))
-            return False
-
-        manager_path = const.TOOLS_DIR / "manager.apk"
-        if manager_path.exists():
-            manager_path.unlink()
-        shutil.copy(apk_path, manager_path)
-        return True
 
 
 class LkmRootStrategy(InitBootRootStrategy):
@@ -723,8 +669,6 @@ def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
         return FolkPatchStrategy()
     elif gki:
         return GkiRootStrategy()
-    elif root_type == "magisk":
-        return MagiskRootStrategy()
     else:
         return LkmRootStrategy(root_type)
 
@@ -1173,7 +1117,6 @@ def unroot_device(dev: device.DeviceController) -> None:
     utils.ui.echo(get_string("act_start_unroot"))
 
     strategies: List[RootStrategy] = [
-        MagiskRootStrategy(),
         LkmRootStrategy(),
         GkiRootStrategy(),
     ]
@@ -1211,7 +1154,6 @@ def unroot_device(dev: device.DeviceController) -> None:
         utils.ui.echo(get_string(selected_strategy.unroot_detect_msg_key))
     else:
         prompt = get_string("act_unroot_prompt_all").format(
-            magisk_dir=MagiskRootStrategy().backup_dir.name,
             lkm_dir=LkmRootStrategy().backup_dir.name,
             gki_dir=GkiRootStrategy().backup_dir.name,
         )

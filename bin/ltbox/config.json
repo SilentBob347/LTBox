@@ -5,10 +5,6 @@
     "avb_archive_url": "https://android.googlesource.com/platform/external/avb/+archive/refs/heads/main.tar.gz",
     "avb_fallback_archive_url": "https://github.com/LineageOS/android_external_avb/archive/refs/heads/lineage-23.2.zip"
   },
-  "magisk": {
-    "repo": "topjohnwu/Magisk",
-    "tag": "latest"
-  },
   "kernelsu-next": {
     "repo": "KernelSU-Next/KernelSU-Next",
     "tag": "latest",

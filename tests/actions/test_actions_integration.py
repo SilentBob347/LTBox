@@ -12,7 +12,6 @@ from ltbox.actions.root import (
     FolkPatchStrategy,
     GkiRootStrategy,
     LkmRootStrategy,
-    MagiskRootStrategy,
 )
 
 pytestmark = pytest.mark.integration
@@ -294,77 +293,6 @@ def test_root_lkm(fw_pkg, tmp_path):
         assert (mock_dirs["OUTPUT_ROOT_LKM_DIR"] / "vbmeta.img").exists()
 
         print(f"[PASS] LKM Integration Test Complete. Output: {final_output}")
-
-
-def test_root_magisk(fw_pkg, tmp_path):
-    if not fw_pkg:
-        pytest.skip("Firmware package not available")
-
-    init_boot_img = fw_pkg.get("init_boot.img")
-    vbmeta_img = fw_pkg.get("vbmeta.img")
-
-    if not init_boot_img or not vbmeta_img:
-        pytest.skip("Required images (init_boot, vbmeta) missing")
-
-    mock_dirs = {
-        "TOOLS_DIR": tmp_path / "bin" / "tools",
-        "DOWNLOAD_DIR": tmp_path / "bin" / "download",
-        "OUTPUT_ROOT_MAGISK_DIR": tmp_path / "output" / "root_magisk",
-        "IMAGE_DIR": tmp_path / "images",
-        "BASE_DIR": tmp_path / "base",
-    }
-    for d in mock_dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
-
-    with patch.multiple("ltbox.constants", **mock_dirs):
-        print("\n[INFO] [MAGISK] Checking bundled magiskboot...")
-        magiskboot_exe = mock_dirs["TOOLS_DIR"] / "magiskboot.exe"
-        real_magiskboot = (
-            Path(__file__).resolve().parents[2] / "bin" / "tools" / "magiskboot.exe"
-        )
-
-        if real_magiskboot.exists():
-            shutil.copy(real_magiskboot, magiskboot_exe)
-
-            for dll_file in real_magiskboot.parent.glob("*.dll"):
-                shutil.copy(dll_file, mock_dirs["TOOLS_DIR"] / dll_file.name)
-        else:
-            pytest.skip("magiskboot.exe not found in bin/tools. Please build it first.")
-
-        strategy = MagiskRootStrategy()
-
-        print("[INFO] [MAGISK] Downloading resources (APK)...")
-        if not strategy.download_resources():
-            pytest.fail("Failed to download Magisk resources")
-
-        work_dir = tmp_path / "work_magisk"
-        work_dir.mkdir()
-
-        target_init_boot = work_dir / "init_boot.img"
-        shutil.copy(init_boot_img, target_init_boot)
-
-        shutil.copy(vbmeta_img, mock_dirs["BASE_DIR"] / const.FN_VBMETA_BAK)
-
-        print("[INFO] [MAGISK] Running ACTUAL patch process...")
-        try:
-            patched_path = strategy.patch(work_dir, dev=None)
-        except Exception as e:
-            pytest.fail(f"Magisk patching failed with real tools: {e}")
-
-        assert patched_path.exists(), "Patched init_boot image not returned"
-        assert patched_path.stat().st_size > 0, "Patched init_boot image is empty"
-        print(f"[INFO] [MAGISK] Patch success: {patched_path}")
-
-        print("[INFO] [MAGISK] Finalizing (AVB Chaining)...")
-        final_output = strategy.finalize_patch(
-            patched_path, mock_dirs["OUTPUT_ROOT_MAGISK_DIR"], mock_dirs["BASE_DIR"]
-        )
-
-        assert final_output.exists()
-        assert final_output.name == "init_boot.img"
-        assert (mock_dirs["OUTPUT_ROOT_MAGISK_DIR"] / "vbmeta.img").exists()
-
-        print(f"[PASS] Magisk Integration Test Complete. Output: {final_output}")
 
 
 def test_root_folkpatch(fw_pkg, tmp_path):
