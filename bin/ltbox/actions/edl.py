@@ -95,11 +95,14 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
                 utils.ui.echo(f"  {item1}")
 
         utils.ui.echo(f"   f. {get_string('act_flash_partitions_select_done')}")
+        utils.ui.echo(f"   c. {get_string('cancel')}")
         utils.ui.echo("\n" + "=" * width + "\n")
 
         choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
         if choice == "f":
             return [label for label in labels if label in selected]
+        if choice == "c":
+            return []
 
         try:
             idx = int(choice)
