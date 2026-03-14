@@ -1,18 +1,20 @@
 name: Lint Code
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
       - 'bin/**/*.py'
       - 'tests/**/*.py'
-      - '.github/workflows/lint.yml'
-      - '.github/workflows/python-command.yml'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'bin/**/*.py'
       - 'tests/**/*.py'
-      - '.github/workflows/lint.yml'
-      - '.github/workflows/python-command.yml'
+      - '.github/workflows/**'
 
 jobs:
   lint:

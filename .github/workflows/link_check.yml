@@ -1,15 +1,23 @@
 name: Check Download Links
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 on:
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
   push:
     paths:
-      - 'bin/ltbox/config.json'
-      - 'bin/ltbox/downloader.py'
-      - '.github/workflows/link_check.yml'
-      - '.github/workflows/python-command.yml'
+      - 'bin/**'
+      - 'tests/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'bin/**'
+      - 'tests/**'
+      - '.github/workflows/**'
 
 jobs:
   check-urls:

@@ -1,5 +1,9 @@
 name: Windows Smoke Test & Unit Test
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
@@ -7,14 +11,12 @@ on:
     paths:
       - 'bin/**'
       - 'tests/**'
-      - '.github/workflows/windows_test.yml'
-      - '.github/workflows/python-command.yml'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'bin/**'
       - 'tests/**'
-      - '.github/workflows/windows_test.yml'
-      - '.github/workflows/python-command.yml'
+      - '.github/workflows/**'
   workflow_call:
 
 jobs:
