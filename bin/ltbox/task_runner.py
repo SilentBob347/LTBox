@@ -26,13 +26,16 @@ class TaskUIAdapter:
 
 
 def _default_ui_adapter() -> TaskUIAdapter:
+    def _pause() -> None:
+        input(get_string("press_enter_to_continue"))
+
     return TaskUIAdapter(
         clear=ui.clear,
         info=ui.info,
         echo=ui.echo,
         error=ui.error,
         box_output=lambda lines: ui.box_output(lines, err=True),
-        pause=lambda: input(get_string("press_enter_to_continue")),
+        pause=_pause,
     )
 
 

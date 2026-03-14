@@ -4,7 +4,7 @@ import subprocess
 from contextlib import nullcontext
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, TypedDict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +17,13 @@ pytestmark = pytest.mark.integration
 MAGISKBOOT_PATH = (
     Path(__file__).resolve().parents[2] / "bin" / "tools" / "magiskboot.exe"
 )
+
+
+class RootSetupContext(TypedDict):
+    boot_img: Path
+    vbmeta_img: Optional[Path]
+    work_dir: Path
+    base_dir: Path
 
 
 @pytest.fixture
@@ -80,16 +87,17 @@ def _run_patch_with_fail_context(
         pytest.fail(f"{fail_label} patching failed with real tools: {e}")
 
 
-def _setup_gki_context(ctx: dict[str, Path | None]) -> None:
+def _setup_gki_context(ctx: RootSetupContext) -> None:
     shutil.copy(ctx["boot_img"], ctx["work_dir"] / "boot.img")
     shutil.copy(ctx["boot_img"], ctx["base_dir"] / "boot.bak.img")
 
 
-def _setup_folkpatch_context(ctx: dict[str, Path | None]) -> None:
+def _setup_folkpatch_context(ctx: RootSetupContext) -> None:
     shutil.copy(ctx["boot_img"], ctx["work_dir"] / "boot.img")
-    if ctx["vbmeta_img"] is None:
+    vbmeta_img = ctx["vbmeta_img"]
+    if vbmeta_img is None:
         pytest.fail("FolkPatch requires vbmeta image in setup context")
-    shutil.copy(ctx["vbmeta_img"], ctx["base_dir"] / "vbmeta.bak.img")
+    shutil.copy(vbmeta_img, ctx["base_dir"] / "vbmeta.bak.img")
     shutil.copy(ctx["boot_img"], ctx["base_dir"] / "boot.bak.img")
 
 
