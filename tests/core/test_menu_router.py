@@ -18,8 +18,11 @@ def test_build_root_type_menu_uses_declarative_spec(monkeypatch):
 
 
 def test_build_root_dispatch_map_covers_all_root_choices():
+    breadcrumbs = {
+        key: f"main > root > {key}" for key in ["1", "2", "3", "4", "5", "6"]
+    }
     dispatch_map = menu_router._build_root_dispatch_map(
-        dev=object(), registry=object(), type_breadcrumbs="main > root"
+        dev=object(), registry=object(), type_breadcrumbs=breadcrumbs
     )
 
     assert sorted(dispatch_map.keys()) == ["1", "2", "3", "4", "5", "6"]
@@ -38,10 +41,11 @@ def test_root_menu_uses_dispatch_map_and_returns_on_route(monkeypatch):
     monkeypatch.setattr(menu_router, "_build_root_type_menu", lambda *_args: fake_menu)
     monkeypatch.setattr(menu_router, "get_string", lambda key: key)
 
-    called = {"count": 0}
+    called = {"count": 0, "breadcrumbs": None}
 
-    def fake_dispatch(_dev, _registry, _breadcrumbs):
+    def fake_dispatch(_dev, _registry, breadcrumbs):
         called["count"] += 1
+        called["breadcrumbs"] = breadcrumbs
         return {"1": lambda: menu_router.RouteResult.MAIN}
 
     monkeypatch.setattr(menu_router, "_build_root_dispatch_map", fake_dispatch)
@@ -49,4 +53,35 @@ def test_root_menu_uses_dispatch_map_and_returns_on_route(monkeypatch):
     result = menu_router.root_menu(dev=object(), registry=object())
 
     assert called["count"] == 1
+    assert called["breadcrumbs"]["5"].endswith(" > APatch")
+    assert called["breadcrumbs"]["6"].endswith(" > FolkPatch")
     assert result is None
+
+
+def test_build_root_dispatch_map_routes_with_selected_type_breadcrumbs(monkeypatch):
+    received = []
+
+    def fake_root_action_menu(_dev, _registry, gki, root_type, breadcrumbs):
+        received.append((gki, root_type, breadcrumbs))
+
+    monkeypatch.setattr(menu_router, "_root_action_menu", fake_root_action_menu)
+
+    breadcrumbs = {
+        "1": "main > root > KernelSU",
+        "2": "main > root > KernelSU Next",
+        "3": "main > root > SukiSU",
+        "4": "main > root > ReSukiSU",
+        "5": "main > root > APatch",
+        "6": "main > root > FolkPatch",
+    }
+    dispatch_map = menu_router._build_root_dispatch_map(
+        dev=object(), registry=object(), type_breadcrumbs=breadcrumbs
+    )
+
+    dispatch_map["5"]()
+    dispatch_map["6"]()
+
+    assert received == [
+        (True, "apatch", "main > root > APatch"),
+        (True, "folkpatch", "main > root > FolkPatch"),
+    ]

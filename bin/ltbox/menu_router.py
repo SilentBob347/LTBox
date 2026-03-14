@@ -43,6 +43,10 @@ ROOT_TYPE_MENU_SPEC: List[Optional[Tuple[str, str]]] = [
     ("x", "menu_main_exit"),
 ]
 
+ROOT_TYPE_BREADCRUMB_LABELS: Dict[str, str] = {
+    item[0]: item[1] for item in ROOT_TYPE_MENU_SPEC if item is not None
+}
+
 
 def _loop_menu(
     menu_items_factory: Callable[[], List[Any]],
@@ -128,25 +132,49 @@ def _handle_ksu_mode(dev: Any, registry: Any, type_breadcrumbs: str) -> Optional
     return None
 
 
+def _resolve_root_type_label(label_key: str) -> str:
+    return get_string(label_key) if label_key.startswith("menu_") else label_key
+
+
 def _build_root_dispatch_map(
-    dev: Any, registry: Any, type_breadcrumbs: str
+    dev: Any, registry: Any, type_breadcrumbs: Dict[str, str]
 ) -> Dict[str, Callable[[], Optional[str]]]:
     return {
         "1": lambda: _root_action_menu(
-            dev, registry, gki=False, root_type="kernelsu", breadcrumbs=type_breadcrumbs
+            dev,
+            registry,
+            gki=False,
+            root_type="kernelsu",
+            breadcrumbs=type_breadcrumbs["1"],
         ),
-        "2": lambda: _handle_ksu_mode(dev, registry, type_breadcrumbs),
+        "2": lambda: _handle_ksu_mode(dev, registry, type_breadcrumbs["2"]),
         "3": lambda: _root_action_menu(
-            dev, registry, gki=False, root_type="sukisu", breadcrumbs=type_breadcrumbs
+            dev,
+            registry,
+            gki=False,
+            root_type="sukisu",
+            breadcrumbs=type_breadcrumbs["3"],
         ),
         "4": lambda: _root_action_menu(
-            dev, registry, gki=False, root_type="resukisu", breadcrumbs=type_breadcrumbs
+            dev,
+            registry,
+            gki=False,
+            root_type="resukisu",
+            breadcrumbs=type_breadcrumbs["4"],
         ),
         "5": lambda: _root_action_menu(
-            dev, registry, gki=True, root_type="apatch", breadcrumbs=type_breadcrumbs
+            dev,
+            registry,
+            gki=True,
+            root_type="apatch",
+            breadcrumbs=type_breadcrumbs["5"],
         ),
         "6": lambda: _root_action_menu(
-            dev, registry, gki=True, root_type="folkpatch", breadcrumbs=type_breadcrumbs
+            dev,
+            registry,
+            gki=True,
+            root_type="folkpatch",
+            breadcrumbs=type_breadcrumbs["6"],
         ),
     }
 
@@ -170,7 +198,11 @@ def _build_root_type_menu(main_title: str) -> TerminalMenu:
 
 def root_menu(dev: Any, registry: Any):
     main_title = get_string("menu_main_title")
-    type_breadcrumbs = f"{main_title} > {get_string('menu_root_type_title')}"
+    root_type_title = get_string("menu_root_type_title")
+    type_breadcrumbs = {
+        key: f"{main_title} > {root_type_title} > {_resolve_root_type_label(label)}"
+        for key, label in ROOT_TYPE_BREADCRUMB_LABELS.items()
+    }
     dispatch_map = _build_root_dispatch_map(dev, registry, type_breadcrumbs)
 
     while True:
