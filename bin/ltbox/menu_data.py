@@ -209,7 +209,7 @@ def get_root_mode_menu_data() -> List[MenuItem]:
 def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
     specs: List[MenuSpec] = []
 
-    if root_type == "folkpatch":
+    if root_type in ("folkpatch", "apatch"):
         specs.extend(
             [
                 MenuSpec(

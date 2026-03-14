@@ -351,16 +351,21 @@ class FolkPatchStrategy(GkiRootStrategy):
         requires_kernel_version=False,
     )
 
-    def __init__(self):
+    def __init__(self, root_type: str = "folkpatch"):
         super().__init__()
+        self.root_type = root_type
         self.is_nightly = False
         self.workflow_id = None
         self.repo_config: Dict[str, Any] = {}
-        self._staging_dir = const.TOOLS_DIR / "folkpatch_staging"
+        self._staging_dir = const.TOOLS_DIR / f"{self.root_type}_staging"
+
+    @property
+    def source_name(self) -> str:
+        return "APatch" if self.root_type == "apatch" else "FolkPatch"
 
     def configure_source(self) -> None:
         settings = const.load_settings_raw()
-        self.repo_config = settings.get("folkpatch", {})
+        self.repo_config = settings.get(self.root_type, {})
 
         menu = TerminalMenu(
             get_string("folkpatch_menu_version_title"),
@@ -377,7 +382,11 @@ class FolkPatchStrategy(GkiRootStrategy):
             utils.ui.clear()
             width = utils.ui.get_term_width()
             utils.ui.echo("-" * width)
-            utils.ui.echo(get_string("folkpatch_prompt_workflow_id"))
+            utils.ui.echo(
+                get_string("folkpatch_prompt_workflow_id").replace(
+                    "FolkPatch", self.source_name
+                )
+            )
             default_workflow = str(self.repo_config.get("workflow", "")).strip()
             if default_workflow:
                 utils.ui.echo(
@@ -397,10 +406,16 @@ class FolkPatchStrategy(GkiRootStrategy):
             downloader.download_kptools(const.DOWNLOAD_DIR)
             if self.is_nightly and self.workflow_id:
                 downloader.download_folkpatch_nightly(
-                    self.workflow_id, self._staging_dir
+                    self.workflow_id,
+                    self._staging_dir,
+                    repo=self.repo_config.get("repo", ""),
                 )
             else:
-                downloader.download_folkpatch_release(self._staging_dir)
+                downloader.download_folkpatch_release(
+                    self._staging_dir,
+                    repo=self.repo_config.get("repo", ""),
+                    tag=self.repo_config.get("tag", "latest"),
+                )
             return True
         except Exception as e:
             utils.ui.error(get_string("folkpatch_download_failed").format(e=e))
@@ -679,8 +694,8 @@ class LkmRootStrategy(InitBootRootStrategy):
 
 
 def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
-    if root_type == "folkpatch":
-        return FolkPatchStrategy()
+    if root_type in ("folkpatch", "apatch"):
+        return FolkPatchStrategy(root_type)
     elif gki:
         return GkiRootStrategy()
     else:

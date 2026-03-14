@@ -36,7 +36,7 @@ def patch_boot_with_root_algo(
 
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
-    if root_type == "folkpatch":
+    if root_type in ("folkpatch", "apatch"):
         if superkey is None:
             utils.ui.error(get_string("folkpatch_err_superkey_required"))
             return None

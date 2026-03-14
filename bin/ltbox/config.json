@@ -43,6 +43,11 @@
       "Manager-release.zip"
     ]
   },
+  "apatch": {
+    "repo": "bmax121/APatch",
+    "tag": "latest",
+    "workflow": ""
+  },
   "folkpatch": {
     "repo": "matsuzaka-yuki/FolkPatch",
     "tag": "latest",

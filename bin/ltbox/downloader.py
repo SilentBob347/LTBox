@@ -830,23 +830,23 @@ def download_kptools(target_dir: Path):
     utils.ui.echo(get_string("dl_kptools_ready"))
 
 
-def download_folkpatch_release(target_dir: Path):
+def download_folkpatch_release(target_dir: Path, repo: str = "", tag: str = "latest"):
     utils.ui.echo(get_string("dl_folkpatch_stable_downloading"))
     apk_path = target_dir / "FolkPatch.apk"
     _download_and_move_github_asset(
-        const.FOLKPATCH_REPO,
-        const.FOLKPATCH_TAG,
+        repo or const.FOLKPATCH_REPO,
+        tag or const.FOLKPATCH_TAG,
         r".*\.apk$",
         apk_path,
     )
     _extract_folkpatch_kpimg(apk_path, target_dir)
 
 
-def download_folkpatch_nightly(workflow_id: str, target_dir: Path):
+def download_folkpatch_nightly(workflow_id: str, target_dir: Path, repo: str = ""):
     utils.ui.echo(
         get_string("dl_folkpatch_nightly_downloading").format(workflow_id=workflow_id)
     )
-    repo = const.FOLKPATCH_REPO
+    repo = repo or const.FOLKPATCH_REPO
     artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
 
     target_artifact = next(

@@ -129,6 +129,9 @@ def root_menu(dev: Any, registry: Any):
             dev, registry, gki=False, root_type="resukisu", breadcrumbs=type_breadcrumbs
         ),
         "5": lambda: _root_action_menu(
+            dev, registry, gki=True, root_type="apatch", breadcrumbs=type_breadcrumbs
+        ),
+        "6": lambda: _root_action_menu(
             dev, registry, gki=True, root_type="folkpatch", breadcrumbs=type_breadcrumbs
         ),
     }
@@ -143,7 +146,8 @@ def root_menu(dev: Any, registry: Any):
         mode_menu.add_option("3", get_string("menu_root_type_sukisu"))
         mode_menu.add_option("4", get_string("menu_root_type_resukisu"))
         mode_menu.add_separator()
-        mode_menu.add_option("5", "FolkPatch")
+        mode_menu.add_option("5", "APatch")
+        mode_menu.add_option("6", "FolkPatch")
         mode_menu.add_separator()
         mode_menu.add_option("b", get_string("menu_back"))
         mode_menu.add_option("x", get_string("menu_main_exit"))
