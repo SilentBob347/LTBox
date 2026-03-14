@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from ltbox import downloader, i18n
 from tests.scripts import cache_fw
+from tests.actions.integration.fixtures import firmware_file_getter  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN_PATH = ROOT / "bin"
