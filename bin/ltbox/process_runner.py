@@ -4,7 +4,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, TypedDict, Union
 
 from .logger import get_logger
 
@@ -28,9 +28,16 @@ class CommandResult:
     combined_output: str
 
 
+class SubprocessTextKwargs(TypedDict):
+    encoding: str
+    errors: str
+    env: dict[str, str]
+    cwd: Optional[Union[str, Path]]
+
+
 def _get_subprocess_kwargs(
     env: dict[str, str], cwd: Optional[Union[str, Path]]
-) -> dict[str, object]:
+) -> SubprocessTextKwargs:
     run_env = env.copy()
 
     if cwd:

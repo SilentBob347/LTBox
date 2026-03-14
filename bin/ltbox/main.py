@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from . import downloader, i18n, update_service, utils
 from .app_state import AppState
@@ -14,6 +14,9 @@ from .i18n import get_string
 from .logger import logging_context
 from .registry import CommandRegistry
 from .utils import ui
+
+if TYPE_CHECKING:
+    from .menu_router import DeviceControllerFactoryProtocol
 
 APP_DIR = Path(__file__).parent.resolve()
 BASE_DIR = APP_DIR.parent
@@ -268,7 +271,9 @@ def _resolve_language_code(
     return "en" if is_info_mode else prompt_for_language(settings_store=settings_store)
 
 
-def _initialize_runtime(lang_code: str) -> Tuple[type, CommandRegistry, Any, Any]:
+def _initialize_runtime(
+    lang_code: str,
+) -> Tuple["DeviceControllerFactoryProtocol", CommandRegistry, Any, Any]:
     downloader.install_base_tools(lang_code)
     utils.check_dependencies()
 
@@ -293,7 +298,7 @@ def _initialize_runtime(lang_code: str) -> Tuple[type, CommandRegistry, Any, Any
 
 def _run_entry_mode(
     is_info_mode: bool,
-    device_controller_class: type,
+    device_controller_class: "DeviceControllerFactoryProtocol",
     registry: CommandRegistry,
     constants_module: Any,
     avb_patch_module: Any,

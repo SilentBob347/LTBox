@@ -1,7 +1,7 @@
 import sys
 from dataclasses import replace
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from . import i18n, menu_data
 from .app_state import AppState
@@ -10,6 +10,7 @@ from .menu import TerminalMenu, select_menu_action
 from .utils import ui
 from . import update_service
 from .task_runner import run_task
+from .registry import CommandRegistry
 
 
 class LoopAction(str, Enum):
@@ -55,33 +56,24 @@ class DeviceControllerProtocol(Protocol):
 
 
 class DeviceControllerFactoryProtocol(Protocol):
-    def __call__(self, *, skip_adb: bool) -> DeviceControllerProtocol: ...
-
-
-class CommandSpecProtocol(Protocol):
-    func: Callable[..., Any]
-
-
-class CommandRegistryProtocol(Protocol):
-    def get(self, name: str) -> Optional[CommandSpecProtocol]: ...
+    def __call__(self, skip_adb: bool) -> DeviceControllerProtocol: ...
 
 
 MenuReturn = Optional[Union[LoopAction, RouteResult]]
-TMenuReturn = TypeVar("TMenuReturn", bound=MenuReturn)
 
 
 def _loop_menu(
     menu_items_factory: Callable[[], List[Any]],
     title_key: str,
     breadcrumbs: Optional[str],
-    action_handler: Callable[[str], TMenuReturn],
-) -> Optional[LoopAction]:
+    action_handler: Callable[[str], MenuReturn],
+) -> MenuReturn:
     while True:
         menu_items = menu_items_factory()
         action = select_menu_action(menu_items, title_key, breadcrumbs=breadcrumbs)
 
         if action in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
-            return action
+            return LoopAction(action)
 
         if action is not None:
             result = action_handler(action)
@@ -91,9 +83,9 @@ def _loop_menu(
 
 def advanced_menu(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     target_region: str,
-) -> Optional[LoopAction]:
+) -> MenuReturn:
     main_title = get_string("menu_main_title")
 
     def _handler(action: str) -> None:
@@ -112,7 +104,7 @@ def advanced_menu(
 
 def _root_action_menu(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     gki: bool,
     root_type: str,
     breadcrumbs: str,
@@ -134,7 +126,7 @@ def _root_action_menu(
 
 def _handle_ksu_mode(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     type_breadcrumbs: str,
 ) -> MenuReturn:
     mode_breadcrumbs = f"{type_breadcrumbs} > {get_string('menu_root_mode_title')}"
@@ -167,7 +159,7 @@ def _resolve_root_type_label(label_key: str) -> str:
 
 def _build_root_dispatch_map(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     type_breadcrumbs: Dict[str, str],
 ) -> Dict[str, Callable[[], MenuReturn]]:
     return {
@@ -229,7 +221,7 @@ def _build_root_type_menu(main_title: str) -> TerminalMenu:
 
 def root_menu(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
 ) -> MenuReturn:
     main_title = get_string("menu_main_title")
     root_type_title = get_string("menu_root_type_title")
@@ -283,9 +275,9 @@ def _handle_update_check():
 
 def settings_menu(
     dev: DeviceControllerProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     state: AppState,
-) -> tuple[AppState, Optional[LoopAction]]:
+) -> tuple[AppState, MenuReturn]:
     main_title = get_string("menu_main_title")
     next_state = state
 
@@ -399,18 +391,18 @@ def prompt_for_language(
 
 def main_loop(
     device_controller_class: DeviceControllerFactoryProtocol,
-    registry: CommandRegistryProtocol,
+    registry: CommandRegistry,
     initial_state: AppState,
 ) -> AppState:
     state = initial_state
-    dev = device_controller_class(skip_adb=state.skip_adb)
+    dev = device_controller_class(state.skip_adb)
 
-    def _run_settings() -> Optional[LoopAction]:
+    def _run_settings() -> MenuReturn:
         nonlocal state
         state, action = settings_menu(dev, registry, state)
         return action
 
-    menu_handlers: Dict[str, Callable[[], Optional[LoopAction]]] = {
+    menu_handlers: Dict[str, Callable[[], MenuReturn]] = {
         MainMenuAction.SETTINGS: _run_settings,
         MainMenuAction.ROOT: lambda: root_menu(dev, registry),
         MainMenuAction.ADVANCED: lambda: advanced_menu(
@@ -418,7 +410,7 @@ def main_loop(
         ),
     }
 
-    def _handler(action: str) -> Optional[LoopAction]:
+    def _handler(action: str) -> MenuReturn:
         action_func = menu_handlers.get(action)
         if action_func:
             return action_func()
