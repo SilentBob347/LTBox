@@ -4,10 +4,15 @@ inputs:
   tag:
     description: 'Tag to resolve (for example, github.ref_name)'
     required: true
+outputs:
+  tag_name:
+    description: 'Resolved release tag name'
+    value: ${{ steps.resolve_tag.outputs.tag }}
 runs:
   using: 'composite'
   steps:
     - name: Resolve Tag Name
+      id: resolve_tag
       shell: pwsh
       run: ./.github/scripts/release/resolve-tag.ps1 -Tag "${{ inputs.tag }}"
 
