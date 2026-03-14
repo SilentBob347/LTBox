@@ -23,7 +23,4 @@ jobs:
   check-urls:
     uses: ./.github/workflows/python-command.yml
     with:
-      runner: ubuntu-latest
-      python-version: '3.14'
-      run-command: |
-        python tests/scripts/check_links.py
+      task: links

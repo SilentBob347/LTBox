@@ -20,9 +20,4 @@ jobs:
   lint:
     uses: ./.github/workflows/python-command.yml
     with:
-      runner: ubuntu-latest
-      python-version: '3.14'
-      run-command: |
-        ruff check bin/ltbox tests
-        ruff format --check bin/ltbox tests
-        mypy bin/ltbox tests --ignore-missing-imports
+      task: links

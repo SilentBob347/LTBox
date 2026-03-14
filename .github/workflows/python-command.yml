@@ -7,16 +7,22 @@ on:
         description: Runner label
         required: false
         type: string
-        default: ubuntu-latest
+        default: ''
       python-version:
-        description: Python version to install
+        description: Python version override (defaults to repository variable PYTHON_VERSION)
         required: false
         type: string
-        default: '3.14'
-      run-command:
-        description: Shell command(s) to execute
-        required: true
+        default: ''
+      task:
+        description: Built-in command profile to execute (lint|unit|architecture|links)
+        required: false
         type: string
+        default: ''
+      run-command:
+        description: Optional custom shell command(s) to execute when task is not set
+        required: false
+        type: string
+        default: ''
       extra-env:
         description: Multiline KEY=VALUE pairs appended to GITHUB_ENV
         required: false
@@ -35,7 +41,9 @@ on:
 
 jobs:
   run:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner != '' && inputs.runner || (inputs.task == 'unit' && 'windows-latest' || 'ubuntu-latest') }}
+    env:
+      PYTHON_VERSION: ${{ inputs.python-version != '' && inputs.python-version || vars.PYTHON_VERSION || '3.14' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -46,15 +54,15 @@ jobs:
             .mypy_cache
             .ruff_cache
             .pytest_cache
-          key: py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ inputs.python-version }}-${{ hashFiles('bin/requirements.txt', 'bin/requirements-dev.txt', '.github/workflows/python-command.yml') }}
+          key: py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('bin/requirements.txt', 'bin/requirements-dev.txt', '.github/workflows/python-command.yml') }}
           restore-keys: |
-            py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ inputs.python-version }}-
+            py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ env.PYTHON_VERSION }}-
             py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Setup Python & Dependencies
         uses: ./.github/actions/setup-python-deps
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Apply standardized Python environment defaults
         shell: bash
@@ -72,6 +80,59 @@ jobs:
           ${{ inputs.extra-env }}
           EOF_ENV
 
+      - name: Resolve command profile
+        id: resolve-command
+        shell: bash
+        run: |
+          case "${{ inputs.task }}" in
+            lint)
+              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
+              command<<'EOF'
+              ruff check bin/ltbox tests
+              ruff format --check bin/ltbox tests
+              mypy bin/ltbox tests --ignore-missing-imports
+              EOF
+              EOF_COMMAND
+              ;;
+            unit)
+              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
+              command<<'EOF'
+              python -m compileall bin/ltbox
+              pytest -s tests/ -m "not integration and not architecture" --cov=bin/ltbox --cov-report=term-missing
+              EOF
+              EOF_COMMAND
+              ;;
+            architecture)
+              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
+              command<<'EOF'
+              pytest -s tests/core/test_exports.py -m architecture
+              EOF
+              EOF_COMMAND
+              ;;
+            links)
+              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
+              command<<'EOF'
+              python tests/scripts/check_links.py
+              EOF
+              EOF_COMMAND
+              ;;
+            '')
+              if [ -z "${{ inputs.run-command }}" ]; then
+                echo "Either 'task' or 'run-command' must be provided." >&2
+                exit 1
+              fi
+              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
+              command<<'EOF'
+              ${{ inputs.run-command }}
+              EOF
+              EOF_COMMAND
+              ;;
+            *)
+              echo "Unknown task '${{ inputs.task }}'. Use one of: lint, unit, architecture, links." >&2
+              exit 1
+              ;;
+          esac
+
       - name: Run command
         run: |
-          ${{ inputs.run-command }}
+          ${{ steps.resolve-command.outputs.command }}
