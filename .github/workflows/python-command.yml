@@ -86,46 +86,46 @@ jobs:
         run: |
           case "${{ inputs.task }}" in
             lint)
-              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
-              command<<'EOF'
-              ruff check bin/ltbox tests
-              ruff format --check bin/ltbox tests
-              mypy bin/ltbox tests --ignore-missing-imports
-              EOF
-              EOF_COMMAND
+              {
+                echo "command<<EOF"
+                echo "ruff check bin/ltbox tests"
+                echo "ruff format --check bin/ltbox tests"
+                echo "mypy bin/ltbox tests --ignore-missing-imports"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
               ;;
             unit)
-              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
-              command<<'EOF'
-              python -m compileall bin/ltbox
-              pytest -s tests/ -m "not integration and not architecture" --cov=bin/ltbox --cov-report=term-missing
-              EOF
-              EOF_COMMAND
+              {
+                echo "command<<EOF"
+                echo "python -m compileall bin/ltbox"
+                echo 'pytest -s tests/ -m "not integration and not architecture" --cov=bin/ltbox --cov-report=term-missing'
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
               ;;
             architecture)
-              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
-              command<<'EOF'
-              pytest -s tests/core/test_exports.py -m architecture
-              EOF
-              EOF_COMMAND
+              {
+                echo "command<<EOF"
+                echo "pytest -s tests/core/test_exports.py -m architecture"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
               ;;
             links)
-              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
-              command<<'EOF'
-              python tests/scripts/check_links.py
-              EOF
-              EOF_COMMAND
+              {
+                echo "command<<EOF"
+                echo "python tests/scripts/check_links.py"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
               ;;
             '')
               if [ -z "${{ inputs.run-command }}" ]; then
                 echo "Either 'task' or 'run-command' must be provided." >&2
                 exit 1
               fi
-              cat <<'EOF_COMMAND' >> "$GITHUB_OUTPUT"
-              command<<'EOF'
-              ${{ inputs.run-command }}
-              EOF
-              EOF_COMMAND
+              {
+                echo "command<<EOF"
+                printf '%s\n' "${{ inputs.run-command }}"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Unknown task '${{ inputs.task }}'. Use one of: lint, unit, architecture, links." >&2
