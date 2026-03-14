@@ -1,14 +1,15 @@
 import sys
+import pytest
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 from ltbox import downloader, i18n
 from tests.scripts import cache_fw
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "bin"))
-sys.path.insert(0, str(ROOT))
+BIN_PATH = ROOT / "bin"
+
+if str(BIN_PATH) not in sys.path:
+    sys.path.insert(0, str(BIN_PATH))
 
 
 def pytest_configure(config):
