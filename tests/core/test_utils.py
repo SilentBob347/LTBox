@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from ltbox import crypto, downloader, utils
+from ltbox.process_runner import CommandResult, CommandRunner, RunOptions
 
 
 class TestUtils:
@@ -22,14 +23,43 @@ class TestUtils:
     def test_update_check(self, cur, lat, exp):
         assert utils.is_update_available(cur, lat) == exp
 
-    @patch("ltbox.utils.subprocess.run")
-    def test_run_cmd(self, mock_run):
+    @patch("ltbox.process_runner.subprocess.run")
+    def test_run_cmd_capture(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["echo"], returncode=0, stdout="ok", stderr=""
         )
-        res = utils.run_command(["echo"], capture=True)
+        with pytest.deprecated_call():
+            res = utils.run_command(["echo"], capture=True)
         assert res.returncode == 0
         assert "ok" in res.stdout
+        assert res.combined_output == "ok"
+
+    @patch("ltbox.process_runner.subprocess.Popen")
+    def test_run_cmd_stream(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["line1\n", "line2\n"])
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        on_output = MagicMock()
+        result = CommandRunner().run(
+            ["echo"], options=RunOptions(stream=True), on_output=on_output
+        )
+
+        assert result.stdout == "line1\nline2\n"
+        assert result.stderr == ""
+        assert result.returncode == 0
+        assert result.combined_output == "line1\nline2\n"
+        assert on_output.call_count == 2
+
+    @patch("ltbox.process_runner.subprocess.run")
+    def test_run_cmd_failure(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["echo"], returncode=1, stdout="", stderr="boom"
+        )
+
+        with pytest.raises(subprocess.CalledProcessError):
+            CommandRunner().run(["echo"], options=RunOptions(capture=True, check=True))
 
     def test_pbkdf1(self):
         salt = b"1234567890123456"
@@ -76,8 +106,11 @@ class TestUtils:
         ],
     )
     def test_format_command_output(self, stdout, stderr, expected):
-        result = subprocess.CompletedProcess(
-            args=["cmd"], returncode=0, stdout=stdout, stderr=stderr
+        result = CommandResult(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=0,
+            combined_output=f"{stderr}{stdout}" if stderr else stdout,
         )
         assert utils.format_command_output(result) == expected
 

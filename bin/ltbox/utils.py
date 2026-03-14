@@ -1,10 +1,10 @@
 import json
 import os
 import shutil
-import subprocess
 import time
 import urllib.request
 import functools
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, List, Optional, Union
@@ -12,6 +12,7 @@ from typing import Any, Callable, Generator, Iterable, List, Optional, Union
 from . import constants as const
 from .i18n import get_string
 from .logger import get_logger
+from .process_runner import CommandResult, CommandRunner, RunOptions
 from .ui import ui
 
 logger = get_logger()
@@ -87,58 +88,6 @@ def wait_for_condition(
         time.sleep(interval)
 
 
-def _run_command(
-    command: Union[List[str], str],
-    shell: bool,
-    check: bool,
-    env: dict,
-    cwd: Optional[Union[str, Path]],
-    capture: bool,
-    on_output: Optional[Callable[[str], None]],
-) -> subprocess.CompletedProcess:
-    run_kwargs = _get_subprocess_kwargs(env, cwd)
-    if capture:
-        return subprocess.run(
-            command,
-            shell=shell,
-            check=check,
-            capture_output=True,
-            text=True,
-            **run_kwargs,
-        )
-
-    process = subprocess.Popen(
-        command,
-        shell=shell,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        **run_kwargs,
-    )
-
-    output_lines = []
-    if process.stdout:
-        for line in process.stdout:
-            if on_output is not None:
-                on_output(line)
-            else:
-                logger.info(line.rstrip())
-            output_lines.append(line)
-
-    process.wait()
-    returncode = process.returncode
-
-    if check and returncode != 0:
-        raise subprocess.CalledProcessError(
-            returncode, command, output="".join(output_lines)
-        )
-
-    return subprocess.CompletedProcess(
-        command, returncode, stdout="".join(output_lines), stderr=None
-    )
-
-
 def run_command(
     command: Union[List[str], str],
     shell: bool = False,
@@ -147,32 +96,28 @@ def run_command(
     capture: bool = False,
     cwd: Optional[Union[str, Path]] = None,
     on_output: Optional[Callable[[str], None]] = None,
-) -> subprocess.CompletedProcess:
+) -> CommandResult:
+    warnings.warn(
+        "utils.run_command is deprecated; use process_runner.CommandRunner.run instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     run_env = env if env is not None else _get_tool_env()
-
-    return _run_command(
-        command, shell, check, run_env, cwd, capture=capture, on_output=on_output
+    return CommandRunner().run(
+        command,
+        shell=shell,
+        options=RunOptions(
+            capture=capture,
+            stream=not capture,
+            check=check,
+            cwd=cwd,
+            env=run_env,
+        ),
+        on_output=on_output,
     )
 
 
-def _get_subprocess_kwargs(env: dict, cwd: Optional[Union[str, Path]]) -> dict:
-    run_env = env.copy()
-
-    if cwd:
-        resolved_cwd = str(Path(cwd).resolve())
-        run_env["TMPDIR"] = resolved_cwd
-        run_env["TEMP"] = resolved_cwd
-        run_env["TMP"] = resolved_cwd
-
-    return {
-        "encoding": "utf-8",
-        "errors": "ignore",
-        "env": run_env,
-        "cwd": cwd,
-    }
-
-
-def format_command_output(result: subprocess.CompletedProcess) -> str:
+def format_command_output(result: CommandResult) -> str:
     stdout = (result.stdout or "").strip()
     stderr = (result.stderr or "").strip()
     if stderr and stdout:
@@ -370,7 +315,7 @@ class ExternalTool:
         check: bool = True,
         cwd: Optional[Union[str, Path]] = None,
         **kwargs: Any,
-    ) -> subprocess.CompletedProcess:
+    ) -> CommandResult:
         cmd = self.base_cmd + [str(arg) for arg in args]
         return run_command(cmd, capture=capture, check=check, cwd=cwd, **kwargs)
 
