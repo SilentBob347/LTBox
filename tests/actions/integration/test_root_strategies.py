@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import pytest
 from ltbox import constants as const
-from ltbox.actions.root import FolkPatchStrategy, GkiRootStrategy, LkmRootStrategy
+from ltbox.actions.root_strategies import (
+    FolkPatchStrategy,
+    GkiRootStrategy,
+    LkmRootStrategy,
+)
 
 from .fixtures import (
     _copy_bundled_magiskboot,

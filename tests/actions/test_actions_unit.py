@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 from ltbox import constants as const
 from ltbox.actions import edl
 from ltbox.actions import xml as xml_action
-from ltbox.actions.root import GkiRootStrategy
+from ltbox.actions.root_strategies import GkiRootStrategy
 from ltbox.patch.avb import vbmeta_has_chain_partition
 
 
@@ -75,7 +75,9 @@ def test_xml_fallback(mock_env):
         ),
         (["rawprogram0.xml"], "rawprogram0.xml", "B"),
     ]
-    tmpl = """<?xml version=\"1.0\" ?><data><program label=\"{m}\" filename=\"\"/></data>"""
+    tmpl = (
+        """<xml version=\"1.0\" ><data><program label=\"{m}\" filename=\"\"/></data>"""
+    )
 
     for fnames, expected, marker in cases:
         if target.exists():
@@ -133,12 +135,15 @@ def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):
     (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
 
     with (
-        patch("ltbox.actions.root.process_boot_image_avb") as process_avb,
-        patch("ltbox.actions.root.vbmeta_has_chain_partition", return_value=False),
+        patch("ltbox.actions.root_strategies.process_boot_image_avb") as process_avb,
         patch(
-            "ltbox.actions.root.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.root_strategies.vbmeta_has_chain_partition",
+            return_value=False,
+        ),
+        patch(
+            "ltbox.actions.root_strategies.rebuild_vbmeta_with_chained_images"
         ) as rebuild_vbmeta,
-        patch("ltbox.actions.root.const.BASE_DIR", tmp_path),
+        patch("ltbox.actions.root_strategies.const.BASE_DIR", tmp_path),
     ):
         (tmp_path / const.FN_VBMETA_ROOT).write_bytes(b"new-vbmeta")
 
@@ -163,10 +168,13 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
 
     with (
-        patch("ltbox.actions.root.process_boot_image_avb") as process_avb,
-        patch("ltbox.actions.root.vbmeta_has_chain_partition", return_value=True),
+        patch("ltbox.actions.root_strategies.process_boot_image_avb") as process_avb,
         patch(
-            "ltbox.actions.root.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.root_strategies.vbmeta_has_chain_partition",
+            return_value=True,
+        ),
+        patch(
+            "ltbox.actions.root_strategies.rebuild_vbmeta_with_chained_images"
         ) as rebuild_vbmeta,
     ):
         final_boot = strategy.finalize_patch(patched_boot, output_dir, backup_dir)
