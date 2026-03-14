@@ -1,8 +1,9 @@
 import functools
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .errors import LTBoxError, ToolError
 from .i18n import get_string
@@ -12,6 +13,27 @@ from .utils import ui
 
 APP_DIR = Path(__file__).parent.resolve()
 BASE_DIR = APP_DIR.parent
+
+
+@dataclass(frozen=True)
+class TaskUIAdapter:
+    clear: Callable[[], None]
+    info: Callable[[str], None]
+    echo: Callable[[str], None]
+    error: Callable[[str], None]
+    box_output: Callable[[List[str]], None]
+    pause: Callable[[], None]
+
+
+def _default_ui_adapter() -> TaskUIAdapter:
+    return TaskUIAdapter(
+        clear=ui.clear,
+        info=ui.info,
+        echo=ui.echo,
+        error=ui.error,
+        box_output=lambda lines: ui.box_output(lines, err=True),
+        pause=lambda: input(get_string("press_enter_to_continue")),
+    )
 
 
 def _format_command_failure_messages(
@@ -30,35 +52,53 @@ def _format_command_failure_messages(
 
 
 @functools.singledispatch
-def _handle_task_error(error: BaseException, title: str) -> None:
+def _handle_task_error(
+    error: BaseException, title: str, ui_adapter: TaskUIAdapter
+) -> None:
     pass
 
 
 @_handle_task_error.register
-def _(error: LTBoxError, title: str) -> None:
-    ui.box_output([get_string("task_failed").format(title=title), str(error)], err=True)
+def _(error: LTBoxError, title: str, ui_adapter: TaskUIAdapter) -> None:
+    ui_adapter.box_output([get_string("task_failed").format(title=title), str(error)])
 
 
 @_handle_task_error.register
-def _(error: subprocess.CalledProcessError, title: str) -> None:
-    ui.box_output(_format_command_failure_messages(error), err=True)
+def _(
+    error: subprocess.CalledProcessError, title: str, ui_adapter: TaskUIAdapter
+) -> None:
+    ui_adapter.box_output(_format_command_failure_messages(error))
 
 
 @_handle_task_error.register(FileNotFoundError)
 @_handle_task_error.register(RuntimeError)
 @_handle_task_error.register(KeyError)
-def _(error: Exception, title: str) -> None:
-    ui.box_output([get_string("unexpected_error").format(e=error)], err=True)
+def _(error: Exception, title: str, ui_adapter: TaskUIAdapter) -> None:
+    ui_adapter.box_output([get_string("unexpected_error").format(e=error)])
 
 
 @_handle_task_error.register
-def _(error: SystemExit, title: str) -> None:
-    ui.error(get_string("process_halted"))
+def _(error: SystemExit, title: str, ui_adapter: TaskUIAdapter) -> None:
+    ui_adapter.error(get_string("process_halted"))
 
 
 @_handle_task_error.register
-def _(error: KeyboardInterrupt, title: str) -> None:
-    ui.error(get_string("process_cancelled"))
+def _(error: KeyboardInterrupt, title: str, ui_adapter: TaskUIAdapter) -> None:
+    ui_adapter.error(get_string("process_cancelled"))
+
+
+def _build_final_kwargs(
+    base_kwargs: Dict[str, Any],
+    extra_kwargs: Optional[Dict[str, Any]],
+    require_dev: bool,
+    dev: Any,
+) -> Dict[str, Any]:
+    final_kwargs = base_kwargs.copy()
+    if extra_kwargs:
+        final_kwargs.update(extra_kwargs)
+    if require_dev:
+        final_kwargs["dev"] = dev
+    return final_kwargs
 
 
 def run_task(
@@ -66,8 +106,11 @@ def run_task(
     dev: Any,
     registry: CommandRegistry,
     extra_kwargs: Optional[Dict[str, Any]] = None,
+    ui_adapter: Optional[TaskUIAdapter] = None,
 ):
-    ui.clear()
+    ui_adapter = ui_adapter or _default_ui_adapter()
+
+    ui_adapter.clear()
 
     cmd_info = registry.get(command)
     if not cmd_info:
@@ -94,25 +137,28 @@ def run_task(
                 dev.reset_task_state()
 
             if not is_workflow:
-                ui.info(get_string("logging_enabled").format(log_file=log_filename))
-                ui.info(get_string("logging_command").format(command=command))
+                ui_adapter.info(
+                    get_string("logging_enabled").format(log_file=log_filename)
+                )
+                ui_adapter.info(get_string("logging_command").format(command=command))
 
-            final_kwargs = base_kwargs.copy()
-
-            if extra_kwargs:
-                final_kwargs.update(extra_kwargs)
-
-            if require_dev:
-                final_kwargs["dev"] = dev
+            final_kwargs = _build_final_kwargs(
+                base_kwargs=base_kwargs,
+                extra_kwargs=extra_kwargs,
+                require_dev=require_dev,
+                dev=dev,
+            )
 
             result = func(**final_kwargs)
 
             if result_handler:
                 result_handler(result)
             elif isinstance(result, str) and result:
-                ui.echo(result)
+                ui_adapter.echo(result)
             elif result:
-                ui.echo(get_string("act_unhandled_success_result").format(res=result))
+                ui_adapter.echo(
+                    get_string("act_unhandled_success_result").format(res=result)
+                )
 
     except (
         LTBoxError,
@@ -126,7 +172,7 @@ def run_task(
         SystemExit,
         KeyboardInterrupt,
     ) as e:
-        _handle_task_error(e, title)
+        _handle_task_error(e, title, ui_adapter)
     finally:
         if dev and hasattr(dev, "adb"):
             dev.adb.force_kill_server()
@@ -134,7 +180,9 @@ def run_task(
             dev.fastboot.force_kill_server()
 
         if not is_workflow:
-            ui.info(get_string("logging_finished").format(log_file=log_filename))
+            ui_adapter.info(
+                get_string("logging_finished").format(log_file=log_filename)
+            )
 
-        ui.echo("")
-        input(get_string("press_enter_to_continue"))
+        ui_adapter.echo("")
+        ui_adapter.pause()

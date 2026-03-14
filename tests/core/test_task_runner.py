@@ -6,7 +6,7 @@ import pytest
 
 from ltbox.registry import CommandRegistry
 from ltbox.errors import ToolError
-from ltbox.task_runner import run_task
+from ltbox.task_runner import TaskUIAdapter, _build_final_kwargs, run_task
 from tests.helpers import make_device_mock
 
 
@@ -59,3 +59,36 @@ def test_run_task_unhandled_exception_bubbles_up():
 
     dev.adb.force_kill_server.assert_called_once()
     dev.fastboot.force_kill_server.assert_called_once()
+
+
+def test_build_final_kwargs_merges_extra_and_dev_injection():
+    kwargs = _build_final_kwargs(
+        base_kwargs={"a": 1},
+        extra_kwargs={"b": 2},
+        require_dev=True,
+        dev="dev-obj",
+    )
+
+    assert kwargs == {"a": 1, "b": 2, "dev": "dev-obj"}
+
+
+def test_run_task_accepts_custom_ui_adapter_without_input_patch():
+    registry = CommandRegistry()
+    registry.add("ok", lambda: "done", "OK Task", require_dev=False)
+
+    events = []
+    test_ui = TaskUIAdapter(
+        clear=lambda: events.append("clear"),
+        info=lambda msg: events.append(("info", msg)),
+        echo=lambda msg: events.append(("echo", msg)),
+        error=lambda msg: events.append(("error", msg)),
+        box_output=lambda lines: events.append(("box", tuple(lines))),
+        pause=lambda: events.append("pause"),
+    )
+
+    with patch("ltbox.task_runner.logging_context", return_value=nullcontext()):
+        run_task("ok", None, registry, ui_adapter=test_ui)
+
+    assert "clear" in events
+    assert ("echo", "done") in events
+    assert "pause" in events
