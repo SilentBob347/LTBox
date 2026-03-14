@@ -22,6 +22,16 @@ on:
         required: false
         type: string
         default: ''
+      default-pythonpath:
+        description: Default PYTHONPATH written to GITHUB_ENV before running commands
+        required: false
+        type: string
+        default: 'bin'
+      default-pythonunbuffered:
+        description: Default PYTHONUNBUFFERED written to GITHUB_ENV before running commands
+        required: false
+        type: string
+        default: '1'
 
 jobs:
   run:
@@ -45,6 +55,14 @@ jobs:
         uses: ./.github/actions/setup-python-deps
         with:
           python-version: ${{ inputs.python-version }}
+
+      - name: Apply standardized Python environment defaults
+        shell: bash
+        run: |
+          {
+            echo "PYTHONUNBUFFERED=${{ inputs.default-pythonunbuffered }}"
+            echo "PYTHONPATH=${{ inputs.default-pythonpath }}"
+          } >> "$GITHUB_ENV"
 
       - name: Apply extra environment variables
         if: ${{ inputs.extra-env != '' }}

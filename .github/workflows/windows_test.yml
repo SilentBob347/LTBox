@@ -23,9 +23,6 @@ jobs:
     with:
       runner: windows-latest
       python-version: '3.14'
-      extra-env: |
-        PYTHONUNBUFFERED=1
-        PYTHONPATH=bin
       run-command: |
         python -m compileall bin/ltbox
         pytest -s tests/ -m "not integration and not architecture" --cov=bin/ltbox --cov-report=term-missing
@@ -35,9 +32,6 @@ jobs:
     with:
       runner: ubuntu-latest
       python-version: '3.14'
-      extra-env: |
-        PYTHONUNBUFFERED=1
-        PYTHONPATH=bin
       run-command: |
         pytest -s tests/core/test_exports.py -m architecture
 
