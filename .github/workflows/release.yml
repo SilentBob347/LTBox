@@ -22,12 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Resolve Tag Name
-        id: resolve-tag
-        run: ./.github/scripts/release/resolve-tag.ps1 -Tag "${{ github.ref_name }}"
-
-      - name: Verify Version Match
-        run: ./.github/scripts/release/verify-version-match.ps1 -TagName "$env:TAG_NAME"
+      - name: Run release tag preflight
+        uses: ./.github/actions/release-preflight
+        with:
+          tag: ${{ github.ref_name }}
 
       - name: Preflight Summary
         run: |
@@ -46,12 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Resolve Tag Name
-        id: resolve-tag
-        run: ./.github/scripts/release/resolve-tag.ps1 -Tag "${{ github.ref_name }}"
-
-      - name: Verify Version Match
-        run: ./.github/scripts/release/verify-version-match.ps1 -TagName "$env:TAG_NAME"
+      - name: Run release tag preflight
+        uses: ./.github/actions/release-preflight
+        with:
+          tag: ${{ github.ref_name }}
 
       - name: Setup Environment & FW Cache
         uses: ./.github/actions/setup-fw-env
