@@ -18,14 +18,15 @@ $requiredTools = @('fh_loader.exe', 'QSaharaServer.exe')
 $copied = @()
 
 foreach ($tool in $requiredTools) {
-    $matches = Get-ChildItem -Path $ExtractRoot -Recurse -Filter $tool -File
-    if (-not $matches -or $matches.Count -eq 0) {
+    $foundFiles = @(Get-ChildItem -Path $ExtractRoot -Recurse -Filter $tool -File)
+
+    if ($foundFiles.Count -eq 0) {
         throw "[release][tools] Required tool not found in cache: $tool"
     }
 
-    foreach ($match in $matches) {
-        Copy-Item -Path $match.FullName -Destination $ToolsDir -Force
-        $copied += Join-Path $ToolsDir $match.Name
+    foreach ($file in $foundFiles) {
+        Copy-Item -Path $file.FullName -Destination $ToolsDir -Force
+        $copied += Join-Path $ToolsDir $file.Name
     }
 }
 
