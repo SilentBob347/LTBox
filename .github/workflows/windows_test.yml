@@ -55,6 +55,7 @@ jobs:
       TEST_FW_PASSWORD: ${{ secrets.TEST_FW_PASSWORD }}
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "bin"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - uses: actions/checkout@v6
