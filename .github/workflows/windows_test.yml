@@ -10,12 +10,17 @@ on:
       - '**'
   pull_request:
   workflow_call:
+    inputs:
+      force_run:
+        type: boolean
+        required: false
+        default: true
 
 jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      should_run: ${{ github.event_name == 'workflow_call' && 'true' || steps.filter.outputs.python_ci }}
+      should_run: ${{ inputs.force_run == true || steps.filter.outputs.python_ci == 'true' }}
     steps:
       - uses: actions/checkout@v6
         if: ${{ github.event_name != 'workflow_call' }}
