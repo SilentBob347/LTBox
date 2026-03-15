@@ -413,7 +413,10 @@ def main_loop(
     def _handler(action: str) -> MenuReturn:
         action_func = menu_handlers.get(action)
         if action_func:
-            return action_func()
+            result = action_func()
+            if result == LoopAction.BACK:
+                return None
+            return result
 
         extras = build_task_kwargs(action, state)
         run_task(action, dev, registry, extra_kwargs=extras)
