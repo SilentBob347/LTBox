@@ -58,7 +58,7 @@ Connects to the device in ADB mode and disables system update packages to preven
 
 **`5. Root device`**
 Opens the root selection menu:
-* **LKM Mode:** Patches `init_boot.img` & `vbmeta.img` (Recommended for newer kernels). Supports KernelSU Next, SukiSU Ultra, ReSukiSU and FolkPatch.
+* **LKM Mode:** Patches `init_boot.img` & `vbmeta.img`.
 * **GKI Mode:** Patches `boot.img` by replacing its kernel with [GKI_KernelSU_SUSFS](https://github.com/WildKernels/GKI_KernelSU_SUSFS).
 
 **`6. Unroot device`**

@@ -58,7 +58,7 @@
 
 **`5. Root 设备`**
 打开 root 提权方式选择菜单：
-* **LKM Mode:** 修补 `init_boot.img` 和 `vbmeta.img` （推荐用于较新的内核）。支持 KernelSU Next、SukiSU Ultra、ReSukiSU 和 FolkPatch。
+* **LKM Mode:** 修补 `init_boot.img` 和 `vbmeta.img` 。
 * **GKI Mode:** 通过将 `boot.img` 的内核替换为 `GKI_KernelSU_SUSFS` 来修补 `boot.img` 。
 
 **`6. 设备 Unroot`**
