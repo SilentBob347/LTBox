@@ -692,19 +692,23 @@ def download_nightly_artifacts(
         raise e
 
 
-def download_ksu_manager_release(target_dir: Path) -> None:
+def download_ksu_manager_release(
+    target_dir: Path, repo: str = "", tag: str = ""
+) -> None:
     utils.ui.echo(get_string("dl_ksu_downloading"))
     target_file = target_dir / "manager.apk"
-    repo_url = f"https://github.com/{const.KSU_APK_REPO}"
+
+    repo_url = f"https://github.com/{repo or const.KSU_APK_REPO}"
+    resolved_tag = tag or const.KSU_APK_TAG
 
     try:
         _download_and_move_github_asset(
-            repo_url, const.KSU_APK_TAG, ".*spoofed.*\\.apk", target_file
+            repo_url, resolved_tag, ".*spoofed.*\\.apk", target_file
         )
     except ToolError:
         try:
             _download_and_move_github_asset(
-                repo_url, const.KSU_APK_TAG, ".*\\.apk", target_file
+                repo_url, resolved_tag, ".*\\.apk", target_file
             )
         except ToolError as e:
             utils.ui.error(get_string("dl_err_ksu_download").format(e=e))
@@ -713,13 +717,13 @@ def download_ksu_manager_release(target_dir: Path) -> None:
     utils.ui.echo(get_string("dl_ksu_success"))
 
 
-def download_ksuinit_release(target_path: Path) -> None:
+def download_ksuinit_release(target_path: Path, repo: str = "", tag: str = "") -> None:
     if target_path.exists():
         target_path.unlink()
 
-    owner_repo = _get_owner_repo(f"https://github.com/{const.KSU_APK_REPO}")
-    tag = _resolve_release_tag(owner_repo, const.KSU_APK_TAG)
-    workflow_id = _get_workflow_run_id_for_tag(owner_repo, tag)
+    owner_repo = _get_owner_repo(f"https://github.com/{repo or const.KSU_APK_REPO}")
+    resolved_tag = _resolve_release_tag(owner_repo, tag or const.KSU_APK_TAG)
+    workflow_id = _get_workflow_run_id_for_tag(owner_repo, resolved_tag)
     base_url = f"https://nightly.link/{owner_repo}/actions/runs/{workflow_id}"
     temp_zip = target_path.parent / "ksuinit.zip"
 
@@ -741,7 +745,9 @@ def download_ksuinit_release(target_path: Path) -> None:
             temp_zip.unlink()
 
 
-def get_lkm_kernel_release(target_path: Path, kernel_version: str) -> None:
+def get_lkm_kernel_release(
+    target_path: Path, kernel_version: str, repo: str = "", tag: str = ""
+) -> None:
     if not kernel_version:
         raise ToolError(get_string("err_req_kernel_ver_lkm"))
 
@@ -752,8 +758,8 @@ def get_lkm_kernel_release(target_path: Path, kernel_version: str) -> None:
 
     try:
         _download_and_move_github_asset(
-            f"https://github.com/{const.KSU_APK_REPO}",
-            const.KSU_APK_TAG,
+            f"https://github.com/{repo or const.KSU_APK_REPO}",
+            tag or const.KSU_APK_TAG,
             asset_pattern_regex,
             target_path,
         )

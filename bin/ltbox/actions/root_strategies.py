@@ -680,11 +680,15 @@ class LkmRootStrategy(InitBootRootStrategy):
         else:
             utils.recreate_dir(self.staging_dir)
 
-            downloader.download_ksu_manager_release(const.TOOLS_DIR)
-            downloader.download_ksuinit_release(self.staging_dir / "init")
+            tag = self.repo_config.get("tag", "latest")
+
+            downloader.download_ksu_manager_release(const.TOOLS_DIR, repo=repo, tag=tag)
+            downloader.download_ksuinit_release(
+                self.staging_dir / "init", repo=repo, tag=tag
+            )
             if kernel_version:
                 downloader.get_lkm_kernel_release(
-                    self.staging_dir / "kernelsu.ko", kernel_version
+                    self.staging_dir / "kernelsu.ko", kernel_version, repo=repo, tag=tag
                 )
             return True
 
