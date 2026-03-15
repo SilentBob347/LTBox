@@ -8,7 +8,7 @@ from .. import device, utils
 from ..i18n import get_string
 from ..menu import TerminalMenu
 from ..patch.avb import (
-    _apply_hash_footer,
+    _apply_avb_integrity_footer,
     extract_image_avb_info,
     rebuild_vbmeta_with_chained_images,
 )
@@ -56,7 +56,7 @@ def rebuild_vbmeta_for_modified_images(
                         get_string("img_err_missing_key").format(key=key, name=src.name)
                     )
 
-        _apply_hash_footer(dst, image_info, None)
+        _apply_avb_integrity_footer(dst, image_info, None)
         rebuilt_inputs.append(dst)
 
     rebuilt_vbmeta = const.OUTPUT_DIR / const.FN_VBMETA
@@ -180,7 +180,7 @@ def convert_region_images(
                     )
                 )
 
-    _apply_hash_footer(vendor_boot_prc, vendor_boot_info, None)
+    _apply_avb_integrity_footer(vendor_boot_prc, vendor_boot_info, None)
 
     vbmeta_img = const.BASE_DIR / const.FN_VBMETA
     rebuild_vbmeta_with_chained_images(
@@ -421,7 +421,7 @@ def rescue_after_ota(
         if "algorithm" not in vb_info:
             vb_info["algorithm"] = "SHA256_RSA4096"
 
-        _apply_hash_footer(dest_vb, vb_info, None)
+        _apply_avb_integrity_footer(dest_vb, vb_info, None)
 
         dest_vbmeta = const.OUTPUT_DIR / f"{vbmeta_target}.img"
 

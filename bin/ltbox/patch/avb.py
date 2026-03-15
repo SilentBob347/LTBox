@@ -120,7 +120,7 @@ def vbmeta_has_chain_partition(vbmeta_path: Path, partition_name: str) -> bool:
     return partition_name in descriptors
 
 
-def _apply_hash_footer(
+def _apply_avb_integrity_footer(
     image_path: Path,
     image_info: Dict[str, Any],
     key_file: Optional[Path],
@@ -138,7 +138,7 @@ def _apply_hash_footer(
     )
 
     avbtool = utils.AvbToolWrapper()
-    add_footer_cmd = [
+    apply_footer_cmd = [
         "add_hash_footer",
         "--image",
         image_path,
@@ -156,17 +156,17 @@ def _apply_hash_footer(
     ]
 
     if key_file:
-        add_footer_cmd.extend(["--key", key_file])
+        apply_footer_cmd.extend(["--key", key_file])
 
     if "flags" in image_info:
-        add_footer_cmd.extend(["--flags", image_info.get("flags", "0")])
+        apply_footer_cmd.extend(["--flags", image_info.get("flags", "0")])
         utils.ui.info(
             get_string("img_footer_restore_flags").format(
                 flags=image_info.get("flags", "0")
             )
         )
 
-    avbtool.run(*add_footer_cmd)
+    avbtool.run(*apply_footer_cmd)
     utils.ui.info(get_string("img_footer_success").format(name=image_path.name))
 
 
@@ -199,7 +199,7 @@ def patch_chained_image_rollback(
 
         shutil.copy(new_image_path, patched_image_path)
 
-        _apply_hash_footer(
+        _apply_avb_integrity_footer(
             image_path=patched_image_path,
             image_info=info,
             key_file=key_file,
@@ -322,7 +322,7 @@ def process_boot_image_avb(
         else:
             utils.ui.info(get_string("img_warn_no_sig_key"))
 
-        _apply_hash_footer(
+        _apply_avb_integrity_footer(
             image_path=image_to_process, image_info=boot_info, key_file=key_file
         )
     else:
@@ -332,7 +332,7 @@ def process_boot_image_avb(
             )
         )
 
-        add_footer_cmd = [
+        apply_footer_cmd = [
             str(const.PYTHON_EXE),
             str(const.AVBTOOL_PY),
             "add_hash_footer",
@@ -352,14 +352,14 @@ def process_boot_image_avb(
         ]
 
         if "flags" in boot_info:
-            add_footer_cmd.extend(["--flags", boot_info.get("flags", "0")])
+            apply_footer_cmd.extend(["--flags", boot_info.get("flags", "0")])
             utils.ui.info(
                 get_string("img_footer_restore_flags").format(
                     flags=boot_info.get("flags", "0")
                 )
             )
 
-        utils.run_command(add_footer_cmd)
+        utils.run_command(apply_footer_cmd)
         utils.ui.info(
             get_string("img_footer_success").format(name=image_to_process.name)
         )

@@ -83,7 +83,7 @@ Opens the advanced menu for individual steps, manual control, and troubleshootin
 Individual steps for manual control and troubleshooting.
 
 **`1. Convert ROM Region to PRC/ROW`**
-Converts `vendor_boot.img` and remakes `vbmeta.img` based on the selected region settings (PRC or ROW).
+Converts `vendor_boot.img` and rebuilds `vbmeta.img` with updated verification metadata based on the selected region settings (PRC or ROW).
 
 **`2. Dump devinfo/persist from device`**
 Dumps `devinfo` and `persist` partitions from the device in EDL mode to the `backup/` folder.
@@ -95,10 +95,10 @@ Patches the country code (e.g., "CN", "KR") in `devinfo.img`/`persist.img`.
 Flashes the patched images to the device via EDL.
 
 **`5. Detect Anti-Rollback from device`**
-Dumps `boot` and `vbmeta_system` to check their rollback indices against the new ROM.
+Dumps `boot` and `vbmeta_system` to analyze their AVB rollback indices (security versions) against the new ROM.
 
 **`6. Patch rollback indices in ROM`**
-Synchronizes the new ROM's rollback index with the device's index to bypass anti-rollback protection.
+Synchronizes the new ROM's AVB rollback index with the device's index to bypass anti-rollback protection.
 
 **`7. Write Anti-Anti-Rollback patched image`**
 Flashes the ARB-patched images to the device.

@@ -601,7 +601,7 @@ def sign_and_flash_twrp(dev: device.DeviceController) -> None:
 
         root_ui.echo(get_string("act_sign_twrp_start"))
 
-        from ..patch.avb import _apply_hash_footer, extract_image_avb_info
+        from ..patch.avb import _apply_avb_integrity_footer, extract_image_avb_info
 
         rec_info = extract_image_avb_info(dumped_recovery)
 
@@ -626,7 +626,7 @@ def sign_and_flash_twrp(dev: device.DeviceController) -> None:
             capture_output=True,
         )
 
-        _apply_hash_footer(
+        _apply_avb_integrity_footer(
             image_path=final_twrp, image_info=rec_info, key_file=key_file
         )
         root_ui.echo(get_string("act_sign_twrp_ok"))

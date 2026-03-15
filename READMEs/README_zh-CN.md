@@ -83,7 +83,7 @@
 用于手动控制和故障排除的各个步骤。
 
 **`1. 为中国版 (PRC) / 全球版 (ROW) 设备更改固件区域`**
-根据选定的区域设置（PRC 或 ROW）转换 `vendor_boot.img` 并重建 `vbmeta.img` 。
+根据选择的区域设置（PRC 或 ROW）转换 `vendor_boot.img`，并使用更新的验证元数据重建 `vbmeta.img`。
 
 **`2. 从设备导出 devinfo/persist`**
 将 EDL 模式下设备的 `devinfo` 和 `persist` 分区转储到 `backup/` 文件夹。
@@ -95,10 +95,10 @@
 通过 EDL 将修补后的镜像刷写到设备。
 
 **`5. 从设备检测防回滚状态`**
-转储 `boot` 和 `vbmeta_system` ，以检查它们的回滚索引是否与新的 ROM 一致。
+提取 `boot` 和 `vbmeta_system`，以分析其与新 ROM 相比的 AVB 回滚索引。
 
 **`6. 在 ROM 中修补回滚索引`**
-将新 ROM 的回滚索引与设备的索引同步，以绕过防回滚保护。
+将新 ROM 的 AVB 回滚索引与设备的索引同步，以绕过防回滚保护。
 
 **`7. 将防回滚修补后的镜像写入设备`**
 将经过 ARB 修补的镜像文件刷入设备。
