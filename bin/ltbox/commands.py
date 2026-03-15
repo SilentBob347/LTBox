@@ -98,6 +98,11 @@ def _build_command_definitions() -> List[CommandDefinition]:
             title=get_string("task_title_unroot"),
         ),
         CommandDefinition(
+            name="rebuild_vbmeta_for_modified_images",
+            func=actions.rebuild_vbmeta_for_modified_images,
+            title=get_string("task_title_rebuild_vbmeta_for_modified_images"),
+        ),
+        CommandDefinition(
             name="sign_and_flash_twrp",
             func=actions.sign_and_flash_twrp,
             title=get_string("task_title_rec_flash"),

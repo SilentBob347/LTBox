@@ -177,6 +177,12 @@ def get_advanced_menu_data(target_region: str) -> List[MenuItem]:
             "option",
             key="13",
             text=lambda: get_string("menu_adv_13"),
+            action="rebuild_vbmeta_for_modified_images",
+        ),
+        MenuSpec(
+            "option",
+            key="14",
+            text=lambda: get_string("menu_adv_14"),
             action="sign_and_flash_twrp",
         ),
         MenuSpec("separator"),

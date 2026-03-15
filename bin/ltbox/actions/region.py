@@ -14,6 +14,90 @@ from ..patch.avb import (
 )
 from ..patch.region import detect_country_codes, edit_vendor_boot, patch_country_codes
 from . import edl
+from .system import detect_active_slot_robust
+
+
+def rebuild_vbmeta_for_modified_images(
+    dev: device.DeviceController,
+    on_log: Callable[[str], None] = lambda s: None,
+) -> None:
+    on_log(get_string("act_wait_vbmeta_rebuild_images"))
+
+    const.IMAGE_DIR.mkdir(exist_ok=True)
+
+    vbmeta_src = const.IMAGE_DIR / const.FN_VBMETA
+    candidate_sources = [
+        const.IMAGE_DIR / "dtbo.img",
+        const.IMAGE_DIR / const.FN_INIT_BOOT,
+        const.IMAGE_DIR / const.FN_VENDOR_BOOT,
+    ]
+
+    if not vbmeta_src.exists() or not any(img.exists() for img in candidate_sources):
+        raise FileNotFoundError(get_string("act_err_vbmeta_rebuild_files_missing"))
+
+    selected_sources = [img for img in candidate_sources if img.exists()]
+
+    if const.OUTPUT_DIR.exists():
+        shutil.rmtree(const.OUTPUT_DIR)
+    const.OUTPUT_DIR.mkdir(exist_ok=True)
+
+    rebuilt_inputs: List[Path] = []
+    for src in selected_sources:
+        dst = const.OUTPUT_DIR / src.name
+        shutil.copy(src, dst)
+
+        image_info = extract_image_avb_info(src)
+        for key in ["partition_size", "name", "rollback", "salt", "algorithm"]:
+            if key not in image_info:
+                if key == "partition_size" and "data_size" in image_info:
+                    image_info["partition_size"] = image_info["data_size"]
+                else:
+                    raise KeyError(
+                        get_string("img_err_missing_key").format(key=key, name=src.name)
+                    )
+
+        _apply_hash_footer(dst, image_info, None)
+        rebuilt_inputs.append(dst)
+
+    rebuilt_vbmeta = const.OUTPUT_DIR / const.FN_VBMETA
+    rebuild_vbmeta_with_chained_images(
+        output_path=rebuilt_vbmeta,
+        original_vbmeta_path=vbmeta_src,
+        chained_images=rebuilt_inputs,
+    )
+
+    on_log(
+        get_string("act_vbmeta_rebuild_complete").format(
+            images=", ".join(img.name for img in rebuilt_inputs)
+        )
+    )
+
+    if (
+        utils.ui.prompt(get_string("prompt_flash_image_folder_confirm")).strip().lower()
+        != "y"
+    ):
+        return
+
+    if not dev.skip_adb:
+        dev.adb.wait_for_device()
+
+    active_slot = ""
+    try:
+        active_slot = detect_active_slot_robust(dev) or ""
+    except Exception:
+        active_slot = ""
+
+    on_log(get_string("rescue_reboot_edl"))
+    dev.adb.reboot("edl")
+
+    flash_targets = [
+        (Path(img_path).stem, img_path)
+        for img_path in rebuilt_inputs + [rebuilt_vbmeta]
+    ]
+    with dev.edl_session(auto_reset=True, reset_msg_key="act_reset_sys") as port:
+        for base_target, image_path in flash_targets:
+            target = f"{base_target}_{active_slot}" if active_slot else base_target
+            edl.flash_partition_target(dev, port, target, image_path)
 
 
 def convert_region_images(

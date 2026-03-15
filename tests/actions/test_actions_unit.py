@@ -1,8 +1,12 @@
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ltbox import constants as const
+from ltbox import menu_data
 from ltbox.actions import edl
+from ltbox.actions import region
 from ltbox.actions import xml as xml_action
 from ltbox.actions.root_strategies import GkiRootStrategy
 from ltbox.patch.avb import vbmeta_has_chain_partition
@@ -182,3 +186,28 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     process_avb.assert_called_once()
     rebuild_vbmeta.assert_not_called()
     assert not (output_dir / const.FN_VBMETA).exists()
+
+
+def test_advanced_menu_option_13_rebuilds_vbmeta_and_14_is_recovery():
+    menu_items = menu_data.get_advanced_menu_data("ROW")
+    options = {item.key: item for item in menu_items if item.item_type == "option"}
+
+    assert options["13"].action == "rebuild_vbmeta_for_modified_images"
+    assert options["14"].action == "sign_and_flash_twrp"
+
+
+def test_rebuild_vbmeta_for_modified_images_requires_vbmeta_and_one_image(tmp_path):
+    image_dir = tmp_path / "image"
+    output_dir = tmp_path / "output"
+    image_dir.mkdir()
+
+    with patch.multiple(
+        "ltbox.actions.region.const",
+        IMAGE_DIR=image_dir,
+        OUTPUT_DIR=output_dir,
+        FN_VBMETA="vbmeta.img",
+        FN_INIT_BOOT="init_boot.img",
+        FN_VENDOR_BOOT="vendor_boot.img",
+    ):
+        with pytest.raises(FileNotFoundError):
+            region.rebuild_vbmeta_for_modified_images(MagicMock())

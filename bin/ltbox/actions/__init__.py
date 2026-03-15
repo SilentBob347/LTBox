@@ -12,7 +12,12 @@ from .edl import (
     flash_partitions,
     write_anti_rollback,
 )
-from .region import convert_region_images, edit_devinfo_persist, rescue_after_ota
+from .region import (
+    convert_region_images,
+    edit_devinfo_persist,
+    rebuild_vbmeta_for_modified_images,
+    rescue_after_ota,
+)
 from .root import (
     patch_root_image_file,
     patch_root_image_file_and_flash,
