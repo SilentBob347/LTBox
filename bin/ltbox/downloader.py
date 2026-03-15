@@ -836,8 +836,8 @@ def download_kptools(target_dir: Path):
     utils.ui.echo(get_string("dl_kptools_ready"))
 
 
-def download_folkpatch_release(target_dir: Path, repo: str = "", tag: str = "latest"):
-    utils.ui.echo(get_string("dl_folkpatch_stable_downloading"))
+def download_apatch_release(target_dir: Path, repo: str = "", tag: str = "latest"):
+    utils.ui.echo(get_string("dl_apatch_stable_downloading"))
     apk_path = target_dir / "FolkPatch.apk"
     _download_and_move_github_asset(
         repo or const.FOLKPATCH_REPO,
@@ -845,12 +845,12 @@ def download_folkpatch_release(target_dir: Path, repo: str = "", tag: str = "lat
         r".*\.apk$",
         apk_path,
     )
-    _extract_folkpatch_kpimg(apk_path, target_dir)
+    _extract_apatch_kpimg(apk_path, target_dir)
 
 
-def download_folkpatch_nightly(workflow_id: str, target_dir: Path, repo: str = ""):
+def download_apatch_nightly(workflow_id: str, target_dir: Path, repo: str = ""):
     utils.ui.echo(
-        get_string("dl_folkpatch_nightly_downloading").format(workflow_id=workflow_id)
+        get_string("dl_apatch_nightly_downloading").format(workflow_id=workflow_id)
     )
     repo = repo or const.FOLKPATCH_REPO
     artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
@@ -860,7 +860,7 @@ def download_folkpatch_nightly(workflow_id: str, target_dir: Path, repo: str = "
     )
     if not target_artifact:
         raise ToolError(
-            get_string("dl_err_folkpatch_artifact_missing").format(
+            get_string("dl_err_apatch_artifact_missing").format(
                 workflow_id=workflow_id, artifacts=artifact_names
             )
         )
@@ -876,25 +876,25 @@ def download_folkpatch_nightly(workflow_id: str, target_dir: Path, repo: str = "
         with zipfile.ZipFile(temp_zip, "r") as zf:
             apk_member = next((m for m in zf.namelist() if m.endswith(".apk")), None)
             if not apk_member:
-                raise ToolError(get_string("dl_err_folkpatch_apk_missing_in_nightly"))
+                raise ToolError(get_string("dl_err_apatch_apk_missing_in_nightly"))
             with zf.open(apk_member) as src, open(apk_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     finally:
         if temp_zip.exists():
             temp_zip.unlink()
 
-    _extract_folkpatch_kpimg(apk_path, target_dir)
+    _extract_apatch_kpimg(apk_path, target_dir)
 
 
-def _extract_folkpatch_kpimg(apk_path: Path, target_dir: Path):
+def _extract_apatch_kpimg(apk_path: Path, target_dir: Path):
     kpimg_path = target_dir / "kpimg"
     with zipfile.ZipFile(apk_path, "r") as zf:
         try:
             with zf.open("assets/kpimg") as src, open(kpimg_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            utils.ui.echo(get_string("dl_folkpatch_kpimg_extracted"))
+            utils.ui.echo(get_string("dl_apatch_kpimg_extracted"))
         except KeyError:
-            raise ToolError(get_string("dl_err_folkpatch_kpimg_missing"))
+            raise ToolError(get_string("dl_err_apatch_kpimg_missing"))
 
     manager_apk = const.TOOLS_DIR / "manager.apk"
     shutil.copy(apk_path, manager_apk)

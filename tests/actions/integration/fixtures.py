@@ -87,11 +87,11 @@ def _setup_gki_context(ctx: RootSetupContext) -> None:
     shutil.copy(ctx["boot_img"], ctx["base_dir"] / "boot.bak.img")
 
 
-def _setup_folkpatch_context(ctx: RootSetupContext) -> None:
+def _setup_apatch_context(ctx: RootSetupContext) -> None:
     shutil.copy(ctx["boot_img"], ctx["work_dir"] / "boot.img")
     vbmeta_img = ctx["vbmeta_img"]
     if vbmeta_img is None:
-        pytest.fail("FolkPatch requires vbmeta image in setup context")
+        pytest.fail("APatch requires vbmeta image in setup context")
     shutil.copy(vbmeta_img, ctx["base_dir"] / "vbmeta.bak.img")
     shutil.copy(ctx["boot_img"], ctx["base_dir"] / "boot.bak.img")
 

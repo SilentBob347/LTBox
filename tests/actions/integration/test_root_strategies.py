@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from ltbox import constants as const
 from ltbox.actions.root_strategies import (
-    FolkPatchStrategy,
+    APatchStrategy,
     GkiRootStrategy,
     LkmRootStrategy,
 )
@@ -14,7 +14,7 @@ from .fixtures import (
     _copy_bundled_magiskboot,
     _prepare_mock_dirs,
     _run_patch_with_fail_context,
-    _setup_folkpatch_context,
+    _setup_apatch_context,
     _setup_gki_context,
     extract_kernel_version_from_img,
 )
@@ -40,11 +40,11 @@ pytestmark = pytest.mark.integration
         ),
         pytest.param(
             "FOLKPATCH",
-            FolkPatchStrategy,
+            APatchStrategy,
             "OUTPUT_ROOT_DIR",
             "[INFO] [FOLKPATCH] Downloading resources (kptools, APK)...",
-            "Failed to download FolkPatch resources",
-            _setup_folkpatch_context,
+            "Failed to download APatch family resources",
+            _setup_apatch_context,
             "boot.img",
             None,
             "SuperKey1234",
@@ -107,7 +107,7 @@ def test_root_patch_strategies(
 
         if patched_path is None:
             pytest.skip(
-                "FolkPatch returned None, likely due to unsupported kernel (missing CONFIG_KALLSYMS). Skipping test."
+                "APatch family returned None, likely due to unsupported kernel (missing CONFIG_KALLSYMS). Skipping test."
             )
 
         assert patched_path.exists(), "Patched boot image not returned"

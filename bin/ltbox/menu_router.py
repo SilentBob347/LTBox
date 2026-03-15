@@ -34,7 +34,7 @@ class RouteResult(str, Enum):
 
 ROOT_TYPE_MENU_SPEC: List[Optional[Tuple[str, str]]] = [
     ("1", "menu_root_type_ksu"),
-    ("2", "menu_root_type_ksu_next"),
+    ("2", "menu_root_type_ksun"),
     None,
     ("3", "menu_root_type_sukisu"),
     ("4", "menu_root_type_resukisu"),

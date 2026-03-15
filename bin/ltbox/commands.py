@@ -55,22 +55,22 @@ def _build_command_definitions() -> List[CommandDefinition]:
             default_kwargs={"gki": True},
         ),
         CommandDefinition(
-            name="root_device_fp",
+            name="root_device_apatch",
             func=actions.root_device,
-            title=get_string("task_title_root_gki") + " (FolkPatch)",
+            title=get_string("task_title_root_gki") + " (APatch)",
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(
-            name="patch_root_image_file_fp",
+            name="patch_root_image_file_apatch",
             func=actions.patch_root_image_file,
-            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
+            title=get_string("task_title_root_file_gki") + " (APatch)",
             require_dev=False,
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(
-            name="patch_root_image_file_flash_fp",
+            name="patch_root_image_file_flash_apatch",
             func=actions.patch_root_image_file_and_flash,
-            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
+            title=get_string("task_title_root_file_gki") + " (APatch)",
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(

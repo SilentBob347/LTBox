@@ -331,7 +331,7 @@ class GkiRootStrategy(ConfigurableRootStrategy):
         return final_boot
 
 
-class FolkPatchStrategy(GkiRootStrategy):
+class APatchStrategy(GkiRootStrategy):
     spec = RootStrategySpec(
         image_name=const.FN_BOOT,
         backup_name=const.FN_BOOT_BAK,
@@ -339,7 +339,7 @@ class FolkPatchStrategy(GkiRootStrategy):
         backup_dir=const.BACKUP_BOOT_DIR,
         required_files=[const.FN_BOOT, const.FN_VBMETA],
         main_partition="boot",
-        display_name="FolkPatch",
+        display_name="APatch",
         unroot_detect_msg_key="act_unroot_gki_detected",
         unroot_menu_msg_key="act_unroot_menu_3_gki",
         menu_shortcut="5",
@@ -357,15 +357,15 @@ class FolkPatchStrategy(GkiRootStrategy):
 
     @property
     def source_name(self) -> str:
-        return "APatch" if self.root_type == "apatch" else "FolkPatch"
+        return "APatch" if self.root_type == "apatch" else "APatch"
 
     def configure_source(self) -> None:
         settings = const.load_settings_raw()
         self.repo_config = settings.get(self.root_type, {})
 
         menu = TerminalMenu(
-            get_string("folkpatch_menu_version_title"),
-            breadcrumbs=get_string("folkpatch_menu_breadcrumbs"),
+            get_string("apatch_menu_version_title"),
+            breadcrumbs=get_string("apatch_menu_breadcrumbs"),
         )
         menu.add_option("1", get_string("menu_root_subtype_release"))
         menu.add_option("2", get_string("menu_root_subtype_nightly"))
@@ -379,8 +379,8 @@ class FolkPatchStrategy(GkiRootStrategy):
             width = utils.ui.get_term_width()
             utils.ui.echo("-" * width)
             utils.ui.echo(
-                get_string("folkpatch_prompt_workflow_id").replace(
-                    "FolkPatch", self.source_name
+                get_string("apatch_prompt_workflow_id").replace(
+                    "APatch", self.source_name
                 )
             )
             default_workflow = str(self.repo_config.get("workflow", "")).strip()
@@ -401,20 +401,20 @@ class FolkPatchStrategy(GkiRootStrategy):
         try:
             downloader.download_kptools(const.DOWNLOAD_DIR)
             if self.is_nightly and self.workflow_id:
-                downloader.download_folkpatch_nightly(
+                downloader.download_apatch_nightly(
                     self.workflow_id,
                     self._staging_dir,
                     repo=self.repo_config.get("repo", ""),
                 )
             else:
-                downloader.download_folkpatch_release(
+                downloader.download_apatch_release(
                     self._staging_dir,
                     repo=self.repo_config.get("repo", ""),
                     tag=self.repo_config.get("tag", "latest"),
                 )
             return True
         except Exception as e:
-            utils.ui.error(get_string("folkpatch_download_failed").format(e=e))
+            utils.ui.error(get_string("apatch_download_failed").format(e=e))
             return False
 
     def patch(
@@ -425,13 +425,13 @@ class FolkPatchStrategy(GkiRootStrategy):
     ) -> Optional[Path]:
         magiskboot_exe = const.MAGISKBOOT_EXE
 
-        utils.ui.echo("\n" + get_string("folkpatch_superkey_requirement"))
+        utils.ui.echo("\n" + get_string("apatch_superkey_requirement"))
         superkey = ""
         while True:
-            superkey = input(get_string("folkpatch_enter_superkey")).strip()
+            superkey = input(get_string("apatch_enter_superkey")).strip()
             if 8 <= len(superkey) <= 63 and superkey.isalnum():
                 break
-            utils.ui.error(get_string("folkpatch_superkey_invalid"))
+            utils.ui.error(get_string("apatch_superkey_invalid"))
 
         kpimg_src = self._staging_dir / "kpimg"
         if kpimg_src.exists():
@@ -439,7 +439,7 @@ class FolkPatchStrategy(GkiRootStrategy):
 
             shutil.copy(kpimg_src, work_dir / "kpimg")
         else:
-            utils.ui.error(get_string("folkpatch_kpimg_missing"))
+            utils.ui.error(get_string("apatch_kpimg_missing"))
             return None
 
         return patch_boot_with_root_algo(
@@ -695,7 +695,7 @@ class LkmRootStrategy(InitBootRootStrategy):
 
 def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
     if root_type in ("folkpatch", "apatch"):
-        return FolkPatchStrategy(root_type)
+        return APatchStrategy(root_type)
     elif gki:
         return GkiRootStrategy()
     else:
