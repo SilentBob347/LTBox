@@ -19,7 +19,9 @@ def test_patch_all_flow_standard(mock_env):
     ):
         mock_actions.read_anti_rollback.return_value = ("OK", "PASS")
 
-        workflow.patch_all(dev=mock_dev, wipe=0, target_region="PRC")
+        workflow.patch_all(
+            dev=mock_dev, wipe=0, target_region="PRC", modify_region_code=True
+        )
 
         mock_actions.convert_region_images.assert_called_once()
 
@@ -28,6 +30,25 @@ def test_patch_all_flow_standard(mock_env):
         mock_actions.read_anti_rollback.assert_called_once()
 
         mock_actions.flash_full_firmware.assert_called_once()
+
+
+def test_patch_all_passes_modify_region_code_flag():
+    mock_dev = make_device_mock()
+
+    with (
+        patch("ltbox.workflow.actions") as mock_actions,
+        patch("ltbox.workflow.utils.ui"),
+        patch("ltbox.workflow._wait_for_input_images"),
+        patch("ltbox.workflow._cleanup_previous_outputs"),
+    ):
+        mock_actions.read_anti_rollback.return_value = ("OK", "PASS")
+
+        workflow.patch_all(dev=mock_dev, modify_region_code=False)
+
+        assert (
+            mock_actions.convert_region_images.call_args.kwargs["modify_region_code"]
+            is False
+        )
 
 
 def test_patch_all_skip_arb():

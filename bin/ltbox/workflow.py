@@ -53,6 +53,7 @@ def _convert_region_images(ctx: TaskContext) -> None:
         dev=ctx.dev,
         device_model=ctx.device_model,
         target_region=ctx.target_region,
+        modify_region_code=ctx.modify_region_code,
         on_log=ctx.on_log,
     )
 
@@ -192,12 +193,14 @@ def patch_all(
     dev: device.DeviceController,
     wipe: int = 0,
     skip_rollback: bool = False,
+    modify_region_code: bool = True,
     target_region: str = "PRC",
 ) -> str:
     ctx = TaskContext(
         dev=dev,
         wipe=wipe,
         skip_rollback=skip_rollback,
+        modify_region_code=modify_region_code,
         target_region=target_region,
         on_log=lambda s: utils.ui.info(s),
     )

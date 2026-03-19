@@ -277,7 +277,10 @@ def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
 
 
 def get_settings_menu_data(
-    skip_adb_state: str, skip_rb_state: str, target_region: str
+    skip_adb_state: str,
+    skip_rb_state: str,
+    modify_region_code_state: str,
+    target_region: str,
 ) -> List[MenuItem]:
     region_label = (
         get_string("menu_settings_device_row")
@@ -306,12 +309,20 @@ def get_settings_menu_data(
         MenuSpec(
             "option",
             key="4",
+            text=lambda: get_string("menu_settings_modify_region").format(
+                state=modify_region_code_state
+            ),
+            action="toggle_modify_region_code",
+        ),
+        MenuSpec(
+            "option",
+            key="5",
             text=lambda: get_string("menu_settings_lang"),
             action="change_lang",
         ),
         MenuSpec(
             "option",
-            key="5",
+            key="6",
             text=lambda: get_string("menu_settings_check_update"),
             action="check_update",
         ),

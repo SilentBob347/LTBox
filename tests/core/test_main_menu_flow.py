@@ -89,16 +89,28 @@ def test_build_root_dispatch_map_routes_with_selected_type_breadcrumbs(monkeypat
 
 
 def test_build_task_kwargs_uses_app_state_for_patch_actions():
-    state = AppState(skip_rollback=True, target_region="ROW")
+    state = AppState(skip_rollback=True, modify_region_code=False, target_region="ROW")
 
     extras = menu_router.build_task_kwargs(menu_router.MainMenuAction.PATCH_ALL, state)
 
-    assert extras == {"skip_rollback": True, "target_region": "ROW"}
+    assert extras == {
+        "skip_rollback": True,
+        "modify_region_code": False,
+        "target_region": "ROW",
+    }
     assert menu_router.build_task_kwargs("menu_root", state) == {}
 
 
 def test_settings_menu_returns_updated_state(monkeypatch):
-    actions = iter(["toggle_region", "toggle_adb", "toggle_rollback", "back"])
+    actions = iter(
+        [
+            "toggle_region",
+            "toggle_adb",
+            "toggle_rollback",
+            "toggle_modify_region_code",
+            "back",
+        ]
+    )
     monkeypatch.setattr(
         menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
     )
@@ -115,7 +127,11 @@ def test_settings_menu_returns_updated_state(monkeypatch):
     next_state, action = result
 
     assert next_state == AppState(
-        skip_adb=True, skip_rollback=True, target_region="ROW", language=None
+        skip_adb=True,
+        skip_rollback=True,
+        modify_region_code=False,
+        target_region="ROW",
+        language=None,
     )
     assert action == menu_router.LoopAction.BACK
     assert dev.skip_adb is True

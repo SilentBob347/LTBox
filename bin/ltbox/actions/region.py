@@ -104,6 +104,7 @@ def convert_region_images(
     dev: device.DeviceController,
     device_model: Optional[str] = None,
     target_region: str = "PRC",
+    modify_region_code: bool = True,
     on_log: Callable[[str], None] = lambda s: None,
 ) -> None:
 
@@ -138,7 +139,11 @@ def convert_region_images(
         raise IOError(get_string("act_err_copy_input").format(e=e))
 
     on_log(get_string("act_start_conv"))
-    edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
+    if modify_region_code:
+        edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
+    else:
+        on_log(get_string("act_skip_region_modify"))
+        shutil.copy(vendor_boot_bak, const.BASE_DIR / const.FN_VENDOR_BOOT_PRC)
 
     vendor_boot_prc = const.BASE_DIR / const.FN_VENDOR_BOOT_PRC
     on_log(get_string("act_verify_conv"))

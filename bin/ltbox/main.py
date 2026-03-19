@@ -39,6 +39,7 @@ except ImportError:
 class AppSettings:
     language: Optional[str] = None
     target_region: str = "PRC"
+    modify_region_code: bool = True
 
     _ALLOWED_TARGET_REGIONS: ClassVar[set[str]] = {"PRC", "ROW"}
 
@@ -55,6 +56,7 @@ class AppSettings:
         return cls(
             language=cls.validate_language(data.get("language")),
             target_region=cls.validate_target_region(data.get("target_region", "PRC")),
+            modify_region_code=bool(data.get("modify_region_code", True)),
         )
 
 
@@ -62,6 +64,7 @@ class SettingsStore:
     _UPDATE_VALIDATORS: ClassVar[Dict[str, Callable[[Any], bool]]] = {
         "language": lambda value: isinstance(value, str),
         "target_region": lambda value: value in AppSettings._ALLOWED_TARGET_REGIONS,
+        "modify_region_code": lambda value: isinstance(value, bool),
     }
 
     def __init__(self, path: Path):
@@ -326,11 +329,13 @@ def _run_entry_mode(
             registry,
             initial_state=AppState(
                 target_region=settings.target_region,
+                modify_region_code=settings.modify_region_code,
                 language=settings.language,
             ),
         )
         settings_store.update(
             target_region=final_state.target_region,
+            modify_region_code=final_state.modify_region_code,
             language=final_state.language,
         )
 

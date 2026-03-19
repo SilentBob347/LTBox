@@ -297,6 +297,12 @@ def settings_menu(
         nonlocal next_state
         next_state = replace(next_state, skip_rollback=not next_state.skip_rollback)
 
+    def _toggle_modify_region_code():
+        nonlocal next_state
+        next_state = replace(
+            next_state, modify_region_code=not next_state.modify_region_code
+        )
+
     def _change_lang():
         cmd_info = registry.get("change_language")
         if cmd_info:
@@ -308,6 +314,7 @@ def settings_menu(
         "toggle_region": _toggle_region,
         "toggle_adb": _toggle_adb,
         "toggle_rollback": _toggle_rollback,
+        "toggle_modify_region_code": _toggle_modify_region_code,
         "change_lang": _change_lang,
         "check_update": _handle_update_check,
     }
@@ -321,6 +328,7 @@ def settings_menu(
         lambda: menu_data.get_settings_menu_data(
             "ON" if next_state.skip_adb else "OFF",
             "ON" if next_state.skip_rollback else "OFF",
+            "ON" if next_state.modify_region_code else "OFF",
             next_state.target_region,
         ),
         "menu_settings_title",
@@ -336,6 +344,7 @@ def build_task_kwargs(action: str, state: AppState) -> Dict[str, Any]:
     if action in [MainMenuAction.PATCH_ALL, MainMenuAction.PATCH_ALL_WIPE]:
         extras["skip_rollback"] = state.skip_rollback
         extras["target_region"] = state.target_region
+        extras["modify_region_code"] = state.modify_region_code
     return extras
 
 
