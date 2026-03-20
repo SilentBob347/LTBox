@@ -206,7 +206,9 @@ def patch_all(
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = f"log_{timestamp}.txt"
+    log_dir = const.BASE_DIR / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = str(log_dir / f"log_flash_firmware_{timestamp}.txt")
     command_name = "patch_all_wipe" if wipe == 1 else "patch_all"
 
     utils.ui.info(get_string("logging_enabled").format(log_file=log_file))

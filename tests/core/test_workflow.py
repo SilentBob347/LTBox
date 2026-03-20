@@ -1,8 +1,8 @@
 import contextlib
-
 import pytest
-from unittest.mock import patch
 
+from unittest.mock import patch
+from pathlib import Path
 from ltbox import workflow
 from ltbox.errors import LTBoxError, UserCancelError
 from tests.helpers import make_device_mock
@@ -49,6 +49,26 @@ def test_patch_all_passes_modify_region_code_flag():
             mock_actions.convert_region_images.call_args.kwargs["modify_region_code"]
             is False
         )
+
+
+def test_patch_all_writes_flash_log_under_log_directory(tmp_path):
+    mock_dev = make_device_mock()
+
+    with (
+        patch("ltbox.workflow.utils.ui"),
+        patch("ltbox.workflow.const.BASE_DIR", tmp_path),
+        patch("ltbox.workflow._build_steps", return_value=[]),
+        patch("ltbox.workflow._run_steps"),
+        patch(
+            "ltbox.workflow.logging_context", return_value=contextlib.nullcontext()
+        ) as mock_logging_context,
+    ):
+        workflow.patch_all(dev=mock_dev)
+
+    log_file = Path(mock_logging_context.call_args.args[0])
+    assert log_file.parent == tmp_path / "log"
+    assert log_file.name.startswith("log_flash_firmware_")
+    assert log_file.suffix == ".txt"
 
 
 def test_patch_all_skip_arb():
