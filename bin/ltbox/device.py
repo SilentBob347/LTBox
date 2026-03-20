@@ -1,5 +1,6 @@
 import os
 import contextlib
+import ctypes
 import re
 import subprocess
 import time
@@ -289,6 +290,32 @@ class FastbootManager(BaseDeviceManager):
 
 
 class EdlManager(BaseDeviceManager):
+    @contextlib.contextmanager
+    def _prevent_sleep_during_flash(self):
+        if os.name != "nt":
+            yield
+            return
+
+        es_continuous = 0x80000000
+        es_system_required = 0x00000001
+        es_awaymode_required = 0x00000040
+
+        try:
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                es_continuous | es_system_required | es_awaymode_required
+            )
+        except Exception:
+            yield
+            return
+
+        try:
+            yield
+        finally:
+            try:
+                ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
+            except Exception:
+                pass
+
     def check_device(self, silent: bool = False) -> Optional[str]:
         if not silent:
             ui.info(get_string("device_check_edl"))
@@ -357,7 +384,8 @@ class EdlManager(BaseDeviceManager):
         ]
 
         try:
-            utils.run_command(cmd_sahara, check=True)
+            with self._prevent_sleep_during_flash():
+                utils.run_command(cmd_sahara, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             msg = get_string("device_fatal_programmer")
             msg += f"\n{get_string('device_fatal_causes')}"
@@ -407,7 +435,8 @@ class EdlManager(BaseDeviceManager):
         ]
 
         try:
-            utils.run_command(cmd_fh, cwd=dest_dir, check=True)
+            with self._prevent_sleep_during_flash():
+                utils.run_command(cmd_fh, cwd=dest_dir, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(get_string("device_err_fh_exec").format(e=e), e)
 
@@ -442,7 +471,8 @@ class EdlManager(BaseDeviceManager):
         ]
 
         try:
-            utils.run_command(cmd_fh, cwd=work_dir, check=True)
+            with self._prevent_sleep_during_flash():
+                utils.run_command(cmd_fh, cwd=work_dir, check=True)
             ui.info(get_string("device_flash_success").format(filename=filename))
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(get_string("device_err_flash_exec").format(e=e), e)
@@ -457,7 +487,8 @@ class EdlManager(BaseDeviceManager):
 
         cmd_fh = [str(const.EDL_EXE), f"--port={port_str}", "--reset", "--noprompt"]
         try:
-            utils.run_command(cmd_fh)
+            with self._prevent_sleep_during_flash():
+                utils.run_command(cmd_fh)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(get_string("device_err_reset_fail").format(e=e), e)
 
@@ -499,7 +530,8 @@ class EdlManager(BaseDeviceManager):
         ]
 
         try:
-            utils.run_command(cmd_fh)
+            with self._prevent_sleep_during_flash():
+                utils.run_command(cmd_fh)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(
                 get_string("device_err_rawprogram_fail").format(e=e), e
