@@ -324,9 +324,16 @@ def edit_devinfo_persist(
         persist_img.unlink(missing_ok=True)
         return backup_critical_dir.name
 
-    on_log(get_string("act_note_region_code"))
+    separator = "=" * utils.ui.get_term_width()
+    note_message = get_string("act_note_region_code")
+    ask_message = get_string("act_ask_change_code").strip()
 
-    should_change = on_confirm(get_string("act_ask_change_code"))
+    on_log("")
+    on_log(f"\033[96m{separator}\033[0m")
+    on_log(f"\033[96m{note_message}\033[0m")
+    on_log(f"\033[96m{separator}\033[0m")
+
+    should_change = on_confirm(f"\033[93m{ask_message}\033[0m")
 
     if not should_change:
         on_log(get_string("act_op_cancel"))

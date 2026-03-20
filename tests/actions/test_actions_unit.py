@@ -251,3 +251,48 @@ def test_convert_region_images_skips_validation_and_avb_when_region_modify_disab
 
     assert (output_dir / const.FN_VENDOR_BOOT).exists()
     assert (output_dir / const.FN_VBMETA).exists()
+
+
+def test_edit_devinfo_prompt_is_highlighted_with_separator_and_color(tmp_path):
+    backup_dir = tmp_path / "backup"
+    image_dir = tmp_path / "image"
+    output_dp_dir = tmp_path / "output_dp"
+    base_dir = tmp_path / "base"
+    backup_dir.mkdir()
+    image_dir.mkdir()
+    output_dp_dir.mkdir()
+    base_dir.mkdir()
+
+    (backup_dir / "devinfo.img").write_bytes(b"devinfo")
+    (backup_dir / "persist.img").write_bytes(b"persist")
+
+    logged_messages = []
+    captured = {}
+
+    def _on_log(msg):
+        logged_messages.append(msg)
+
+    def _on_confirm(msg):
+        captured["prompt"] = msg
+        return False
+
+    with (
+        patch.multiple(
+            "ltbox.actions.region.const",
+            BACKUP_DIR=backup_dir,
+            IMAGE_DIR=image_dir,
+            OUTPUT_DP_DIR=output_dp_dir,
+            BASE_DIR=base_dir,
+            FN_DEVINFO="devinfo.img",
+            FN_PERSIST="persist.img",
+        ),
+        patch(
+            "ltbox.actions.region.detect_country_codes",
+            return_value={"devinfo.img": "ROW", "persist.img": "ROW"},
+        ),
+    ):
+        region.edit_devinfo_persist(on_log=_on_log, on_confirm=_on_confirm)
+
+    assert any("\033[96m" in message and "=" in message for message in logged_messages)
+    assert any("Play Integrity" in message for message in logged_messages)
+    assert captured["prompt"].startswith("\033[93m")
