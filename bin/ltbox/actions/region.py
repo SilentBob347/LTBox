@@ -139,11 +139,32 @@ def convert_region_images(
         raise IOError(get_string("act_err_copy_input").format(e=e))
 
     on_log(get_string("act_start_conv"))
-    if modify_region_code:
-        edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
-    else:
+    if not modify_region_code:
         on_log(get_string("act_skip_region_modify"))
-        shutil.copy(vendor_boot_bak, const.BASE_DIR / const.FN_VENDOR_BOOT_PRC)
+        on_log(get_string("act_skip_val"))
+        on_log(get_string("act_finalize"))
+        on_log(get_string("act_rename_final"))
+
+        final_vendor_boot = const.BASE_DIR / const.FN_VENDOR_BOOT
+        final_vbmeta = const.BASE_DIR / const.FN_VBMETA
+        shutil.copy(vendor_boot_bak, final_vendor_boot)
+        shutil.copy(vbmeta_bak, final_vbmeta)
+
+        final_images = [final_vendor_boot, final_vbmeta]
+        on_log(get_string("act_move_final").format(dir=const.OUTPUT_DIR.name))
+        utils.move_existing_files(final_images, const.OUTPUT_DIR)
+        on_log(get_string("act_move_backup").format(dir=const.BACKUP_DIR.name))
+        utils.move_existing_files(const.BASE_DIR.glob("*.bak.img"), const.BACKUP_DIR)
+        on_log("")
+
+        width = utils.ui.get_term_width()
+        on_log("  " + "=" * width)
+        on_log(get_string("act_success"))
+        on_log(get_string("act_final_saved").format(dir=const.OUTPUT_DIR.name))
+        on_log("  " + "=" * width)
+        return
+
+    edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
 
     vendor_boot_prc = const.BASE_DIR / const.FN_VENDOR_BOOT_PRC
     on_log(get_string("act_verify_conv"))

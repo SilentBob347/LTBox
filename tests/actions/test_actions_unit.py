@@ -211,3 +211,43 @@ def test_rebuild_vbmeta_for_modified_images_requires_vbmeta_and_one_image(tmp_pa
     ):
         with pytest.raises(FileNotFoundError):
             region.rebuild_vbmeta_for_modified_images(MagicMock())
+
+
+def test_convert_region_images_skips_validation_and_avb_when_region_modify_disabled(
+    mock_env, tmp_path
+):
+    image_dir = mock_env["IMAGE_DIR"]
+    output_dir = mock_env["OUTPUT_DIR"]
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+
+    (image_dir / const.FN_VENDOR_BOOT).write_bytes(b"vendor_boot")
+    (image_dir / const.FN_VBMETA).write_bytes(b"vbmeta")
+
+    mock_dev = MagicMock()
+    mock_dev.skip_adb = False
+
+    with (
+        patch("ltbox.actions.region.const.BACKUP_DIR", backup_dir),
+        patch("ltbox.actions.region.edit_vendor_boot") as edit_vendor_boot,
+        patch("ltbox.actions.region.extract_image_avb_info") as extract_info,
+        patch("ltbox.actions.region._apply_avb_integrity_footer") as apply_footer,
+        patch(
+            "ltbox.actions.region.rebuild_vbmeta_with_chained_images"
+        ) as rebuild_vbmeta,
+    ):
+        region.convert_region_images(
+            dev=mock_dev,
+            device_model="TB322FC",
+            target_region="PRC",
+            modify_region_code=False,
+            on_log=lambda _: None,
+        )
+
+    edit_vendor_boot.assert_not_called()
+    extract_info.assert_not_called()
+    apply_footer.assert_not_called()
+    rebuild_vbmeta.assert_not_called()
+
+    assert (output_dir / const.FN_VENDOR_BOOT).exists()
+    assert (output_dir / const.FN_VBMETA).exists()
