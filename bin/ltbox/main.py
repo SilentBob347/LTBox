@@ -366,7 +366,11 @@ def _acquire_single_instance_mutex() -> Optional[Any]:
     if sys.platform != "win32":
         return "Non-Windows-Mutex"
 
-    kernel32 = ctypes.windll.kernel32
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
+
+    kernel32 = windll.kernel32
     mutex_name = "Global\\LTBox_Singleton_Mutex"
 
     mutex = kernel32.CreateMutexW(None, False, mutex_name)
@@ -405,7 +409,11 @@ def _is_running_as_admin() -> bool:
     try:
         import ctypes
 
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+
+        return bool(windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
 
