@@ -413,6 +413,50 @@ def _force_kill_processes(exe_names: List[str]) -> None:
             pass
 
 
+def _get_running_processes(exe_names: List[str]) -> List[str]:
+    if os.name != "nt":
+        return []
+    try:
+        result = subprocess.run(
+            ["tasklist"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        tasklist_output = result.stdout.lower()
+        return [name for name in exe_names if name.lower() in tasklist_output]
+    except Exception:
+        return []
+
+
+def _handle_conflicting_processes_once() -> None:
+    process_names = [
+        "adb.exe",
+        "fastboot.exe",
+        "Software Fix.exe",
+        "fh_loader.exe",
+        "QSaharaServer.exe",
+    ]
+    running = _get_running_processes(process_names)
+    if not running:
+        return
+
+    ui.clear()
+    running_list = ", ".join(running)
+    ui.warn(
+        get_string("startup_conflict_processes_prompt").format(processes=running_list)
+    )
+    choice = ui.prompt(get_string("startup_conflict_confirm")).strip().lower()
+    if choice == "y":
+        _force_kill_processes(running)
+        return
+
+    ui.warn(get_string("startup_conflict_exit_message"))
+    input(get_string("press_enter_to_exit"))
+    sys.exit(0)
+
+
 def _init_and_run(is_info_mode: bool, lang_code: str) -> None:
     try:
         (
@@ -454,7 +498,7 @@ def entry_point() -> None:
             input()
             sys.exit(0)
 
-        _force_kill_processes(["adb.exe", "fastboot.exe"])
+        _handle_conflicting_processes_once()
         _check_updates()
         _init_and_run(is_info_mode, lang_code)
 

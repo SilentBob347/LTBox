@@ -36,7 +36,7 @@ def test_fastboot_slot_detection_failure():
             manager.get_slot_suffix()
 
 
-def test_adb_reboot_edl_kills_edl_related_processes_first():
+def test_adb_reboot_edl_does_not_force_kill_processes():
     manager = AdbManager(skip_adb=False)
 
     with (
@@ -46,9 +46,7 @@ def test_adb_reboot_edl_kills_edl_related_processes_first():
     ):
         manager.reboot("edl")
 
-    kill_processes.assert_called_once_with(
-        ["QSaharaServer.exe", "fh_loader.exe", "Software Fix.exe"]
-    )
+    kill_processes.assert_not_called()
 
 
 def test_adb_reboot_non_edl_does_not_kill_edl_related_processes():

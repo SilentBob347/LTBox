@@ -178,11 +178,6 @@ class AdbManager(BaseDeviceManager):
                     ui.warn(get_string("device_manual_edl_req"))
                 return
 
-            if target == "edl":
-                self._force_kill_processes(
-                    ["QSaharaServer.exe", "fh_loader.exe", "Software Fix.exe"]
-                )
-
             def _reboot(device: adbutils.AdbDevice) -> None:
                 if target == "edl":
                     try:
