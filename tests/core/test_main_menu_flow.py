@@ -271,3 +271,29 @@ def test_preset_three_does_not_change_target_region(monkeypatch):
     assert next_state.modify_region_code is False
     assert next_state.skip_rollback is True
     assert next_state.preset_code == "3"
+
+
+def test_settings_menu_preset_selection_from_dash_starts_at_first_preset(monkeypatch):
+    actions = iter(["select_preset", "back"])
+    monkeypatch.setattr(
+        menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
+    )
+
+    class DummyDev:
+        def __init__(self):
+            self.skip_adb = False
+
+    state = AppState(
+        target_region="ROW",
+        modify_region_code=False,
+        skip_rollback=True,
+        preset_code="-",
+    )
+    dev = DummyDev()
+
+    next_state, _ = menu_router.settings_menu(dev, registry=MagicMock(), state=state)
+
+    assert next_state.target_region == "PRC"
+    assert next_state.modify_region_code is True
+    assert next_state.skip_rollback is False
+    assert next_state.preset_code == "1"

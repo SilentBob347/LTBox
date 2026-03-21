@@ -372,6 +372,7 @@ def settings_menu(
             )
 
     action_handlers = {
+        "select_preset": _select_preset,
         "toggle_region": _toggle_region,
         "toggle_adb": _toggle_adb,
         "toggle_rollback": _toggle_rollback,
