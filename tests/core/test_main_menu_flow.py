@@ -142,19 +142,19 @@ def test_resolve_settings_preset_label():
         menu_router._resolve_settings_preset_label(
             AppState(target_region="PRC", modify_region_code=True, skip_rollback=False)
         )
-        == menu_router.PRESET_1
+        == "Install Global Firmware on Chinese Device"
     )
     assert (
         menu_router._resolve_settings_preset_label(
             AppState(target_region="ROW", modify_region_code=True, skip_rollback=False)
         )
-        == menu_router.PRESET_2
+        == "Install Chinese Firmware on Global Device"
     )
     assert (
         menu_router._resolve_settings_preset_label(
             AppState(target_region="ROW", modify_region_code=False, skip_rollback=True)
         )
-        == menu_router.PRESET_3
+        == "Install Stock Firmware without any modifications"
     )
     assert (
         menu_router._resolve_settings_preset_label(

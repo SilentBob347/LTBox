@@ -62,9 +62,9 @@ class DeviceControllerFactoryProtocol(Protocol):
 MenuReturn = Optional[Union[LoopAction, RouteResult]]
 
 
-PRESET_1 = "Install Global Firmware on Chinese Device"
-PRESET_2 = "Install Chinese Firmware on Global Device"
-PRESET_3 = "Install Firmware without any modifications"
+PRESET_1_KEY = "menu_settings_preset_1"
+PRESET_2_KEY = "menu_settings_preset_2"
+PRESET_3_KEY = "menu_settings_preset_3"
 
 
 def _resolve_settings_preset_label(state: AppState) -> str:
@@ -73,28 +73,28 @@ def _resolve_settings_preset_label(state: AppState) -> str:
         and state.modify_region_code
         and not state.skip_rollback
     ):
-        return PRESET_1
+        return get_string(PRESET_1_KEY)
     if (
         state.target_region == "ROW"
         and state.modify_region_code
         and not state.skip_rollback
     ):
-        return PRESET_2
+        return get_string(PRESET_2_KEY)
     if (
         state.target_region == "ROW"
         and not state.modify_region_code
         and state.skip_rollback
     ):
-        return PRESET_3
+        return get_string(PRESET_3_KEY)
     return "-"
 
 
 def _prompt_for_settings_preset(breadcrumbs: str) -> Optional[str]:
     preset_title = get_string("menu_settings_preset")
     menu = TerminalMenu(preset_title, breadcrumbs=breadcrumbs)
-    menu.add_option("1", PRESET_1)
-    menu.add_option("2", PRESET_2)
-    menu.add_option("3", PRESET_3)
+    menu.add_option("1", get_string(PRESET_1_KEY))
+    menu.add_option("2", get_string(PRESET_2_KEY))
+    menu.add_option("3", get_string(PRESET_3_KEY))
     menu.add_separator()
     menu.add_option("b", get_string("menu_back"))
 
