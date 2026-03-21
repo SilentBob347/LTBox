@@ -398,6 +398,21 @@ def _check_updates() -> None:
     update_service.prompt_for_update(current_version, latest_version)
 
 
+def _force_kill_processes(exe_names: List[str]) -> None:
+    for exe_name in exe_names:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", exe_name, "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+                ),
+            )
+        except Exception:
+            pass
+
+
 def _init_and_run(is_info_mode: bool, lang_code: str) -> None:
     try:
         (
@@ -439,6 +454,7 @@ def entry_point() -> None:
             input()
             sys.exit(0)
 
+        _force_kill_processes(["adb.exe", "fastboot.exe"])
         _check_updates()
         _init_and_run(is_info_mode, lang_code)
 

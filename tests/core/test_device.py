@@ -34,3 +34,31 @@ def test_fastboot_slot_detection_failure():
     ):
         with pytest.raises(DeviceCommandError):
             manager.get_slot_suffix()
+
+
+def test_adb_reboot_edl_kills_edl_related_processes_first():
+    manager = AdbManager(skip_adb=False)
+
+    with (
+        patch.object(manager, "wait_for_device", return_value=True),
+        patch.object(manager, "_with_device", return_value=None),
+        patch.object(manager, "_force_kill_processes") as kill_processes,
+    ):
+        manager.reboot("edl")
+
+    kill_processes.assert_called_once_with(
+        ["QSaharaServer.exe", "fh_loader.exe", "Software Fix.exe"]
+    )
+
+
+def test_adb_reboot_non_edl_does_not_kill_edl_related_processes():
+    manager = AdbManager(skip_adb=False)
+
+    with (
+        patch.object(manager, "wait_for_device", return_value=True),
+        patch.object(manager, "_with_device", return_value=None),
+        patch.object(manager, "_force_kill_processes") as kill_processes,
+    ):
+        manager.reboot("bootloader")
+
+    kill_processes.assert_not_called()

@@ -39,6 +39,10 @@ class BaseDeviceManager:
         except Exception:
             pass
 
+    def _force_kill_processes(self, exe_names: List[str]) -> None:
+        for exe_name in exe_names:
+            self._force_kill_process(exe_name)
+
 
 class AdbManager(BaseDeviceManager):
     def __init__(
@@ -173,6 +177,11 @@ class AdbManager(BaseDeviceManager):
                 if target == "edl":
                     ui.warn(get_string("device_manual_edl_req"))
                 return
+
+            if target == "edl":
+                self._force_kill_processes(
+                    ["QSaharaServer.exe", "fh_loader.exe", "Software Fix.exe"]
+                )
 
             def _reboot(device: adbutils.AdbDevice) -> None:
                 if target == "edl":
