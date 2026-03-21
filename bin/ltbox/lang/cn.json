@@ -230,7 +230,7 @@
   "act_unroot_menu_2_lkm": "还原 LKM (init_boot, vbmeta)",
   "act_unroot_menu_3_gki": "还原 APatch/GKI (boot)",
   "act_unroot_menu_title": "Unroot 模式",
-  "act_unroot_prompt_all": "[!] 未找到备份的引导镜像。\\n\\n  [对于 LKM Unroot]\\n  请将 'init_boot.img' 和 'vbmeta.img'\\n  放入 '{lkm_dir}' 文件夹。\\n\\n  [对于 GKI Unroot]\\n  请将 'boot.img' 放入 '{gki_dir}' 文件夹。",
+  "act_unroot_prompt_all": "[!] 未找到备份的引导镜像。\n\n  [对于 LKM Unroot]\n  请将 'init_boot.img' 和 'vbmeta.img'\n  放入 '{lkm_dir}' 文件夹。\n\n  [对于 GKI Unroot]\n  请将 'boot.img' 放入 '{gki_dir}' 文件夹。",
   "act_unroot_step1": "\n[步骤 1/4] 检查需求",
   "act_unroot_step3": "\n[步骤 3/4] 设备槽位与连接",
   "act_unroot_step4_gki": "[步骤 4/4] 正在将官方 boot.img 刷入 {part}",
