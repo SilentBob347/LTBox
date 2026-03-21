@@ -391,7 +391,7 @@ def settings_menu(
             _preset_label_from_code(next_state.preset_code),
             "ON" if next_state.skip_adb else "OFF",
             "ON" if next_state.skip_rollback else "OFF",
-            "ON" if next_state.modify_region_code else "OFF",
+            next_state.modify_region_code,
             next_state.target_region,
         ),
         "menu_settings_title",

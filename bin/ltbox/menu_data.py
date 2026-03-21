@@ -276,7 +276,7 @@ def get_settings_menu_data(
     preset_label: str,
     skip_adb_state: str,
     skip_rb_state: str,
-    modify_region_code_state: str,
+    modify_region_code_enabled: bool,
     target_region: str,
 ) -> List[MenuItem]:
     region_label = (
@@ -292,48 +292,59 @@ def get_settings_menu_data(
             text=lambda: get_string("menu_settings_preset").format(preset=preset_label),
             action="select_preset",
         ),
-        MenuSpec("option", key="2", text=region_label, action="toggle_region"),
         MenuSpec(
             "option",
-            key="3",
+            key="2",
             text=lambda: get_string("menu_settings_modify_region").format(
-                state=modify_region_code_state
+                state="ON" if modify_region_code_enabled else "OFF"
             ),
             action="toggle_modify_region_code",
         ),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="4",
-            text=lambda: get_string("menu_settings_skip_adb").format(
-                state=skip_adb_state
-            ),
-            action="toggle_adb",
-        ),
-        MenuSpec(
-            "option",
-            key="5",
-            text=lambda: get_string("menu_settings_skip_rb").format(
-                state=skip_rb_state
-            ),
-            action="toggle_rollback",
-        ),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="6",
-            text=lambda: f"{get_string('menu_settings_lang')}: [{get_string('_lang')}]",
-            action="change_lang",
-        ),
-        MenuSpec(
-            "option",
-            key="7",
-            text=lambda: get_string("menu_settings_check_update"),
-            action="check_update",
-        ),
-        MenuSpec("separator"),
-        *_nav_specs(include_back=True),
     ]
+
+    if modify_region_code_enabled:
+        specs.append(
+            MenuSpec("option", key="3", text=region_label, action="toggle_region")
+        )
+
+    specs.extend(
+        [
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="4",
+                text=lambda: get_string("menu_settings_skip_adb").format(
+                    state=skip_adb_state
+                ),
+                action="toggle_adb",
+            ),
+            MenuSpec(
+                "option",
+                key="5",
+                text=lambda: get_string("menu_settings_skip_rb").format(
+                    state=skip_rb_state
+                ),
+                action="toggle_rollback",
+            ),
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="6",
+                text=lambda: (
+                    f"{get_string('menu_settings_lang')}: [{get_string('_lang')}]"
+                ),
+                action="change_lang",
+            ),
+            MenuSpec(
+                "option",
+                key="7",
+                text=lambda: get_string("menu_settings_check_update"),
+                action="check_update",
+            ),
+            MenuSpec("separator"),
+            *_nav_specs(include_back=True),
+        ]
+    )
     return _build_menu(specs)
 
 

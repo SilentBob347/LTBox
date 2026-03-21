@@ -183,18 +183,34 @@ def test_settings_menu_data_orders_modify_region_before_skip_adb():
         preset_label="x",
         skip_adb_state="OFF",
         skip_rb_state="OFF",
-        modify_region_code_state="ON",
+        modify_region_code_enabled=True,
         target_region="PRC",
     )
     option_actions = [i.action for i in items if i.item_type == "option"]
 
     assert option_actions[:5] == [
         "select_preset",
-        "toggle_region",
         "toggle_modify_region_code",
+        "toggle_region",
         "toggle_adb",
         "toggle_rollback",
     ]
+
+
+def test_settings_menu_hides_region_toggle_when_modify_region_off():
+    items = menu_data.get_settings_menu_data(
+        preset_label="x",
+        skip_adb_state="OFF",
+        skip_rb_state="OFF",
+        modify_region_code_enabled=False,
+        target_region="PRC",
+    )
+    option_items = [i for i in items if i.item_type == "option"]
+    option_actions = [i.action for i in option_items]
+    option_keys = [i.key for i in option_items if i.key.isdigit()]
+
+    assert "toggle_region" not in option_actions
+    assert option_keys == ["1", "2", "4", "5", "6", "7"]
 
 
 def test_settings_menu_preset_selection_cycles_to_third_preset(monkeypatch):
