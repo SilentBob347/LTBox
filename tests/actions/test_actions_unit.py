@@ -67,6 +67,53 @@ def test_flash_args(mock_env):
         assert len(passed) == 2
 
 
+def test_dump_partitions_does_not_abort_when_devinfo_persist_are_not_targets(tmp_path):
+    mock_dev = MagicMock()
+    mock_dev.edl_session.return_value.__enter__.return_value = "COM1"
+
+    with (
+        patch("ltbox.actions.edl.utils.ui"),
+        patch("ltbox.actions.edl.ensure_edl_requirements"),
+        patch(
+            "ltbox.actions.edl.ensure_params_or_fail", side_effect=ValueError("missing")
+        ),
+        patch("ltbox.actions.edl.time.sleep"),
+        patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),
+    ):
+        edl.dump_partitions(
+            mock_dev,
+            default_targets=False,
+            additional_targets=["boot"],
+            skip_reset=True,
+        )
+
+
+def test_dump_partitions_aborts_when_devinfo_dump_fails(tmp_path):
+    mock_dev = MagicMock()
+    mock_dev.edl_session.return_value.__enter__.return_value = "COM1"
+
+    with (
+        patch("ltbox.actions.edl.utils.ui"),
+        patch("ltbox.actions.edl.ensure_edl_requirements"),
+        patch(
+            "ltbox.actions.edl.ensure_params_or_fail",
+            side_effect=[
+                ValueError("devinfo missing"),
+                {
+                    "source_xml": "rawprogram0.xml",
+                    "lun": "0",
+                    "start_sector": "1",
+                    "num_sectors": "1",
+                },
+            ],
+        ),
+        patch("ltbox.actions.edl.time.sleep"),
+        patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),
+    ):
+        with pytest.raises(RuntimeError, match="devinfo"):
+            edl.dump_partitions(mock_dev, default_targets=True, skip_reset=True)
+
+
 def test_xml_fallback(mock_env):
     out_dir = mock_env["OUTPUT_XML_DIR"]
     target = out_dir / "rawprogram_save_persist_unsparse0.xml"

@@ -315,6 +315,7 @@ def dump_partitions(
             get_string("act_ext_dump_targets").format(targets=", ".join(targets))
         )
 
+    critical_targets = {"devinfo", "persist"} & set(targets)
     failed_targets: list[str] = []
     ensure_edl_requirements()
     with dev.edl_session(
@@ -381,11 +382,11 @@ def dump_partitions(
 
             except (ValueError, FileNotFoundError) as e:
                 utils.ui.echo(get_string("act_skip_dump").format(target=target, e=e))
-                if target in {"devinfo", "persist"}:
+                if target in critical_targets:
                     failed_targets.append(target)
             except Exception as e:
                 utils.ui.error(get_string("act_err_dump").format(target=target, e=e))
-                if target in {"devinfo", "persist"}:
+                if target in critical_targets:
                     failed_targets.append(target)
 
             utils.ui.echo(get_string("act_wait_stability"))
