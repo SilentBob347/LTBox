@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from ltbox import menu_router
+from ltbox import menu_data, menu_router
 from ltbox.app_state import AppState
 
 
@@ -135,3 +135,73 @@ def test_settings_menu_returns_updated_state(monkeypatch):
     )
     assert action == menu_router.LoopAction.BACK
     assert dev.skip_adb is True
+
+
+def test_resolve_settings_preset_label():
+    assert (
+        menu_router._resolve_settings_preset_label(
+            AppState(target_region="PRC", modify_region_code=True, skip_rollback=False)
+        )
+        == menu_router.PRESET_1
+    )
+    assert (
+        menu_router._resolve_settings_preset_label(
+            AppState(target_region="ROW", modify_region_code=True, skip_rollback=False)
+        )
+        == menu_router.PRESET_2
+    )
+    assert (
+        menu_router._resolve_settings_preset_label(
+            AppState(target_region="ROW", modify_region_code=False, skip_rollback=True)
+        )
+        == menu_router.PRESET_3
+    )
+    assert (
+        menu_router._resolve_settings_preset_label(
+            AppState(target_region="PRC", modify_region_code=False, skip_rollback=True)
+        )
+        == "-"
+    )
+
+
+def test_settings_menu_preset_selection_applies_values(monkeypatch):
+    actions = iter(["select_preset", "back"])
+    monkeypatch.setattr(
+        menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
+    )
+    monkeypatch.setattr(menu_router, "_prompt_for_settings_preset", lambda *_args: "3")
+
+    class DummyDev:
+        def __init__(self):
+            self.skip_adb = False
+
+    state = AppState()
+    dev = DummyDev()
+
+    next_state, action = menu_router.settings_menu(
+        dev, registry=MagicMock(), state=state
+    )
+
+    assert next_state.target_region == "ROW"
+    assert next_state.modify_region_code is False
+    assert next_state.skip_rollback is True
+    assert action == menu_router.LoopAction.BACK
+
+
+def test_settings_menu_data_orders_modify_region_before_skip_adb():
+    items = menu_data.get_settings_menu_data(
+        preset_label="x",
+        skip_adb_state="OFF",
+        skip_rb_state="OFF",
+        modify_region_code_state="ON",
+        target_region="PRC",
+    )
+    option_actions = [i.action for i in items if i.item_type == "option"]
+
+    assert option_actions[:5] == [
+        "select_preset",
+        "toggle_region",
+        "toggle_modify_region_code",
+        "toggle_adb",
+        "toggle_rollback",
+    ]

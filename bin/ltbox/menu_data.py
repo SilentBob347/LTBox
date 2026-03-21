@@ -273,6 +273,7 @@ def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
 
 
 def get_settings_menu_data(
+    preset_label: str,
     skip_adb_state: str,
     skip_rb_state: str,
     modify_region_code_state: str,
@@ -285,10 +286,16 @@ def get_settings_menu_data(
     )
 
     specs = [
-        MenuSpec("option", key="1", text=region_label, action="toggle_region"),
         MenuSpec(
             "option",
-            key="2",
+            key="1",
+            text=lambda: get_string("menu_settings_preset").format(preset=preset_label),
+            action="select_preset",
+        ),
+        MenuSpec("option", key="2", text=region_label, action="toggle_region"),
+        MenuSpec(
+            "option",
+            key="3",
             text=lambda: get_string("menu_settings_skip_adb").format(
                 state=skip_adb_state
             ),
@@ -296,7 +303,7 @@ def get_settings_menu_data(
         ),
         MenuSpec(
             "option",
-            key="3",
+            key="4",
             text=lambda: get_string("menu_settings_skip_rb").format(
                 state=skip_rb_state
             ),
@@ -304,7 +311,7 @@ def get_settings_menu_data(
         ),
         MenuSpec(
             "option",
-            key="4",
+            key="5",
             text=lambda: get_string("menu_settings_modify_region").format(
                 state=modify_region_code_state
             ),
@@ -313,13 +320,13 @@ def get_settings_menu_data(
         MenuSpec("separator"),
         MenuSpec(
             "option",
-            key="5",
+            key="6",
             text=lambda: f"{get_string('menu_settings_lang')}: [{get_string('_lang')}]",
             action="change_lang",
         ),
         MenuSpec(
             "option",
-            key="6",
+            key="7",
             text=lambda: get_string("menu_settings_check_update"),
             action="check_update",
         ),

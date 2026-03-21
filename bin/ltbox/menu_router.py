@@ -62,6 +62,48 @@ class DeviceControllerFactoryProtocol(Protocol):
 MenuReturn = Optional[Union[LoopAction, RouteResult]]
 
 
+PRESET_1 = "Install Global Firmware on Chinese Device"
+PRESET_2 = "Install Chinese Firmware on Global Device"
+PRESET_3 = "Install Firmware without any modifications"
+
+
+def _resolve_settings_preset_label(state: AppState) -> str:
+    if (
+        state.target_region == "PRC"
+        and state.modify_region_code
+        and not state.skip_rollback
+    ):
+        return PRESET_1
+    if (
+        state.target_region == "ROW"
+        and state.modify_region_code
+        and not state.skip_rollback
+    ):
+        return PRESET_2
+    if (
+        state.target_region == "ROW"
+        and not state.modify_region_code
+        and state.skip_rollback
+    ):
+        return PRESET_3
+    return "-"
+
+
+def _prompt_for_settings_preset(breadcrumbs: str) -> Optional[str]:
+    preset_title = get_string("menu_settings_preset")
+    menu = TerminalMenu(preset_title, breadcrumbs=breadcrumbs)
+    menu.add_option("1", PRESET_1)
+    menu.add_option("2", PRESET_2)
+    menu.add_option("3", PRESET_3)
+    menu.add_separator()
+    menu.add_option("b", get_string("menu_back"))
+
+    choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
+    if choice == "b":
+        return None
+    return choice
+
+
 def _loop_menu(
     menu_items_factory: Callable[[], List[Any]],
     title_key: str,
@@ -281,6 +323,36 @@ def settings_menu(
     main_title = get_string("menu_main_title")
     next_state = state
 
+    def _apply_selected_preset(preset_choice: str) -> None:
+        nonlocal next_state
+        if preset_choice == "1":
+            next_state = replace(
+                next_state,
+                target_region="PRC",
+                modify_region_code=True,
+                skip_rollback=False,
+            )
+        elif preset_choice == "2":
+            next_state = replace(
+                next_state,
+                target_region="ROW",
+                modify_region_code=True,
+                skip_rollback=False,
+            )
+        elif preset_choice == "3":
+            next_state = replace(
+                next_state,
+                target_region="ROW",
+                modify_region_code=False,
+                skip_rollback=True,
+            )
+
+    def _select_preset():
+        breadcrumbs = f"{main_title} > {get_string('menu_settings_title')}"
+        selected = _prompt_for_settings_preset(breadcrumbs)
+        if selected is not None:
+            _apply_selected_preset(selected)
+
     def _toggle_region():
         nonlocal next_state
         next_state = replace(
@@ -326,6 +398,7 @@ def settings_menu(
 
     action = _loop_menu(
         lambda: menu_data.get_settings_menu_data(
+            _resolve_settings_preset_label(next_state),
             "ON" if next_state.skip_adb else "OFF",
             "ON" if next_state.skip_rollback else "OFF",
             "ON" if next_state.modify_region_code else "OFF",

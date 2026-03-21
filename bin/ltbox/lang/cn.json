@@ -621,6 +621,7 @@
   "menu_settings_device_row": "设备区域: [全球 (ROW)]",
   "menu_settings_lang": "更改语言",
   "menu_settings_modify_region": "修改区域代码: [{state}]",
+  "menu_settings_preset": "预设: [{preset}]",
   "menu_settings_skip_adb": "跳过 ADB 检查: [{state}]",
   "menu_settings_skip_rb": "跳过回滚检查: [{state}]",
   "menu_settings_title": "设置",

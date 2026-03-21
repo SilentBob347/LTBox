@@ -621,6 +621,7 @@
   "menu_settings_device_row": "기기 지역: [글로벌(ROW)]",
   "menu_settings_lang": "언어 변경",
   "menu_settings_modify_region": "지역 코드 변경: [{state}]",
+  "menu_settings_preset": "프리셋: [{preset}]",
   "menu_settings_skip_adb": "ADB 체크 건너뛰기: [{state}]",
   "menu_settings_skip_rb": "롤백 체크 건너뛰기: [{state}]",
   "menu_settings_title": "설정",

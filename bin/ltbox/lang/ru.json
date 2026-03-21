@@ -621,6 +621,7 @@
   "menu_settings_device_row": "Регион устройства: [Глобальная (ROW)]",
   "menu_settings_lang": "Сменить язык",
   "menu_settings_modify_region": "Изменять код региона: [{state}]",
+  "menu_settings_preset": "Пресет: [{preset}]",
   "menu_settings_skip_adb": "Пропустить проверку ADB: [{state}]",
   "menu_settings_skip_rb": "Пропустить проверку отката: [{state}]",
   "menu_settings_title": "Настройки",

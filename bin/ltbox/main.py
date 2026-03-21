@@ -40,6 +40,7 @@ class AppSettings:
     language: Optional[str] = None
     target_region: str = "PRC"
     modify_region_code: bool = True
+    skip_rollback: bool = False
 
     _ALLOWED_TARGET_REGIONS: ClassVar[set[str]] = {"PRC", "ROW"}
 
@@ -57,6 +58,7 @@ class AppSettings:
             language=cls.validate_language(data.get("language")),
             target_region=cls.validate_target_region(data.get("target_region", "PRC")),
             modify_region_code=bool(data.get("modify_region_code", True)),
+            skip_rollback=bool(data.get("skip_rollback", False)),
         )
 
 
@@ -65,6 +67,7 @@ class SettingsStore:
         "language": lambda value: isinstance(value, str),
         "target_region": lambda value: value in AppSettings._ALLOWED_TARGET_REGIONS,
         "modify_region_code": lambda value: isinstance(value, bool),
+        "skip_rollback": lambda value: isinstance(value, bool),
     }
 
     def __init__(self, path: Path):
@@ -330,12 +333,14 @@ def _run_entry_mode(
             initial_state=AppState(
                 target_region=settings.target_region,
                 modify_region_code=settings.modify_region_code,
+                skip_rollback=settings.skip_rollback,
                 language=settings.language,
             ),
         )
         settings_store.update(
             target_region=final_state.target_region,
             modify_region_code=final_state.modify_region_code,
+            skip_rollback=final_state.skip_rollback,
             language=final_state.language,
         )
 
