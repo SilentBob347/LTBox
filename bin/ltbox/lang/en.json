@@ -50,6 +50,7 @@
   "act_detect_status_null": "{display_name}: null",
   "act_dp_moved": "\n[*] Images moved to '{dir}'.",
   "act_dp_ready": "  Modified images ready in '{dir}'.",
+  "act_dump_failed": "\n[!] Dump Failed: {targets}",
   "act_dump_finish": "\n[*] Dump Finished",
   "act_dump_ignore_warn": "Note: You can ignore any 'warning' displayed during the process.",
   "act_dump_recovery": "[*] Dumping {part}...",
