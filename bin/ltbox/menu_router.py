@@ -104,6 +104,7 @@ def advanced_menu(
     dev: DeviceControllerProtocol,
     registry: CommandRegistry,
     target_region: str,
+    modify_region_code_enabled: bool,
 ) -> MenuReturn:
     main_title = get_string("menu_main_title")
 
@@ -114,7 +115,9 @@ def advanced_menu(
         run_task(action, dev, registry, extra_kwargs=extras)
 
     return _loop_menu(
-        lambda: menu_data.get_advanced_menu_data(target_region),
+        lambda: menu_data.get_advanced_menu_data(
+            target_region, modify_region_code_enabled
+        ),
         "menu_adv_title",
         main_title,
         _handler,
@@ -478,7 +481,7 @@ def main_loop(
         MainMenuAction.SETTINGS: _run_settings,
         MainMenuAction.ROOT: lambda: root_menu(dev, registry),
         MainMenuAction.ADVANCED: lambda: advanced_menu(
-            dev, registry, state.target_region
+            dev, registry, state.target_region, state.modify_region_code
         ),
     }
 
@@ -495,7 +498,9 @@ def main_loop(
         return None
 
     action = _loop_menu(
-        lambda: menu_data.get_main_menu_data(state.target_region),
+        lambda: menu_data.get_main_menu_data(
+            state.target_region, state.modify_region_code
+        ),
         "menu_main_title",
         None,
         _handler,

@@ -213,6 +213,27 @@ def test_settings_menu_hides_region_toggle_when_modify_region_off():
     assert option_keys == ["1", "2", "4", "5", "6", "7"]
 
 
+def test_main_menu_hides_region_name_when_modify_region_off():
+    items = menu_data.get_main_menu_data(
+        target_region="PRC",
+        modify_region_code_enabled=False,
+    )
+    option_items = [i for i in items if i.item_type == "option"]
+
+    assert option_items[0].text == "Install Firmware on Device (Wipe Data)"
+    assert option_items[1].text == "Install Firmware on Device (Keep Data)"
+
+
+def test_advanced_menu_hides_convert_option_when_modify_region_off():
+    items = menu_data.get_advanced_menu_data(
+        target_region="PRC",
+        modify_region_code_enabled=False,
+    )
+    option_actions = [i.action for i in items if i.item_type == "option"]
+
+    assert "convert" not in option_actions
+
+
 def test_settings_menu_preset_selection_cycles_to_third_preset(monkeypatch):
     actions = iter(["select_preset", "back"])
     monkeypatch.setattr(

@@ -91,100 +91,111 @@ def _nav_specs(
     return specs
 
 
-def get_advanced_menu_data(target_region: str) -> List[MenuItem]:
+def get_advanced_menu_data(
+    target_region: str, modify_region_code_enabled: bool = True
+) -> List[MenuItem]:
     region_text = (
         get_string("menu_adv_1_row")
         if target_region == "ROW"
         else get_string("menu_adv_1_prc")
     )
 
-    specs = [
-        MenuSpec("option", key="1", text=region_text, action="convert"),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="2",
-            text=lambda: get_string("menu_adv_2"),
-            action="dump_partitions",
-        ),
-        MenuSpec(
-            "option",
-            key="3",
-            text=lambda: get_string("menu_adv_3"),
-            action="edit_dp",
-        ),
-        MenuSpec(
-            "option",
-            key="4",
-            text=lambda: get_string("menu_adv_4"),
-            action="flash_partitions",
-        ),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="5",
-            text=lambda: get_string("menu_adv_5"),
-            action="read_anti_rollback",
-        ),
-        MenuSpec(
-            "option",
-            key="6",
-            text=lambda: get_string("menu_adv_6"),
-            action="patch_anti_rollback",
-        ),
-        MenuSpec(
-            "option",
-            key="7",
-            text=lambda: get_string("menu_adv_7"),
-            action="write_anti_rollback",
-        ),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="8",
-            text=lambda: get_string("menu_adv_8"),
-            action="decrypt_xml",
-        ),
-        MenuSpec(
-            "option",
-            key="9",
-            text=lambda: get_string("task_title_modify_xml_wipe"),
-            action="modify_xml_wipe",
-        ),
-        MenuSpec(
-            "option",
-            key="10",
-            text=lambda: get_string("task_title_modify_xml_nowipe"),
-            action="modify_xml",
-        ),
-        MenuSpec("separator"),
-        MenuSpec(
-            "option",
-            key="11",
-            text=lambda: get_string("menu_adv_11"),
-            action="flash_full_firmware",
-        ),
-        MenuSpec(
-            "option",
-            key="12",
-            text=lambda: get_string("menu_adv_12"),
-            action="flash_partition_labels",
-        ),
-        MenuSpec(
-            "option",
-            key="13",
-            text=lambda: get_string("menu_adv_13"),
-            action="rebuild_vbmeta_for_modified_images",
-        ),
-        MenuSpec(
-            "option",
-            key="14",
-            text=lambda: get_string("menu_adv_14"),
-            action="sign_and_flash_twrp",
-        ),
-        MenuSpec("separator"),
-        *_nav_specs(include_back=True, include_exit=True),
-    ]
+    specs: List[MenuSpec] = []
+    if modify_region_code_enabled:
+        specs.extend(
+            [
+                MenuSpec("option", key="1", text=region_text, action="convert"),
+                MenuSpec("separator"),
+            ]
+        )
+
+    specs.extend(
+        [
+            MenuSpec(
+                "option",
+                key="2",
+                text=lambda: get_string("menu_adv_2"),
+                action="dump_partitions",
+            ),
+            MenuSpec(
+                "option",
+                key="3",
+                text=lambda: get_string("menu_adv_3"),
+                action="edit_dp",
+            ),
+            MenuSpec(
+                "option",
+                key="4",
+                text=lambda: get_string("menu_adv_4"),
+                action="flash_partitions",
+            ),
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="5",
+                text=lambda: get_string("menu_adv_5"),
+                action="read_anti_rollback",
+            ),
+            MenuSpec(
+                "option",
+                key="6",
+                text=lambda: get_string("menu_adv_6"),
+                action="patch_anti_rollback",
+            ),
+            MenuSpec(
+                "option",
+                key="7",
+                text=lambda: get_string("menu_adv_7"),
+                action="write_anti_rollback",
+            ),
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="8",
+                text=lambda: get_string("menu_adv_8"),
+                action="decrypt_xml",
+            ),
+            MenuSpec(
+                "option",
+                key="9",
+                text=lambda: get_string("task_title_modify_xml_wipe"),
+                action="modify_xml_wipe",
+            ),
+            MenuSpec(
+                "option",
+                key="10",
+                text=lambda: get_string("task_title_modify_xml_nowipe"),
+                action="modify_xml",
+            ),
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="11",
+                text=lambda: get_string("menu_adv_11"),
+                action="flash_full_firmware",
+            ),
+            MenuSpec(
+                "option",
+                key="12",
+                text=lambda: get_string("menu_adv_12"),
+                action="flash_partition_labels",
+            ),
+            MenuSpec(
+                "option",
+                key="13",
+                text=lambda: get_string("menu_adv_13"),
+                action="rebuild_vbmeta_for_modified_images",
+            ),
+            MenuSpec(
+                "option",
+                key="14",
+                text=lambda: get_string("menu_adv_14"),
+                action="sign_and_flash_twrp",
+            ),
+            MenuSpec("separator"),
+            *_nav_specs(include_back=True, include_exit=True),
+        ]
+    )
     return _build_menu(specs)
 
 
@@ -348,8 +359,13 @@ def get_settings_menu_data(
     return _build_menu(specs)
 
 
-def get_main_menu_data(target_region: str) -> List[MenuItem]:
-    if target_region == "ROW":
+def get_main_menu_data(
+    target_region: str, modify_region_code_enabled: bool = True
+) -> List[MenuItem]:
+    if not modify_region_code_enabled:
+        install_wipe_text = get_string("menu_main_install_wipe")
+        install_keep_text = get_string("menu_main_install_keep")
+    elif target_region == "ROW":
         install_wipe_text = get_string("menu_main_install_wipe_row")
         install_keep_text = get_string("menu_main_install_keep_row")
     else:
