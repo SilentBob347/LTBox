@@ -13,7 +13,9 @@ bin/tools/
 desktop.ini
 get-pip.py
 image/
+image_new/
 input*/
 log/
+ota/
 output*/
 working/

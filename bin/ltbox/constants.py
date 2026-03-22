@@ -32,8 +32,14 @@ class LTBoxConfig:
         self.output_anti_rollback_dir = self.base_dir / "output_anti_rollback"
 
         self.image_dir = self.base_dir / "image"
+        self.image_new_dir = self.base_dir / "image_new"
         self.working_dir = self.base_dir / "working"
         self.output_xml_dir = self.base_dir / "output_xml"
+
+        self.ota_dir = self.base_dir / "ota"
+        self.ota_working_dir = self.ota_dir / "ota_working"
+        self.payload_dumper_dir = self.download_dir / "payload_dumper"
+        self.payload_dumper_py = self.payload_dumper_dir / "payload_dumper.py"
 
         # --- File Name Constants ---
         self.fn_boot = "boot.img"
@@ -230,8 +236,14 @@ BACKUP_INIT_BOOT_DIR = CONF.backup_init_boot_dir
 WORKING_BOOT_DIR = CONF.working_boot_dir
 OUTPUT_ANTI_ROLLBACK_DIR = CONF.output_anti_rollback_dir
 IMAGE_DIR = CONF.image_dir
+IMAGE_NEW_DIR = CONF.image_new_dir
 WORKING_DIR = CONF.working_dir
 OUTPUT_XML_DIR = CONF.output_xml_dir
+
+OTA_DIR = CONF.ota_dir
+OTA_WORKING_DIR = CONF.ota_working_dir
+PAYLOAD_DUMPER_DIR = CONF.payload_dumper_dir
+PAYLOAD_DUMPER_PY = CONF.payload_dumper_py
 
 FN_BOOT = CONF.fn_boot
 FN_INIT_BOOT = CONF.fn_init_boot

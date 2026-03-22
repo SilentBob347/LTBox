@@ -57,6 +57,12 @@ def _build_command_definitions() -> List[CommandDefinition]:
             title=get_string("task_title_rescue"),
         ),
         CommandDefinition(
+            name="apply_incremental_ota",
+            func=actions.apply_incremental_ota,
+            title=get_string("task_title_apply_ota"),
+            require_dev=False,
+        ),
+        CommandDefinition(
             name="edit_dp",
             func=actions.edit_devinfo_persist,
             title=get_string("task_title_patch_devinfo"),

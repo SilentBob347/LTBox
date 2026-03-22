@@ -341,7 +341,6 @@ def get_main_menu_data(
     specs = [
         MenuSpec("option", key="1", text=install_wipe_text, action="patch_all_wipe"),
         MenuSpec("option", key="2", text=install_keep_text, action="patch_all"),
-        MenuSpec("separator"),
         MenuSpec(
             "option",
             key="3",
