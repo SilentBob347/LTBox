@@ -44,7 +44,9 @@ def patch_boot_with_root_algo(
         kptools_exe = const.DOWNLOAD_DIR / "kptools.exe"
         kpimg_file = work_dir / "kpimg"
 
-        utils.ui.echo(get_string("apatch_unpack_start").format(name=img_name))
+        utils.ui.echo(
+            get_string("apatch_kptools_step").format(action="Unpacking", name=img_name)
+        )
 
         cmd_unpack = [str(kptools_exe), "unpack", img_name]
         res_unpack = subprocess.run(
@@ -55,7 +57,9 @@ def patch_boot_with_root_algo(
 
         if res_unpack.returncode != 0:
             utils.ui.error(
-                get_string("apatch_unpack_failed").format(error=res_unpack.stderr)
+                get_string("apatch_kptools_failed").format(
+                    action="unpack", error=res_unpack.stderr
+                )
             )
             return None
 
@@ -105,7 +109,9 @@ def patch_boot_with_root_algo(
             )
             return None
 
-        utils.ui.echo(get_string("apatch_repack_start").format(name=img_name))
+        utils.ui.echo(
+            get_string("apatch_kptools_step").format(action="Repacking", name=img_name)
+        )
         cmd_repack = [str(kptools_exe), "repack", img_name]
         res_repack = subprocess.run(
             cmd_repack, cwd=work_dir, capture_output=True, text=True
@@ -115,7 +121,9 @@ def patch_boot_with_root_algo(
 
         if res_repack.returncode != 0:
             utils.ui.error(
-                get_string("apatch_repack_failed").format(error=res_repack.stderr)
+                get_string("apatch_kptools_failed").format(
+                    action="repack", error=res_repack.stderr
+                )
             )
             return None
 
@@ -168,7 +176,7 @@ def patch_boot_with_root_algo(
         return patched_boot_path
 
     else:
-        print(get_string("img_root_step1_init_boot").format(name=img_name))
+        print(get_string("img_root_step1").format(name="init_boot"))
         mb.run("unpack", img_name, cwd=work_dir)
         if not (work_dir / "ramdisk.cpio").exists():
             print(get_string("img_root_unpack_fail"))
@@ -228,7 +236,7 @@ def patch_boot_with_root_algo(
         mb.run("cpio", "ramdisk.cpio", "add 0755 init init", cwd=work_dir)
         mb.run("cpio", "ramdisk.cpio", "add 0755 kernelsu.ko kernelsu.ko", cwd=work_dir)
 
-        print(get_string("img_root_step6_init_boot").format(name=img_name))
+        print(get_string("img_root_step6").format(name="init_boot"))
         mb.run("repack", img_name, cwd=work_dir)
         if not (work_dir / "new-boot.img").exists():
             print(get_string("img_root_repack_fail"))

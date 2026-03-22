@@ -384,11 +384,13 @@ def _create_write_xml(
     new_filename: str,
     success_key: str,
     error_key: str,
-    warn_file_missing_key: str,
-    warn_label_missing_key: str,
 ) -> None:
     if not src_xml_path.exists():
-        utils.ui.info(get_string(warn_file_missing_key).format(name=src_xml_path.name))
+        utils.ui.info(
+            get_string("act_warn_partition_xml_missing").format(
+                name=src_xml_path.name, partition=target_label
+            )
+        )
         return
 
     try:
@@ -410,7 +412,9 @@ def _create_write_xml(
             )
         else:
             utils.ui.info(
-                get_string(warn_label_missing_key).format(name=src_xml_path.name)
+                get_string("act_warn_partition_label_missing").format(
+                    partition=target_label, name=src_xml_path.name
+                )
             )
     except (OSError, ET.ParseError) as e:
         utils.ui.error(get_string(error_key).format(name=dest_xml_path.name, e=e))
@@ -447,8 +451,6 @@ def modify_xml(wipe: int = 0, skip_dp: bool = False) -> None:
                     new_filename="persist.img",
                     success_key="act_created_xml",
                     error_key="act_err_create_xml",
-                    warn_file_missing_key="act_warn_persist_xml_missing",
-                    warn_label_missing_key="act_warn_persist_label_missing",
                 )
 
                 _create_write_xml(
@@ -460,8 +462,6 @@ def modify_xml(wipe: int = 0, skip_dp: bool = False) -> None:
                     new_filename="devinfo.img",
                     success_key="act_created_xml",
                     error_key="act_err_create_xml",
-                    warn_file_missing_key="act_warn_devinfo_xml_missing",
-                    warn_label_missing_key="act_warn_devinfo_label_missing",
                 )
 
         except (OSError, FileNotFoundError, ET.ParseError) as e:
