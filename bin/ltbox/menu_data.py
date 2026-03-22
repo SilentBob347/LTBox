@@ -222,7 +222,24 @@ def get_root_mode_menu_data() -> List[MenuItem]:
 def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
     specs: List[MenuSpec] = []
 
-    if root_type in ("folkpatch", "apatch"):
+    if root_type == "folkpatch":
+        specs.extend(
+            [
+                MenuSpec(
+                    "option",
+                    key="1",
+                    text=lambda: get_string("menu_root_1_gki"),
+                    action="root_device_folkpatch",
+                ),
+                MenuSpec(
+                    "option",
+                    key="2",
+                    text=lambda: get_string("menu_root_2_gki"),
+                    action="patch_root_image_file_flash_folkpatch",
+                ),
+            ]
+        )
+    elif root_type == "apatch":
         specs.extend(
             [
                 MenuSpec(

@@ -58,19 +58,32 @@ def _build_command_definitions() -> List[CommandDefinition]:
             name="root_device_apatch",
             func=actions.root_device,
             title=get_string("task_title_root_device").format(mode="GKI") + " (APatch)",
-            default_kwargs={"gki": True, "root_type": "folkpatch"},
+            default_kwargs={"gki": True, "root_type": "apatch"},
         ),
         CommandDefinition(
             name="patch_root_image_file_apatch",
             func=actions.patch_root_image_file,
             title=get_string("task_title_root_file_gki") + " (APatch)",
             require_dev=False,
-            default_kwargs={"gki": True, "root_type": "folkpatch"},
+            default_kwargs={"gki": True, "root_type": "apatch"},
         ),
         CommandDefinition(
             name="patch_root_image_file_flash_apatch",
             func=actions.patch_and_flash_root,
             title=get_string("task_title_root_file_gki") + " (APatch)",
+            default_kwargs={"gki": True, "root_type": "apatch"},
+        ),
+        CommandDefinition(
+            name="root_device_folkpatch",
+            func=actions.root_device,
+            title=get_string("task_title_root_device").format(mode="GKI")
+            + " (FolkPatch)",
+            default_kwargs={"gki": True, "root_type": "folkpatch"},
+        ),
+        CommandDefinition(
+            name="patch_root_image_file_flash_folkpatch",
+            func=actions.patch_and_flash_root,
+            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(

@@ -357,15 +357,17 @@ class APatchStrategy(GkiRootStrategy):
 
     @property
     def source_name(self) -> str:
-        return "APatch" if self.root_type == "apatch" else "APatch"
+        return "FolkPatch" if self.root_type == "folkpatch" else "APatch"
 
     def configure_source(self) -> None:
         settings = const.load_settings_raw()
         self.repo_config = settings.get(self.root_type, {})
 
         menu = TerminalMenu(
-            get_string("apatch_menu_version_title"),
-            breadcrumbs=get_string("apatch_menu_breadcrumbs"),
+            get_string("apatch_menu_version_title").format(name=self.source_name),
+            breadcrumbs=get_string("apatch_menu_breadcrumbs").format(
+                name=self.source_name
+            ),
         )
         menu.add_option("1", get_string("menu_root_subtype_release"))
         menu.add_option("2", get_string("menu_root_subtype_nightly"))
@@ -379,9 +381,7 @@ class APatchStrategy(GkiRootStrategy):
             width = utils.ui.get_term_width()
             utils.ui.echo("-" * width)
             utils.ui.echo(
-                get_string("apatch_prompt_workflow_id").replace(
-                    "APatch", self.source_name
-                )
+                get_string("apatch_prompt_workflow_id").format(name=self.source_name)
             )
             default_workflow = str(self.repo_config.get("workflow", "")).strip()
             if default_workflow:
@@ -414,7 +414,9 @@ class APatchStrategy(GkiRootStrategy):
                 )
             return True
         except Exception as e:
-            utils.ui.error(get_string("apatch_download_failed").format(e=e))
+            utils.ui.error(
+                get_string("apatch_download_failed").format(e=e, name=self.source_name)
+            )
             return False
 
     def patch(
@@ -425,7 +427,10 @@ class APatchStrategy(GkiRootStrategy):
     ) -> Optional[Path]:
         magiskboot_exe = const.MAGISKBOOT_EXE
 
-        utils.ui.echo("\n" + get_string("apatch_superkey_requirement"))
+        utils.ui.echo(
+            "\n"
+            + get_string("apatch_superkey_requirement").format(name=self.source_name)
+        )
         superkey = ""
         while True:
             superkey = input(get_string("apatch_enter_superkey")).strip()
@@ -447,7 +452,7 @@ class APatchStrategy(GkiRootStrategy):
             magiskboot_exe,
             dev=dev,
             gki=True,
-            root_type="folkpatch",
+            root_type=self.root_type,
             superkey=superkey,
         )
 

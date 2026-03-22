@@ -37,15 +37,21 @@ def patch_boot_with_root_algo(
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
     if root_type in ("folkpatch", "apatch"):
+        display_name = "FolkPatch" if root_type == "folkpatch" else "APatch"
+
         if superkey is None:
-            utils.ui.error(get_string("apatch_err_superkey_required"))
+            utils.ui.error(
+                get_string("apatch_err_superkey_required").format(name=display_name)
+            )
             return None
 
         kptools_exe = const.DOWNLOAD_DIR / "kptools.exe"
         kpimg_file = work_dir / "kpimg"
 
         utils.ui.echo(
-            get_string("apatch_kptools_step").format(action="Unpacking", name=img_name)
+            get_string("apatch_kptools_step").format(
+                action="Unpacking", file=img_name, name=display_name
+            )
         )
 
         cmd_unpack = [str(kptools_exe), "unpack", img_name]
@@ -58,7 +64,7 @@ def patch_boot_with_root_algo(
         if res_unpack.returncode != 0:
             utils.ui.error(
                 get_string("apatch_kptools_failed").format(
-                    action="unpack", error=res_unpack.stderr
+                    action="unpack", error=res_unpack.stderr, name=display_name
                 )
             )
             return None
@@ -72,14 +78,16 @@ def patch_boot_with_root_algo(
 
         shutil.move(kernel_file, kernel_ori)
 
-        utils.ui.echo(get_string("apatch_check_kernel"))
+        utils.ui.echo(get_string("apatch_check_kernel").format(name=display_name))
         cmd_check = [str(kptools_exe), "-i", str(kernel_ori), "-f"]
         res_check = subprocess.run(
             cmd_check, cwd=work_dir, capture_output=True, text=True
         )
 
         if "CONFIG_KALLSYMS=y" not in res_check.stdout:
-            utils.ui.error(get_string("apatch_err_kallsyms_required"))
+            utils.ui.error(
+                get_string("apatch_err_kallsyms_required").format(name=display_name)
+            )
             return None
         if "CONFIG_KALLSYMS_ALL=y" not in res_check.stdout:
             utils.ui.echo(get_string("apatch_warn_kallsyms_all"))
@@ -105,12 +113,16 @@ def patch_boot_with_root_algo(
 
         if res_patch.returncode != 0:
             utils.ui.error(
-                get_string("apatch_patch_failed").format(error=res_patch.stderr)
+                get_string("apatch_patch_failed").format(
+                    error=res_patch.stderr, name=display_name
+                )
             )
             return None
 
         utils.ui.echo(
-            get_string("apatch_kptools_step").format(action="Repacking", name=img_name)
+            get_string("apatch_kptools_step").format(
+                action="Repacking", file=img_name, name=display_name
+            )
         )
         cmd_repack = [str(kptools_exe), "repack", img_name]
         res_repack = subprocess.run(
@@ -122,7 +134,7 @@ def patch_boot_with_root_algo(
         if res_repack.returncode != 0:
             utils.ui.error(
                 get_string("apatch_kptools_failed").format(
-                    action="repack", error=res_repack.stderr
+                    action="repack", error=res_repack.stderr, name=display_name
                 )
             )
             return None
@@ -133,7 +145,7 @@ def patch_boot_with_root_algo(
             return None
 
         shutil.move(patched_file, patched_boot_path)
-        utils.ui.echo(get_string("apatch_repack_success"))
+        utils.ui.echo(get_string("apatch_repack_success").format(name=display_name))
         return patched_boot_path
 
     elif gki:
