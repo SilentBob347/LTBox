@@ -84,12 +84,13 @@ def _resolve_settings_preset_label(state: AppState) -> str:
 def _loop_menu(
     menu_items_factory: Callable[[], List[Any]],
     title_key: str,
-    breadcrumbs: Optional[str],
+    breadcrumbs: Union[None, str, Callable[[], Optional[str]]],
     action_handler: Callable[[str], MenuReturn],
 ) -> MenuReturn:
     while True:
+        resolved_bc = breadcrumbs() if callable(breadcrumbs) else breadcrumbs
         menu_items = menu_items_factory()
-        action = select_menu_action(menu_items, title_key, breadcrumbs=breadcrumbs)
+        action = select_menu_action(menu_items, title_key, breadcrumbs=resolved_bc)
 
         if action in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
             return LoopAction(action)
@@ -106,8 +107,6 @@ def advanced_menu(
     target_region: str,
     modify_region_code_enabled: bool,
 ) -> MenuReturn:
-    main_title = get_string("menu_main_title")
-
     def _handler(action: str) -> None:
         extras: Dict[str, Any] = (
             {"target_region": target_region} if action == "convert" else {}
@@ -119,7 +118,7 @@ def advanced_menu(
             target_region, modify_region_code_enabled
         ),
         "menu_adv_title",
-        main_title,
+        lambda: get_string("menu_main_title"),
         _handler,
     )
 
@@ -129,7 +128,7 @@ def _root_action_menu(
     registry: CommandRegistry,
     gki: bool,
     root_type: str,
-    breadcrumbs: str,
+    breadcrumbs: Union[str, Callable[[], str]],
 ) -> MenuReturn:
     def _handler(action: str) -> None:
         extras: Dict[str, Any] = {"root_type": root_type}
@@ -151,23 +150,24 @@ def _handle_ksu_mode(
     registry: CommandRegistry,
     type_breadcrumbs: str,
 ) -> MenuReturn:
-    mode_breadcrumbs = f"{type_breadcrumbs} > {get_string('menu_root_mode_title')}"
+    def _mode_bc():
+        return f"{type_breadcrumbs} > {get_string('menu_root_mode_title')}"
 
     def _handler(mode_action: str) -> MenuReturn:
         if mode_action == "lkm":
             return _root_action_menu(
-                dev, registry, gki=False, root_type="ksu", breadcrumbs=mode_breadcrumbs
+                dev, registry, gki=False, root_type="ksu", breadcrumbs=_mode_bc
             )
         elif mode_action == "gki":
             return _root_action_menu(
-                dev, registry, gki=True, root_type="ksu", breadcrumbs=mode_breadcrumbs
+                dev, registry, gki=True, root_type="ksu", breadcrumbs=_mode_bc
             )
         return None
 
     res = _loop_menu(
         menu_data.get_root_mode_menu_data,
         "menu_root_mode_title",
-        type_breadcrumbs,
+        lambda: type_breadcrumbs,
         _handler,
     )
     if res == LoopAction.RETURN:
@@ -245,15 +245,14 @@ def root_menu(
     dev: DeviceControllerProtocol,
     registry: CommandRegistry,
 ) -> MenuReturn:
-    main_title = get_string("menu_main_title")
-    root_type_title = get_string("menu_root_type_title")
-    type_breadcrumbs = {
-        key: f"{main_title} > {root_type_title} > {_resolve_root_type_label(label)}"
-        for key, label in ROOT_TYPE_BREADCRUMB_LABELS.items()
-    }
-    dispatch_map = _build_root_dispatch_map(dev, registry, type_breadcrumbs)
-
     while True:
+        main_title = get_string("menu_main_title")
+        root_type_title = get_string("menu_root_type_title")
+        type_breadcrumbs = {
+            key: f"{main_title} > {root_type_title} > {_resolve_root_type_label(label)}"
+            for key, label in ROOT_TYPE_BREADCRUMB_LABELS.items()
+        }
+        dispatch_map = _build_root_dispatch_map(dev, registry, type_breadcrumbs)
         mode_menu = _build_root_type_menu(main_title)
 
         choice = mode_menu.ask(
@@ -300,7 +299,6 @@ def settings_menu(
     registry: CommandRegistry,
     state: AppState,
 ) -> tuple[AppState, MenuReturn]:
-    main_title = get_string("menu_main_title")
     next_state = state
 
     def _apply_selected_preset(preset_choice: str) -> None:
@@ -371,7 +369,7 @@ def settings_menu(
         cmd_info = registry.get("change_language")
         if cmd_info:
             cmd_info.func(
-                breadcrumbs=f"{main_title} > {get_string('menu_settings_title')}"
+                breadcrumbs=f"{get_string('menu_main_title')} > {get_string('menu_settings_title')}"
             )
 
     action_handlers = {
@@ -398,7 +396,7 @@ def settings_menu(
             next_state.target_region,
         ),
         "menu_settings_title",
-        main_title,
+        lambda: get_string("menu_main_title"),
         _handler,
     )
 
