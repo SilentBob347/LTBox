@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .. import constants as const
 from .. import device, utils
 from ..i18n import get_string
-from ..partition import ensure_params_or_fail
+from ..partition import require_partition_params
 from . import xml
 
 
@@ -123,7 +123,7 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
             selected.add(label)
 
 
-def flash_partition_labels(
+def flash_selected_partitions(
     dev: device.DeviceController, skip_reset: bool = False
 ) -> None:
     utils.ui.echo(get_string("act_flash_partitions_label_start"))
@@ -274,7 +274,7 @@ def flash_partition_target(
 ) -> None:
     utils.ui.echo(get_string("act_flashing_target").format(target=target_name))
 
-    params = ensure_params_or_fail(target_name)
+    params = require_partition_params(target_name)
     utils.ui.echo(
         get_string("act_found_dump_info").format(
             xml=params["source_xml"], lun=params["lun"], start=params["start_sector"]
@@ -329,7 +329,7 @@ def dump_partitions(
             utils.ui.echo(get_string("act_prep_dump").format(target=target))
 
             try:
-                params = ensure_params_or_fail(target)
+                params = require_partition_params(target)
                 utils.ui.echo(
                     get_string("act_found_dump_info").format(
                         xml=params["source_xml"],
@@ -356,15 +356,15 @@ def dump_partitions(
 
                 if params.get("size_in_kb"):
                     try:
-                        expected_size_bytes = int(float(params["size_in_kb"]) * 1024)
-                        actual_size_bytes = out_file.stat().st_size
+                        expected_size = int(float(params["size_in_kb"]) * 1024)
+                        actual_size = out_file.stat().st_size
 
-                        if expected_size_bytes != actual_size_bytes:
+                        if expected_size != actual_size:
                             raise RuntimeError(
                                 get_string("act_err_dump_size_mismatch").format(
                                     target=target,
-                                    expected=expected_size_bytes,
-                                    actual=actual_size_bytes,
+                                    expected=expected_size,
+                                    actual=actual_size,
                                 )
                             )
                     except (ValueError, OSError) as e:
@@ -393,16 +393,12 @@ def dump_partitions(
             time.sleep(5)
 
     if failed_targets:
-        failed_targets_unique = sorted(set(failed_targets))
+        failed_targets = sorted(set(failed_targets))
         utils.ui.error(
-            get_string("act_dump_failed").format(
-                targets=", ".join(failed_targets_unique)
-            )
+            get_string("act_dump_failed").format(targets=", ".join(failed_targets))
         )
         raise RuntimeError(
-            get_string("act_dump_failed").format(
-                targets=", ".join(failed_targets_unique)
-            )
+            get_string("act_dump_failed").format(targets=", ".join(failed_targets))
         )
 
     utils.ui.echo(get_string("act_dump_ignore_warn"))

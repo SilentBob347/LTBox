@@ -460,7 +460,7 @@ def _get_running_processes(exe_names: List[str]) -> List[str]:
         return []
 
 
-def _handle_conflicting_processes_once() -> None:
+def _resolve_process_conflicts() -> None:
     process_names = [
         "adb.exe",
         "fastboot.exe",
@@ -529,7 +529,7 @@ def entry_point() -> None:
             sys.exit(0)
 
         _ensure_admin_or_exit()
-        _handle_conflicting_processes_once()
+        _resolve_process_conflicts()
         _check_updates()
         _init_and_run(is_info_mode, lang_code)
 

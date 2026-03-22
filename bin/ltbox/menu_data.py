@@ -56,7 +56,7 @@ def _build_menu(specs: List[MenuSpec]) -> List[MenuItem]:
     return items
 
 
-def _nav_specs(
+def _navigation_specs(
     *,
     include_back: bool = False,
     include_return: bool = False,
@@ -178,22 +178,22 @@ def get_advanced_menu_data(
                 "option",
                 key="12",
                 text=lambda: get_string("menu_adv_12"),
-                action="flash_partition_labels",
+                action="flash_selected_partitions",
             ),
             MenuSpec(
                 "option",
                 key="13",
-                text=lambda: get_string("menu_adv_13"),
-                action="rebuild_vbmeta_for_modified_images",
+                text=lambda: get_string("task_title_rebuild_vbmeta"),
+                action="rebuild_vbmeta",
             ),
             MenuSpec(
                 "option",
                 key="14",
-                text=lambda: get_string("menu_adv_14"),
-                action="sign_and_flash_twrp",
+                text=lambda: get_string("menu_main_rec_flash"),
+                action="sign_and_flash_recovery",
             ),
             MenuSpec("separator"),
-            *_nav_specs(include_back=True, include_exit=True),
+            *_navigation_specs(include_back=True, include_exit=True),
         ]
     )
     return _build_menu(specs)
@@ -214,7 +214,7 @@ def get_root_mode_menu_data() -> List[MenuItem]:
             action="gki",
         ),
         MenuSpec("separator"),
-        *_nav_specs(include_back=True, include_return=True, include_exit=True),
+        *_navigation_specs(include_back=True, include_return=True, include_exit=True),
     ]
     return _build_menu(specs)
 
@@ -277,7 +277,9 @@ def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
     specs.extend(
         [
             MenuSpec("separator"),
-            *_nav_specs(include_back=True, include_return=True, include_exit=True),
+            *_navigation_specs(
+                include_back=True, include_return=True, include_exit=True
+            ),
         ]
     )
     return _build_menu(specs)
@@ -353,7 +355,7 @@ def get_settings_menu_data(
                 action="check_update",
             ),
             MenuSpec("separator"),
-            *_nav_specs(include_back=True),
+            *_navigation_specs(include_back=True),
         ]
     )
     return _build_menu(specs)
@@ -414,6 +416,6 @@ def get_main_menu_data(
             text=lambda: get_string("menu_main_adv"),
             action="menu_advanced",
         ),
-        *_nav_specs(include_exit=True),
+        *_navigation_specs(include_exit=True),
     ]
     return _build_menu(specs)

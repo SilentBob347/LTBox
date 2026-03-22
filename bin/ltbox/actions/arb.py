@@ -28,8 +28,8 @@ def read_anti_rollback(
     utils.ui.echo(get_string("act_start_arb"))
     utils.check_dependencies()
 
-    current_boot_rb = 0
-    current_vbmeta_rb = 0
+    boot_rollback = 0
+    vbmeta_rollback = 0
 
     utils.ui.echo(get_string("act_arb_step1"))
     try:
@@ -40,13 +40,13 @@ def read_anti_rollback(
             get_string("act_read_dumped_file").format(name=dumped_boot_path.name)
         )
         boot_info = extract_image_avb_info(dumped_boot_path)
-        current_boot_rb = int(boot_info.get("rollback", "0"))
+        boot_rollback = int(boot_info.get("rollback", "0"))
 
         utils.ui.echo(
             get_string("act_read_dumped_file").format(name=dumped_vbmeta_path.name)
         )
         vbmeta_info = extract_image_avb_info(dumped_vbmeta_path)
-        current_vbmeta_rb = int(vbmeta_info.get("rollback", "0"))
+        vbmeta_rollback = int(vbmeta_info.get("rollback", "0"))
 
     except Exception as e:
         width = utils.ui.get_term_width()
@@ -58,8 +58,8 @@ def read_anti_rollback(
         utils.ui.echo(get_string("act_arb_error"))
         return ArbStatus.ERROR, 0, 0
 
-    utils.ui.echo(get_string("act_curr_boot_idx").format(idx=current_boot_rb))
-    utils.ui.echo(get_string("act_curr_vbmeta_idx").format(idx=current_vbmeta_rb))
+    utils.ui.echo(get_string("act_curr_boot_idx").format(idx=boot_rollback))
+    utils.ui.echo(get_string("act_curr_vbmeta_idx").format(idx=vbmeta_rollback))
 
     utils.ui.echo(get_string("act_arb_step2"))
     utils.ui.echo(get_string("act_extract_new_indices"))
@@ -89,7 +89,7 @@ def read_anti_rollback(
     utils.ui.echo(get_string("act_new_boot_idx").format(idx=new_boot_rb))
     utils.ui.echo(get_string("act_new_vbmeta_idx").format(idx=new_vbmeta_rb))
 
-    if new_boot_rb < current_boot_rb or new_vbmeta_rb < current_vbmeta_rb:
+    if new_boot_rb < boot_rollback or new_vbmeta_rb < vbmeta_rollback:
         utils.ui.echo(get_string("act_arb_patch_req"))
         status = ArbStatus.NEEDS_PATCH
     else:
@@ -97,7 +97,7 @@ def read_anti_rollback(
         status = ArbStatus.MATCH
 
     utils.ui.echo(get_string("act_arb_complete").format(status=status.value))
-    return status, current_boot_rb, current_vbmeta_rb
+    return status, boot_rollback, vbmeta_rollback
 
 
 def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
@@ -109,7 +109,7 @@ def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
     try:
         if comparison_result:
             utils.ui.echo(get_string("act_use_pre_arb"))
-            status, current_boot_rb, current_vbmeta_rb = comparison_result
+            status, boot_rollback, vbmeta_rollback = comparison_result
         else:
             utils.ui.echo(get_string("act_err_no_cmp"))
             return
@@ -122,7 +122,7 @@ def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
 
         patch_chained_image_rollback(
             image_name=const.FN_BOOT,
-            current_rb_index=current_boot_rb,
+            current_rb_index=boot_rollback,
             new_image_path=(const.IMAGE_DIR / const.FN_BOOT),
             patched_image_path=(const.OUTPUT_ANTI_ROLLBACK_DIR / const.FN_BOOT),
         )
@@ -131,7 +131,7 @@ def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
 
         patch_vbmeta_image_rollback(
             image_name=const.FN_VBMETA_SYSTEM,
-            current_rb_index=current_vbmeta_rb,
+            current_rb_index=vbmeta_rollback,
             new_image_path=(const.IMAGE_DIR / const.FN_VBMETA_SYSTEM),
             patched_image_path=(
                 const.OUTPUT_ANTI_ROLLBACK_DIR / const.FN_VBMETA_SYSTEM
@@ -153,10 +153,10 @@ def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
         shutil.rmtree(const.OUTPUT_ANTI_ROLLBACK_DIR)
 
 
-def read_anti_rollback_from_device(dev: device.DeviceController) -> None:
+def read_device_anti_rollback(dev: device.DeviceController) -> None:
     utils.ui.echo(get_string("act_start_arb"))
 
-    active_slot_suffix = system.detect_active_slot_robust(dev)
+    active_slot_suffix = system.detect_slot(dev)
     suffix = active_slot_suffix if active_slot_suffix else ""
     boot_target = f"boot{suffix}"
     vbmeta_target = f"vbmeta_system{suffix}"
@@ -178,7 +178,7 @@ def read_anti_rollback_from_device(dev: device.DeviceController) -> None:
     read_anti_rollback(dumped_boot_path=dumped_boot, dumped_vbmeta_path=dumped_vbmeta)
 
 
-def patch_anti_rollback_in_rom() -> None:
+def patch_rom_anti_rollback() -> None:
     utils.ui.echo(get_string("act_start_arb_patch"))
 
     backup_dir = const.BACKUP_DIR

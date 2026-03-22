@@ -5,7 +5,7 @@ from ..errors import ToolError
 from ..i18n import get_string
 
 
-def detect_active_slot_robust(dev: device.DeviceController) -> Optional[str]:
+def detect_slot(dev: device.DeviceController) -> Optional[str]:
     try:
         return dev.detect_active_slot()
     except Exception as e:

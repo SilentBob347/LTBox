@@ -14,10 +14,10 @@ from ..patch.avb import (
 )
 from ..patch.region import detect_country_codes, edit_vendor_boot, patch_country_codes
 from . import edl
-from .system import detect_active_slot_robust
+from .system import detect_slot
 
 
-def rebuild_vbmeta_for_modified_images(
+def rebuild_vbmeta(
     dev: device.DeviceController,
     on_log: Callable[[str], None] = lambda s: None,
 ) -> None:
@@ -83,7 +83,7 @@ def rebuild_vbmeta_for_modified_images(
 
     active_slot = ""
     try:
-        active_slot = detect_active_slot_robust(dev) or ""
+        active_slot = detect_slot(dev) or ""
     except Exception:
         active_slot = ""
 
@@ -127,7 +127,7 @@ def convert_region_images(
             get_string("act_err_xml_missing").format(dir=const.IMAGE_DIR.name)
         )
 
-    on_log(get_string("act_backup_orig"))
+    on_log(get_string("act_backup_images").format(name="images"))
     vendor_boot_bak = const.BASE_DIR / const.FN_VENDOR_BOOT_BAK
     vbmeta_bak = const.BASE_DIR / const.FN_VBMETA_BAK
 
@@ -166,9 +166,9 @@ def convert_region_images(
 
     edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
 
-    vendor_boot_prc = const.BASE_DIR / const.FN_VENDOR_BOOT_PRC
+    vendor_boot_patched = const.BASE_DIR / const.FN_VENDOR_BOOT_PRC
     on_log(get_string("act_verify_conv"))
-    if not vendor_boot_prc.exists():
+    if not vendor_boot_patched.exists():
         raise FileNotFoundError(get_string("act_err_vb_prc_not_created"))
     on_log(get_string("act_conv_success"))
 
@@ -206,13 +206,13 @@ def convert_region_images(
                     )
                 )
 
-    _apply_avb_integrity_footer(vendor_boot_prc, vendor_boot_info, None)
+    _apply_avb_integrity_footer(vendor_boot_patched, vendor_boot_info, None)
 
     vbmeta_img = const.BASE_DIR / const.FN_VBMETA
     rebuild_vbmeta_with_chained_images(
         output_path=vbmeta_img,
         original_vbmeta_path=vbmeta_bak,
-        chained_images=[vendor_boot_prc],
+        chained_images=[vendor_boot_patched],
     )
     on_log("")
 

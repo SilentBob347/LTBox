@@ -75,7 +75,8 @@ def test_dump_partitions_does_not_abort_when_devinfo_persist_are_not_targets(tmp
         patch("ltbox.actions.edl.utils.ui"),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
         patch(
-            "ltbox.actions.edl.ensure_params_or_fail", side_effect=ValueError("missing")
+            "ltbox.actions.edl.require_partition_params",
+            side_effect=ValueError("missing"),
         ),
         patch("ltbox.actions.edl.time.sleep"),
         patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),
@@ -96,7 +97,7 @@ def test_dump_partitions_aborts_when_devinfo_dump_fails(tmp_path):
         patch("ltbox.actions.edl.utils.ui"),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
         patch(
-            "ltbox.actions.edl.ensure_params_or_fail",
+            "ltbox.actions.edl.require_partition_params",
             side_effect=[
                 ValueError("devinfo missing"),
                 {
@@ -239,11 +240,11 @@ def test_advanced_menu_option_13_rebuilds_vbmeta_and_14_is_recovery():
     menu_items = menu_data.get_advanced_menu_data("ROW")
     options = {item.key: item for item in menu_items if item.item_type == "option"}
 
-    assert options["13"].action == "rebuild_vbmeta_for_modified_images"
-    assert options["14"].action == "sign_and_flash_twrp"
+    assert options["13"].action == "rebuild_vbmeta"
+    assert options["14"].action == "sign_and_flash_recovery"
 
 
-def test_rebuild_vbmeta_for_modified_images_requires_vbmeta_and_one_image(tmp_path):
+def test_rebuild_vbmeta_requires_vbmeta_and_one_image(tmp_path):
     image_dir = tmp_path / "image"
     output_dir = tmp_path / "output"
     image_dir.mkdir()
@@ -257,7 +258,7 @@ def test_rebuild_vbmeta_for_modified_images_requires_vbmeta_and_one_image(tmp_pa
         FN_VENDOR_BOOT="vendor_boot.img",
     ):
         with pytest.raises(FileNotFoundError):
-            region.rebuild_vbmeta_for_modified_images(MagicMock())
+            region.rebuild_vbmeta(MagicMock())
 
 
 def test_convert_region_images_skips_validation_and_avb_when_region_modify_disabled(

@@ -32,7 +32,7 @@ def test_collect_base_partitions_from_xml(mock_env):
     assert part_map["super"]["none"][0]["filename"] == "super.img"
 
 
-def test_flash_partition_labels_fails_when_image_missing(mock_env):
+def test_flash_selected_partitions_fails_when_image_missing(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     (img_dir / "rawprogram0.xml").write_text(
         """<?xml version='1.0'?><data>
@@ -46,10 +46,10 @@ def test_flash_partition_labels_fails_when_image_missing(mock_env):
         patch("ltbox.actions.edl._prompt_partition_selection", return_value=["super"]),
     ):
         with pytest.raises(FileNotFoundError):
-            edl.flash_partition_labels(MagicMock())
+            edl.flash_selected_partitions(MagicMock())
 
 
-def test_flash_partition_labels_writes_selected_entries(mock_env):
+def test_flash_selected_partitions_writes_selected_entries(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     (img_dir / "rawprogram0.xml").write_text(
         """<?xml version='1.0'?><data>
@@ -69,13 +69,13 @@ def test_flash_partition_labels_writes_selected_entries(mock_env):
         patch("ltbox.actions.edl._prompt_partition_selection", return_value=["super"]),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
     ):
-        edl.flash_partition_labels(dev, skip_reset=True)
+        edl.flash_selected_partitions(dev, skip_reset=True)
 
     assert dev.edl.write_partition.call_count == 2
     dev.edl.reset.assert_not_called()
 
 
-def test_flash_partition_labels_ab_slot_selection(mock_env):
+def test_flash_selected_partitions_ab_slot_selection(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     (img_dir / "rawprogram0.xml").write_text(
         """<?xml version='1.0'?><data>
@@ -95,7 +95,7 @@ def test_flash_partition_labels_ab_slot_selection(mock_env):
         patch("ltbox.utils.ui.prompt", return_value="2"),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
     ):
-        edl.flash_partition_labels(dev, skip_reset=True)
+        edl.flash_selected_partitions(dev, skip_reset=True)
 
     dev.edl.write_partition.assert_called_once_with(
         port="COM1", image_path=(img_dir / "boot.img"), lun="0", start_sector="200"

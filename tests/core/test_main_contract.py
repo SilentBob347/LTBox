@@ -68,7 +68,7 @@ def test_entry_point_runs_conflict_check_after_singleton_check():
         patch("ltbox.main._prepare_environment", return_value=object()),
         patch("ltbox.main._setup_language", return_value="en"),
         patch("ltbox.main._ensure_admin_or_exit"),
-        patch("ltbox.main._handle_conflicting_processes_once") as conflict_check,
+        patch("ltbox.main._resolve_process_conflicts") as conflict_check,
         patch("ltbox.main._check_updates"),
         patch("ltbox.main._init_and_run"),
     ):
@@ -81,7 +81,7 @@ def test_entry_point_skips_conflict_check_when_another_instance_is_running():
     with (
         patch("ltbox.main._prepare_environment", return_value=None),
         patch("ltbox.main._setup_language", return_value="en"),
-        patch("ltbox.main._handle_conflicting_processes_once") as conflict_check,
+        patch("ltbox.main._resolve_process_conflicts") as conflict_check,
         patch("ltbox.main.ui.clear"),
         patch("ltbox.main.ui.error"),
         patch("builtins.input", return_value=""),
@@ -98,7 +98,7 @@ def test_entry_point_exits_when_admin_required_check_fails():
         patch("ltbox.main._prepare_environment", return_value=object()),
         patch("ltbox.main._setup_language", return_value="en"),
         patch("ltbox.main._ensure_admin_or_exit", side_effect=SystemExit(0)),
-        patch("ltbox.main._handle_conflicting_processes_once") as conflict_check,
+        patch("ltbox.main._resolve_process_conflicts") as conflict_check,
         patch("ltbox.main._check_updates"),
         patch("ltbox.main._init_and_run"),
     ):
@@ -109,7 +109,7 @@ def test_entry_point_exits_when_admin_required_check_fails():
     conflict_check.assert_not_called()
 
 
-def test_handle_conflicting_processes_once_exits_on_n():
+def test_resolve_process_conflicts_exits_on_n():
     with (
         patch(
             "ltbox.main._get_running_processes",
@@ -122,13 +122,13 @@ def test_handle_conflicting_processes_once_exits_on_n():
         patch("ltbox.main._force_kill_processes") as kill_processes,
     ):
         with pytest.raises(SystemExit) as exc:
-            main._handle_conflicting_processes_once()
+            main._resolve_process_conflicts()
 
     assert exc.value.code == 0
     kill_processes.assert_not_called()
 
 
-def test_handle_conflicting_processes_once_kills_on_y():
+def test_resolve_process_conflicts_kills_on_y():
     with (
         patch(
             "ltbox.main._get_running_processes",
@@ -139,6 +139,6 @@ def test_handle_conflicting_processes_once_kills_on_y():
         patch("ltbox.main.ui.prompt", return_value="y"),
         patch("ltbox.main._force_kill_processes") as kill_processes,
     ):
-        main._handle_conflicting_processes_once()
+        main._resolve_process_conflicts()
 
     kill_processes.assert_called_once_with(["adb.exe", "fastboot.exe"])

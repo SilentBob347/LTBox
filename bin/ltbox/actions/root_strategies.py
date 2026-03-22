@@ -567,7 +567,7 @@ class LkmRootStrategy(InitBootRootStrategy):
                 self.is_tagged_build = True
                 self.workflow_id = ""
 
-    def _perform_nightly_download(
+    def _download_nightly(
         self,
         repo,
         workflow_id,
@@ -596,10 +596,10 @@ class LkmRootStrategy(InitBootRootStrategy):
                 manager_fallback_names=self.repo_config.get("manager_fallbacks"),
             )
 
-            mgr_zip_path = temp_dl_dir / manager_zip
+            manager_zip_path = temp_dl_dir / manager_zip
             apk_found = False
-            if mgr_zip_path.exists():
-                with zipfile.ZipFile(mgr_zip_path, "r") as zf:
+            if manager_zip_path.exists():
+                with zipfile.ZipFile(manager_zip_path, "r") as zf:
                     for name in zf.namelist():
                         if name.endswith(".apk"):
                             with (
@@ -670,7 +670,7 @@ class LkmRootStrategy(InitBootRootStrategy):
                     utils.ui.error(get_string("err_download_workflow"))
                     return False
 
-            return self._perform_nightly_download(
+            return self._download_nightly(
                 repo,
                 workflow_id,
                 manager,

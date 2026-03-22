@@ -38,7 +38,7 @@ def _build_command_definitions() -> List[CommandDefinition]:
         CommandDefinition(
             name="root_device_gki",
             func=actions.root_device,
-            title=get_string("task_title_root_gki"),
+            title=get_string("task_title_root_device").format(mode="GKI"),
             default_kwargs={"gki": True},
         ),
         CommandDefinition(
@@ -50,14 +50,14 @@ def _build_command_definitions() -> List[CommandDefinition]:
         ),
         CommandDefinition(
             name="patch_root_image_file_flash_gki",
-            func=actions.patch_root_image_file_and_flash,
+            func=actions.patch_and_flash_root,
             title=get_string("task_title_root_file_gki"),
             default_kwargs={"gki": True},
         ),
         CommandDefinition(
             name="root_device_apatch",
             func=actions.root_device,
-            title=get_string("task_title_root_gki") + " (APatch)",
+            title=get_string("task_title_root_device").format(mode="GKI") + " (APatch)",
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(
@@ -69,14 +69,14 @@ def _build_command_definitions() -> List[CommandDefinition]:
         ),
         CommandDefinition(
             name="patch_root_image_file_flash_apatch",
-            func=actions.patch_root_image_file_and_flash,
+            func=actions.patch_and_flash_root,
             title=get_string("task_title_root_file_gki") + " (APatch)",
             default_kwargs={"gki": True, "root_type": "folkpatch"},
         ),
         CommandDefinition(
             name="root_device_lkm",
             func=actions.root_device,
-            title=get_string("task_title_root_lkm"),
+            title=get_string("task_title_root_device").format(mode="LKM"),
             default_kwargs={"gki": False},
         ),
         CommandDefinition(
@@ -88,7 +88,7 @@ def _build_command_definitions() -> List[CommandDefinition]:
         ),
         CommandDefinition(
             name="patch_root_image_file_flash_lkm",
-            func=actions.patch_root_image_file_and_flash,
+            func=actions.patch_and_flash_root,
             title=get_string("task_title_root_file_lkm"),
             default_kwargs={"gki": False},
         ),
@@ -98,13 +98,13 @@ def _build_command_definitions() -> List[CommandDefinition]:
             title=get_string("task_title_unroot"),
         ),
         CommandDefinition(
-            name="rebuild_vbmeta_for_modified_images",
-            func=actions.rebuild_vbmeta_for_modified_images,
-            title=get_string("task_title_rebuild_vbmeta_for_modified_images"),
+            name="rebuild_vbmeta",
+            func=actions.rebuild_vbmeta,
+            title=get_string("task_title_rebuild_vbmeta"),
         ),
         CommandDefinition(
-            name="sign_and_flash_twrp",
-            func=actions.sign_and_flash_twrp,
+            name="sign_and_flash_recovery",
+            func=actions.sign_and_flash_recovery,
             title=get_string("task_title_rec_flash"),
         ),
         CommandDefinition(
@@ -135,13 +135,13 @@ def _build_command_definitions() -> List[CommandDefinition]:
         ),
         CommandDefinition(
             name="read_anti_rollback",
-            func=actions.read_anti_rollback_from_device,
+            func=actions.read_device_anti_rollback,
             title=get_string("task_title_read_arb"),
             result_handler=_handle_read_anti_rollback_result,
         ),
         CommandDefinition(
             name="patch_anti_rollback",
-            func=actions.patch_anti_rollback_in_rom,
+            func=actions.patch_rom_anti_rollback,
             title=get_string("task_title_patch_arb"),
             require_dev=False,
         ),
@@ -176,8 +176,8 @@ def _build_command_definitions() -> List[CommandDefinition]:
             title=get_string("task_title_flash_full_firmware"),
         ),
         CommandDefinition(
-            name="flash_partition_labels",
-            func=actions.flash_partition_labels,
+            name="flash_selected_partitions",
+            func=actions.flash_selected_partitions,
             title=get_string("task_title_flash_partitions_label"),
         ),
         CommandDefinition(

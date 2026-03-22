@@ -66,7 +66,7 @@ def get_partition_params(
     return None
 
 
-def ensure_params_or_fail(label: str) -> Dict[str, Any]:
+def require_partition_params(label: str) -> Dict[str, Any]:
     xmls = scan_and_decrypt_xmls()
     if not xmls:
         raise FileNotFoundError(get_string("act_err_no_xml_dump"))
