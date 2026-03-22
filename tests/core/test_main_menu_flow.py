@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import MagicMock
 
 from ltbox import menu_data, menu_router
@@ -154,7 +155,67 @@ def test_resolve_settings_preset_label():
     assert menu_router._resolve_settings_preset_label(AppState(preset_code="-")) == "-"
 
 
-def test_settings_menu_preset_selection_applies_values(monkeypatch):
+@pytest.mark.parametrize(
+    "initial_state, expected",
+    [
+        pytest.param(
+            AppState(),
+            {
+                "preset_code": "2",
+                "target_region": "ROW",
+                "modify_region_code": True,
+                "skip_rollback": False,
+            },
+            id="default_to_preset_2",
+        ),
+        pytest.param(
+            AppState(
+                target_region="ROW",
+                modify_region_code=True,
+                skip_rollback=False,
+                preset_code="2",
+            ),
+            {
+                "preset_code": "3",
+                "target_region": "ROW",
+                "modify_region_code": False,
+                "skip_rollback": True,
+            },
+            id="preset_2_to_3",
+        ),
+        pytest.param(
+            AppState(
+                target_region="PRC",
+                modify_region_code=True,
+                skip_rollback=False,
+                preset_code="2",
+            ),
+            {
+                "preset_code": "3",
+                "target_region": "PRC",
+                "modify_region_code": False,
+                "skip_rollback": True,
+            },
+            id="preset_3_keeps_region",
+        ),
+        pytest.param(
+            AppState(
+                target_region="ROW",
+                modify_region_code=False,
+                skip_rollback=True,
+                preset_code="-",
+            ),
+            {
+                "preset_code": "1",
+                "target_region": "PRC",
+                "modify_region_code": True,
+                "skip_rollback": False,
+            },
+            id="dash_to_preset_1",
+        ),
+    ],
+)
+def test_settings_menu_preset_selection_cycle(monkeypatch, initial_state, expected):
     actions = iter(["select_preset", "back"])
     monkeypatch.setattr(
         menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
@@ -164,17 +225,14 @@ def test_settings_menu_preset_selection_applies_values(monkeypatch):
         def __init__(self):
             self.skip_adb = False
 
-    state = AppState()
-    dev = DummyDev()
-
     next_state, action = menu_router.settings_menu(
-        dev, registry=MagicMock(), state=state
+        DummyDev(), registry=MagicMock(), state=initial_state
     )
 
-    assert next_state.target_region == "ROW"
-    assert next_state.modify_region_code is True
-    assert next_state.skip_rollback is False
-    assert next_state.preset_code == "2"
+    assert next_state.preset_code == expected["preset_code"]
+    assert next_state.target_region == expected["target_region"]
+    assert next_state.modify_region_code is expected["modify_region_code"]
+    assert next_state.skip_rollback is expected["skip_rollback"]
     assert action == menu_router.LoopAction.BACK
 
 
@@ -234,32 +292,6 @@ def test_advanced_menu_hides_convert_option_when_modify_region_off():
     assert "convert" not in option_actions
 
 
-def test_settings_menu_preset_selection_cycles_to_third_preset(monkeypatch):
-    actions = iter(["select_preset", "back"])
-    monkeypatch.setattr(
-        menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
-    )
-
-    class DummyDev:
-        def __init__(self):
-            self.skip_adb = False
-
-    state = AppState(
-        target_region="ROW",
-        modify_region_code=True,
-        skip_rollback=False,
-        preset_code="2",
-    )
-    dev = DummyDev()
-
-    next_state, _ = menu_router.settings_menu(dev, registry=MagicMock(), state=state)
-
-    assert next_state.target_region == "ROW"
-    assert next_state.modify_region_code is False
-    assert next_state.skip_rollback is True
-    assert next_state.preset_code == "3"
-
-
 def test_settings_menu_direct_toggle_recomputes_preset_code(monkeypatch):
     actions = iter(["toggle_modify_region_code", "back"])
     monkeypatch.setattr(
@@ -282,55 +314,3 @@ def test_settings_menu_direct_toggle_recomputes_preset_code(monkeypatch):
 
     assert next_state.modify_region_code is False
     assert next_state.preset_code == "-"
-
-
-def test_preset_three_does_not_change_target_region(monkeypatch):
-    actions = iter(["select_preset", "back"])
-    monkeypatch.setattr(
-        menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
-    )
-
-    class DummyDev:
-        def __init__(self):
-            self.skip_adb = False
-
-    state = AppState(
-        target_region="PRC",
-        modify_region_code=True,
-        skip_rollback=False,
-        preset_code="2",
-    )
-    dev = DummyDev()
-
-    next_state, _ = menu_router.settings_menu(dev, registry=MagicMock(), state=state)
-
-    assert next_state.target_region == "PRC"
-    assert next_state.modify_region_code is False
-    assert next_state.skip_rollback is True
-    assert next_state.preset_code == "3"
-
-
-def test_settings_menu_preset_selection_from_dash_starts_at_first_preset(monkeypatch):
-    actions = iter(["select_preset", "back"])
-    monkeypatch.setattr(
-        menu_router, "select_menu_action", lambda *_args, **_kwargs: next(actions)
-    )
-
-    class DummyDev:
-        def __init__(self):
-            self.skip_adb = False
-
-    state = AppState(
-        target_region="ROW",
-        modify_region_code=False,
-        skip_rollback=True,
-        preset_code="-",
-    )
-    dev = DummyDev()
-
-    next_state, _ = menu_router.settings_menu(dev, registry=MagicMock(), state=state)
-
-    assert next_state.target_region == "PRC"
-    assert next_state.modify_region_code is True
-    assert next_state.skip_rollback is False
-    assert next_state.preset_code == "1"

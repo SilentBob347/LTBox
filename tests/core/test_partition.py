@@ -1,12 +1,23 @@
 import shutil
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from ltbox import partition
 from ltbox.actions import edl
 
-pytestmark = pytest.mark.integration
+
+def test_require_partition_params_raises_on_missing():
+    with (
+        patch(
+            "ltbox.partition.scan_and_decrypt_xmls",
+            return_value=[Path("dummy.xml")],
+        ),
+        patch("ltbox.partition.get_partition_params", return_value=None),
+    ):
+        with pytest.raises(ValueError):
+            partition.require_partition_params("nonexistent_label")
 
 
 def _copy_firmware_xml(fw_pkg, image_dir):
@@ -31,6 +42,7 @@ def _get_first_program(xml_path):
     return program
 
 
+@pytest.mark.integration
 def test_partition_params_from_firmware_xml(fw_pkg, mock_env):
     if not fw_pkg:
         pytest.skip("Firmware package not available")
@@ -42,13 +54,14 @@ def test_partition_params_from_firmware_xml(fw_pkg, mock_env):
     program = _get_first_program(xml_path)
     label = program.get("label")
 
-    params = partition.ensure_params_or_fail(label)
+    params = partition.require_partition_params(label)
 
     assert params["source_xml"] == xml_path.name
     assert params["lun"] == program.get("physical_partition_number")
     assert params["start_sector"] == program.get("start_sector")
 
 
+@pytest.mark.integration
 def test_flash_partition_target_uses_firmware_params(fw_pkg, mock_env):
     if not fw_pkg:
         pytest.skip("Firmware package not available")

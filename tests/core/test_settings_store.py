@@ -33,6 +33,22 @@ def test_settings_store_applies_valid_updates_from_validator_map(tmp_path):
     assert loaded.preset_code == "3"
 
 
+def test_settings_store_write_then_read_persistence(tmp_path):
+    path = tmp_path / "settings.json"
+    store1 = main.SettingsStore(path)
+    store1.update(
+        language="ru", target_region="ROW", skip_rollback=True, preset_code="2"
+    )
+
+    store2 = main.SettingsStore(path)
+    loaded = store2.load()
+
+    assert loaded.language == "ru"
+    assert loaded.target_region == "ROW"
+    assert loaded.skip_rollback is True
+    assert loaded.preset_code == "2"
+
+
 def test_settings_store_defaults_preset_when_missing(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(
