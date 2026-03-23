@@ -126,6 +126,11 @@ def _build_command_definitions() -> List[CommandDefinition]:
             title=get_string("task_title_disable_ota"),
         ),
         CommandDefinition(
+            name="reenable_ota",
+            func=actions.reenable_ota,
+            title=get_string("task_title_reenable_ota"),
+        ),
+        CommandDefinition(
             name="rescue_ota",
             func=actions.rescue_after_ota,
             title=get_string("task_title_rescue"),

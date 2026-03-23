@@ -49,10 +49,13 @@ Same as option 1, but modifies the XML scripts to **preserve user data** (skips 
 **`3. Rescue after OTA`**
 Attempts to fix boot issues caused by taking a Full OTA update on a converted device by dumping & patching essential partitions.
 
-**`4. Disable OTA`**
+**`4. Disable System Updates`**
 Connects to the device in ADB mode and disables system update packages to prevent automatic updates.
 
-**`5. Root device`**
+**`5. Re-enable System Updates`**
+Reverses the OTA disable changes by re-enabling automatic updates and reinstalling system update packages.
+
+**`6. Root device`**
 Opens the root selection menu. Available root types:
 * **KernelSU / KernelSU Next** — LKM & GKI mode
 * **SukiSU Ultra / ReSukiSU** — LKM mode
@@ -60,7 +63,7 @@ Opens the root selection menu. Available root types:
 
 Currently, rooting on the Legion Tab Y700 2nd Gen is only possible using KernelSU Next GKI mode and APatch / FolkPatch.
 
-**`6. Unroot device`**
+**`7. Unroot device`**
 Restores the device to a non-rooted state by flashing the stock image from backups.
 
 **`0. Settings`**

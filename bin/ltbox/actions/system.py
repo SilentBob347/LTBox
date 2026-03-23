@@ -52,6 +52,25 @@ def disable_ota(dev: device.DeviceController) -> None:
     utils.ui.echo(get_string("act_ota_finished"))
 
 
+def reenable_ota(dev: device.DeviceController) -> None:
+
+    utils.ui.echo(get_string("act_start_reenable_ota"))
+
+    dev.adb.wait_for_device()
+
+    utils.ui.echo(get_string("act_reenable_ota_settings_put"))
+    _safe_shell(
+        dev,
+        "settings put global ota_disable_automatic_update 0",
+        get_string("act_ota_warn_failed_settings"),
+    )
+
+    packages = ["com.lenovo.ota", "com.tblenovo.lenovowhatsnew", "com.lenovo.tbengine"]
+    _reenable_ota_packages(dev, packages)
+
+    utils.ui.echo(get_string("act_reenable_ota_finished"))
+
+
 def _disable_ota_packages(
     dev: device.DeviceController,
     packages: list[str],
@@ -60,6 +79,25 @@ def _disable_ota_packages(
         _clear_package_data(dev, pkg)
         utils.ui.echo(get_string("act_ota_uninstalling").format(pkg=pkg))
         _uninstall_package(dev, pkg)
+
+
+def _reenable_ota_packages(
+    dev: device.DeviceController,
+    packages: list[str],
+) -> None:
+    for pkg in packages:
+        utils.ui.echo(get_string("act_reenable_ota_reinstalling").format(pkg=pkg))
+        _reinstall_package(dev, pkg)
+
+
+def _reinstall_package(dev: device.DeviceController, package: str) -> None:
+    output = _safe_shell(dev, f"cmd package install-existing {package}")
+    if "installed" in output.lower():
+        utils.ui.echo(
+            get_string("act_reenable_ota_reinstall_success").format(pkg=package)
+        )
+    else:
+        utils.ui.echo(get_string("act_reenable_ota_reinstall_fail").format(pkg=package))
 
 
 def _clear_package_data(dev: device.DeviceController, package: str) -> None:
