@@ -237,7 +237,7 @@
   "act_unroot_menu_2_lkm": "Restore LKM (init_boot, vbmeta)",
   "act_unroot_menu_3_gki": "Restore APatch/GKI (boot)",
   "act_unroot_menu_title": "Unroot Mode",
-  "act_unroot_prompt_all": "[!] No backup found.\n\n  LKM: Place init_boot.img + vbmeta.img in '{lkm_dir}'.\n  GKI: Place boot.img in '{gki_dir}'.",
+  "act_unroot_prompt_all": "[!] No backup found.\n\n  LKM: Place init_boot.img + vbmeta.img in '{lkm_dir}'.\n  GKI: Place boot.img + vbmeta.img in '{gki_dir}'.",
   "act_unroot_step1": "\n[STEP 1/4] Checking Requirements",
   "act_unroot_step3": "\n[STEP 3/4] Device Slot & Connection",
   "act_unroot_step4_gki": "[STEP 4/4] Flashing stock boot.img to {part}",
