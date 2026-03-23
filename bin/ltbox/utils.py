@@ -229,7 +229,7 @@ def _check_required_windows_drivers() -> None:
     if os.name != "nt":
         return
 
-    if not _is_driver_present(["qcser.inf", "lenovo_ser.inf"]):
+    if not _is_driver_present(["qcser.inf"]):
         msg = get_string("utils_err_missing_qdloader_driver")
         ui.error(msg)
         raise RuntimeError(msg)
