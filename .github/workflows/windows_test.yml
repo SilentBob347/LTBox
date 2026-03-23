@@ -73,9 +73,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: bin/tools
-          key: tools-bin-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/scripts/build_tools.py', 'tests/scripts/cache_fw.py', 'bin/ltbox/config.json', '.github/actions/setup-fw-env/action.yml', '.github/workflows/windows_test.yml') }}
+          key: tools-bin-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/scripts/build_tools.py', 'tests/scripts/cache_fw.py', 'bin/ltbox/config.json', '.github/ci-tools.json', '.github/actions/setup-fw-env/action.yml', '.github/workflows/windows_test.yml') }}
           restore-keys: |
             tools-bin-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Bundle CI tools
+        run: python .github/scripts/release/bundle-tools.py
 
       - name: Run Integration Tests
         run: |
