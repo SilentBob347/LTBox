@@ -20,6 +20,7 @@ jobs:
   preflight:
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 5
     outputs:
       tag_name: ${{ steps.preflight.outputs.tag_name }}
     defaults:
@@ -42,91 +43,28 @@ jobs:
           "- Tag: $env:TAG_NAME" >> $env:GITHUB_STEP_SUMMARY
           "- Config version matches tag ?" >> $env:GITHUB_STEP_SUMMARY
 
-  release:
+  build:
     needs: preflight
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
+    uses: ./.github/workflows/build-archive.yml
+    with:
+      tag-name: ${{ needs.preflight.outputs.tag_name }}
+    secrets: inherit
+
+  release:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Set release tag from preflight output
-        run: |
-          "TAG_NAME=${{ needs.preflight.outputs.tag_name }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Setup Environment & FW Cache
-        uses: ./.github/actions/setup-fw-env
+      - uses: actions/download-artifact@v7
         with:
-          fw-password: ${{ secrets.TEST_FW_PASSWORD }}
-          fw-url: ${{ secrets.TEST_FW_URL }}
-
-      - name: Install Tools from Cache
-        run: ./.github/scripts/release/install-tools-from-cache.ps1
-
-      - name: Download tools artifact from test job
-        uses: actions/download-artifact@v7
-        with:
-          name: tools-exe
-          path: bin/tools/
-
-      - name: Bundle base tools
-        run: python .github/scripts/release/bundle-tools.py
-
-      - name: Bundle Python environment
-        run: python .github/scripts/release/bundle-python.py
-
-      - name: Verify required release inputs
-        run: |
-          $requiredFiles = @(
-            'bin/tools/fh_loader.exe',
-            'bin/tools/QSaharaServer.exe',
-            'bin/tools/magiskboot.exe',
-            'bin/tools/adb.exe',
-            'bin/tools/fastboot.exe',
-            'bin/tools/avbtool.py',
-            'bin/tools/kptools.exe',
-            'bin/tools/testkey_rsa4096.pem',
-            'bin/tools/testkey_rsa2048.pem',
-            'bin/python3/python.exe'
-          )
-
-          foreach ($required in $requiredFiles) {
-            if (-not (Test-Path $required)) {
-              throw "[release][precheck] Missing required file: $required"
-            }
-            Write-Host "[release][precheck] Found $required"
-          }
-
-      - name: Create Archive
-        run: ./.github/scripts/release/create-archive.ps1 -TagName "$env:TAG_NAME"
-
-      - name: Generate Checksums
-        run: ./.github/scripts/release/generate-checksums.ps1 -TagName "$env:TAG_NAME"
-
-      - name: Verify release artifacts
-        run: |
-          $archive = "LTBox-win_amd64-$env:TAG_NAME.zip"
-          $checksum = "$archive.sha256"
-
-          if (-not (Test-Path $archive)) {
-            throw "[release][verify] Missing archive: $archive"
-          }
-          if (-not (Test-Path $checksum)) {
-            throw "[release][verify] Missing checksum: $checksum"
-          }
-
-          $archiveInfo = Get-Item $archive
-          Write-Host "[release][verify] Archive size: $([Math]::Round($archiveInfo.Length / 1MB, 2)) MB"
-
-          "### Release Artifacts" >> $env:GITHUB_STEP_SUMMARY
-          "- Archive: $archive ($([Math]::Round($archiveInfo.Length / 1MB, 2)) MB)" >> $env:GITHUB_STEP_SUMMARY
-          "- Checksum: $checksum" >> $env:GITHUB_STEP_SUMMARY
+          name: build-archive
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG_NAME }}
+          tag_name: ${{ needs.preflight.outputs.tag_name }}
           prerelease: true
           generate_release_notes: true
           files: |

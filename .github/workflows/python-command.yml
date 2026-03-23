@@ -54,7 +54,7 @@ jobs:
             .mypy_cache
             .ruff_cache
             .pytest_cache
-          key: py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('bin/requirements.txt', 'bin/requirements-dev.txt', '.github/workflows/python-command.yml') }}
+          key: py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('bin/requirements.txt', 'bin/requirements-dev.txt') }}
           restore-keys: |
             py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-py${{ env.PYTHON_VERSION }}-
             py-tool-cache-v1-${{ runner.os }}-${{ runner.arch }}-

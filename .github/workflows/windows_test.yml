@@ -6,40 +6,22 @@ concurrency:
 
 on:
   workflow_call:
-    inputs:
-      force_run:
-        type: boolean
-        required: false
-        default: true
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ inputs.force_run == true || 'true' }}
-    steps:
-      - run: echo "Workflow called — skipping path filter"
-
   unit-test:
-    if: ${{ needs.changes.outputs.should_run == 'true' }}
-    needs: changes
     uses: ./.github/workflows/python-command.yml
     with:
       task: unit
 
   architecture-test:
-    if: ${{ needs.changes.outputs.should_run == 'true' }}
-    needs: changes
     uses: ./.github/workflows/python-command.yml
     with:
       task: architecture
 
   integration-test:
-    if: ${{ needs.changes.outputs.should_run == 'true' }}
-    needs:
-      - changes
-      - unit-test
+    needs: unit-test
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       TEST_FW_URL: ${{ secrets.TEST_FW_URL }}
       TEST_FW_PASSWORD: ${{ secrets.TEST_FW_PASSWORD }}
