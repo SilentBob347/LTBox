@@ -46,7 +46,7 @@ The all-in-one automated task. It performs all steps (Convert, XML Prepare, Dump
 **`2. Install firmware to PRC/ROW device [KEEP DATA]`**
 Same as option 1, but modifies the XML scripts to **preserve user data** (skips `userdata` and `metadata` partitions).
 
-**`3. Rescue after OTA`**
+**`3. Rescue from Boot Loop After System Update`**
 Attempts to fix boot issues caused by taking a Full OTA update on a converted device by dumping & patching essential partitions.
 
 **`4. Disable System Updates`**
