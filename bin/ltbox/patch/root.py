@@ -3,7 +3,7 @@ import shutil
 import sys
 import subprocess
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from .. import constants as const
 from .. import device, downloader, utils
@@ -20,6 +20,7 @@ def patch_boot_with_root_algo(
     root_type: str = "ksu",
     skip_lkm_download: bool = False,
     superkey: Optional[str] = None,
+    kpm_paths: Optional[List[Path]] = None,
 ) -> Optional[Path]:
 
     img_name = const.FN_BOOT if gki else const.FN_INIT_BOOT
@@ -106,6 +107,9 @@ def patch_boot_with_root_algo(
             "-o",
             str(kernel_file),
         ]
+        if kpm_paths:
+            for kpm_path in kpm_paths:
+                cmd_patch.extend(["-M", str(kpm_path), "-T", "kpm"])
         res_patch = subprocess.run(
             cmd_patch, cwd=work_dir, capture_output=True, text=True
         )

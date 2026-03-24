@@ -3,7 +3,7 @@ import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .. import constants as const
 from .. import device, downloader, utils
@@ -331,6 +331,58 @@ class GkiRootStrategy(ConfigurableRootStrategy):
         return final_boot
 
 
+def _prompt_kpm_selection(kpm_files: List[Path]) -> List[Path]:
+    selected: Set[int] = set()
+
+    while True:
+        utils.ui.clear()
+        width = utils.ui.get_term_width()
+        utils.ui.echo("\n" + "=" * width)
+        utils.ui.echo(f"   {get_string('apatch_kpm_select_title')}")
+        utils.ui.echo("=" * width + "\n")
+
+        for i, kpm_file in enumerate(kpm_files):
+            mark = " [v]" if i in selected else ""
+            utils.ui.echo(f"  {i + 1:3d}. {kpm_file.name}{mark}")
+
+        utils.ui.echo("")
+        utils.ui.echo(f"   a. {get_string('apatch_kpm_select_all')}")
+        utils.ui.echo(f"   d. {get_string('apatch_kpm_deselect_all')}")
+        utils.ui.echo(f"   f. {get_string('apatch_kpm_select_done')}")
+        utils.ui.echo(f"   c. {get_string('cancel')}")
+        utils.ui.echo("\n" + "=" * width + "\n")
+
+        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
+        if choice == "f":
+            return [kpm_files[i] for i in sorted(selected)]
+        if choice == "c":
+            return []
+        if choice == "a":
+            selected = set(range(len(kpm_files)))
+            continue
+        if choice == "d":
+            selected.clear()
+            continue
+
+        try:
+            idx = int(choice)
+        except ValueError:
+            utils.ui.error(get_string("err_invalid_selection"))
+            input(get_string("press_enter_to_continue"))
+            continue
+
+        if not 1 <= idx <= len(kpm_files):
+            utils.ui.error(get_string("err_invalid_selection"))
+            input(get_string("press_enter_to_continue"))
+            continue
+
+        i = idx - 1
+        if i in selected:
+            selected.remove(i)
+        else:
+            selected.add(i)
+
+
 class APatchStrategy(GkiRootStrategy):
     spec = RootStrategySpec(
         image_name=const.FN_BOOT,
@@ -441,6 +493,51 @@ class APatchStrategy(GkiRootStrategy):
             utils.ui.error(get_string("apatch_superkey_invalid"))
 
         utils.ui.clear()
+        kpm_paths: List[Path] = []
+
+        choice = ""
+        while choice not in ("y", "n"):
+            choice = input(get_string("apatch_kpm_ask_embed")).strip().lower()
+
+        if choice == "y":
+            kpm_dir = work_dir / "kpm"
+            kpm_dir.mkdir(exist_ok=True)
+
+            utils.ui.clear()
+            utils.ui.echo(
+                get_string("apatch_kpm_folder_instruction").format(path=kpm_dir)
+            )
+
+            kpm_files: List[Path] = []
+            try:
+                while True:
+                    input(get_string("press_enter_to_continue"))
+                    kpm_files = sorted(kpm_dir.glob("*.kpm"))
+                    if kpm_files:
+                        break
+                    utils.ui.error(
+                        get_string("apatch_kpm_no_files_found").format(path=kpm_dir)
+                    )
+            except KeyboardInterrupt:
+                utils.ui.echo("")
+                kpm_files = []
+
+            if kpm_files:
+                selected = _prompt_kpm_selection(kpm_files)
+                if selected:
+                    kpm_paths = selected
+                    utils.ui.clear()
+                    utils.ui.echo(
+                        get_string("apatch_kpm_embedding").format(count=len(kpm_paths))
+                    )
+                else:
+                    utils.ui.echo(get_string("apatch_kpm_skipped"))
+            else:
+                utils.ui.echo(get_string("apatch_kpm_skipped"))
+        else:
+            utils.ui.echo(get_string("apatch_kpm_skipped"))
+
+        utils.ui.clear()
         kpimg_src = self._staging_dir / "kpimg"
         if kpimg_src.exists():
             import shutil
@@ -457,6 +554,7 @@ class APatchStrategy(GkiRootStrategy):
             gki=True,
             root_type=self.root_type,
             superkey=superkey,
+            kpm_paths=kpm_paths,
         )
 
 

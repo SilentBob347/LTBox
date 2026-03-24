@@ -96,7 +96,7 @@ def test_root_patch_strategies(
         setup_fn(setup_context)
 
         input_context = (
-            patch("builtins.input", return_value=input_value)
+            patch("builtins.input", side_effect=[input_value, "n"])
             if input_value is not None
             else nullcontext()
         )
