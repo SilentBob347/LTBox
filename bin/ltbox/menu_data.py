@@ -305,7 +305,6 @@ def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
 def get_settings_menu_data(
     preset_label: str,
     skip_adb_state: str,
-    skip_rb_state: str,
     modify_region_code_enabled: bool,
     target_region: str,
 ) -> List[MenuItem]:
@@ -348,18 +347,10 @@ def get_settings_menu_data(
                 ),
                 action="toggle_adb",
             ),
-            MenuSpec(
-                "option",
-                key="5",
-                text=lambda: get_string("menu_settings_skip_rb").format(
-                    state=skip_rb_state
-                ),
-                action="toggle_rollback",
-            ),
             MenuSpec("separator"),
             MenuSpec(
                 "option",
-                key="6",
+                key="5",
                 text=lambda: (
                     f"{get_string('menu_settings_lang')}: [{get_string('_lang')}]"
                 ),
@@ -367,7 +358,7 @@ def get_settings_menu_data(
             ),
             MenuSpec(
                 "option",
-                key="7",
+                key="6",
                 text=lambda: get_string("menu_settings_check_update"),
                 action="check_update",
             ),

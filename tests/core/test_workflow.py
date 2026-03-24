@@ -16,6 +16,7 @@ def test_patch_all_flow_standard(mock_env):
         patch("ltbox.workflow.utils.ui"),
         patch("ltbox.workflow._wait_for_input_images"),
         patch("ltbox.workflow._cleanup_previous_outputs"),
+        patch("ltbox.workflow.time.sleep"),
     ):
         mock_actions.read_anti_rollback.return_value = ("OK", "PASS")
 
@@ -40,6 +41,7 @@ def test_patch_all_passes_modify_region_code_flag():
         patch("ltbox.workflow.utils.ui"),
         patch("ltbox.workflow._wait_for_input_images"),
         patch("ltbox.workflow._cleanup_previous_outputs"),
+        patch("ltbox.workflow.time.sleep"),
     ):
         mock_actions.read_anti_rollback.return_value = ("OK", "PASS")
 
@@ -71,15 +73,18 @@ def test_patch_all_writes_flash_log_under_log_directory(tmp_path):
     assert log_file.suffix == ".txt"
 
 
-def test_patch_all_skip_arb():
+def test_patch_all_skip_arb_when_device_has_no_arb():
     mock_dev = make_device_mock()
+    mock_dev.fastboot.check_anti_rollback.return_value = False
+    mock_dev.fastboot.continue_boot.return_value = None
     with (
         patch("ltbox.workflow.actions") as mock_actions,
         patch("ltbox.workflow.utils.ui"),
         patch("ltbox.workflow._wait_for_input_images"),
         patch("ltbox.workflow._cleanup_previous_outputs"),
+        patch("ltbox.workflow.time.sleep"),
     ):
-        workflow.patch_all(dev=mock_dev, skip_rollback=True)
+        workflow.patch_all(dev=mock_dev)
 
         mock_actions.read_anti_rollback.assert_not_called()
 

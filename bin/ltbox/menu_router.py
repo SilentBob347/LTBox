@@ -308,7 +308,6 @@ def settings_menu(
                 next_state,
                 target_region="PRC",
                 modify_region_code=True,
-                skip_rollback=False,
                 preset_code="1",
             )
         elif preset_choice == "2":
@@ -316,14 +315,12 @@ def settings_menu(
                 next_state,
                 target_region="ROW",
                 modify_region_code=True,
-                skip_rollback=False,
                 preset_code="2",
             )
         elif preset_choice == "3":
             next_state = replace(
                 next_state,
                 modify_region_code=False,
-                skip_rollback=True,
                 preset_code="3",
             )
 
@@ -351,12 +348,6 @@ def settings_menu(
         next_state = replace(next_state, skip_adb=not next_state.skip_adb)
         dev.skip_adb = next_state.skip_adb
 
-    def _toggle_rollback():
-        nonlocal next_state
-        next_state = replace(
-            next_state, skip_rollback=not next_state.skip_rollback, preset_code="-"
-        )
-
     def _toggle_modify_region_code():
         nonlocal next_state
         next_state = replace(
@@ -376,7 +367,6 @@ def settings_menu(
         "select_preset": _select_preset,
         "toggle_region": _toggle_region,
         "toggle_adb": _toggle_adb,
-        "toggle_rollback": _toggle_rollback,
         "toggle_modify_region_code": _toggle_modify_region_code,
         "change_lang": _change_lang,
         "check_update": _handle_update_check,
@@ -391,7 +381,6 @@ def settings_menu(
         lambda: menu_data.get_settings_menu_data(
             _preset_label_from_code(next_state.preset_code),
             "ON" if next_state.skip_adb else "OFF",
-            "ON" if next_state.skip_rollback else "OFF",
             next_state.modify_region_code,
             next_state.target_region,
         ),
@@ -406,7 +395,6 @@ def settings_menu(
 def build_task_kwargs(action: str, state: AppState) -> Dict[str, Any]:
     extras: Dict[str, Any] = {}
     if action in [MainMenuAction.PATCH_ALL, MainMenuAction.PATCH_ALL_WIPE]:
-        extras["skip_rollback"] = state.skip_rollback
         extras["target_region"] = state.target_region
         extras["modify_region_code"] = state.modify_region_code
     return extras

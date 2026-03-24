@@ -40,7 +40,6 @@ class AppSettings:
     language: Optional[str] = None
     target_region: str = "PRC"
     modify_region_code: bool = True
-    skip_rollback: bool = False
     preset_code: str = "1"
 
     _ALLOWED_TARGET_REGIONS: ClassVar[set[str]] = {"PRC", "ROW"}
@@ -58,7 +57,6 @@ class AppSettings:
     def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
         target_region = cls.validate_target_region(data.get("target_region", "PRC"))
         modify_region_code = bool(data.get("modify_region_code", True))
-        skip_rollback = bool(data.get("skip_rollback", False))
         preset_code = data.get("preset_code", "1")
         if preset_code not in cls._ALLOWED_PRESET_CODES:
             preset_code = "1"
@@ -66,7 +64,6 @@ class AppSettings:
             language=cls.validate_language(data.get("language")),
             target_region=target_region,
             modify_region_code=modify_region_code,
-            skip_rollback=skip_rollback,
             preset_code=preset_code,
         )
 
@@ -76,7 +73,6 @@ class SettingsStore:
         "language": lambda value: isinstance(value, str),
         "target_region": lambda value: value in AppSettings._ALLOWED_TARGET_REGIONS,
         "modify_region_code": lambda value: isinstance(value, bool),
-        "skip_rollback": lambda value: isinstance(value, bool),
         "preset_code": lambda value: value in AppSettings._ALLOWED_PRESET_CODES,
     }
 
@@ -342,7 +338,6 @@ def _run_entry_mode(
             initial_state=AppState(
                 target_region=settings.target_region,
                 modify_region_code=settings.modify_region_code,
-                skip_rollback=settings.skip_rollback,
                 preset_code=settings.preset_code,
                 language=settings.language,
             ),
@@ -350,7 +345,6 @@ def _run_entry_mode(
         settings_store.update(
             target_region=final_state.target_region,
             modify_region_code=final_state.modify_region_code,
-            skip_rollback=final_state.skip_rollback,
             preset_code=final_state.preset_code,
             language=final_state.language,
         )

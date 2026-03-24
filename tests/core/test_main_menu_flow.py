@@ -90,12 +90,11 @@ def test_build_root_dispatch_map_routes_with_selected_type_breadcrumbs(monkeypat
 
 
 def test_build_task_kwargs_uses_app_state_for_patch_actions():
-    state = AppState(skip_rollback=True, modify_region_code=False, target_region="ROW")
+    state = AppState(modify_region_code=False, target_region="ROW")
 
     extras = menu_router.build_task_kwargs(menu_router.MainMenuAction.PATCH_ALL, state)
 
     assert extras == {
-        "skip_rollback": True,
         "modify_region_code": False,
         "target_region": "ROW",
     }
@@ -107,7 +106,6 @@ def test_settings_menu_returns_updated_state(monkeypatch):
         [
             "toggle_region",
             "toggle_adb",
-            "toggle_rollback",
             "toggle_modify_region_code",
             "back",
         ]
@@ -129,7 +127,6 @@ def test_settings_menu_returns_updated_state(monkeypatch):
 
     assert next_state == AppState(
         skip_adb=True,
-        skip_rollback=True,
         modify_region_code=False,
         target_region="ROW",
         preset_code="-",
@@ -164,7 +161,6 @@ def test_resolve_settings_preset_label():
                 "preset_code": "2",
                 "target_region": "ROW",
                 "modify_region_code": True,
-                "skip_rollback": False,
             },
             id="default_to_preset_2",
         ),
@@ -172,14 +168,12 @@ def test_resolve_settings_preset_label():
             AppState(
                 target_region="ROW",
                 modify_region_code=True,
-                skip_rollback=False,
                 preset_code="2",
             ),
             {
                 "preset_code": "3",
                 "target_region": "ROW",
                 "modify_region_code": False,
-                "skip_rollback": True,
             },
             id="preset_2_to_3",
         ),
@@ -187,14 +181,12 @@ def test_resolve_settings_preset_label():
             AppState(
                 target_region="PRC",
                 modify_region_code=True,
-                skip_rollback=False,
                 preset_code="2",
             ),
             {
                 "preset_code": "3",
                 "target_region": "PRC",
                 "modify_region_code": False,
-                "skip_rollback": True,
             },
             id="preset_3_keeps_region",
         ),
@@ -202,14 +194,12 @@ def test_resolve_settings_preset_label():
             AppState(
                 target_region="ROW",
                 modify_region_code=False,
-                skip_rollback=True,
                 preset_code="-",
             ),
             {
                 "preset_code": "1",
                 "target_region": "PRC",
                 "modify_region_code": True,
-                "skip_rollback": False,
             },
             id="dash_to_preset_1",
         ),
@@ -232,7 +222,6 @@ def test_settings_menu_preset_selection_cycle(monkeypatch, initial_state, expect
     assert next_state.preset_code == expected["preset_code"]
     assert next_state.target_region == expected["target_region"]
     assert next_state.modify_region_code is expected["modify_region_code"]
-    assert next_state.skip_rollback is expected["skip_rollback"]
     assert action == menu_router.LoopAction.BACK
 
 
@@ -240,18 +229,16 @@ def test_settings_menu_data_orders_modify_region_before_skip_adb():
     items = menu_data.get_settings_menu_data(
         preset_label="x",
         skip_adb_state="OFF",
-        skip_rb_state="OFF",
         modify_region_code_enabled=True,
         target_region="PRC",
     )
     option_actions = [i.action for i in items if i.item_type == "option"]
 
-    assert option_actions[:5] == [
+    assert option_actions[:4] == [
         "select_preset",
         "toggle_modify_region_code",
         "toggle_region",
         "toggle_adb",
-        "toggle_rollback",
     ]
 
 
@@ -259,7 +246,6 @@ def test_settings_menu_hides_region_toggle_when_modify_region_off():
     items = menu_data.get_settings_menu_data(
         preset_label="x",
         skip_adb_state="OFF",
-        skip_rb_state="OFF",
         modify_region_code_enabled=False,
         target_region="PRC",
     )
@@ -268,7 +254,7 @@ def test_settings_menu_hides_region_toggle_when_modify_region_off():
     option_keys = [i.key for i in option_items if i.key.isdigit()]
 
     assert "toggle_region" not in option_actions
-    assert option_keys == ["1", "2", "4", "5", "6", "7"]
+    assert option_keys == ["1", "2", "4", "5", "6"]
 
 
 def test_main_menu_hides_region_name_when_modify_region_off():
@@ -305,7 +291,6 @@ def test_settings_menu_direct_toggle_recomputes_preset_code(monkeypatch):
     state = AppState(
         target_region="PRC",
         modify_region_code=True,
-        skip_rollback=False,
         preset_code="1",
     )
     dev = DummyDev()

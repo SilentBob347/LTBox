@@ -17,5 +17,6 @@ class TaskContext:
     boot_target: Optional[str] = None
     vbmeta_target: Optional[str] = None
     backup_dir_name: Optional[str] = None
+    arb_patched: bool = False
 
     on_log: Callable[[str], None] = field(default_factory=lambda: lambda s: print(s))

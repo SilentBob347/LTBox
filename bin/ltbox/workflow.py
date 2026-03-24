@@ -1,4 +1,5 @@
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
@@ -69,6 +70,29 @@ def _decrypt_and_modify_xml(ctx: TaskContext) -> None:
     actions.modify_xml(wipe=ctx.wipe)
 
 
+def _detect_anti_rollback(ctx: TaskContext) -> None:
+    if ctx.dev.skip_adb:
+        ctx.on_log(get_string("wf_arb_detect_skip_adb"))
+        return
+
+    ctx.on_log(get_string("wf_arb_detect_start"))
+
+    ctx.dev.ensure_fastboot_mode()
+
+    has_arb = ctx.dev.fastboot.check_anti_rollback()
+
+    if has_arb:
+        ctx.on_log(get_string("wf_arb_detect_enabled"))
+    else:
+        ctx.skip_rollback = True
+        ctx.on_log(get_string("wf_arb_detect_disabled"))
+
+    ctx.dev.fastboot.continue_boot()
+
+    ctx.on_log(get_string("wf_arb_detect_resume"))
+    time.sleep(10)
+
+
 def _dump_images(ctx: TaskContext) -> None:
     ctx.skip_dp_workflow = ctx.wipe == 0
 
@@ -111,6 +135,11 @@ def _check_and_patch_arb(ctx: TaskContext) -> None:
 
     if arb_status_result[0] == "ERROR":
         raise LTBoxError(get_string("wf_step8_err_arb_abort"))
+
+    from .actions.arb import ArbStatus
+
+    if arb_status_result[0] == ArbStatus.NEEDS_PATCH:
+        ctx.arb_patched = True
 
     actions.patch_anti_rollback(comparison_result=arb_status_result)
 
@@ -179,6 +208,7 @@ def _build_steps(ctx: TaskContext) -> list[WorkflowStep]:
         ),
         WorkflowStep("wf_step4_convert", lambda: _convert_region_images(ctx)),
         WorkflowStep("wf_step5_modify_xml", lambda: _decrypt_and_modify_xml(ctx)),
+        WorkflowStep(None, lambda: _detect_anti_rollback(ctx)),
         WorkflowStep("wf_step6_dump", lambda: _run_dump_step(ctx)),
         WorkflowStep(None, lambda: _run_patch_dp_step(ctx)),
         WorkflowStep(None, lambda: _run_arb_step(ctx)),
@@ -198,14 +228,12 @@ def _log_active_slot(ctx: TaskContext) -> None:
 def patch_all(
     dev: device.DeviceController,
     wipe: int = 0,
-    skip_rollback: bool = False,
     modify_region_code: bool = True,
     target_region: str = "PRC",
 ) -> str:
     ctx = TaskContext(
         dev=dev,
         wipe=wipe,
-        skip_rollback=skip_rollback,
         modify_region_code=modify_region_code,
         target_region=target_region,
         on_log=lambda s: utils.ui.info(s),
@@ -238,6 +266,9 @@ def patch_all(
 
             if ctx.backup_dir_name:
                 success_msg += f"\n\n{get_string('wf_backup_notice').format(dir=ctx.backup_dir_name)}"
+
+            if ctx.arb_patched:
+                success_msg += f"\n\n{get_string('wf_arb_patched_warning')}"
 
             success_msg += f"\n\n{get_string('wf_notice_widevine')}"
             return success_msg

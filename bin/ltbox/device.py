@@ -292,6 +292,32 @@ class FastbootManager(BaseDeviceManager):
             ui.warn(get_string("device_wait_fastboot_cancel"))
             raise
 
+    def check_anti_rollback(self) -> bool:
+        try:
+            result = utils.run_command(
+                [str(const.FASTBOOT_EXE), "getvar", "anti"],
+                capture=True,
+                check=False,
+            )
+            output = utils.format_command_output(result)
+            if "FAILED" in output or "not found" in output.lower():
+                return False
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise DeviceCommandError(get_string("device_err_check_arb").format(e=e), e)
+
+    def continue_boot(self) -> None:
+        try:
+            utils.run_command(
+                [str(const.FASTBOOT_EXE), "continue"],
+                capture=True,
+                check=False,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise DeviceCommandError(
+                get_string("device_err_fastboot_continue").format(e=e), e
+            )
+
 
 class EdlManager(BaseDeviceManager):
     @contextlib.contextmanager
