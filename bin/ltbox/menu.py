@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .i18n import get_string
 from .menu_data import MenuItem
@@ -22,12 +22,31 @@ except ImportError:
     questionary = None  # type: ignore
 
 
+class _LiveStatusText:
+    """Text object whose __format__ returns fresh status on each render."""
+
+    def __init__(self, status_fn: Callable[[], str]):
+        self._status_fn = status_fn
+
+    def __format__(self, spec: str) -> str:
+        return self._status_fn()
+
+    def __str__(self) -> str:
+        return self._status_fn()
+
+
 class TerminalMenu:
-    def __init__(self, title: str, breadcrumbs: Optional[str] = None):
+    def __init__(
+        self,
+        title: str,
+        breadcrumbs: Optional[str] = None,
+        status_fn: Optional[Callable[[], str]] = None,
+    ):
         self.title = title
         self.breadcrumbs = breadcrumbs
         self.options: List[Tuple[Optional[str], str, bool]] = []
         self.valid_keys: List[str] = []
+        self._status_fn = status_fn
 
     def add_option(self, key: str, text: str) -> None:
         self.options.append((key, text, True))
@@ -69,6 +88,10 @@ class TerminalMenu:
     def show(self) -> None:
         self._render_header()
 
+        if self._status_fn and self.breadcrumbs is None:
+            ui.echo(f"   {self._status_fn()}")
+            ui.echo("")
+
         for key, text, is_selectable in self.options:
             if is_selectable:
                 ui.echo(f"   {key}. {text}")
@@ -85,7 +108,14 @@ class TerminalMenu:
         if questionary:
             self._render_header()
 
-            choices: List[Union[Choice, Separator]] = [Separator(" ")]
+            choices: List[Union[Choice, Separator]] = []
+
+            if self._status_fn and self.breadcrumbs is None:
+                choices.append(Separator(_LiveStatusText(self._status_fn)))  # type: ignore[arg-type]
+                choices.append(Separator(" "))
+            else:
+                choices.append(Separator(" "))
+
             for key, text, is_selectable in self.options:
                 if is_selectable and key is not None:
                     choices.append(Choice(f"{key}. {text}", value=key.lower()))
@@ -93,12 +123,17 @@ class TerminalMenu:
                     display_text = f"  {text}" if text else f"   {SEPARATOR_TEXT}"
                     choices.append(Separator(display_text))
 
+            extra_kwargs: Dict[str, Any] = {}
+            if self._status_fn and self.breadcrumbs is None:
+                extra_kwargs["refresh_interval"] = 3.0
+
             answer = questionary.select(
                 prompt_msg.strip(),
                 choices=choices,
                 qmark=">",
                 pointer="->",
                 instruction=get_string("prompt_use_arrow_keys"),
+                **extra_kwargs,
             ).ask()
 
             if answer is not None:
@@ -116,9 +151,12 @@ class TerminalMenu:
 
 
 def select_menu_action(
-    menu_items: List[MenuItem], title_key: str, breadcrumbs: Optional[str] = None
+    menu_items: List[MenuItem],
+    title_key: str,
+    breadcrumbs: Optional[str] = None,
+    status_fn: Optional[Callable[[], str]] = None,
 ) -> Optional[str]:
-    menu = TerminalMenu(get_string(title_key), breadcrumbs)
+    menu = TerminalMenu(get_string(title_key), breadcrumbs, status_fn=status_fn)
     menu.populate(menu_items)
 
     action_map = {

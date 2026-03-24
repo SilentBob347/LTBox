@@ -86,11 +86,14 @@ def _loop_menu(
     title_key: str,
     breadcrumbs: Union[None, str, Callable[[], Optional[str]]],
     action_handler: Callable[[str], MenuReturn],
+    status_fn: Optional[Callable[[], str]] = None,
 ) -> MenuReturn:
     while True:
         resolved_bc = breadcrumbs() if callable(breadcrumbs) else breadcrumbs
         menu_items = menu_items_factory()
-        action = select_menu_action(menu_items, title_key, breadcrumbs=resolved_bc)
+        action = select_menu_action(
+            menu_items, title_key, breadcrumbs=resolved_bc, status_fn=status_fn
+        )
 
         if action in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
             return LoopAction(action)
@@ -455,8 +458,13 @@ def main_loop(
     registry: CommandRegistry,
     initial_state: AppState,
 ) -> AppState:
+    from .device_status import DeviceStatusMonitor
+
     state = initial_state
     dev = device_controller_class(state.skip_adb)
+
+    monitor = DeviceStatusMonitor()
+    monitor.start()
 
     def _run_settings() -> MenuReturn:
         nonlocal state
@@ -483,14 +491,18 @@ def main_loop(
         run_task(action, dev, registry, extra_kwargs=extras)
         return None
 
-    action = _loop_menu(
-        lambda: menu_data.get_main_menu_data(
-            state.target_region, state.modify_region_code
-        ),
-        "menu_main_title",
-        None,
-        _handler,
-    )
+    try:
+        action = _loop_menu(
+            lambda: menu_data.get_main_menu_data(
+                state.target_region, state.modify_region_code
+            ),
+            "menu_main_title",
+            None,
+            _handler,
+            status_fn=monitor.get_status_text,
+        )
+    finally:
+        monitor.stop()
 
     if action == LoopAction.EXIT:
         sys.exit(0)
