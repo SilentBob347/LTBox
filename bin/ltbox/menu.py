@@ -110,9 +110,16 @@ class TerminalMenu:
 
             choices: List[Union[Choice, Separator]] = []
 
+            extra_kwargs: Dict[str, Any] = {}
+
             if self._status_fn and self.breadcrumbs is None:
+                ui.echo(f"   {self._status_fn()}")
+                ui.echo("")
+                choices.append(Separator(" "))
+            elif self._status_fn:
                 choices.append(Separator(_LiveStatusText(self._status_fn)))  # type: ignore[arg-type]
                 choices.append(Separator(" "))
+                extra_kwargs["refresh_interval"] = 3.0
             else:
                 choices.append(Separator(" "))
 
@@ -122,10 +129,6 @@ class TerminalMenu:
                 else:
                     display_text = f"  {text}" if text else f"   {SEPARATOR_TEXT}"
                     choices.append(Separator(display_text))
-
-            extra_kwargs: Dict[str, Any] = {}
-            if self._status_fn and self.breadcrumbs is None:
-                extra_kwargs["refresh_interval"] = 3.0
 
             answer = questionary.select(
                 prompt_msg.strip(),

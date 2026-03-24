@@ -398,20 +398,20 @@ def get_main_menu_data(
         MenuSpec(
             "option",
             key="3",
-            text=lambda: get_string("menu_main_rescue"),
-            action="rescue_ota",
-        ),
-        MenuSpec(
-            "option",
-            key="4",
             text=lambda: get_string("menu_main_disable_ota"),
             action="disable_ota",
         ),
         MenuSpec(
             "option",
-            key="5",
+            key="4",
             text=lambda: get_string("menu_main_reenable_ota"),
             action="reenable_ota",
+        ),
+        MenuSpec(
+            "option",
+            key="5",
+            text=lambda: get_string("menu_main_rescue"),
+            action="rescue_ota",
         ),
         MenuSpec("separator"),
         MenuSpec(
