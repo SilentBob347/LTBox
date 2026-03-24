@@ -429,6 +429,13 @@ def get_main_menu_data(
         MenuSpec("separator"),
         MenuSpec(
             "option",
+            key="r",
+            text=lambda: get_string("menu_main_reboot"),
+            action="menu_reboot",
+        ),
+        MenuSpec("separator"),
+        MenuSpec(
+            "option",
             key="0",
             text=lambda: get_string("menu_settings_title"),
             action="menu_settings",
@@ -441,4 +448,98 @@ def get_main_menu_data(
         ),
         *_navigation_specs(include_exit=True),
     ]
+    return _build_menu(specs)
+
+
+def get_reboot_menu_data(device_status_key: str) -> List[MenuItem]:
+    specs: List[MenuSpec] = []
+
+    if device_status_key == "device_status_adb":
+        specs.extend(
+            [
+                MenuSpec(
+                    "option",
+                    key="1",
+                    text=lambda: get_string("menu_reboot_system"),
+                    action="reboot_adb_system",
+                ),
+                MenuSpec(
+                    "option",
+                    key="2",
+                    text=lambda: get_string("menu_reboot_fastboot"),
+                    action="reboot_adb_bootloader",
+                ),
+                MenuSpec(
+                    "option",
+                    key="3",
+                    text=lambda: get_string("menu_reboot_fastbootd"),
+                    action="reboot_adb_fastboot",
+                ),
+                MenuSpec(
+                    "option",
+                    key="4",
+                    text=lambda: get_string("menu_reboot_edl"),
+                    action="reboot_adb_edl",
+                ),
+            ]
+        )
+    elif device_status_key == "device_status_fastboot":
+        specs.extend(
+            [
+                MenuSpec(
+                    "option",
+                    key="1",
+                    text=lambda: get_string("menu_reboot_system"),
+                    action="reboot_fb_system",
+                ),
+                MenuSpec(
+                    "option",
+                    key="2",
+                    text=lambda: get_string("menu_reboot_fastboot"),
+                    action="reboot_fb_bootloader",
+                ),
+                MenuSpec(
+                    "option",
+                    key="3",
+                    text=lambda: get_string("menu_reboot_fastbootd"),
+                    action="reboot_fb_fastboot",
+                ),
+                MenuSpec(
+                    "option",
+                    key="4",
+                    text=lambda: get_string("menu_reboot_edl"),
+                    action="reboot_fb_edl",
+                ),
+            ]
+        )
+    elif device_status_key == "device_status_edl":
+        specs.append(
+            MenuSpec(
+                "option",
+                key="1",
+                text=lambda: get_string("menu_reboot_system"),
+                action="reboot_edl_system",
+            )
+        )
+    elif device_status_key == "device_status_adb_required":
+        specs.append(
+            MenuSpec("label", text=lambda: get_string("menu_reboot_adb_required"))
+        )
+    else:
+        specs.append(
+            MenuSpec("label", text=lambda: get_string("menu_reboot_not_recognized"))
+        )
+
+    specs.extend(
+        [
+            MenuSpec("separator"),
+            MenuSpec(
+                "option",
+                key="r",
+                text=lambda: get_string("menu_reboot_refresh"),
+                action="refresh",
+            ),
+            *_navigation_specs(include_back=True),
+        ]
+    )
     return _build_menu(specs)

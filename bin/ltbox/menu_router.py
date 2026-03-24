@@ -1,3 +1,4 @@
+import os
 import sys
 from dataclasses import replace
 from enum import Enum
@@ -23,6 +24,7 @@ class MainMenuAction(str, Enum):
     SETTINGS = "menu_settings"
     ROOT = "menu_root"
     ADVANCED = "menu_advanced"
+    REBOOT = "menu_reboot"
     PATCH_ALL = "patch_all"
     PATCH_ALL_WIPE = "patch_all_wipe"
 
@@ -277,6 +279,144 @@ def root_menu(
                     return LoopAction.EXIT
 
 
+def _execute_reboot_command(action: str) -> None:
+    import subprocess
+
+    from . import constants as const
+
+    _CREATE_NO_WINDOW = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    )
+
+    adb_cmds = {
+        "reboot_adb_system": [str(const.ADB_EXE), "reboot"],
+        "reboot_adb_bootloader": [str(const.ADB_EXE), "reboot", "bootloader"],
+        "reboot_adb_fastboot": [str(const.ADB_EXE), "reboot", "fastboot"],
+        "reboot_adb_edl": [str(const.ADB_EXE), "reboot", "edl"],
+    }
+
+    fb_cmds = {
+        "reboot_fb_system": [str(const.FASTBOOT_EXE), "reboot"],
+        "reboot_fb_bootloader": [str(const.FASTBOOT_EXE), "reboot", "bootloader"],
+        "reboot_fb_fastboot": [str(const.FASTBOOT_EXE), "reboot", "fastboot"],
+        "reboot_fb_edl": [str(const.FASTBOOT_EXE), "oem", "edl"],
+    }
+
+    cmd = adb_cmds.get(action) or fb_cmds.get(action)
+    if cmd:
+        ui.clear()
+        ui.info(get_string("reboot_sending"))
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                timeout=15,
+                capture_output=True,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+            ui.info(get_string("reboot_sent_success"))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+            ui.error(get_string("reboot_failed").format(e=e))
+        input(get_string("press_enter_to_continue"))
+        return
+
+    if action == "reboot_edl_system":
+        _reboot_from_edl()
+        return
+
+
+def _reboot_from_edl() -> None:
+    import serial.tools.list_ports
+
+    from . import constants as const
+
+    ui.clear()
+    ui.info(get_string("reboot_edl_start"))
+
+    edl_port = None
+    for port in serial.tools.list_ports.comports():
+        hwid = (port.hwid or "").upper()
+        if "VID:PID=05C6:9008" in hwid:
+            edl_port = port.device
+            break
+
+    if not edl_port:
+        ui.error(get_string("reboot_edl_port_not_found"))
+        input(get_string("press_enter_to_continue"))
+        return
+
+    ui.info(get_string("reboot_edl_found_port").format(port=edl_port))
+
+    if not const.EDL_LOADER_FILE.exists():
+        ui.error(
+            get_string("reboot_edl_loader_missing").format(
+                file=const.EDL_LOADER_FILENAME, dir=const.IMAGE_DIR.name
+            )
+        )
+        input(get_string("press_enter_to_continue"))
+        return
+
+    import subprocess
+
+    _CREATE_NO_WINDOW = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    )
+
+    try:
+        port_str = f"\\\\.\\{edl_port}"
+
+        ui.info(get_string("reboot_edl_uploading"))
+        cmd_sahara = [
+            str(const.QSAHARASERVER_EXE),
+            "-p",
+            port_str,
+            "-s",
+            f"13:{const.EDL_LOADER_FILE}",
+        ]
+        subprocess.run(
+            cmd_sahara, check=True, timeout=30, creationflags=_CREATE_NO_WINDOW
+        )
+
+        import time
+
+        time.sleep(2)
+
+        ui.info(get_string("reboot_edl_resetting"))
+        cmd_reset = [
+            str(const.EDL_EXE),
+            f"--port={port_str}",
+            "--reset",
+            "--noprompt",
+        ]
+        subprocess.run(
+            cmd_reset, check=True, timeout=30, creationflags=_CREATE_NO_WINDOW
+        )
+
+        ui.info(get_string("reboot_sent_success"))
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        ui.error(get_string("reboot_edl_failed").format(e=e))
+        ui.warn(get_string("reboot_edl_manual_hint"))
+
+    input(get_string("press_enter_to_continue"))
+
+
+def reboot_menu(
+    monitor: Any,
+) -> MenuReturn:
+    def _handler(action: str) -> None:
+        if action == "refresh":
+            return
+        _execute_reboot_command(action)
+
+    return _loop_menu(
+        lambda: menu_data.get_reboot_menu_data(monitor.get_status_key()),
+        "menu_reboot_title",
+        lambda: get_string("menu_main_title"),
+        _handler,
+        status_fn=monitor.get_status_text,
+    )
+
+
 def _handle_update_check():
     ui.clear()
     ui.echo(get_string("act_update_checking"))
@@ -493,6 +633,7 @@ def main_loop(
         MainMenuAction.ADVANCED: lambda: advanced_menu(
             dev, registry, state.target_region, state.modify_region_code
         ),
+        MainMenuAction.REBOOT: lambda: reboot_menu(monitor),
     }
 
     def _handler(action: str) -> MenuReturn:

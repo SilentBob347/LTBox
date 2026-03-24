@@ -21,6 +21,10 @@ class DeviceStatusMonitor:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+    def get_status_key(self) -> str:
+        with self._lock:
+            return self._status_key
+
     def get_status_text(self) -> str:
         with self._lock:
             return get_string(self._status_key)
