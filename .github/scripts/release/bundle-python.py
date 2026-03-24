@@ -1,4 +1,4 @@
-"""CI script: download Python embeddable zip and install pip + requirements into bin/python3/."""
+"""CI script: download Python embeddable zip and install requirements into bin/python3/ via uv."""
 
 import json
 import shutil
@@ -32,7 +32,6 @@ def main() -> None:
 
     py_config = config["python"]
     embed_url = py_config["embed_url"]
-    get_pip_url = py_config["get_pip_url"]
     pth_source = REPO_ROOT / py_config["pth_source"]
 
     python_exe = PYTHON_DIR / "python.exe"
@@ -57,21 +56,10 @@ def main() -> None:
         shutil.copy(pth_source, pth_dest)
         print(f"[bundle-python] Copied {pth_source.name}")
 
-    # 3. Install pip
-    get_pip_path = PYTHON_DIR / "get-pip.py"
-    _download(get_pip_url, get_pip_path, "get-pip.py")
-
-    subprocess.run(
-        [str(python_exe), str(get_pip_path)],
-        check=True,
-    )
-    get_pip_path.unlink()
-    print("[bundle-python] pip installed.")
-
-    # 4. Install requirements
+    # 3. Install requirements via uv (no pip bootstrap needed)
     if REQUIREMENTS.exists():
         subprocess.run(
-            [str(python_exe), "-m", "pip", "install", "--upgrade", "-r", str(REQUIREMENTS)],
+            ["uv", "pip", "install", "--python", str(python_exe), "-r", str(REQUIREMENTS)],
             check=True,
         )
         print("[bundle-python] Requirements installed.")

@@ -18,6 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Set TAG_NAME
         run: |
           "TAG_NAME=${{ inputs.tag-name }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
