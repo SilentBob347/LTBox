@@ -329,7 +329,7 @@
   "device_adb_connected": "[+] ADB 연결됨.",
   "device_already_edl": "[+] 기기가 이미 EDL 모드 상태입니다. ADB 재부팅을 건너뜁니다.",
   "device_cause_1": "  1. 연결 불안정 (USB 케이블/포트 확인).",
-  "device_cause_2": "  2. 드라이버 문제 (장치 관리자에서 Qualcomm HS-USB QDLoader 9008 확인).",
+  "device_cause_2": "  2. 드라이버 문제 (AMD CPU를 사용하는 경우 Quectel QDLoader 9008 드라이버를 시도하세요).",
   "device_cause_3": "  3. 기기 멈춤 (전원+볼륨 아래 버튼을\n     10초간 눌러 강제 재부팅).",
   "device_check_always_allow": "[!] '이 컴퓨터에서 항상 허용'을 체크하고 '허용'을 누르세요.",
   "device_check_edl": "[*] EDL (9008) 기기 확인 중...",
