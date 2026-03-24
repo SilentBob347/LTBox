@@ -112,11 +112,7 @@ class TerminalMenu:
 
             extra_kwargs: Dict[str, Any] = {}
 
-            if self._status_fn and self.breadcrumbs is None:
-                ui.echo(f"   {self._status_fn()}")
-                ui.echo("")
-                choices.append(Separator(" "))
-            elif self._status_fn:
+            if self._status_fn:
                 choices.append(Separator(_LiveStatusText(self._status_fn)))  # type: ignore[arg-type]
                 choices.append(Separator(" "))
                 extra_kwargs["refresh_interval"] = 3.0
