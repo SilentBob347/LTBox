@@ -196,6 +196,7 @@
   "act_root_warn_brick": "[!] 警告：请勿尝试在管理器应用内安装、更新或卸载 Root。这一定会导致您的设备变砖。",
   "act_root_warn_lkm_kver_fail": "[!] 警告：无法通过 ADB 获取内核版本: {e}",
   "act_root_warn_lkm_kver_retry": "[!] 稍后将尝试重新获取，但如果设备正在重启，可能会失败。",
+  "act_root_warn_lkm_skip_adb": "[!] 已跳过 ADB。请手动输入内核版本。\n  您可以在 设置 > 关于手机 > 内核版本 中找到。",
   "act_safety_remove": "[*] 安全：正在从 'image' 文件夹中移除官方 devinfo/persist。",
   "act_select_cancel": "\n[!] 选择已取消。退出中。",
   "act_select_new_code": "选择新的国家代码",

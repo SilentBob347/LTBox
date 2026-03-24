@@ -223,8 +223,12 @@ def _get_lkm_kernel_version(
                 utils.ui.error(get_string("act_root_warn_lkm_kver_fail").format(e=e))
                 utils.ui.error(get_string("act_root_warn_lkm_kver_retry"))
         else:
-            utils.ui.error(get_string("act_root_err_lkm_skip_adb"))
-            raise ToolError(get_string("act_root_err_lkm_skip_adb_exc"))
+            utils.ui.warn(get_string("act_root_warn_lkm_skip_adb"))
+            manual_ver = input(get_string("prompt_enter_kernel_version")).strip()
+            if not manual_ver:
+                utils.ui.error(get_string("err_kernel_version_req"))
+                raise ToolError(get_string("act_root_err_lkm_skip_adb_exc"))
+            return manual_ver
     return None
 
 

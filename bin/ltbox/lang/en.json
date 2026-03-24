@@ -196,6 +196,7 @@
   "act_root_warn_brick": "[!] WARNING: Do NOT install/update/uninstall root from the manager app. It WILL brick your device.",
   "act_root_warn_lkm_kver_fail": "[!] Warning: Could not get kernel version via ADB: {e}",
   "act_root_warn_lkm_kver_retry": "[!] Will attempt to get it later, but this may fail if device is rebooting.",
+  "act_root_warn_lkm_skip_adb": "[!] ADB is skipped. Please enter the kernel version manually.\n  You can find it in Settings > About phone > Kernel version.",
   "act_safety_remove": "[*] Safety: Removing stock devinfo/persist from 'image' folder.",
   "act_select_cancel": "\n[!] Selection cancelled. Exiting.",
   "act_select_new_code": "SELECT NEW COUNTRY CODE",
