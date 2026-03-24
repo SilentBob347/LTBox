@@ -1,5 +1,4 @@
 import shutil
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
@@ -10,7 +9,6 @@ from . import device, utils
 from .context import TaskContext
 from .errors import (
     DeviceCommandError,
-    DeviceConnectionError,
     DeviceError,
     LTBoxError,
     UserCancelError,
@@ -41,13 +39,12 @@ def _cleanup_previous_outputs(ctx: TaskContext) -> None:
 def _populate_device_info(ctx: TaskContext) -> None:
     ctx.active_slot_suffix = ctx.dev.detect_active_slot()
 
-    if not ctx.dev.skip_adb:
-        try:
-            ctx.device_model = ctx.dev.adb.get_model()
-            if not ctx.device_model:
-                raise DeviceError(get_string("wf_err_adb_model"))
-        except (DeviceConnectionError, DeviceCommandError) as e:
-            raise DeviceError(get_string("wf_err_get_model").format(e=e), e)
+    try:
+        ctx.device_model = ctx.dev.fastboot.get_model()
+        if not ctx.device_model:
+            raise DeviceError(get_string("wf_err_fastboot_model"))
+    except DeviceCommandError as e:
+        raise DeviceError(get_string("wf_err_get_model").format(e=e), e)
 
 
 def _wait_for_input_images(ctx: TaskContext) -> None:
@@ -71,10 +68,6 @@ def _decrypt_and_modify_xml(ctx: TaskContext) -> None:
 
 
 def _detect_anti_rollback(ctx: TaskContext) -> None:
-    if ctx.dev.skip_adb:
-        ctx.on_log(get_string("wf_arb_detect_skip_adb"))
-        return
-
     ctx.on_log(get_string("wf_arb_detect_start"))
 
     ctx.dev.ensure_fastboot_mode()
@@ -86,11 +79,6 @@ def _detect_anti_rollback(ctx: TaskContext) -> None:
     else:
         ctx.skip_rollback = True
         ctx.on_log(get_string("wf_arb_detect_disabled"))
-
-    ctx.dev.fastboot.continue_boot()
-
-    ctx.on_log(get_string("wf_arb_detect_resume"))
-    time.sleep(10)
 
 
 def _dump_images(ctx: TaskContext) -> None:

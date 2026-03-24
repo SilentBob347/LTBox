@@ -292,6 +292,27 @@ class FastbootManager(BaseDeviceManager):
             ui.warn(get_string("device_wait_fastboot_cancel"))
             raise
 
+    def get_model(self) -> Optional[str]:
+        try:
+            result = utils.run_command(
+                [str(const.FASTBOOT_EXE), "getvar", "modelname"],
+                capture=True,
+                check=False,
+            )
+            output = utils.format_command_output(result)
+
+            match = re.search(r"modelname:\s*(.+)", output)
+            if match:
+                model = match.group(1).strip()
+                if model:
+                    return model
+
+            return None
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise DeviceCommandError(
+                get_string("device_err_get_model_fastboot").format(e=e), e
+            )
+
     def check_anti_rollback(self) -> bool:
         try:
             result = utils.run_command(
@@ -317,6 +338,20 @@ class FastbootManager(BaseDeviceManager):
             raise DeviceCommandError(
                 get_string("device_err_fastboot_continue").format(e=e), e
             )
+
+    def oem_edl(self) -> bool:
+        try:
+            result = utils.run_command(
+                [str(const.FASTBOOT_EXE), "oem", "edl"],
+                capture=True,
+                check=False,
+            )
+            output = utils.format_command_output(result)
+            if "FAILED" in output:
+                return False
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
 
 
 class EdlManager(BaseDeviceManager):
@@ -618,15 +653,6 @@ class DeviceController:
         self.adb.skip_adb = value
 
     def detect_active_slot(self) -> Optional[str]:
-        slot = self.adb.get_slot_suffix()
-        if slot:
-            return slot
-
-        width = ui.get_term_width()
-        ui.echo("\n" + "=" * width)
-        ui.echo(get_string("act_manual_fastboot"))
-        ui.echo("=" * width + "\n")
-
         self.ensure_fastboot_mode()
         return self.fastboot.get_slot_suffix()
 
@@ -647,7 +673,31 @@ class DeviceController:
             ui.info(get_string("device_already_edl"))
             return
 
-        if not self.skip_adb:
+        in_fastboot = self.fastboot.check_device(silent=True)
+
+        if in_fastboot:
+            ui.info(get_string("device_edl_via_fastboot"))
+            if self.fastboot.oem_edl():
+                ui.info(get_string("device_wait_10s_edl"))
+                time.sleep(10)
+                return
+            ui.warn(get_string("device_oem_edl_failed"))
+
+            if not self.skip_adb:
+                ui.info(get_string("device_edl_via_fastboot_fallback"))
+                self.fastboot.continue_boot()
+                time.sleep(10)
+                self.adb.wait_for_device()
+                ui.info(get_string("device_edl_setup_title"))
+                self.adb.reboot("edl")
+                ui.info(get_string("device_wait_10s_edl"))
+                time.sleep(10)
+            else:
+                width = ui.get_term_width()
+                ui.echo("\n" + "=" * width)
+                ui.echo(get_string("act_manual_edl"))
+                ui.echo("=" * width + "\n")
+        elif not self.skip_adb:
             self.adb.wait_for_device()
             ui.info(get_string("device_edl_setup_title"))
             self.adb.reboot("edl")
