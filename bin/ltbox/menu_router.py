@@ -89,12 +89,17 @@ def _loop_menu(
     breadcrumbs: Union[None, str, Callable[[], Optional[str]]],
     action_handler: Callable[[str], MenuReturn],
     status_fn: Optional[Callable[[], str]] = None,
+    status_key_fn: Optional[Callable[[], str]] = None,
 ) -> MenuReturn:
     while True:
         resolved_bc = breadcrumbs() if callable(breadcrumbs) else breadcrumbs
         menu_items = menu_items_factory()
         action = select_menu_action(
-            menu_items, title_key, breadcrumbs=resolved_bc, status_fn=status_fn
+            menu_items,
+            title_key,
+            breadcrumbs=resolved_bc,
+            status_fn=status_fn,
+            status_key_fn=status_key_fn,
         )
 
         if action in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
@@ -404,8 +409,6 @@ def reboot_menu(
     monitor: Any,
 ) -> MenuReturn:
     def _handler(action: str) -> None:
-        if action == "refresh":
-            return
         _execute_reboot_command(action)
 
     return _loop_menu(
@@ -414,6 +417,7 @@ def reboot_menu(
         lambda: get_string("menu_main_title"),
         _handler,
         status_fn=monitor.get_status_text,
+        status_key_fn=monitor.get_status_key,
     )
 
 

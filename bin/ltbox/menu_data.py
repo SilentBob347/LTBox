@@ -533,12 +533,6 @@ def get_reboot_menu_data(device_status_key: str) -> List[MenuItem]:
     specs.extend(
         [
             MenuSpec("separator"),
-            MenuSpec(
-                "option",
-                key="r",
-                text=lambda: get_string("menu_reboot_refresh"),
-                action="refresh",
-            ),
             *_navigation_specs(include_back=True),
         ]
     )

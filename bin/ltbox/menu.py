@@ -5,6 +5,7 @@ from .menu_data import MenuItem
 from .utils import ui
 
 SEPARATOR_TEXT = "-" * 12
+_REFRESH_SENTINEL = "__auto_refresh__"
 
 _LOGO_LINES = [
     "██╗  ████████╗██████╗  ██████╗ ██╗  ██╗",
@@ -25,10 +26,25 @@ except ImportError:
 class _LiveStatusText:
     """Text object whose __format__ returns fresh status on each render."""
 
-    def __init__(self, status_fn: Callable[[], str]):
+    def __init__(
+        self,
+        status_fn: Callable[[], str],
+        status_key_fn: Optional[Callable[[], str]] = None,
+        initial_key: Optional[str] = None,
+    ):
         self._status_fn = status_fn
+        self._status_key_fn = status_key_fn
+        self._initial_key = initial_key
 
     def __format__(self, spec: str) -> str:
+        if self._status_key_fn is not None:
+            if self._status_key_fn() != self._initial_key:
+                try:
+                    from prompt_toolkit.application import get_app
+
+                    get_app().exit(result=_REFRESH_SENTINEL)
+                except Exception:
+                    pass
         return self._status_fn()
 
     def __str__(self) -> str:
@@ -41,12 +57,14 @@ class TerminalMenu:
         title: str,
         breadcrumbs: Optional[str] = None,
         status_fn: Optional[Callable[[], str]] = None,
+        status_key_fn: Optional[Callable[[], str]] = None,
     ):
         self.title = title
         self.breadcrumbs = breadcrumbs
         self.options: List[Tuple[Optional[str], str, bool]] = []
         self.valid_keys: List[str] = []
         self._status_fn = status_fn
+        self._status_key_fn = status_key_fn
 
     def add_option(self, key: str, text: str) -> None:
         self.options.append((key, text, True))
@@ -88,8 +106,9 @@ class TerminalMenu:
     def show(self) -> None:
         self._render_header()
 
-        if self._status_fn and self.breadcrumbs is None:
+        if self._status_fn:
             ui.echo(f"   {self._status_fn()}")
+            ui.echo("")
             ui.echo("")
 
         for key, text, is_selectable in self.options:
@@ -113,7 +132,15 @@ class TerminalMenu:
             extra_kwargs: Dict[str, Any] = {}
 
             if self._status_fn:
-                choices.append(Separator(_LiveStatusText(self._status_fn)))  # type: ignore[arg-type]
+                initial_key = self._status_key_fn() if self._status_key_fn else None
+                choices.append(
+                    Separator(  # type: ignore[arg-type]
+                        _LiveStatusText(
+                            self._status_fn, self._status_key_fn, initial_key
+                        )
+                    )
+                )
+                choices.append(Separator(" "))
                 choices.append(Separator(" "))
                 extra_kwargs["refresh_interval"] = 3.0
             else:
@@ -135,6 +162,8 @@ class TerminalMenu:
                 **extra_kwargs,
             ).ask()
 
+            if answer == _REFRESH_SENTINEL:
+                return _REFRESH_SENTINEL
             if answer is not None:
                 return answer
             raise KeyboardInterrupt()
@@ -154,8 +183,14 @@ def select_menu_action(
     title_key: str,
     breadcrumbs: Optional[str] = None,
     status_fn: Optional[Callable[[], str]] = None,
+    status_key_fn: Optional[Callable[[], str]] = None,
 ) -> Optional[str]:
-    menu = TerminalMenu(get_string(title_key), breadcrumbs, status_fn=status_fn)
+    menu = TerminalMenu(
+        get_string(title_key),
+        breadcrumbs,
+        status_fn=status_fn,
+        status_key_fn=status_key_fn,
+    )
     menu.populate(menu_items)
 
     action_map = {
@@ -163,4 +198,6 @@ def select_menu_action(
     }
 
     choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
+    if choice == _REFRESH_SENTINEL:
+        return None
     return action_map.get(choice)
