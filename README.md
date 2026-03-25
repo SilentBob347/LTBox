@@ -46,14 +46,14 @@ The all-in-one automated task. It performs all steps (Convert, XML Prepare, Dump
 **`2. Install firmware to PRC/ROW device [KEEP DATA]`**
 Same as option 1, but modifies the XML scripts to **preserve user data** (skips `userdata` and `metadata` partitions).
 
-**`3. Rescue from Boot Loop After System Update`**
-Attempts to fix boot issues caused by taking a Full OTA update on a converted device by dumping & patching essential partitions.
-
-**`4. Disable System Updates`**
+**`3. Disable System Updates`**
 Connects to the device in ADB mode and disables system update packages to prevent automatic updates.
 
-**`5. Re-enable System Updates`**
+**`4. Re-enable System Updates`**
 Reverses the OTA disable changes by re-enabling automatic updates and reinstalling system update packages.
+
+**`5. Rescue from Boot Failure After System Update`**
+Attempts to fix boot issues caused by taking a Full OTA update on a converted device by dumping & patching essential partitions.
 
 **`6. Root device`**
 Opens the root selection menu. Available root types:
@@ -66,6 +66,9 @@ Currently, rooting on the Legion Tab Y700 2nd Gen is only possible using KernelS
 **`7. Unroot device`**
 Restores the device to a non-rooted state by flashing the stock image from backups.
 
+**`r. Reboot Device`**
+Reboots the device into System, Fastboot, Fastbootd, or EDL mode.
+
 **`0. Settings`**
 Opens the settings submenu to configure the toolkit (see below).
 
@@ -77,9 +80,9 @@ Opens the advanced menu for individual steps, manual control, and troubleshootin
 * **Preset:** Cycle through device presets (ROW, PRC, Stock). Each preset configures the target region and related defaults.
 * **Modify Region Code:** Toggle region code modification ON/OFF. When OFF, firmware is flashed without modifying the region.
 * **Region:** Toggle target firmware region between **PRC** (China) and **ROW** (Global). Only visible when Modify Region Code is ON.
-* **Skip ADB:** Toggle ADB checks. Useful if the device is already in EDL/fastboot mode.
-* **Skip Anti-Rollback:** Toggle automated Anti-Rollback checks.
-* **Language:** Switch the toolkit's interface language.
+* **Modify Rollback Index:** Toggle automated Anti-Rollback modifications ON/OFF.
+* **Skip ADB Check:** Toggle ADB checks ON/OFF. Useful if the device is already in EDL/fastboot mode.
+* **Change Language:** Switch the toolkit's interface language.
 * **Check for Updates:** Check for the latest version of LTBox.
 
 ### 3.3 Advanced Menu
