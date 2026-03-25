@@ -131,12 +131,14 @@ def _patch_root_from_folder(
         return False
 
 
-def patch_root_image_file(gki: bool = False, root_type: str = "ksu") -> None:
-    strategy = get_root_strategy(gki, root_type)
-
-    if hasattr(strategy, "configure_source"):
-        strategy.configure_source()
-        utils.ui.clear()
+def patch_root_image_file(
+    gki: bool = False, root_type: str = "ksu", strategy=None
+) -> None:
+    if strategy is None:
+        strategy = get_root_strategy(gki, root_type)
+        if hasattr(strategy, "configure_source"):
+            strategy.configure_source()
+            utils.ui.clear()
 
     utils.ui.echo(get_string("act_clean_dir").format(dir=strategy.log_output_dir_name))
     utils.recreate_dir(strategy.output_dir)
@@ -146,15 +148,18 @@ def patch_root_image_file(gki: bool = False, root_type: str = "ksu") -> None:
 
 
 def patch_and_flash_root(
-    dev: device.DeviceController, gki: bool = False, root_type: str = "ksu"
+    dev: device.DeviceController,
+    gki: bool = False,
+    root_type: str = "ksu",
+    strategy=None,
 ) -> None:
-    strategy = get_root_strategy(gki, root_type)
+    if strategy is None:
+        strategy = get_root_strategy(gki, root_type)
+        if hasattr(strategy, "configure_source"):
+            strategy.configure_source()
+            utils.ui.clear()
 
     _cleanup_manager_apk()
-
-    if hasattr(strategy, "configure_source"):
-        strategy.configure_source()
-        utils.ui.clear()
 
     utils.ui.echo(get_string("act_clean_dir").format(dir=strategy.log_output_dir_name))
     utils.recreate_dir(strategy.output_dir)
@@ -411,15 +416,18 @@ def _flash_root_image(
 
 
 def root_device(
-    dev: device.DeviceController, gki: bool = False, root_type: str = "ksu"
+    dev: device.DeviceController,
+    gki: bool = False,
+    root_type: str = "ksu",
+    strategy=None,
 ) -> None:
-    strategy = get_root_strategy(gki, root_type)
+    if strategy is None:
+        strategy = get_root_strategy(gki, root_type)
+        if hasattr(strategy, "configure_source"):
+            strategy.configure_source()
+            utils.ui.clear()
 
     _cleanup_manager_apk()
-
-    if hasattr(strategy, "configure_source"):
-        strategy.configure_source()
-        utils.ui.clear()
 
     _prepare_root_env(strategy)
 

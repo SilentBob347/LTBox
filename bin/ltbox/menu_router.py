@@ -138,16 +138,27 @@ def _root_action_menu(
     registry: CommandRegistry,
     gki: bool,
     root_type: str,
-    breadcrumbs: Union[str, Callable[[], str]],
+    breadcrumbs: str,
 ) -> MenuReturn:
+    from .actions.root_strategies import get_root_strategy
+
+    strategy = get_root_strategy(gki, root_type)
+
+    if hasattr(strategy, "configure_source"):
+        strategy.configure_source(breadcrumbs=breadcrumbs)
+        ui.clear()
+
+    source_label = getattr(strategy, "source_label", "")
+    action_bc = f"{breadcrumbs} > {source_label}" if source_label else breadcrumbs
+
     def _handler(action: str) -> None:
-        extras: Dict[str, Any] = {"root_type": root_type}
+        extras: Dict[str, Any] = {"root_type": root_type, "strategy": strategy}
         run_task(action, dev, registry, extra_kwargs=extras)
 
     res = _loop_menu(
         lambda: menu_data.get_root_menu_data(gki, root_type=root_type),
         "menu_root_title",
-        breadcrumbs,
+        lambda: action_bc,
         _handler,
     )
     if res == LoopAction.RETURN:
@@ -160,17 +171,18 @@ def _handle_ksu_mode(
     registry: CommandRegistry,
     type_breadcrumbs: str,
 ) -> MenuReturn:
-    def _mode_bc():
-        return f"{type_breadcrumbs} > {get_string('menu_root_mode_title')}"
+    MODE_LABELS = {"lkm": "LKM", "gki": "GKI"}
 
     def _handler(mode_action: str) -> MenuReturn:
+        mode_label = MODE_LABELS.get(mode_action, "")
+        mode_bc = f"{type_breadcrumbs} > {mode_label}"
         if mode_action == "lkm":
             return _root_action_menu(
-                dev, registry, gki=False, root_type="ksu", breadcrumbs=_mode_bc
+                dev, registry, gki=False, root_type="ksu", breadcrumbs=mode_bc
             )
         elif mode_action == "gki":
             return _root_action_menu(
-                dev, registry, gki=True, root_type="ksu", breadcrumbs=_mode_bc
+                dev, registry, gki=True, root_type="ksu", breadcrumbs=mode_bc
             )
         return None
 
@@ -257,9 +269,8 @@ def root_menu(
 ) -> MenuReturn:
     while True:
         main_title = get_string("menu_main_title")
-        root_type_title = get_string("menu_root_type_title")
         type_breadcrumbs = {
-            key: f"{main_title} > {root_type_title} > {_resolve_root_type_label(label)}"
+            key: f"{main_title} > {_resolve_root_type_label(label)}"
             for key, label in ROOT_TYPE_BREADCRUMB_LABELS.items()
         }
         dispatch_map = _build_root_dispatch_map(dev, registry, type_breadcrumbs)

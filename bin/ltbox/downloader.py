@@ -365,6 +365,26 @@ def get_latest_tagged_workflow_run(
     return run_id, resolved_tag
 
 
+def get_latest_successful_workflow_run(repo: str, workflow_file: str) -> Optional[str]:
+    owner_repo = _get_owner_repo(repo)
+    api_url = f"https://api.github.com/repos/{owner_repo}/actions/workflows/{workflow_file}/runs"
+    params: dict[str, str | int] = {
+        "status": "success",
+        "per_page": 1,
+    }
+    try:
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        runs = data.get("workflow_runs", [])
+        if runs:
+            return str(runs[0]["id"])
+        return None
+    except requests.RequestException as e:
+        utils.ui.error(get_string("dl_err_check_network"))
+        raise ToolError(get_string("dl_github_failed").format(e=e))
+
+
 def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:
     utils.ui.echo(get_string("dl_gki_downloading"))
 
