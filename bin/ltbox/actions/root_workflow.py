@@ -77,6 +77,7 @@ def _patch_root_from_folder(
             (const.BASE_DIR / const.FN_VBMETA).unlink()
 
         if isinstance(strategy, LkmRootStrategy) and not lkm_kernel_version:
+            utils.ui.clear()
             utils.ui.echo(get_string("err_req_kernel_ver_lkm"))
             lkm_kernel_version = input(
                 get_string("prompt_enter_kernel_version")
@@ -135,6 +136,7 @@ def patch_root_image_file(gki: bool = False, root_type: str = "ksu") -> None:
 
     if hasattr(strategy, "configure_source"):
         strategy.configure_source()
+        utils.ui.clear()
 
     utils.ui.echo(get_string("act_clean_dir").format(dir=strategy.log_output_dir_name))
     utils.recreate_dir(strategy.output_dir)
@@ -172,6 +174,7 @@ def patch_and_flash_root(
     ):
         return
 
+    utils.ui.clear()
     confirm = (
         utils.ui.prompt(get_string("prompt_flash_image_folder_confirm")).strip().lower()
     )
@@ -223,6 +226,7 @@ def _get_lkm_kernel_version(
                 utils.ui.error(get_string("act_root_warn_lkm_kver_fail").format(e=e))
                 utils.ui.error(get_string("act_root_warn_lkm_kver_retry"))
         else:
+            utils.ui.clear()
             utils.ui.warn(get_string("act_root_warn_lkm_skip_adb"))
             manual_ver = input(get_string("prompt_enter_kernel_version")).strip()
             if not manual_ver:
