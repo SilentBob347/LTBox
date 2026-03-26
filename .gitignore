@@ -4,6 +4,7 @@
 *.zip
 backup*/
 .claude/
+AGENTS.md
 CLAUDE.md
 __pycache__/
 bin/ltbox/settings.json
