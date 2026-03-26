@@ -30,6 +30,7 @@ def test_patch_all_flow_standard(mock_env):
         mock_actions.read_anti_rollback.assert_called_once()
 
         mock_actions.flash_full_firmware.assert_called_once()
+        assert mock_actions.flash_full_firmware.call_args.kwargs["wipe"] is False
 
 
 def test_patch_all_passes_modify_region_code_flag():
@@ -49,6 +50,22 @@ def test_patch_all_passes_modify_region_code_flag():
             mock_actions.convert_region_images.call_args.kwargs["modify_region_code"]
             is False
         )
+
+
+def test_patch_all_wipe_passes_wipe_flag_to_flash():
+    mock_dev = make_device_mock()
+
+    with (
+        patch("ltbox.workflow.actions") as mock_actions,
+        patch("ltbox.workflow.utils.ui"),
+        patch("ltbox.workflow._wait_for_input_images"),
+        patch("ltbox.workflow._cleanup_previous_outputs"),
+    ):
+        mock_actions.read_anti_rollback.return_value = ("MATCH", 0, 0)
+
+        workflow.patch_all(dev=mock_dev, wipe=1)
+
+        assert mock_actions.flash_full_firmware.call_args.kwargs["wipe"] is True
 
 
 def test_patch_all_writes_flash_log_under_log_directory(tmp_path):

@@ -696,11 +696,40 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
     return raw_xmls, patch_xmls
 
 
+def _prompt_flash_wipe_mode() -> Optional[bool]:
+    while True:
+        utils.ui.clear()
+        width = utils.ui.get_term_width()
+        utils.ui.echo("\n" + "=" * width)
+        utils.ui.echo(f"   {get_string('task_title_flash_full_firmware')}")
+        utils.ui.echo("=" * width + "\n")
+        utils.ui.echo(f"   1. {get_string('menu_main_install_wipe')}")
+        utils.ui.echo(f"   2. {get_string('menu_main_install_keep')}")
+        utils.ui.echo(f"   c. {get_string('cancel')}\n")
+
+        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
+        if choice == "1":
+            return True
+        if choice == "2":
+            return False
+        if choice == "c":
+            return None
+
+        utils.ui.error(get_string("err_invalid_selection"))
+
+
+def _resolve_flash_wipe_mode(wipe: Optional[bool]) -> Optional[bool]:
+    if wipe is not None:
+        return bool(wipe)
+    return _prompt_flash_wipe_mode()
+
+
 def flash_full_firmware(
     dev: device.DeviceController,
     skip_reset: bool = False,
     skip_reset_edl: bool = False,
     skip_dp: bool = False,
+    wipe: Optional[bool] = None,
 ) -> None:
     utils.ui.echo(get_string("act_start_flash"))
 
@@ -714,6 +743,11 @@ def flash_full_firmware(
         )
 
     ensure_loader_file()
+
+    wipe_mode = _resolve_flash_wipe_mode(wipe)
+    if wipe_mode is None:
+        utils.ui.echo(get_string("act_op_cancel"))
+        return
 
     if not skip_reset_edl:
         width = utils.ui.get_term_width()
@@ -734,19 +768,24 @@ def flash_full_firmware(
     _prepare_flash_files(skip_dp)
 
     raw_xmls, patch_xmls = _select_flash_xmls(skip_dp)
+    reset_after_flash = not skip_reset
 
     utils.ui.echo(get_string("act_flash_step1"))
 
     with dev.edl_session(
         load_programmer=False,
-        auto_reset=not skip_reset,
-        reset_msg_key="act_reset_sys",
-        skip_msg_key="act_skip_final_reset",
-        pre_sleep=5,
+        auto_reset=False,
+        skip_msg_key="act_skip_final_reset" if skip_reset else "",
     ) as port:
         try:
             dev.edl.flash_rawprogram(
-                port, const.EDL_LOADER_FILE, "UFS", raw_xmls, patch_xmls
+                port,
+                const.EDL_LOADER_FILE,
+                "UFS",
+                raw_xmls,
+                patch_xmls,
+                pre_erase=wipe_mode,
+                reset_after=reset_after_flash,
             )
         except (subprocess.CalledProcessError, OSError, RuntimeError) as e:
             utils.ui.error(get_string("act_err_main_flash").format(e=e))

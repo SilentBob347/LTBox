@@ -550,6 +550,9 @@ class EdlManager(BaseDeviceManager):
         memory_type: str,
         raw_xmls: List[Path],
         patch_xmls: List[Path],
+        *,
+        pre_erase: bool = False,
+        reset_after: bool = False,
     ) -> None:
         if not const.QSAHARASERVER_EXE.exists() or not const.EDL_EXE.exists():
             ui.error(
@@ -563,25 +566,40 @@ class EdlManager(BaseDeviceManager):
         ui.info(get_string("device_step1_load"))
         self.load_programmer_safe(port, loader_path)
 
-        ui.info(get_string("device_step2_flash"))
         raw_xml_str = ",".join([p.name for p in raw_xmls])
         patch_xml_str = ",".join([p.name for p in patch_xmls])
 
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={port_str}",
-            f"--search_path={search_path}",
-            f"--sendxml={raw_xml_str}",
-            f"--sendxml={patch_xml_str}",
-            "--setactivepartition=1",
-            f"--memoryname={memory_type}",
-            "--showpercentagecomplete",
-            "--zlpawarehost=1",
-            "--noprompt",
-        ]
-
         try:
             with self._prevent_sleep_during_flash():
+                if pre_erase:
+                    cmd_erase = [
+                        str(const.EDL_EXE),
+                        f"--port={port_str}",
+                        f"--search_path={search_path}",
+                        "--sendxml=FHLoaderErase.xml",
+                        f"--memoryname={memory_type}",
+                        "--showpercentagecomplete",
+                        "--zlpawarehost=1",
+                        "--noprompt",
+                    ]
+                    utils.run_command(cmd_erase)
+
+                ui.info(get_string("device_step2_flash"))
+                cmd_fh = [
+                    str(const.EDL_EXE),
+                    f"--port={port_str}",
+                    f"--search_path={search_path}",
+                    f"--sendxml={raw_xml_str}",
+                    f"--sendxml={patch_xml_str}",
+                    "--setactivepartition=1",
+                    f"--memoryname={memory_type}",
+                    "--showpercentagecomplete",
+                    "--zlpawarehost=1",
+                    "--noprompt",
+                ]
+                if reset_after:
+                    cmd_fh.append("--reset")
+
                 utils.run_command(cmd_fh)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(

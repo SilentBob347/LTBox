@@ -200,7 +200,12 @@ def _check_and_patch_arb(ctx: TaskContext) -> None:
 
 def _flash_images(ctx: TaskContext) -> None:
     skip_dp = ctx.skip_dp_workflow and not ctx.use_backup_dp
-    actions.flash_full_firmware(dev=ctx.dev, skip_reset_edl=True, skip_dp=skip_dp)
+    actions.flash_full_firmware(
+        dev=ctx.dev,
+        skip_reset_edl=True,
+        skip_dp=skip_dp,
+        wipe=bool(ctx.wipe),
+    )
 
 
 def _log_workflow_halt() -> None:

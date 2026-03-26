@@ -56,15 +56,69 @@ def test_flash_args(mock_env):
         patch("ltbox.actions.edl._prepare_flash_files"),
         patch("builtins.input", return_value="y"),
     ):
+        mock_ui.get_term_width.return_value = 80
         mock_ui.prompt.return_value = "y"
 
-        edl.flash_full_firmware(mock_dev, skip_reset=True, skip_reset_edl=False)
+        edl.flash_full_firmware(
+            mock_dev,
+            skip_reset=True,
+            skip_reset_edl=False,
+            wipe=False,
+        )
 
-        args, _ = mock_dev.edl.flash_rawprogram.call_args
+        args, kwargs = mock_dev.edl.flash_rawprogram.call_args
         passed = [p.name for p in args[3]]
 
         assert "rawprogram_unsparse0.xml" in passed
         assert len(passed) == 2
+        assert kwargs["pre_erase"] is False
+        assert kwargs["reset_after"] is False
+
+
+def test_flash_full_firmware_wipe_requests_pre_erase_and_inline_reset(mock_env):
+    img_dir = mock_env["IMAGE_DIR"]
+    files = ["rawprogram1.xml", "rawprogram_unsparse0.xml", "patch0.xml"]
+    create_xmls(img_dir, files)
+
+    mock_dev = MagicMock()
+
+    with (
+        patch("ltbox.actions.edl.utils.ui"),
+        patch("ltbox.actions.edl.ensure_loader_file"),
+        patch("ltbox.actions.edl._prepare_flash_files"),
+    ):
+        edl.flash_full_firmware(
+            mock_dev,
+            skip_reset=False,
+            skip_reset_edl=True,
+            wipe=True,
+        )
+
+        _, kwargs = mock_dev.edl.flash_rawprogram.call_args
+        assert kwargs["pre_erase"] is True
+        assert kwargs["reset_after"] is True
+
+
+def test_flash_full_firmware_prompts_for_manual_mode_when_unspecified(mock_env):
+    img_dir = mock_env["IMAGE_DIR"]
+    files = ["rawprogram1.xml", "rawprogram_unsparse0.xml", "patch0.xml"]
+    create_xmls(img_dir, files)
+
+    mock_dev = MagicMock()
+
+    with (
+        patch("ltbox.actions.edl.utils.ui") as mock_ui,
+        patch("ltbox.actions.edl.ensure_loader_file"),
+        patch("ltbox.actions.edl._prepare_flash_files"),
+    ):
+        mock_ui.get_term_width.return_value = 80
+        mock_ui.prompt.return_value = "2"
+
+        edl.flash_full_firmware(mock_dev, skip_reset=True, skip_reset_edl=True)
+
+        _, kwargs = mock_dev.edl.flash_rawprogram.call_args
+        assert kwargs["pre_erase"] is False
+        assert kwargs["reset_after"] is False
 
 
 def test_dump_partitions_does_not_abort_when_devinfo_persist_are_not_targets(tmp_path):
