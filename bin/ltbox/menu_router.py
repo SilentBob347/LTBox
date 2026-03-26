@@ -67,6 +67,7 @@ MenuReturn = Optional[Union[LoopAction, RouteResult]]
 PRESET_1_KEY = "menu_settings_preset_1"
 PRESET_2_KEY = "menu_settings_preset_2"
 PRESET_3_KEY = "menu_settings_preset_3"
+SKIP_ADB_BLOCKED_ACTIONS = {"disable_ota", "reenable_ota"}
 
 
 def _preset_label_from_code(preset_code: str) -> str:
@@ -574,6 +575,16 @@ def build_task_kwargs(action: str, state: AppState) -> Dict[str, Any]:
     return extras
 
 
+def _handle_skip_adb_menu_block(action: str, state: AppState) -> bool:
+    if not state.skip_adb or action not in SKIP_ADB_BLOCKED_ACTIONS:
+        return False
+
+    ui.clear()
+    ui.warn(get_string("menu_main_skip_adb_disabled_required"))
+    input(get_string("press_enter_to_continue"))
+    return True
+
+
 def prompt_for_language(
     force_prompt: bool = False,
     settings_store: Any = None,
@@ -658,6 +669,9 @@ def main_loop(
             if result == LoopAction.BACK:
                 return None
             return result
+
+        if _handle_skip_adb_menu_block(action, state):
+            return None
 
         extras = build_task_kwargs(action, state)
         run_task(action, dev, registry, extra_kwargs=extras)

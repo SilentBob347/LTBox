@@ -264,6 +264,18 @@ def test_settings_menu_hides_region_toggle_when_modify_region_off():
     assert option_keys == ["1", "2", "4", "5", "6", "7"]
 
 
+def test_settings_menu_data_uses_short_skip_adb_label():
+    items = menu_data.get_settings_menu_data(
+        preset_label="x",
+        skip_adb_state="OFF",
+        modify_region_code_enabled=True,
+        target_region="PRC",
+    )
+    skip_adb_item = next(i for i in items if i.action == "toggle_adb")
+
+    assert skip_adb_item.text == "Skip ADB: [OFF]"
+
+
 def test_main_menu_hides_region_name_when_modify_region_off():
     items = menu_data.get_main_menu_data(
         target_region="PRC",
@@ -283,6 +295,38 @@ def test_advanced_menu_hides_convert_option_when_modify_region_off():
     option_actions = [i.action for i in items if i.item_type == "option"]
 
     assert "convert" not in option_actions
+
+
+@pytest.mark.parametrize("action", ["disable_ota", "reenable_ota"])
+def test_handle_skip_adb_menu_block_blocks_ota_actions(monkeypatch, action):
+    mock_ui = MagicMock()
+    monkeypatch.setattr(menu_router, "ui", mock_ui)
+    monkeypatch.setattr("builtins.input", lambda *_args: "")
+
+    blocked = menu_router._handle_skip_adb_menu_block(
+        action,
+        AppState(skip_adb=True),
+    )
+
+    assert blocked is True
+    mock_ui.clear.assert_called_once()
+    mock_ui.warn.assert_called_once_with(
+        "This option is only available when 'Skip ADB' is disabled."
+    )
+
+
+def test_handle_skip_adb_menu_block_ignores_other_actions(monkeypatch):
+    mock_ui = MagicMock()
+    monkeypatch.setattr(menu_router, "ui", mock_ui)
+    monkeypatch.setattr("builtins.input", lambda *_args: "")
+
+    blocked = menu_router._handle_skip_adb_menu_block(
+        "menu_root",
+        AppState(skip_adb=True),
+    )
+
+    assert blocked is False
+    mock_ui.warn.assert_not_called()
 
 
 def test_settings_menu_direct_toggle_recomputes_preset_code(monkeypatch):
