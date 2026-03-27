@@ -15,6 +15,7 @@ except ImportError:
 from . import constants as const
 from . import net, utils
 from .errors import ToolError
+from .github_client import GitHubClient
 from .i18n import get_string
 
 
@@ -29,6 +30,25 @@ def _extract_zip_member(
 ) -> None:
     with zip_file.open(member) as source, open(target_path, "wb") as target:
         shutil.copyfileobj(source, target)
+
+
+def _cleanup_files(*paths: Path) -> None:
+    for path in paths:
+        if path.exists():
+            path.unlink()
+
+
+def _move_downloaded_file(downloaded_path: Path, target_file: Path) -> Path:
+    if downloaded_path.resolve() == target_file.resolve():
+        return target_file
+    if target_file.exists():
+        target_file.unlink()
+    shutil.move(str(downloaded_path), str(target_file))
+    return target_file
+
+
+def _github_client(repo_url: str) -> GitHubClient:
+    return GitHubClient(_get_owner_repo(repo_url))
 
 
 def download_resource(
@@ -152,87 +172,24 @@ def extract_archive_files(
 
 
 def _find_non_testing_release(owner_repo: str, asset_pattern: str) -> Optional[dict]:
-    response = requests.get(
-        f"https://api.github.com/repos/{owner_repo}/releases",
-        params={"per_page": 10},
-    )
-    response.raise_for_status()
-
-    releases: list[dict] = []
-    try:
-        payload = response.json()
-        if isinstance(payload, list):
-            releases = payload
-    except ValueError:
-        releases = []
-
-    if not releases:
-        return None
-
-    first_non_testing_index = None
-    for index, release in enumerate(releases):
-        if release.get("draft"):
-            continue
-        body = release.get("body") or ""
-        if "TESTING" not in body:
-            first_non_testing_index = index
-            break
-
-    if first_non_testing_index is not None:
-        for release in releases[first_non_testing_index:]:
-            if release.get("draft"):
-                continue
-            if any(
-                re.match(asset_pattern, asset["name"])
-                for asset in release.get("assets", [])
-            ):
-                return release
-
-    return None
+    return _github_client(owner_repo).find_non_testing_release_with_asset(asset_pattern)
 
 
 def _fetch_release_data(owner_repo: str, tag: str, asset_pattern: str) -> dict:
-    if owner_repo.lower() == "wildkernels/gki_kernelsu_susfs" and (
-        not tag or tag.lower() == "latest"
-    ):
-        release_data = _find_non_testing_release(owner_repo, asset_pattern)
-        if release_data is not None:
-            return release_data
-
-    if not tag or tag.lower() == "latest":
-        api_url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
-    else:
-        api_url = f"https://api.github.com/repos/{owner_repo}/releases/tags/{tag}"
-
-    response = requests.get(api_url)
-    response.raise_for_status()
-    return response.json()
+    return _github_client(owner_repo).fetch_release_data(tag, asset_pattern)
 
 
 def _find_asset_by_pattern(release_data: dict, asset_pattern: str) -> dict:
-    target_asset = next(
-        (
-            asset
-            for asset in release_data.get("assets", [])
-            if re.match(asset_pattern, asset["name"])
-        ),
-        None,
-    )
-    if not target_asset:
-        raise ToolError(get_string("dl_err_download_tool").format(name=asset_pattern))
-    return target_asset
+    return GitHubClient.find_asset_by_pattern(release_data, asset_pattern)
 
 
 def _download_github_asset(
     repo_url: str, tag: str, asset_pattern: str, dest_dir: Path
 ) -> Path:
-    from requests.exceptions import RequestException  # type: ignore[import-untyped]
-
-    owner_repo = _get_owner_repo(repo_url)
-
     try:
-        release_data = _fetch_release_data(owner_repo, tag, asset_pattern)
-        target_asset = _find_asset_by_pattern(release_data, asset_pattern)
+        client = _github_client(repo_url)
+        release_data = client.fetch_release_data(tag, asset_pattern)
+        target_asset = client.find_asset_by_pattern(release_data, asset_pattern)
 
         download_url = target_asset["browser_download_url"]
         filename = target_asset["name"]
@@ -241,7 +198,7 @@ def _download_github_asset(
         download_resource(download_url, dest_path)
         return dest_path
 
-    except (RequestException, ValueError) as e:
+    except ValueError as e:
         utils.ui.error(get_string("dl_err_check_network"))
         raise ToolError(get_string("dl_github_failed").format(e=e))
 
@@ -252,44 +209,15 @@ def _download_and_move_github_asset(
     downloaded_path = _download_github_asset(
         repo_url, tag, asset_pattern, target_file.parent
     )
-    if downloaded_path.resolve() != target_file.resolve():
-        if target_file.exists():
-            target_file.unlink()
-        shutil.move(str(downloaded_path), str(target_file))
-    return target_file
+    return _move_downloaded_file(downloaded_path, target_file)
 
 
 def _get_latest_release_tag(owner_repo: str) -> str:
-    api_url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
-    try:
-        response = requests.get(api_url, timeout=15)
-        response.raise_for_status()
-        release_data = response.json()
-    except requests.RequestException as e:
-        utils.ui.error(get_string("dl_err_check_network"))
-        raise ToolError(get_string("dl_github_failed").format(e=e))
-
-    tag_name = release_data.get("tag_name")
-    if not tag_name:
-        raise ToolError(get_string("dl_err_latest_release_tag"))
-    return tag_name
+    return _github_client(owner_repo).latest_release_tag()
 
 
 def _get_latest_tag_name(owner_repo: str) -> str:
-    tags_url = f"https://api.github.com/repos/{owner_repo}/tags"
-    try:
-        response = requests.get(tags_url, params={"per_page": 1}, timeout=15)
-        response.raise_for_status()
-        tags = response.json()
-        if tags:
-            tag_name = tags[0].get("name")
-            if tag_name:
-                return tag_name
-    except requests.RequestException as e:
-        utils.ui.error(get_string("dl_err_check_network"))
-        raise ToolError(get_string("dl_github_failed").format(e=e))
-
-    return _get_latest_release_tag(owner_repo)
+    return _github_client(owner_repo).latest_tag_name()
 
 
 def _resolve_release_tag(owner_repo: str, tag: Optional[str]) -> str:
@@ -298,60 +226,12 @@ def _resolve_release_tag(owner_repo: str, tag: Optional[str]) -> str:
     return tag
 
 
-def _select_workflow_run_for_tag(runs: list[dict], tag: str) -> Optional[dict]:
-    for run in runs:
-        head_branch = run.get("head_branch") or ""
-        if head_branch == tag or head_branch == f"refs/tags/{tag}":
-            return run
-    for run in runs:
-        head_branch = run.get("head_branch") or ""
-        if head_branch.endswith(f"/{tag}"):
-            return run
-    return None
-
-
 def _get_workflow_run_id_for_tag(owner_repo: str, tag: str) -> str:
-    api_url = f"https://api.github.com/repos/{owner_repo}/actions/runs"
-    params: dict[str, str | int] = {
-        "per_page": 30,
-        "status": "completed",
-        "branch": tag,
-    }
-    try:
-        response = requests.get(api_url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        run = _select_workflow_run_for_tag(data.get("workflow_runs", []), tag)
-        if run:
-            return str(run["id"])
-
-        response = requests.get(api_url, params={"per_page": 50}, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        run = _select_workflow_run_for_tag(data.get("workflow_runs", []), tag)
-        if run:
-            return str(run["id"])
-    except requests.RequestException as e:
-        utils.ui.error(get_string("dl_err_check_network"))
-        raise ToolError(get_string("dl_github_failed").format(e=e))
-
-    raise ToolError(get_string("dl_err_workflow_run_for_tag").format(tag=tag))
+    return _github_client(owner_repo).workflow_run_id_for_tag(tag)
 
 
 def _get_workflow_run_artifacts(owner_repo: str, run_id: str) -> list[str]:
-    api_url = (
-        f"https://api.github.com/repos/{owner_repo}/actions/runs/{run_id}/artifacts"
-    )
-    try:
-        response = requests.get(api_url, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-    except requests.RequestException as e:
-        utils.ui.error(get_string("dl_err_check_network"))
-        raise ToolError(get_string("dl_github_failed").format(e=e))
-
-    artifacts = data.get("artifacts", [])
-    return [artifact.get("name", "") for artifact in artifacts if artifact.get("name")]
+    return _github_client(owner_repo).workflow_run_artifacts(run_id)
 
 
 def get_latest_tagged_workflow_run(
@@ -366,23 +246,7 @@ def get_latest_tagged_workflow_run(
 
 
 def get_latest_successful_workflow_run(repo: str, workflow_file: str) -> Optional[str]:
-    owner_repo = _get_owner_repo(repo)
-    api_url = f"https://api.github.com/repos/{owner_repo}/actions/workflows/{workflow_file}/runs"
-    params: dict[str, str | int] = {
-        "status": "success",
-        "per_page": 1,
-    }
-    try:
-        response = requests.get(api_url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        runs = data.get("workflow_runs", [])
-        if runs:
-            return str(runs[0]["id"])
-        return None
-    except requests.RequestException as e:
-        utils.ui.error(get_string("dl_err_check_network"))
-        raise ToolError(get_string("dl_github_failed").format(e=e))
+    return _github_client(repo).latest_successful_workflow_run(workflow_file)
 
 
 def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:
@@ -450,13 +314,10 @@ def _download_manager_artifact(
         try:
             download_resource(candidate_url, candidate_path)
             if candidate_path != manager_zip:
-                if manager_zip.exists():
-                    manager_zip.unlink()
-                shutil.move(candidate_path, manager_zip)
+                _move_downloaded_file(candidate_path, manager_zip)
             return
         except (ToolError, requests.RequestException, OSError):
-            if candidate_path.exists():
-                candidate_path.unlink()
+            _cleanup_files(candidate_path)
             continue
 
     raise ToolError(f"Failed to download manager artifact (tried: {candidates})")
@@ -513,13 +374,12 @@ def _download_ksuinit_artifact(
                             ):
                                 shutil.copyfileobj(src, dst)
                         break
-            temp_zip.unlink()
+            _cleanup_files(temp_zip)
 
             if downloaded and not download_all_ksuinit:
                 break
         except (ToolError, requests.RequestException, zipfile.BadZipFile, OSError):
-            if temp_zip.exists():
-                temp_zip.unlink()
+            _cleanup_files(temp_zip)
             continue
 
     if not downloaded:
@@ -565,12 +425,7 @@ def download_nightly_artifacts(
         )
 
     except (ToolError, requests.RequestException, zipfile.BadZipFile, OSError) as e:
-        if manager_zip.exists():
-            manager_zip.unlink()
-        if ksuinit_dest.exists():
-            ksuinit_dest.unlink()
-        if lkm_dest.exists():
-            lkm_dest.unlink()
+        _cleanup_files(manager_zip, ksuinit_dest, lkm_dest)
         raise e
 
 
@@ -623,8 +478,7 @@ def download_ksuinit_release(target_path: Path, repo: str = "", tag: str = "") -
             with zf.open(ksuinit_member) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     finally:
-        if temp_zip.exists():
-            temp_zip.unlink()
+        _cleanup_files(temp_zip)
 
 
 def get_lkm_kernel_release(
@@ -703,8 +557,7 @@ def download_apatch_nightly(
             with zf.open(apk_member) as src, open(apk_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     finally:
-        if temp_zip.exists():
-            temp_zip.unlink()
+        _cleanup_files(temp_zip)
 
     _extract_apatch_kpimg(apk_path, target_dir)
 
