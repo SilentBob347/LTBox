@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ltbox.execution import TaskResult
 from ltbox.registry import CommandRegistry
 from ltbox.errors import ToolError
 from ltbox.task_runner import TaskUIAdapter, _build_final_kwargs, run_task
@@ -92,3 +93,32 @@ def test_run_task_accepts_custom_ui_adapter_without_input_patch():
     assert "clear" in events
     assert ("echo", "done") in events
     assert "pause" in events
+
+
+def test_run_task_emits_structured_result_from_result_handler():
+    registry = CommandRegistry()
+    registry.add(
+        "arb",
+        lambda: ("MATCH", 1, 2),
+        "ARB Task",
+        require_dev=False,
+        result_handler=lambda result: TaskResult(
+            messages=[f"status={result[0]}", f"boot={result[1]}"]
+        ),
+    )
+
+    events = []
+    test_ui = TaskUIAdapter(
+        clear=lambda: events.append("clear"),
+        info=lambda msg: events.append(("info", msg)),
+        echo=lambda msg: events.append(("echo", msg)),
+        error=lambda msg: events.append(("error", msg)),
+        box_output=lambda lines: events.append(("box", tuple(lines))),
+        pause=lambda: events.append("pause"),
+    )
+
+    with patch("ltbox.task_runner.logging_context", return_value=nullcontext()):
+        run_task("arb", None, registry, ui_adapter=test_ui)
+
+    assert ("echo", "status=MATCH") in events
+    assert ("echo", "boot=1") in events

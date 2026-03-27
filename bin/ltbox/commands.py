@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, List, Optional
 from . import actions, workflow
 from .i18n import get_string
 from .registry import REGISTRY
-from .utils import ui
 
 
 @dataclass(frozen=True)
@@ -14,18 +13,8 @@ class CommandDefinition:
     title: str
     require_dev: bool = True
     default_kwargs: Dict[str, Any] = field(default_factory=dict)
-    result_handler: Optional[Callable[[Any], None]] = None
-
-
-def _handle_read_anti_rollback_result(result: Any) -> None:
-    if not isinstance(result, tuple):
-        if result:
-            ui.echo(get_string("act_unhandled_success_result").format(res=result))
-        return
-
-    ui.echo(get_string("act_arb_complete").format(status=result[0]))
-    ui.echo(get_string("act_curr_boot_idx").format(idx=result[1]))
-    ui.echo(get_string("act_curr_vbmeta_idx").format(idx=result[2]))
+    result_handler: Optional[Callable[[Any], Any]] = None
+    log_filename_prefix: Optional[str] = None
 
 
 def _build_command_definitions() -> List[CommandDefinition]:
@@ -155,7 +144,6 @@ def _build_command_definitions() -> List[CommandDefinition]:
             name="read_anti_rollback",
             func=actions.read_device_anti_rollback,
             title=get_string("task_title_read_arb"),
-            result_handler=_handle_read_anti_rollback_result,
         ),
         CommandDefinition(
             name="patch_anti_rollback",
@@ -202,13 +190,15 @@ def _build_command_definitions() -> List[CommandDefinition]:
             name="patch_all",
             func=workflow.patch_all,
             title=get_string("task_title_install_nowipe"),
-            default_kwargs={"wipe": 0},
+            default_kwargs={"wipe": 0, "manage_execution": False},
+            log_filename_prefix="log_flash_firmware",
         ),
         CommandDefinition(
             name="patch_all_wipe",
             func=workflow.patch_all,
             title=get_string("task_title_install_wipe"),
-            default_kwargs={"wipe": 1},
+            default_kwargs={"wipe": 1, "manage_execution": False},
+            log_filename_prefix="log_flash_firmware",
         ),
     ]
 
@@ -228,5 +218,6 @@ def register_all_commands() -> None:
             command.title,
             require_dev=command.require_dev,
             result_handler=command.result_handler,
+            log_filename_prefix=command.log_filename_prefix,
             **command.default_kwargs,
         )

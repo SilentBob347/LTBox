@@ -8,7 +8,8 @@ class CommandSpec:
     title: str
     require_dev: bool = True
     default_kwargs: Dict[str, Any] = field(default_factory=dict)
-    result_handler: Optional[Callable[[Any], None]] = None
+    result_handler: Optional[Callable[[Any], Any]] = None
+    log_filename_prefix: Optional[str] = None
 
     def __getitem__(self, key: str) -> Any:
         try:
@@ -26,7 +27,8 @@ class CommandRegistry:
         name: str,
         title: str,
         require_dev: bool = True,
-        result_handler: Optional[Callable[[Any], None]] = None,
+        result_handler: Optional[Callable[[Any], Any]] = None,
+        log_filename_prefix: Optional[str] = None,
         **default_kwargs,
     ):
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -36,6 +38,7 @@ class CommandRegistry:
                 require_dev=require_dev,
                 default_kwargs=default_kwargs,
                 result_handler=result_handler,
+                log_filename_prefix=log_filename_prefix,
             )
             return func
 
@@ -47,7 +50,8 @@ class CommandRegistry:
         func: Callable[..., Any],
         title: str,
         require_dev: bool = True,
-        result_handler: Optional[Callable[[Any], None]] = None,
+        result_handler: Optional[Callable[[Any], Any]] = None,
+        log_filename_prefix: Optional[str] = None,
         **default_kwargs: Any,
     ):
         self.register(
@@ -55,6 +59,7 @@ class CommandRegistry:
             title,
             require_dev=require_dev,
             result_handler=result_handler,
+            log_filename_prefix=log_filename_prefix,
             **default_kwargs,
         )(func)
 

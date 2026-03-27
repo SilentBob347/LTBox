@@ -3,6 +3,7 @@ import pytest
 
 from unittest.mock import patch
 from pathlib import Path
+from ltbox.execution import TaskResult
 from ltbox import workflow
 from ltbox.context import TaskContext
 from ltbox.errors import LTBoxError, UserCancelError
@@ -185,3 +186,19 @@ def test_patch_all_domain_errors_are_reraised_and_halt_logged():
             workflow.patch_all(dev=mock_dev)
 
     log_halt.assert_called_once()
+
+
+def test_patch_all_can_run_under_outer_task_executor():
+    mock_dev = make_device_mock()
+
+    with (
+        patch("ltbox.workflow.utils.ui"),
+        patch("ltbox.workflow.logging_context") as logging_context,
+        patch("ltbox.workflow._build_steps", return_value=[]),
+        patch("ltbox.workflow._run_steps"),
+    ):
+        result = workflow.patch_all(dev=mock_dev, manage_execution=False)
+
+    logging_context.assert_not_called()
+    assert isinstance(result, TaskResult)
+    assert result.messages

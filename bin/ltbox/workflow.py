@@ -1,6 +1,5 @@
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Callable, Optional
 
 from . import actions
@@ -8,6 +7,12 @@ from .backup_sources import find_backup_critical_dirs
 from . import constants as const
 from . import device, utils
 from .context import TaskContext
+from .execution import (
+    TaskResult,
+    announce_logging_finished,
+    announce_logging_start,
+    build_log_filename,
+)
 from .errors import (
     DeviceCommandError,
     DeviceError,
@@ -253,6 +258,44 @@ def _log_active_slot(ctx: TaskContext) -> None:
     ctx.on_log(get_string("act_active_slot").format(slot=active_slot_str))
 
 
+def _log_target_region(target_region: str) -> None:
+    if target_region == "ROW":
+        utils.ui.info(get_string("menu_main_install_keep_row"))
+    else:
+        utils.ui.info(get_string("menu_main_install_keep_prc"))
+
+
+def _build_success_result(ctx: TaskContext) -> TaskResult:
+    success_msg = get_string("wf_process_complete")
+    success_msg += f"\n{get_string('wf_process_complete_info')}"
+
+    if ctx.backup_dir_name:
+        success_msg += (
+            f"\n\n{get_string('wf_backup_notice').format(dir=ctx.backup_dir_name)}"
+        )
+
+    if ctx.arb_patched:
+        success_msg += f"\n\n{get_string('wf_arb_patched_warning')}"
+
+    if ctx.modify_rollback_index == "OFF":
+        success_msg += f"\n\n{get_string('wf_arb_off_notice')}"
+
+    success_msg += f"\n\n{get_string('wf_notice_widevine')}"
+    return TaskResult.from_message(success_msg)
+
+
+def _run_patch_all(ctx: TaskContext) -> TaskResult:
+    _log_target_region(ctx.target_region)
+
+    if ctx.wipe == 1:
+        ctx.on_log(get_string("wf_wipe_mode_start"))
+    else:
+        ctx.on_log(get_string("wf_nowipe_mode_start"))
+
+    _run_steps(ctx, _build_steps(ctx))
+    return _build_success_result(ctx)
+
+
 def patch_all(
     dev: device.DeviceController,
     wipe: int = 0,
@@ -260,7 +303,8 @@ def patch_all(
     target_region: str = "PRC",
     modify_rollback_index: str = "ON",
     prompts: Optional[WorkflowPrompts] = None,
-) -> str:
+    manage_execution: bool = True,
+) -> TaskResult:
     ctx = TaskContext(
         dev=dev,
         wipe=wipe,
@@ -271,42 +315,25 @@ def patch_all(
         prompts=prompts or UiWorkflowPrompts(),
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = const.BASE_DIR / "log"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = str(log_dir / f"log_flash_firmware_{timestamp}.txt")
+    log_file = (
+        build_log_filename(const.BASE_DIR, "log_flash_firmware")
+        if manage_execution
+        else ""
+    )
     command_name = "patch_all_wipe" if wipe == 1 else "patch_all"
 
-    utils.ui.info(get_string("logging_enabled").format(log_file=log_file))
-    utils.ui.info(get_string("logging_command").format(command=command_name))
-
-    if target_region == "ROW":
-        utils.ui.info(get_string("menu_main_install_keep_row"))
-    else:
-        utils.ui.info(get_string("menu_main_install_keep_prc"))
+    if manage_execution:
+        announce_logging_start(
+            command_name=command_name,
+            log_file=log_file,
+            info=utils.ui.info,
+        )
 
     try:
-        with logging_context(log_file):
-            if ctx.wipe == 1:
-                ctx.on_log(get_string("wf_wipe_mode_start"))
-            else:
-                ctx.on_log(get_string("wf_nowipe_mode_start"))
-            _run_steps(ctx, _build_steps(ctx))
-
-            success_msg = get_string("wf_process_complete")
-            success_msg += f"\n{get_string('wf_process_complete_info')}"
-
-            if ctx.backup_dir_name:
-                success_msg += f"\n\n{get_string('wf_backup_notice').format(dir=ctx.backup_dir_name)}"
-
-            if ctx.arb_patched:
-                success_msg += f"\n\n{get_string('wf_arb_patched_warning')}"
-
-            if ctx.modify_rollback_index == "OFF":
-                success_msg += f"\n\n{get_string('wf_arb_off_notice')}"
-
-            success_msg += f"\n\n{get_string('wf_notice_widevine')}"
-            return success_msg
+        if manage_execution:
+            with logging_context(log_file):
+                return _run_patch_all(ctx)
+        return _run_patch_all(ctx)
 
     except KeyboardInterrupt as e:
         _log_workflow_halt()
@@ -318,4 +345,5 @@ def patch_all(
         _log_workflow_halt()
         raise
     finally:
-        utils.ui.info(get_string("logging_finished").format(log_file=log_file))
+        if manage_execution:
+            announce_logging_finished(log_file=log_file, info=utils.ui.info)

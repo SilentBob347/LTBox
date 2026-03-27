@@ -1,11 +1,16 @@
 import functools
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .errors import LTBoxError, ToolError
+from .execution import (
+    announce_logging_finished,
+    announce_logging_start,
+    build_log_filename,
+    emit_task_result,
+)
 from .i18n import get_string
 from .logger import logging_context
 from .registry import CommandRegistry
@@ -124,26 +129,21 @@ def run_task(
     base_kwargs = cmd_info.default_kwargs
     require_dev = cmd_info.require_dev
     result_handler = cmd_info.result_handler
-
-    is_workflow = command in ("patch_all", "patch_all_wipe")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    log_filename = None
-    if not is_workflow:
-        log_dir = BASE_DIR.parent / "log"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_filename = str(log_dir / f"log_{command}_{timestamp}.txt")
+    log_filename = build_log_filename(
+        BASE_DIR.parent,
+        cmd_info.log_filename_prefix or f"log_{command}",
+    )
 
     try:
+        announce_logging_start(
+            command_name=command,
+            log_file=log_filename,
+            info=ui_adapter.info,
+        )
+
         with logging_context(log_filename):
             if dev and hasattr(dev, "reset_task_state"):
                 dev.reset_task_state()
-
-            if not is_workflow:
-                ui_adapter.info(
-                    get_string("logging_enabled").format(log_file=log_filename)
-                )
-                ui_adapter.info(get_string("logging_command").format(command=command))
 
             final_kwargs = _build_final_kwargs(
                 base_kwargs=base_kwargs,
@@ -153,15 +153,9 @@ def run_task(
             )
 
             result = func(**final_kwargs)
-
             if result_handler:
-                result_handler(result)
-            elif isinstance(result, str) and result:
-                ui_adapter.echo(result)
-            elif result:
-                ui_adapter.echo(
-                    get_string("act_unhandled_success_result").format(res=result)
-                )
+                result = result_handler(result)
+            emit_task_result(result, ui_adapter.echo)
 
     except (
         LTBoxError,
@@ -182,10 +176,7 @@ def run_task(
         if dev and hasattr(dev, "fastboot"):
             dev.fastboot.force_kill_server()
 
-        if not is_workflow:
-            ui_adapter.info(
-                get_string("logging_finished").format(log_file=log_filename)
-            )
+        announce_logging_finished(log_file=log_filename, info=ui_adapter.info)
 
         ui_adapter.echo("")
         ui_adapter.pause()
