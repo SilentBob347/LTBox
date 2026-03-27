@@ -1,27 +1,33 @@
-import json
-import os
-import platform
 import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from . import i18n, update_service, utils
 from .app_state import AppState
+from .info_scan import build_info_scan_command, collect_info_scan_files, run_info_scan
 from .i18n import get_string
-from .logger import logging_context
 from .registry import CommandRegistry
+from .settings_store import (
+    AppSettings,
+    SETTINGS_FILE,
+    SETTINGS_STORE,
+    SettingsStore,
+)
+from .startup_checks import (
+    acquire_single_instance_mutex,
+    check_path_encoding,
+    check_platform as _check_platform_impl,
+    ensure_admin_or_exit as _ensure_admin_or_exit_impl,
+    force_kill_processes as _force_kill_processes_impl,
+    get_running_processes as _get_running_processes_impl,
+    is_running_as_admin as _is_running_as_admin_impl,
+    resolve_process_conflicts as _resolve_process_conflicts_impl,
+    setup_console,
+)
 from .utils import ui
 
 if TYPE_CHECKING:
     from .menu_router import DeviceControllerFactoryProtocol
-
-APP_DIR = Path(__file__).parent.resolve()
-BASE_DIR = APP_DIR.parent
-PYTHON_EXE = BASE_DIR / "python3" / "python.exe"
-SETTINGS_FILE = APP_DIR / "settings.json"
 
 try:
     from .errors import LTBoxError, ToolError
@@ -30,253 +36,6 @@ except ImportError:
     print(get_string("err_ensure_errors"), file=sys.stderr)
     input(get_string("press_enter_to_exit"))
     sys.exit(1)
-
-
-# --- Settings & Init ---
-
-
-@dataclass(frozen=True)
-class AppSettings:
-    language: Optional[str] = None
-    target_region: str = "PRC"
-    modify_region_code: bool = True
-    preset_code: str = "1"
-    modify_rollback_index: str = "ON"
-
-    _ALLOWED_TARGET_REGIONS: ClassVar[set[str]] = {"PRC", "ROW"}
-    _ALLOWED_PRESET_CODES: ClassVar[set[str]] = {"1", "2", "3", "-"}
-    _ALLOWED_MODIFY_RB: ClassVar[set[str]] = {"ON", "AUTO", "OFF"}
-
-    @staticmethod
-    def validate_language(value: Any) -> Optional[str]:
-        return value if isinstance(value, str) else None
-
-    @classmethod
-    def validate_target_region(cls, value: Any) -> str:
-        return value if value in cls._ALLOWED_TARGET_REGIONS else "PRC"
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AppSettings":
-        target_region = cls.validate_target_region(data.get("target_region", "PRC"))
-        modify_region_code = bool(data.get("modify_region_code", True))
-        preset_code = data.get("preset_code", "1")
-        if preset_code not in cls._ALLOWED_PRESET_CODES:
-            preset_code = "1"
-        modify_rollback_index = data.get("modify_rollback_index", "ON")
-        if modify_rollback_index not in cls._ALLOWED_MODIFY_RB:
-            modify_rollback_index = "ON"
-        return cls(
-            language=cls.validate_language(data.get("language")),
-            target_region=target_region,
-            modify_region_code=modify_region_code,
-            preset_code=preset_code,
-            modify_rollback_index=modify_rollback_index,
-        )
-
-
-class SettingsStore:
-    _UPDATE_VALIDATORS: ClassVar[Dict[str, Callable[[Any], bool]]] = {
-        "language": lambda value: isinstance(value, str),
-        "target_region": lambda value: value in AppSettings._ALLOWED_TARGET_REGIONS,
-        "modify_region_code": lambda value: isinstance(value, bool),
-        "preset_code": lambda value: value in AppSettings._ALLOWED_PRESET_CODES,
-        "modify_rollback_index": lambda value: value in AppSettings._ALLOWED_MODIFY_RB,
-    }
-
-    def __init__(self, path: Path):
-        self._path = path
-
-    def load_raw(self) -> Dict[str, Any]:
-        if self._path.exists():
-            try:
-                with open(self._path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return data if isinstance(data, dict) else {}
-            except (json.JSONDecodeError, OSError):
-                return {}
-        return {}
-
-    def load(self) -> AppSettings:
-        return AppSettings.from_dict(self.load_raw())
-
-    def _filter_valid_updates(self, updates: Dict[str, Any]) -> Dict[str, Any]:
-        validated: Dict[str, Any] = {}
-        for key, value in updates.items():
-            validator = self._UPDATE_VALIDATORS.get(key)
-            if validator and validator(value):
-                validated[key] = value
-        return validated
-
-    def update(self, **updates: Any) -> AppSettings:
-        data = self.load_raw()
-        validated = self._filter_valid_updates(updates)
-
-        if not validated:
-            return AppSettings.from_dict(data)
-
-        data.update(validated)
-        try:
-            with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except (OSError, TypeError, ValueError) as e:
-            print(get_string("warn_save_settings_failed").format(e=e), file=sys.stderr)
-        return AppSettings.from_dict(data)
-
-
-SETTINGS_STORE = SettingsStore(SETTINGS_FILE)
-
-
-def _abort_platform_check(messages: List[str]) -> None:
-    for message in messages:
-        print(message, file=sys.stderr)
-    print(get_string("err_aborting"), file=sys.stderr)
-    input(get_string("press_enter_to_exit"))
-    sys.exit(1)
-
-
-def _check_platform():
-    if platform.system() != "Windows":
-        _abort_platform_check(
-            [
-                get_string("err_fatal_windows"),
-                get_string("err_current_platform").format(platform=platform.system()),
-            ]
-        )
-
-    if platform.machine() != "AMD64":
-        _abort_platform_check(
-            [
-                get_string("err_fatal_amd64"),
-                get_string("err_current_arch").format(arch=platform.machine()),
-                get_string("err_arch_unsupported"),
-            ]
-        )
-
-
-def setup_console():
-    try:
-        import ctypes
-
-        if sys.platform == "win32":
-            kernel32 = ctypes.windll.kernel32
-            kernel32.SetConsoleTitleW("LTBox")
-
-            STD_INPUT_HANDLE = -10
-            ENABLE_QUICK_EDIT_MODE = 0x0040
-            ENABLE_EXTENDED_FLAGS = 0x0080
-
-            hStdIn = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(hStdIn, ctypes.byref(mode)):
-                mode.value &= ~ENABLE_QUICK_EDIT_MODE
-                mode.value |= ENABLE_EXTENDED_FLAGS
-                kernel32.SetConsoleMode(hStdIn, mode)
-
-        sys.stdout.write("\x1b[8;40;80t")
-        sys.stdout.flush()
-
-        os.system("mode con: cols=80 lines=40")
-
-    except (ImportError, OSError, AttributeError) as e:
-        print(get_string("warn_set_console_title").format(e=e), file=sys.stderr)
-
-
-def check_path_encoding():
-    current_path = str(Path(__file__).parent.parent.resolve())
-    if not current_path.isascii():
-        ui.clear()
-        width = ui.get_term_width()
-        ui.box_output(
-            [
-                get_string("critical_error_path_encoding"),
-                "-" * width,
-                get_string("current_path").format(current_path=current_path),
-                "-" * width,
-                get_string("path_encoding_details_1"),
-                get_string("path_encoding_details_2"),
-                "",
-                get_string("action_required"),
-                get_string("action_required_details"),
-                get_string("example_path"),
-            ],
-            err=True,
-        )
-
-        input(get_string("press_enter_to_continue"))
-        raise RuntimeError(get_string("critical_error_path_encoding"))
-
-
-# --- Task Execution ---
-
-
-def collect_info_scan_files(paths: List[str]) -> List[Path]:
-    files_to_scan: List[Path] = []
-
-    for path_str in paths:
-        candidate = Path(path_str)
-        if candidate.is_dir():
-            files_to_scan.extend(candidate.rglob("*.img"))
-        elif candidate.is_file() and candidate.suffix.lower() == ".img":
-            files_to_scan.append(candidate)
-
-    return files_to_scan
-
-
-def build_info_scan_command(image_path: Path, constants: Any) -> List[str]:
-    return [
-        str(constants.PYTHON_EXE),
-        str(constants.AVBTOOL_PY),
-        "info_image",
-        "--image",
-        str(image_path),
-    ]
-
-
-def run_info_scan(paths: List[str], constants: Any, avb_patch: Any) -> None:
-    print(get_string("scan_start"))
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = constants.BASE_DIR / "log"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_filename = log_dir / f"image_info_{timestamp}.txt"
-
-    files_to_scan = collect_info_scan_files(paths)
-
-    if not files_to_scan:
-        print(get_string("scan_no_files"), file=sys.stderr)
-        return
-
-    print(get_string("scan_found_files").format(count=len(files_to_scan)))
-
-    with logging_context(log_filename) as logger:
-        for image_path in files_to_scan:
-            header = get_string("scan_log_header").format(path=image_path.resolve())
-            logger.info(header)
-            print(get_string("scan_scanning_file").format(filename=image_path.name))
-
-            try:
-                command = build_info_scan_command(image_path, constants)
-                result = avb_patch.utils.run_command(command, capture=True, check=False)
-
-                logger.info(result.stdout.strip())
-
-                if result.stderr:
-                    logger.info(
-                        get_string("scan_log_errors").format(
-                            errors=result.stderr.strip()
-                        )
-                    )
-
-                logger.info("\n" + "=" * ui.get_term_width() + "\n")
-            except (OSError, RuntimeError, ValueError, AttributeError) as e:
-                error_msg = get_string("scan_failed").format(
-                    filename=image_path.name, e=e
-                )
-                print(error_msg, file=sys.stderr)
-                logger.info(error_msg)
-
-    print(get_string("scan_complete"))
-    print(get_string("scan_saved_to").format(filename=log_filename.name))
 
 
 # --- Menus ---
@@ -362,25 +121,12 @@ def _run_entry_mode(
 # --- Singleton Check ---
 
 
+def _check_platform() -> None:
+    _check_platform_impl()
+
+
 def _acquire_single_instance_mutex() -> Optional[Any]:
-    import ctypes
-
-    if sys.platform != "win32":
-        return "Non-Windows-Mutex"
-
-    windll = getattr(ctypes, "windll", None)
-    if windll is None:
-        return None
-
-    kernel32 = windll.kernel32
-    mutex_name = "Global\\LTBox_Singleton_Mutex"
-
-    mutex = kernel32.CreateMutexW(None, False, mutex_name)
-
-    if kernel32.GetLastError() == 183:
-        return None
-
-    return mutex
+    return acquire_single_instance_mutex()
 
 
 # --- Entry Point ---
@@ -405,88 +151,26 @@ def _check_updates() -> None:
 
 
 def _is_running_as_admin() -> bool:
-    if os.name != "nt":
-        return True
-
-    try:
-        import ctypes
-
-        windll = getattr(ctypes, "windll", None)
-        if windll is None:
-            return False
-
-        return bool(windll.shell32.IsUserAnAdmin())
-    except (ImportError, OSError, AttributeError):
-        return False
+    return _is_running_as_admin_impl()
 
 
 def _ensure_admin_or_exit() -> None:
-    if _is_running_as_admin():
-        return
-
-    ui.clear()
-    ui.error(get_string("startup_admin_required"))
-    input(get_string("press_enter_to_exit"))
-    sys.exit(0)
+    _ensure_admin_or_exit_impl()
 
 
 def _force_kill_processes(exe_names: List[str]) -> None:
-    for exe_name in exe_names:
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", exe_name, "/T"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=(
-                    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-                ),
-            )
-        except (subprocess.CalledProcessError, OSError):
-            pass
+    _force_kill_processes_impl(exe_names)
 
 
 def _get_running_processes(exe_names: List[str]) -> List[str]:
-    if os.name != "nt":
-        return []
-    try:
-        result = subprocess.run(
-            ["tasklist"],
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        tasklist_output = result.stdout.lower()
-        return [name for name in exe_names if name.lower() in tasklist_output]
-    except (subprocess.CalledProcessError, OSError):
-        return []
+    return _get_running_processes_impl(exe_names)
 
 
 def _resolve_process_conflicts() -> None:
-    process_names = [
-        "adb.exe",
-        "fastboot.exe",
-        "Software Fix.exe",
-        "fh_loader.exe",
-        "QSaharaServer.exe",
-    ]
-    running = _get_running_processes(process_names)
-    if not running:
-        return
-
-    ui.clear()
-    running_list = ", ".join(running)
-    ui.warn(
-        get_string("startup_conflict_processes_prompt").format(processes=running_list)
+    _resolve_process_conflicts_impl(
+        get_running_processes=_get_running_processes,
+        force_kill_processes=_force_kill_processes,
     )
-    choice = ui.prompt(get_string("startup_conflict_confirm")).strip().lower()
-    if choice == "y":
-        _force_kill_processes(running)
-        return
-
-    ui.warn(get_string("startup_conflict_exit_message"))
-    input(get_string("press_enter_to_exit"))
-    sys.exit(0)
 
 
 def _init_and_run(is_info_mode: bool, lang_code: str) -> None:
