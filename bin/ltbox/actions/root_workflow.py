@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 from .. import constants as const
 from .. import device, utils
+from ..edl_partition_service import EdlPartitionService
 from ..errors import DeviceCommandError, DeviceConnectionError, ToolError
 from ..i18n import get_string
 from ..menu import TerminalMenu
@@ -18,6 +19,10 @@ from .root_strategies import (
     get_root_strategy,
 )
 from .system import get_slot_suffix
+
+
+def _partition_service() -> EdlPartitionService:
+    return EdlPartitionService(resolve_params=require_partition_params)
 
 
 def _patch_root_from_folder(
@@ -244,28 +249,7 @@ def _get_lkm_kernel_version(
 def _dump_partition(
     dev: device.DeviceController, port: str, label: str, output_path: Path
 ):
-    params = require_partition_params(label)
-    utils.ui.echo(
-        get_string("act_found_dump_info").format(
-            xml=params["source_xml"], lun=params["lun"], start=params["start_sector"]
-        )
-    )
-    dev.edl.read_partition(
-        port=port,
-        output_filename=str(output_path),
-        lun=params["lun"],
-        start_sector=params["start_sector"],
-        num_sectors=params["num_sectors"],
-    )
-    if params.get("size_in_kb"):
-        expected = int(float(params["size_in_kb"]) * 1024)
-        actual = output_path.stat().st_size
-        if expected != actual:
-            raise RuntimeError(
-                get_string("act_err_dump_size_mismatch").format(
-                    target=label, expected=expected, actual=actual
-                )
-            )
+    return _partition_service().dump_partition(dev, port, label, output_path)
 
 
 def _generate_root_image(
@@ -593,13 +577,8 @@ def sign_and_flash_recovery(dev: device.DeviceController) -> None:
         with dev.edl_session(auto_reset=True, reset_msg_key="act_dump_reset") as port:
             utils.ui.echo(get_string("act_dump_recovery").format(part=target_partition))
             try:
-                params = require_partition_params(target_partition)
-                dev.edl.read_partition(
-                    port=port,
-                    output_filename=str(dumped_recovery),
-                    lun=params["lun"],
-                    start_sector=params["start_sector"],
-                    num_sectors=params["num_sectors"],
+                _partition_service().dump_partition(
+                    dev, port, target_partition, dumped_recovery
                 )
             except (subprocess.CalledProcessError, OSError, ValueError) as e:
                 utils.ui.error(

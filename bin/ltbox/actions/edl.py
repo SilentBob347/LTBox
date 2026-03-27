@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .. import constants as const
 from .. import device, utils
 from ..backup_sources import find_dp_source_folders, format_dp_folder_label
+from ..edl_partition_service import EdlPartitionService
 from ..i18n import get_string
 from ..partition import require_partition_params
 from ..prompt_helpers import prompt_choice, prompt_index_selection, prompt_yes_no
@@ -31,6 +32,10 @@ class FullFlashPlan:
     patch_xmls: Tuple[Path, ...]
     pre_erase: bool
     reset_after: bool
+
+
+def _partition_service() -> EdlPartitionService:
+    return EdlPartitionService(resolve_params=require_partition_params)
 
 
 def _rawprogram_xml_paths() -> List[Path]:
@@ -326,27 +331,7 @@ def ensure_edl_requirements() -> None:
 def flash_partition_target(
     dev: device.DeviceController, port: str, target_name: str, image_path: Path
 ) -> None:
-    utils.ui.echo(get_string("act_flashing_target").format(target=target_name))
-
-    params = require_partition_params(target_name)
-    utils.ui.echo(
-        get_string("act_found_dump_info").format(
-            xml=params["source_xml"], lun=params["lun"], start=params["start_sector"]
-        )
-    )
-
-    utils.ui.echo(
-        get_string("device_flashing_part").format(
-            filename=image_path.name, lun=params["lun"], start=params["start_sector"]
-        )
-    )
-    dev.edl.write_partition(
-        port=port,
-        image_path=image_path,
-        lun=params["lun"],
-        start_sector=params["start_sector"],
-    )
-    utils.ui.echo(get_string("device_flash_success").format(filename=image_path.name))
+    _partition_service().flash_partition(dev, port, target_name, image_path)
 
 
 def dump_partitions(
@@ -383,15 +368,8 @@ def dump_partitions(
             utils.ui.echo(get_string("act_prep_dump").format(target=target))
 
             try:
-                params = require_partition_params(target)
-                utils.ui.echo(
-                    get_string("act_found_dump_info").format(
-                        xml=params["source_xml"],
-                        lun=params["lun"],
-                        start=params["start_sector"],
-                    )
-                )
-
+                service = _partition_service()
+                params = service.get_params(target)
                 utils.ui.echo(
                     get_string("device_dumping_part").format(
                         lun=params["lun"],
@@ -399,34 +377,7 @@ def dump_partitions(
                         num=params["num_sectors"],
                     )
                 )
-
-                dev.edl.read_partition(
-                    port=port,
-                    output_filename=str(out_file),
-                    lun=params["lun"],
-                    start_sector=params["start_sector"],
-                    num_sectors=params["num_sectors"],
-                )
-
-                if params.get("size_in_kb"):
-                    try:
-                        expected_size = int(float(params["size_in_kb"]) * 1024)
-                        actual_size = out_file.stat().st_size
-
-                        if expected_size != actual_size:
-                            raise RuntimeError(
-                                get_string("act_err_dump_size_mismatch").format(
-                                    target=target,
-                                    expected=expected_size,
-                                    actual=actual_size,
-                                )
-                            )
-                    except (ValueError, OSError) as e:
-                        utils.ui.echo(
-                            get_string("act_skip_dump").format(
-                                target=target, e=f"Size validation error: {e}"
-                            )
-                        )
+                service.dump_partition(dev, port, target, out_file, params=params)
 
                 utils.ui.echo(
                     get_string("act_dump_success").format(
