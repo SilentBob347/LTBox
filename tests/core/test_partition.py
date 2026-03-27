@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ltbox import partition
 from ltbox.actions import edl
+from ltbox.xml_catalog import XmlCatalog
 
 
 def test_require_partition_params_raises_on_missing():
@@ -18,6 +19,29 @@ def test_require_partition_params_raises_on_missing():
     ):
         with pytest.raises(ValueError):
             partition.require_partition_params("nonexistent_label")
+
+
+def test_xml_catalog_groups_ab_and_non_ab_entries(tmp_path):
+    xml_path = tmp_path / "rawprogram0.xml"
+    xml_path.write_text(
+        """<?xml version='1.0'?><data>
+        <program label='boot_a' filename='boot_a.img' physical_partition_number='0' start_sector='100'/>
+        <program label='boot_b' filename='' physical_partition_number='0' start_sector='200'/>
+        <program label='super' filename='super.img' physical_partition_number='0' start_sector='300'/>
+        <program label='persist' filename='' physical_partition_number='0' start_sector='400'/>
+        </data>""",
+        encoding="utf-8",
+    )
+
+    catalog = XmlCatalog.from_paths([xml_path])
+    groups = catalog.group_by_base_label(with_files_only=True)
+
+    assert sorted(groups.keys()) == ["boot", "super"]
+    assert groups["boot"].is_ab is True
+    assert groups["boot"].a[0].filename == "boot_a.img"
+    assert groups["boot"].b[0].start_sector == "200"
+    assert groups["super"].is_ab is False
+    assert groups["super"].none[0].filename == "super.img"
 
 
 def _copy_firmware_xml(fw_pkg, image_dir):

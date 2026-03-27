@@ -3,8 +3,7 @@ import shutil
 import subprocess
 import time
 import traceback
-import xml.etree.ElementTree as ET
-from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -12,62 +11,206 @@ from .. import constants as const
 from .. import device, utils
 from ..i18n import get_string
 from ..partition import require_partition_params
+from ..xml_catalog import PartitionGroup, PartitionRecord, XmlCatalog
 from . import xml
 
 
-def _collect_base_partitions() -> Dict[str, Any]:
-    xml.ensure_xml_files()
+@dataclass(frozen=True)
+class PartitionFlashTarget:
+    target_name: str
+    image_path: Path
+    lun: str
+    start_sector: str
 
+
+@dataclass(frozen=True)
+class FullFlashPlan:
+    raw_xmls: Tuple[Path, ...]
+    patch_xmls: Tuple[Path, ...]
+    pre_erase: bool
+    reset_after: bool
+
+
+def _rawprogram_xml_paths() -> List[Path]:
     xml_files = sorted(const.IMAGE_DIR.glob("rawprogram*.xml"))
-    if not xml_files:
-        xml_files = sorted(const.OUTPUT_XML_DIR.glob("rawprogram*.xml"))
+    if xml_files:
+        return xml_files
+    return sorted(const.OUTPUT_XML_DIR.glob("rawprogram*.xml"))
 
-    partitions: Dict[str, Any] = defaultdict(
-        lambda: {
-            "is_ab": False,
-            "a": [],
-            "b": [],
-            "none": [],
-            "has_files": False,
+
+def _collect_partition_groups() -> Dict[str, PartitionGroup]:
+    xml.ensure_xml_files()
+    return XmlCatalog.from_paths(
+        _rawprogram_xml_paths(),
+        on_error=utils.ui.error,
+    ).group_by_base_label(with_files_only=True)
+
+
+def _partition_record_to_entry(record: PartitionRecord) -> Dict[str, Optional[str]]:
+    return {
+        "filename": record.filename,
+        "lun": record.lun,
+        "start_sector": record.start_sector,
+    }
+
+
+def _collect_base_partitions() -> Dict[str, Any]:
+    partition_groups = _collect_partition_groups()
+    return {
+        base_label: {
+            "is_ab": group.is_ab,
+            "a": [_partition_record_to_entry(record) for record in group.a],
+            "b": [_partition_record_to_entry(record) for record in group.b],
+            "none": [_partition_record_to_entry(record) for record in group.none],
+            "has_files": group.has_files,
         }
-    )
+        for base_label, group in partition_groups.items()
+    }
 
-    for xml_file in xml_files:
-        try:
-            rp = xml.RawProgramXml(xml_file)
-        except (OSError, ET.ParseError) as e:
-            utils.ui.error(
-                get_string("act_xml_parse_err").format(name=xml_file.name, e=e)
+
+def _prompt_slot_selection() -> str:
+    while True:
+        width = utils.ui.get_term_width()
+        utils.ui.echo("\n" + "=" * width)
+        utils.ui.echo(f"   {get_string('menu_select_slot')}")
+        utils.ui.echo("=" * width + "\n")
+        utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
+        utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
+
+        choice = utils.ui.prompt(get_string("prompt_select")).strip()
+        if choice == "1":
+            return "a"
+        if choice == "2":
+            return "b"
+        utils.ui.error(get_string("err_invalid_selection"))
+
+
+def _resolve_selected_partition_slot(
+    selected_bases: List[str],
+    partition_groups: Dict[str, PartitionGroup],
+) -> str:
+    needs_slot = any(partition_groups[base].is_ab for base in selected_bases)
+    if not needs_slot:
+        return ""
+    return _prompt_slot_selection()
+
+
+def _build_selected_partition_flash_targets(
+    selected_bases: List[str],
+    partition_groups: Dict[str, PartitionGroup],
+    slot_suffix: str,
+) -> List[PartitionFlashTarget]:
+    flash_targets: List[PartitionFlashTarget] = []
+    missing_files: List[str] = []
+
+    for base in selected_bases:
+        partition_group = partition_groups[base]
+        if partition_group.is_ab:
+            target_slot = slot_suffix
+            other_slot = "b" if target_slot == "a" else "a"
+
+            target_records = partition_group.slot_records(target_slot)
+            other_records = partition_group.slot_records(other_slot)
+
+            for target_record, other_record in itertools.zip_longest(
+                target_records, other_records
+            ):
+                if target_record is None:
+                    utils.ui.error(
+                        get_string("act_warn_missing_sector_info").format(
+                            partition=f"{base}_{target_slot}"
+                        )
+                    )
+                    continue
+
+                filename = target_record.filename
+                if not filename and other_record is not None:
+                    filename = other_record.filename
+
+                if not filename:
+                    continue
+
+                image_path = const.IMAGE_DIR / filename
+                if not image_path.exists():
+                    missing_files.append(filename)
+                    continue
+
+                flash_targets.append(
+                    PartitionFlashTarget(
+                        target_name=f"{base}_{target_slot}",
+                        image_path=image_path,
+                        lun=target_record.lun or "",
+                        start_sector=target_record.start_sector or "",
+                    )
+                )
+        else:
+            for record in partition_group.none:
+                if not record.filename:
+                    continue
+
+                image_path = const.IMAGE_DIR / record.filename
+                if not image_path.exists():
+                    missing_files.append(record.filename)
+                    continue
+
+                flash_targets.append(
+                    PartitionFlashTarget(
+                        target_name=base,
+                        image_path=image_path,
+                        lun=record.lun or "",
+                        start_sector=record.start_sector or "",
+                    )
+                )
+
+    if missing_files:
+        unique_missing = sorted(set(missing_files))
+        raise FileNotFoundError(
+            get_string("act_err_selected_partitions_missing_images").format(
+                files=", ".join(unique_missing)
             )
-            continue
+        )
 
-        for prog in rp.programs:
-            label = prog.label.strip()
-            if not label:
-                continue
+    return flash_targets
 
-            filename = prog.filename.strip()
-            lun = prog.lun
-            start_sector = prog.start_sector
 
-            is_ab = label.endswith("_a") or label.endswith("_b")
-            base_label = label[:-2] if is_ab else label
+def _execute_partition_flash_targets(
+    dev: device.DeviceController,
+    port: str,
+    flash_targets: List[PartitionFlashTarget],
+) -> None:
+    for flash_target in flash_targets:
+        utils.ui.echo(
+            get_string("act_flashing_target").format(target=flash_target.target_name)
+        )
+        utils.ui.echo(
+            get_string("device_flashing_part").format(
+                filename=flash_target.image_path.name,
+                lun=flash_target.lun,
+                start=flash_target.start_sector,
+            )
+        )
 
-            if is_ab:
-                partitions[base_label]["is_ab"] = True
-                slot = label[-1]
-                partitions[base_label][slot].append(
-                    {"filename": filename, "lun": lun, "start_sector": start_sector}
-                )
-            else:
-                partitions[base_label]["none"].append(
-                    {"filename": filename, "lun": lun, "start_sector": start_sector}
-                )
+        dev.edl.write_partition(
+            port=port,
+            image_path=flash_target.image_path,
+            lun=flash_target.lun,
+            start_sector=flash_target.start_sector,
+        )
 
-            if filename:
-                partitions[base_label]["has_files"] = True
 
-    return {k: v for k, v in partitions.items() if v["has_files"]}
+def _build_full_flash_plan(
+    skip_dp: bool,
+    wipe_mode: bool,
+    skip_reset: bool,
+) -> FullFlashPlan:
+    _prepare_flash_files(skip_dp)
+    raw_xmls, patch_xmls = _select_flash_xmls(skip_dp)
+    return FullFlashPlan(
+        raw_xmls=tuple(raw_xmls),
+        patch_xmls=tuple(patch_xmls),
+        pre_erase=wipe_mode,
+        reset_after=not skip_reset,
+    )
 
 
 def _prompt_partition_selection(labels: List[str]) -> List[str]:
@@ -128,11 +271,11 @@ def flash_selected_partitions(
 ) -> None:
     utils.ui.echo(get_string("act_flash_partitions_label_start"))
 
-    partition_map = _collect_base_partitions()
-    if not partition_map:
+    partition_groups = _collect_partition_groups()
+    if not partition_groups:
         raise FileNotFoundError(get_string("act_err_no_xml_dump"))
 
-    labels = sorted(partition_map.keys())
+    labels = sorted(partition_groups.keys())
     selected_bases = _prompt_partition_selection(labels)
 
     if not selected_bases:
@@ -141,112 +284,20 @@ def flash_selected_partitions(
 
     utils.ui.clear()
 
-    needs_slot = any(partition_map[base]["is_ab"] for base in selected_bases)
-    slot_suffix = ""
-    if needs_slot:
-        while True:
-            width = utils.ui.get_term_width()
-            utils.ui.echo("\n" + "=" * width)
-            utils.ui.echo(f"   {get_string('menu_select_slot')}")
-            utils.ui.echo("=" * width + "\n")
-            utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
-            utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
+    slot_suffix = _resolve_selected_partition_slot(selected_bases, partition_groups)
+    flash_targets = _build_selected_partition_flash_targets(
+        selected_bases,
+        partition_groups,
+        slot_suffix,
+    )
 
-            choice = utils.ui.prompt(get_string("prompt_select")).strip()
-            if choice == "1":
-                slot_suffix = "a"
-                break
-            elif choice == "2":
-                slot_suffix = "b"
-                break
-            else:
-                utils.ui.error(get_string("err_invalid_selection"))
-
-    flash_plan = []
-    missing_files = []
-
-    for base in selected_bases:
-        p_info = partition_map[base]
-        if p_info["is_ab"]:
-            target_slot = slot_suffix
-            other_slot = "b" if target_slot == "a" else "a"
-
-            target_entries = p_info[target_slot]
-            other_entries = p_info[other_slot]
-
-            for t_entry, o_entry in itertools.zip_longest(
-                target_entries, other_entries
-            ):
-                if not t_entry:
-                    utils.ui.error(
-                        get_string("act_warn_missing_sector_info").format(
-                            partition=f"{base}_{target_slot}"
-                        )
-                    )
-                    continue
-
-                filename = t_entry["filename"]
-                if not filename and o_entry:
-                    filename = o_entry["filename"]
-
-                if not filename:
-                    continue
-
-                if not (const.IMAGE_DIR / filename).exists():
-                    missing_files.append(filename)
-                else:
-                    flash_plan.append(
-                        (
-                            f"{base}_{target_slot}",
-                            filename,
-                            t_entry["lun"],
-                            t_entry["start_sector"],
-                        )
-                    )
-        else:
-            for entry in p_info["none"]:
-                filename = entry["filename"]
-                if not filename:
-                    continue
-                if not (const.IMAGE_DIR / filename).exists():
-                    missing_files.append(filename)
-                else:
-                    flash_plan.append(
-                        (base, filename, entry["lun"], entry["start_sector"])
-                    )
-
-    if missing_files:
-        unique_missing = sorted(set(missing_files))
-        raise FileNotFoundError(
-            get_string("act_err_selected_partitions_missing_images").format(
-                files=", ".join(unique_missing)
-            )
-        )
-
-    if not flash_plan:
+    if not flash_targets:
         utils.ui.echo(get_string("act_op_cancel"))
         return
 
     ensure_edl_requirements()
     with dev.edl_session(auto_reset=not skip_reset) as port:
-        for target_label, filename, lun, start_sector in flash_plan:
-            image_path = const.IMAGE_DIR / filename
-
-            utils.ui.echo(get_string("act_flashing_target").format(target=target_label))
-            utils.ui.echo(
-                get_string("device_flashing_part").format(
-                    filename=image_path.name,
-                    lun=lun,
-                    start=start_sector,
-                )
-            )
-
-            dev.edl.write_partition(
-                port=port,
-                image_path=image_path,
-                lun=lun,
-                start_sector=start_sector,
-            )
+        _execute_partition_flash_targets(dev, port, flash_targets)
 
     utils.ui.echo(get_string("act_write_finish"))
 
@@ -724,52 +775,40 @@ def _resolve_flash_wipe_mode(wipe: Optional[bool]) -> Optional[bool]:
     return _prompt_flash_wipe_mode()
 
 
-def flash_full_firmware(
-    dev: device.DeviceController,
-    skip_reset: bool = False,
-    skip_reset_edl: bool = False,
-    skip_dp: bool = False,
-    wipe: Optional[bool] = None,
-) -> None:
-    utils.ui.echo(get_string("act_start_flash"))
-
-    if not const.IMAGE_DIR.is_dir() or not any(const.IMAGE_DIR.iterdir()):
-        utils.ui.echo(
-            get_string("act_err_image_empty").format(dir=const.IMAGE_DIR.name)
-        )
-        utils.ui.echo(get_string("act_err_run_xml_mod"))
-        raise FileNotFoundError(
-            get_string("act_err_image_empty_exc").format(dir=const.IMAGE_DIR.name)
-        )
-
-    ensure_loader_file()
-
-    wipe_mode = _resolve_flash_wipe_mode(wipe)
-    if wipe_mode is None:
-        utils.ui.echo(get_string("act_op_cancel"))
+def _validate_image_dir_for_flash() -> None:
+    if const.IMAGE_DIR.is_dir() and any(const.IMAGE_DIR.iterdir()):
         return
 
-    if not skip_reset_edl:
-        width = utils.ui.get_term_width()
-        utils.ui.echo("\n" + "=" * width)
-        utils.ui.echo(get_string("act_warn_overwrite_1"))
-        utils.ui.echo(get_string("act_warn_overwrite_2"))
-        utils.ui.echo(get_string("act_warn_overwrite_3"))
-        utils.ui.echo("=" * width + "\n")
+    utils.ui.echo(get_string("act_err_image_empty").format(dir=const.IMAGE_DIR.name))
+    utils.ui.echo(get_string("act_err_run_xml_mod"))
+    raise FileNotFoundError(
+        get_string("act_err_image_empty_exc").format(dir=const.IMAGE_DIR.name)
+    )
 
-        choice = ""
-        while choice not in ["y", "n"]:
-            choice = utils.ui.prompt(get_string("act_ask_continue")).lower().strip()
 
-        if choice == "n":
-            utils.ui.echo(get_string("act_op_cancel"))
-            return
+def _confirm_full_flash_overwrite(skip_reset_edl: bool) -> bool:
+    if skip_reset_edl:
+        return True
 
-    _prepare_flash_files(skip_dp)
+    width = utils.ui.get_term_width()
+    utils.ui.echo("\n" + "=" * width)
+    utils.ui.echo(get_string("act_warn_overwrite_1"))
+    utils.ui.echo(get_string("act_warn_overwrite_2"))
+    utils.ui.echo(get_string("act_warn_overwrite_3"))
+    utils.ui.echo("=" * width + "\n")
 
-    raw_xmls, patch_xmls = _select_flash_xmls(skip_dp)
-    reset_after_flash = not skip_reset
+    choice = ""
+    while choice not in ["y", "n"]:
+        choice = utils.ui.prompt(get_string("act_ask_continue")).lower().strip()
+    return choice == "y"
 
+
+def _execute_full_flash_plan(
+    dev: device.DeviceController,
+    flash_plan: FullFlashPlan,
+    skip_reset: bool,
+    skip_dp: bool,
+) -> None:
     utils.ui.echo(get_string("act_flash_step1"))
 
     with dev.edl_session(
@@ -782,10 +821,10 @@ def flash_full_firmware(
                 port,
                 const.EDL_LOADER_FILE,
                 "UFS",
-                raw_xmls,
-                patch_xmls,
-                pre_erase=wipe_mode,
-                reset_after=reset_after_flash,
+                list(flash_plan.raw_xmls),
+                list(flash_plan.patch_xmls),
+                pre_erase=flash_plan.pre_erase,
+                reset_after=flash_plan.reset_after,
             )
         except (subprocess.CalledProcessError, OSError, RuntimeError) as e:
             utils.ui.error(get_string("act_err_main_flash").format(e=e))
@@ -806,6 +845,40 @@ def flash_full_firmware(
 
         if not skip_reset:
             utils.ui.echo(get_string("act_flash_step3"))
+
+
+def flash_full_firmware(
+    dev: device.DeviceController,
+    skip_reset: bool = False,
+    skip_reset_edl: bool = False,
+    skip_dp: bool = False,
+    wipe: Optional[bool] = None,
+) -> None:
+    utils.ui.echo(get_string("act_start_flash"))
+
+    _validate_image_dir_for_flash()
+    ensure_loader_file()
+
+    wipe_mode = _resolve_flash_wipe_mode(wipe)
+    if wipe_mode is None:
+        utils.ui.echo(get_string("act_op_cancel"))
+        return
+
+    if not _confirm_full_flash_overwrite(skip_reset_edl):
+        utils.ui.echo(get_string("act_op_cancel"))
+        return
+
+    flash_plan = _build_full_flash_plan(
+        skip_dp=skip_dp,
+        wipe_mode=wipe_mode,
+        skip_reset=skip_reset,
+    )
+    _execute_full_flash_plan(
+        dev=dev,
+        flash_plan=flash_plan,
+        skip_reset=skip_reset,
+        skip_dp=skip_dp,
+    )
 
     if not skip_reset:
         utils.ui.echo(get_string("act_flash_finish"))
