@@ -1,5 +1,5 @@
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
@@ -68,6 +68,51 @@ PRESET_1_KEY = "menu_settings_preset_1"
 PRESET_2_KEY = "menu_settings_preset_2"
 PRESET_3_KEY = "menu_settings_preset_3"
 SKIP_ADB_BLOCKED_ACTIONS = {"disable_ota", "reenable_ota"}
+PRESET_SELECTION_ORDER: Dict[str, str] = {"1": "2", "2": "3", "3": "1", "-": "1"}
+PRESET_UPDATES: Dict[str, Dict[str, Any]] = {
+    "1": {
+        "target_region": "PRC",
+        "modify_region_code": True,
+        "modify_rollback_index": "ON",
+        "preset_code": "1",
+    },
+    "2": {
+        "target_region": "ROW",
+        "modify_region_code": True,
+        "modify_rollback_index": "ON",
+        "preset_code": "2",
+    },
+    "3": {
+        "modify_region_code": False,
+        "modify_rollback_index": "AUTO",
+        "preset_code": "3",
+    },
+}
+ROLLBACK_CYCLE = {"ON": "AUTO", "AUTO": "OFF", "OFF": "ON"}
+
+
+@dataclass(frozen=True)
+class RootRouteSpec:
+    handler: str
+    gki: bool = False
+    root_type: str = ""
+
+
+ROOT_ROUTE_SPECS: Dict[str, RootRouteSpec] = {
+    "1": RootRouteSpec(handler="action", gki=False, root_type="kernelsu"),
+    "2": RootRouteSpec(handler="mode"),
+    "3": RootRouteSpec(handler="action", gki=False, root_type="sukisu"),
+    "4": RootRouteSpec(handler="action", gki=False, root_type="resukisu"),
+    "5": RootRouteSpec(handler="action", gki=True, root_type="apatch"),
+    "6": RootRouteSpec(handler="action", gki=True, root_type="folkpatch"),
+}
+
+
+@dataclass(frozen=True)
+class SettingsActionSpec:
+    state_transform: Optional[Callable[[AppState], AppState]] = None
+    effect: Optional[Callable[[], None]] = None
+    sync_skip_adb: bool = False
 
 
 def _preset_label_from_code(preset_code: str) -> str:
@@ -82,6 +127,97 @@ def _preset_label_from_code(preset_code: str) -> str:
 
 def _resolve_settings_preset_label(state: AppState) -> str:
     return _preset_label_from_code(state.preset_code)
+
+
+def _apply_selected_preset(state: AppState, preset_choice: str) -> AppState:
+    updates = PRESET_UPDATES.get(preset_choice)
+    if not updates:
+        return state
+    return replace(state, **updates)
+
+
+def _select_next_preset(state: AppState) -> AppState:
+    next_preset = PRESET_SELECTION_ORDER.get(state.preset_code, "1")
+    return _apply_selected_preset(state, next_preset)
+
+
+def _toggle_region(state: AppState) -> AppState:
+    return replace(
+        state,
+        target_region="ROW" if state.target_region == "PRC" else "PRC",
+        preset_code="-",
+    )
+
+
+def _toggle_skip_adb(state: AppState) -> AppState:
+    return replace(state, skip_adb=not state.skip_adb)
+
+
+def _toggle_modify_region_code(state: AppState) -> AppState:
+    return replace(
+        state,
+        modify_region_code=not state.modify_region_code,
+        preset_code="-",
+    )
+
+
+def _cycle_rollback_setting(state: AppState) -> AppState:
+    new_val = ROLLBACK_CYCLE.get(state.modify_rollback_index, "ON")
+    return replace(
+        state,
+        modify_rollback_index=new_val,
+        preset_code="-",
+    )
+
+
+def _run_change_language(registry: CommandRegistry) -> None:
+    cmd_info = registry.get("change_language")
+    if cmd_info:
+        cmd_info.func(
+            breadcrumbs=f"{get_string('menu_main_title')} > {get_string('menu_settings_title')}"
+        )
+
+
+def _build_settings_action_specs(
+    registry: CommandRegistry,
+) -> Dict[str, SettingsActionSpec]:
+    return {
+        "select_preset": SettingsActionSpec(state_transform=_select_next_preset),
+        "toggle_region": SettingsActionSpec(state_transform=_toggle_region),
+        "toggle_adb": SettingsActionSpec(
+            state_transform=_toggle_skip_adb,
+            sync_skip_adb=True,
+        ),
+        "toggle_modify_region_code": SettingsActionSpec(
+            state_transform=_toggle_modify_region_code
+        ),
+        "cycle_rollback": SettingsActionSpec(state_transform=_cycle_rollback_setting),
+        "change_lang": SettingsActionSpec(
+            effect=lambda: _run_change_language(registry)
+        ),
+        "check_update": SettingsActionSpec(effect=_handle_update_check),
+    }
+
+
+def _apply_settings_action(
+    action: str,
+    *,
+    state: AppState,
+    dev: DeviceControllerProtocol,
+    action_specs: Dict[str, SettingsActionSpec],
+) -> AppState:
+    spec = action_specs.get(action)
+    if spec is None:
+        return state
+
+    next_state = state
+    if spec.state_transform is not None:
+        next_state = spec.state_transform(state)
+    if spec.sync_skip_adb:
+        dev.skip_adb = next_state.skip_adb
+    if spec.effect is not None:
+        spec.effect()
+    return next_state
 
 
 def _loop_menu(
@@ -207,44 +343,29 @@ def _build_root_dispatch_map(
     registry: CommandRegistry,
     type_breadcrumbs: Dict[str, str],
 ) -> Dict[str, Callable[[], MenuReturn]]:
-    return {
-        "1": lambda: _root_action_menu(
-            dev,
-            registry,
-            gki=False,
-            root_type="kernelsu",
-            breadcrumbs=type_breadcrumbs["1"],
-        ),
-        "2": lambda: _handle_ksu_mode(dev, registry, type_breadcrumbs["2"]),
-        "3": lambda: _root_action_menu(
-            dev,
-            registry,
-            gki=False,
-            root_type="sukisu",
-            breadcrumbs=type_breadcrumbs["3"],
-        ),
-        "4": lambda: _root_action_menu(
-            dev,
-            registry,
-            gki=False,
-            root_type="resukisu",
-            breadcrumbs=type_breadcrumbs["4"],
-        ),
-        "5": lambda: _root_action_menu(
-            dev,
-            registry,
-            gki=True,
-            root_type="apatch",
-            breadcrumbs=type_breadcrumbs["5"],
-        ),
-        "6": lambda: _root_action_menu(
-            dev,
-            registry,
-            gki=True,
-            root_type="folkpatch",
-            breadcrumbs=type_breadcrumbs["6"],
-        ),
-    }
+    dispatch_map: Dict[str, Callable[[], MenuReturn]] = {}
+    for key, route_spec in ROOT_ROUTE_SPECS.items():
+        breadcrumbs = type_breadcrumbs[key]
+        if route_spec.handler == "mode":
+            dispatch_map[key] = (
+                lambda breadcrumbs=breadcrumbs: _handle_ksu_mode(
+                    dev,
+                    registry,
+                    breadcrumbs,
+                )
+            )
+            continue
+
+        dispatch_map[key] = (
+            lambda route_spec=route_spec, breadcrumbs=breadcrumbs: _root_action_menu(
+                dev,
+                registry,
+                gki=route_spec.gki,
+                root_type=route_spec.root_type,
+                breadcrumbs=breadcrumbs,
+            )
+        )
+    return dispatch_map
 
 
 def _build_root_type_menu(main_title: str) -> TerminalMenu:
@@ -437,96 +558,16 @@ def settings_menu(
     state: AppState,
 ) -> tuple[AppState, MenuReturn]:
     next_state = state
-
-    def _apply_selected_preset(preset_choice: str) -> None:
-        nonlocal next_state
-        if preset_choice == "1":
-            next_state = replace(
-                next_state,
-                target_region="PRC",
-                modify_region_code=True,
-                modify_rollback_index="ON",
-                preset_code="1",
-            )
-        elif preset_choice == "2":
-            next_state = replace(
-                next_state,
-                target_region="ROW",
-                modify_region_code=True,
-                modify_rollback_index="ON",
-                preset_code="2",
-            )
-        elif preset_choice == "3":
-            next_state = replace(
-                next_state,
-                modify_region_code=False,
-                modify_rollback_index="AUTO",
-                preset_code="3",
-            )
-
-    def _select_preset():
-        current_preset_code = next_state.preset_code
-        if current_preset_code == "1":
-            _apply_selected_preset("2")
-        elif current_preset_code == "2":
-            _apply_selected_preset("3")
-        elif current_preset_code == "3":
-            _apply_selected_preset("1")
-        else:
-            _apply_selected_preset("1")
-
-    def _toggle_region():
-        nonlocal next_state
-        next_state = replace(
-            next_state,
-            target_region="ROW" if next_state.target_region == "PRC" else "PRC",
-            preset_code="-",
-        )
-
-    def _toggle_adb():
-        nonlocal next_state
-        next_state = replace(next_state, skip_adb=not next_state.skip_adb)
-        dev.skip_adb = next_state.skip_adb
-
-    def _toggle_modify_region_code():
-        nonlocal next_state
-        next_state = replace(
-            next_state,
-            modify_region_code=not next_state.modify_region_code,
-            preset_code="-",
-        )
-
-    def _cycle_rollback():
-        nonlocal next_state
-        cycle = {"ON": "AUTO", "AUTO": "OFF", "OFF": "ON"}
-        new_val = cycle.get(next_state.modify_rollback_index, "ON")
-        next_state = replace(
-            next_state,
-            modify_rollback_index=new_val,
-            preset_code="-",
-        )
-
-    def _change_lang():
-        cmd_info = registry.get("change_language")
-        if cmd_info:
-            cmd_info.func(
-                breadcrumbs=f"{get_string('menu_main_title')} > {get_string('menu_settings_title')}"
-            )
-
-    action_handlers = {
-        "select_preset": _select_preset,
-        "toggle_region": _toggle_region,
-        "toggle_adb": _toggle_adb,
-        "toggle_modify_region_code": _toggle_modify_region_code,
-        "cycle_rollback": _cycle_rollback,
-        "change_lang": _change_lang,
-        "check_update": _handle_update_check,
-    }
+    action_specs = _build_settings_action_specs(registry)
 
     def _handler(act: str) -> None:
-        func = action_handlers.get(act)
-        if func:
-            func()
+        nonlocal next_state
+        next_state = _apply_settings_action(
+            act,
+            state=next_state,
+            dev=dev,
+            action_specs=action_specs,
+        )
 
     action = _loop_menu(
         lambda: menu_data.get_settings_menu_data(
@@ -545,12 +586,34 @@ def settings_menu(
 
 
 def build_task_kwargs(action: str, state: AppState) -> Dict[str, Any]:
-    extras: Dict[str, Any] = {}
     if action in [MainMenuAction.PATCH_ALL, MainMenuAction.PATCH_ALL_WIPE]:
-        extras["target_region"] = state.target_region
-        extras["modify_region_code"] = state.modify_region_code
-        extras["modify_rollback_index"] = state.modify_rollback_index
-    return extras
+        return {
+            "target_region": state.target_region,
+            "modify_region_code": state.modify_region_code,
+            "modify_rollback_index": state.modify_rollback_index,
+        }
+    return {}
+
+
+def _build_main_menu_handlers(
+    dev: DeviceControllerProtocol,
+    registry: CommandRegistry,
+    monitor: Any,
+    *,
+    run_settings: Callable[[], MenuReturn],
+    get_state: Callable[[], AppState],
+) -> Dict[str, Callable[[], MenuReturn]]:
+    return {
+        MainMenuAction.SETTINGS: run_settings,
+        MainMenuAction.ROOT: lambda: root_menu(dev, registry),
+        MainMenuAction.ADVANCED: lambda: advanced_menu(
+            dev,
+            registry,
+            get_state().target_region,
+            get_state().modify_region_code,
+        ),
+        MainMenuAction.REBOOT: lambda: reboot_menu(monitor),
+    }
 
 
 def _handle_skip_adb_menu_block(action: str, state: AppState) -> bool:
@@ -631,14 +694,13 @@ def main_loop(
         state, action = settings_menu(dev, registry, state)
         return action
 
-    menu_handlers: Dict[str, Callable[[], MenuReturn]] = {
-        MainMenuAction.SETTINGS: _run_settings,
-        MainMenuAction.ROOT: lambda: root_menu(dev, registry),
-        MainMenuAction.ADVANCED: lambda: advanced_menu(
-            dev, registry, state.target_region, state.modify_region_code
-        ),
-        MainMenuAction.REBOOT: lambda: reboot_menu(monitor),
-    }
+    menu_handlers = _build_main_menu_handlers(
+        dev,
+        registry,
+        monitor,
+        run_settings=_run_settings,
+        get_state=lambda: state,
+    )
 
     def _handler(action: str) -> MenuReturn:
         action_func = menu_handlers.get(action)
