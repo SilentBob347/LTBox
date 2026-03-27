@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .device import DeviceController
+from .workflow_prompts import WorkflowPrompts
 
 
 @dataclass
@@ -23,3 +24,4 @@ class TaskContext:
     force_dp_workflow: bool = False
 
     on_log: Callable[[str], None] = field(default_factory=lambda: lambda s: print(s))
+    prompts: WorkflowPrompts | None = None

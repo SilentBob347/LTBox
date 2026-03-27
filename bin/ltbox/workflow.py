@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from . import actions
+from .backup_sources import find_backup_critical_dirs
 from . import constants as const
 from . import device, utils
 from .context import TaskContext
@@ -15,6 +16,7 @@ from .errors import (
 )
 from .i18n import get_string
 from .logger import logging_context
+from .workflow_prompts import UiWorkflowPrompts, WorkflowPrompts
 
 
 def _cleanup_previous_outputs(ctx: TaskContext) -> None:
@@ -85,60 +87,28 @@ def _check_backup_critical(ctx: TaskContext) -> None:
     if ctx.modify_region_code:
         return
 
-    from .actions.edl import _format_dp_folder_label
-
-    backup_dirs = sorted(
-        [
-            d
-            for d in const.BASE_DIR.iterdir()
-            if d.is_dir()
-            and d.name.startswith("backup_critical")
-            and any(d.glob("*.img"))
-        ],
-        key=lambda d: d.name,
-    )
-
+    backup_dirs = find_backup_critical_dirs(const.BASE_DIR)
     if not backup_dirs:
         return
 
-    utils.ui.clear()
-    utils.ui.echo(get_string("wf_backup_critical_found"))
-    utils.ui.echo("")
-
-    width = utils.ui.get_term_width()
-    utils.ui.echo("=" * width)
-    for i, folder in enumerate(backup_dirs, 1):
-        label = _format_dp_folder_label(folder)
-        utils.ui.echo(f"  {i}. {label}")
-    dump_option = len(backup_dirs) + 1
-    utils.ui.echo(f"  {dump_option}. {get_string('wf_backup_critical_dump')}")
-    utils.ui.echo("=" * width)
-    utils.ui.echo("")
-
-    while True:
-        choice = utils.ui.prompt(get_string("prompt_select")).strip()
-        try:
-            idx = int(choice)
-            if 1 <= idx <= dump_option:
-                break
-        except ValueError:
-            pass
-        utils.ui.error(get_string("err_invalid_selection"))
-
-    utils.ui.clear()
-
-    if idx == dump_option:
+    backup_choice = (ctx.prompts or UiWorkflowPrompts()).choose_backup_source(
+        backup_dirs
+    )
+    if backup_choice.force_dump:
         ctx.force_dp_workflow = True
-    else:
-        chosen = backup_dirs[idx - 1]
-        ctx.on_log(get_string("act_found_patched_folder").format(dir=chosen.name))
-        if const.OUTPUT_DP_DIR.exists():
-            shutil.rmtree(const.OUTPUT_DP_DIR)
-        const.OUTPUT_DP_DIR.mkdir(exist_ok=True)
-        for img in chosen.glob("*.img"):
-            shutil.copy(img, const.OUTPUT_DP_DIR / img.name)
-        ctx.use_backup_dp = True
-        ctx.backup_dir_name = chosen.name
+        return
+    if backup_choice.selected_dir is None:
+        return
+
+    chosen = backup_choice.selected_dir
+    ctx.on_log(get_string("act_found_patched_folder").format(dir=chosen.name))
+    if const.OUTPUT_DP_DIR.exists():
+        shutil.rmtree(const.OUTPUT_DP_DIR)
+    const.OUTPUT_DP_DIR.mkdir(exist_ok=True)
+    for img in chosen.glob("*.img"):
+        shutil.copy(img, const.OUTPUT_DP_DIR / img.name)
+    ctx.use_backup_dp = True
+    ctx.backup_dir_name = chosen.name
 
 
 def _dump_images(ctx: TaskContext) -> None:
@@ -162,11 +132,10 @@ def _dump_images(ctx: TaskContext) -> None:
 
 def _patch_devinfo(ctx: TaskContext) -> None:
     if not ctx.skip_dp_workflow:
+        prompts = ctx.prompts or UiWorkflowPrompts()
         ctx.backup_dir_name = actions.edit_devinfo_persist(
             on_log=ctx.on_log,
-            on_confirm=lambda msg: (
-                utils.ui.prompt(msg + " (y/n) ").lower().strip() == "y"
-            ),
+            on_confirm=prompts.confirm,
         )
 
 
@@ -290,6 +259,7 @@ def patch_all(
     modify_region_code: bool = True,
     target_region: str = "PRC",
     modify_rollback_index: str = "ON",
+    prompts: Optional[WorkflowPrompts] = None,
 ) -> str:
     ctx = TaskContext(
         dev=dev,
@@ -298,6 +268,7 @@ def patch_all(
         modify_region_code=modify_region_code,
         target_region=target_region,
         on_log=lambda s: utils.ui.info(s),
+        prompts=prompts or UiWorkflowPrompts(),
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import constants as const
 from .. import device, utils
+from ..backup_sources import find_dp_source_folders, format_dp_folder_label
 from ..i18n import get_string
 from ..partition import require_partition_params
+from ..prompt_helpers import prompt_choice, prompt_index_selection, prompt_yes_no
 from ..xml_catalog import PartitionGroup, PartitionRecord, XmlCatalog
 from . import xml
 
@@ -69,20 +71,21 @@ def _collect_base_partitions() -> Dict[str, Any]:
 
 
 def _prompt_slot_selection() -> str:
-    while True:
-        width = utils.ui.get_term_width()
-        utils.ui.echo("\n" + "=" * width)
-        utils.ui.echo(f"   {get_string('menu_select_slot')}")
-        utils.ui.echo("=" * width + "\n")
-        utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
-        utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
+    width = utils.ui.get_term_width()
+    utils.ui.echo("\n" + "=" * width)
+    utils.ui.echo(f"   {get_string('menu_select_slot')}")
+    utils.ui.echo("=" * width + "\n")
+    utils.ui.echo(f"   1. {get_string('menu_slot_a')}")
+    utils.ui.echo(f"   2. {get_string('menu_slot_b')}\n")
 
-        choice = utils.ui.prompt(get_string("prompt_select")).strip()
-        if choice == "1":
-            return "a"
-        if choice == "2":
-            return "b"
-        utils.ui.error(get_string("err_invalid_selection"))
+    choice = prompt_index_selection(
+        get_string("prompt_select"),
+        max_index=2,
+        error_message=get_string("err_invalid_selection"),
+        input_func=utils.ui.prompt,
+        error_func=utils.ui.error,
+    )
+    return "a" if choice == 1 else "b"
 
 
 def _resolve_selected_partition_slot(
@@ -458,32 +461,11 @@ def dump_partitions(
 
 
 def _format_dp_folder_label(folder: Path) -> str:
-    from ..patch.region import detect_country_codes
-
-    codes = detect_country_codes(source_dir=folder)
-    parts = []
-    for fname in ["devinfo.img", "persist.img"]:
-        code = codes.get(fname)
-        label = Path(fname).stem
-        parts.append(f"{label}: {code.upper() if code else '?'}")
-    return f"{folder.name} [{', '.join(parts)}]"
+    return format_dp_folder_label(folder)
 
 
 def _find_dp_source_folders() -> List[Path]:
-    backup_dirs = sorted(
-        [
-            d
-            for d in const.BASE_DIR.iterdir()
-            if d.is_dir()
-            and d.name.startswith("backup_critical")
-            and any(d.glob("*.img"))
-        ],
-        key=lambda d: d.name,
-    )
-    folders = list(backup_dirs)
-    if const.OUTPUT_DP_DIR.exists() and any(const.OUTPUT_DP_DIR.glob("*.img")):
-        folders.append(const.OUTPUT_DP_DIR)
-    return folders
+    return find_dp_source_folders(const.BASE_DIR, const.OUTPUT_DP_DIR)
 
 
 def _select_dp_source_folder() -> Path:
@@ -517,20 +499,17 @@ def _select_dp_source_folder() -> Path:
     utils.ui.echo("=" * width)
     utils.ui.echo("")
 
-    while True:
-        choice = utils.ui.prompt(get_string("prompt_select")).strip()
-        try:
-            idx = int(choice)
-            if 1 <= idx <= len(folders):
-                chosen = folders[idx - 1]
-                utils.ui.clear()
-                utils.ui.echo(
-                    get_string("act_found_patched_folder").format(dir=chosen.name)
-                )
-                return chosen
-        except ValueError:
-            pass
-        utils.ui.error(get_string("err_invalid_selection"))
+    idx = prompt_index_selection(
+        get_string("prompt_select"),
+        max_index=len(folders),
+        error_message=get_string("err_invalid_selection"),
+        input_func=utils.ui.prompt,
+        error_func=utils.ui.error,
+    )
+    chosen = folders[idx - 1]
+    utils.ui.clear()
+    utils.ui.echo(get_string("act_found_patched_folder").format(dir=chosen.name))
+    return chosen
 
 
 def flash_partitions(
@@ -748,25 +727,28 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
 
 
 def _prompt_flash_wipe_mode() -> Optional[bool]:
-    while True:
-        utils.ui.clear()
-        width = utils.ui.get_term_width()
-        utils.ui.echo("\n" + "=" * width)
-        utils.ui.echo(f"   {get_string('task_title_flash_full_firmware')}")
-        utils.ui.echo("=" * width + "\n")
-        utils.ui.echo(f"   1. {get_string('menu_main_install_wipe')}")
-        utils.ui.echo(f"   2. {get_string('menu_main_install_keep')}")
-        utils.ui.echo(f"   c. {get_string('cancel')}\n")
+    utils.ui.clear()
+    width = utils.ui.get_term_width()
+    utils.ui.echo("\n" + "=" * width)
+    utils.ui.echo(f"   {get_string('task_title_flash_full_firmware')}")
+    utils.ui.echo("=" * width + "\n")
+    utils.ui.echo(f"   1. {get_string('menu_main_install_wipe')}")
+    utils.ui.echo(f"   2. {get_string('menu_main_install_keep')}")
+    utils.ui.echo(f"   c. {get_string('cancel')}\n")
 
-        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
-        if choice == "1":
-            return True
-        if choice == "2":
-            return False
-        if choice == "c":
-            return None
-
-        utils.ui.error(get_string("err_invalid_selection"))
+    choice = prompt_choice(
+        get_string("prompt_select"),
+        {"1", "2", "c"},
+        input_func=utils.ui.prompt,
+        error_message=get_string("err_invalid_selection"),
+        error_func=utils.ui.error,
+        normalize=lambda value: value.strip().lower(),
+    )
+    if choice == "1":
+        return True
+    if choice == "2":
+        return False
+    return None
 
 
 def _resolve_flash_wipe_mode(wipe: Optional[bool]) -> Optional[bool]:
@@ -797,10 +779,13 @@ def _confirm_full_flash_overwrite(skip_reset_edl: bool) -> bool:
     utils.ui.echo(get_string("act_warn_overwrite_3"))
     utils.ui.echo("=" * width + "\n")
 
-    choice = ""
-    while choice not in ["y", "n"]:
-        choice = utils.ui.prompt(get_string("act_ask_continue")).lower().strip()
-    return choice == "y"
+    result = prompt_yes_no(
+        get_string("act_ask_continue"),
+        input_func=utils.ui.prompt,
+        error_message=get_string("err_invalid_selection"),
+        error_func=utils.ui.error,
+    )
+    return bool(result)
 
 
 def _execute_full_flash_plan(

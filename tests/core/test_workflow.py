@@ -4,7 +4,9 @@ import pytest
 from unittest.mock import patch
 from pathlib import Path
 from ltbox import workflow
+from ltbox.context import TaskContext
 from ltbox.errors import LTBoxError, UserCancelError
+from ltbox.workflow_prompts import BackupChoice
 from tests.helpers import make_device_mock
 
 
@@ -101,6 +103,40 @@ def test_patch_all_skip_arb_when_device_has_no_arb():
 
         mock_actions.read_anti_rollback.assert_not_called()
         mock_actions.patch_anti_rollback.assert_not_called()
+
+
+def test_check_backup_critical_uses_injected_prompt_service(tmp_path):
+    mock_dev = make_device_mock()
+    backup_dir = tmp_path / "backup_critical_20260101"
+    backup_dir.mkdir()
+    (backup_dir / "devinfo.img").write_bytes(b"devinfo")
+    output_dp_dir = tmp_path / "output_dp"
+
+    class PromptStub:
+        def choose_backup_source(self, backup_dirs):
+            assert list(backup_dirs) == [backup_dir]
+            return BackupChoice(selected_dir=backup_dir)
+
+        def confirm(self, message: str) -> bool:
+            raise AssertionError(f"confirm should not be called: {message}")
+
+    ctx = TaskContext(
+        dev=mock_dev,
+        modify_region_code=False,
+        on_log=lambda _message: None,
+        prompts=PromptStub(),
+    )
+
+    with patch.multiple(
+        "ltbox.workflow.const",
+        BASE_DIR=tmp_path,
+        OUTPUT_DP_DIR=output_dp_dir,
+    ):
+        workflow._check_backup_critical(ctx)
+
+    assert ctx.use_backup_dp is True
+    assert ctx.backup_dir_name == backup_dir.name
+    assert (output_dp_dir / "devinfo.img").read_bytes() == b"devinfo"
 
 
 def test_patch_all_keyboard_interrupt_is_mapped_to_user_cancel():
