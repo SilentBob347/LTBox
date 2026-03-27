@@ -1,4 +1,3 @@
-import os
 import sys
 from dataclasses import replace
 from enum import Enum
@@ -6,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from . import i18n, menu_data
 from .app_state import AppState
+from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port
 from .i18n import get_string
 from .menu import TerminalMenu, select_menu_action
 from .utils import ui
@@ -301,10 +301,6 @@ def _execute_reboot_command(action: str) -> None:
 
     from . import constants as const
 
-    _CREATE_NO_WINDOW = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    )
-
     adb_cmds = {
         "reboot_adb_system": [str(const.ADB_EXE), "reboot"],
         "reboot_adb_bootloader": [str(const.ADB_EXE), "reboot", "bootloader"],
@@ -323,13 +319,12 @@ def _execute_reboot_command(action: str) -> None:
     if cmd:
         ui.clear()
         ui.info(get_string("reboot_sending"))
+        runner = DeviceCommandRunner()
         try:
-            subprocess.run(
+            runner.run(
                 cmd,
-                check=True,
+                capture=True,
                 timeout=15,
-                capture_output=True,
-                creationflags=_CREATE_NO_WINDOW,
             )
             ui.info(get_string("reboot_sent_success"))
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
@@ -343,20 +338,14 @@ def _execute_reboot_command(action: str) -> None:
 
 
 def _reboot_from_edl() -> None:
-    import serial.tools.list_ports
+    import subprocess
 
     from . import constants as const
 
     ui.clear()
     ui.info(get_string("reboot_edl_start"))
 
-    edl_port = None
-    for port in serial.tools.list_ports.comports():
-        hwid = (port.hwid or "").upper()
-        if "VID:PID=05C6:9008" in hwid:
-            edl_port = port.device
-            break
-
+    edl_port = find_edl_port()
     if not edl_port:
         ui.error(get_string("reboot_edl_port_not_found"))
         input(get_string("press_enter_to_continue"))
@@ -373,26 +362,17 @@ def _reboot_from_edl() -> None:
         input(get_string("press_enter_to_continue"))
         return
 
-    import subprocess
-
-    _CREATE_NO_WINDOW = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    )
-
+    runner = DeviceCommandRunner()
     try:
-        port_str = f"\\\\.\\{edl_port}"
-
         ui.info(get_string("reboot_edl_uploading"))
         cmd_sahara = [
             str(const.QSAHARASERVER_EXE),
             "-p",
-            port_str,
+            format_serial_port(edl_port),
             "-s",
             f"13:{const.EDL_LOADER_FILE}",
         ]
-        subprocess.run(
-            cmd_sahara, check=True, timeout=30, creationflags=_CREATE_NO_WINDOW
-        )
+        runner.run(cmd_sahara, timeout=30)
 
         import time
 
@@ -401,13 +381,11 @@ def _reboot_from_edl() -> None:
         ui.info(get_string("reboot_edl_resetting"))
         cmd_reset = [
             str(const.EDL_EXE),
-            f"--port={port_str}",
+            f"--port={format_serial_port(edl_port)}",
             "--reset",
             "--noprompt",
         ]
-        subprocess.run(
-            cmd_reset, check=True, timeout=30, creationflags=_CREATE_NO_WINDOW
-        )
+        runner.run(cmd_reset, timeout=30)
 
         ui.info(get_string("reboot_sent_success"))
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:

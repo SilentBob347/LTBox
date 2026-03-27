@@ -17,7 +17,7 @@ def test_adb_get_model_retry_success():
             "adbutils.adb.device_list",
             side_effect=[[], [], [mock_device], [mock_device]],
         ),
-        patch("ltbox.device.time.sleep", return_value=None),
+        patch("ltbox.utils.time.sleep", return_value=None),
     ):
         model = manager.get_model()
         assert model == "Lenovo TB-Test"
@@ -31,7 +31,8 @@ def test_fastboot_slot_detection_failure():
     manager = FastbootManager()
 
     with patch(
-        "ltbox.utils.run_command", side_effect=subprocess.CalledProcessError(1, "cmd")
+        "ltbox.device_fastboot.DeviceCommandRunner.run",
+        side_effect=subprocess.CalledProcessError(1, "cmd"),
     ):
         with pytest.raises(DeviceCommandError):
             manager.get_slot_suffix()
@@ -122,10 +123,10 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_inline_reset(tmp_path):
     )
 
     with (
-        patch("ltbox.device.const.EDL_EXE", fh_loader),
-        patch("ltbox.device.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
         patch.object(manager, "load_programmer_safe"),
-        patch("ltbox.device.utils.run_command") as mock_run_command,
+        patch.object(manager, "_run_command") as mock_run_command,
     ):
         manager.flash_rawprogram(
             "COM1",
@@ -204,10 +205,10 @@ def test_edl_flash_rawprogram_deduplicates_erase_spans_across_xmls(tmp_path):
     )
 
     with (
-        patch("ltbox.device.const.EDL_EXE", fh_loader),
-        patch("ltbox.device.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
         patch.object(manager, "load_programmer_safe"),
-        patch("ltbox.device.utils.run_command"),
+        patch.object(manager, "_run_command"),
     ):
         manager.flash_rawprogram(
             "COM1",
@@ -239,10 +240,10 @@ def test_edl_flash_rawprogram_skips_pre_erase_and_inline_reset_when_disabled(
         path.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device.const.EDL_EXE", fh_loader),
-        patch("ltbox.device.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
         patch.object(manager, "load_programmer_safe"),
-        patch("ltbox.device.utils.run_command") as mock_run_command,
+        patch.object(manager, "_run_command") as mock_run_command,
     ):
         manager.flash_rawprogram(
             "COM1",
@@ -289,8 +290,8 @@ def test_edl_flash_rawprogram_requires_erase_spans_for_pre_erase(tmp_path):
     )
 
     with (
-        patch("ltbox.device.const.EDL_EXE", fh_loader),
-        patch("ltbox.device.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
         patch.object(manager, "load_programmer_safe"),
     ):
         with pytest.raises(DeviceCommandError, match="erase spans"):

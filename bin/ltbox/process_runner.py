@@ -18,6 +18,8 @@ class RunOptions:
     check: bool = True
     cwd: Optional[Union[str, Path]] = None
     env: Optional[dict[str, str]] = None
+    timeout: Optional[float] = None
+    creationflags: int = 0
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class SubprocessTextKwargs(TypedDict):
     errors: str
     env: dict[str, str]
     cwd: Optional[Union[str, Path]]
+    creationflags: int
 
 
 def _get_subprocess_kwargs(
@@ -51,6 +54,7 @@ def _get_subprocess_kwargs(
         "errors": "ignore",
         "env": run_env,
         "cwd": cwd,
+        "creationflags": 0,
     }
 
 
@@ -68,12 +72,14 @@ class CommandRunner:
         run_kwargs = _get_subprocess_kwargs(run_env, opts.cwd)
 
         if opts.capture:
+            run_kwargs["creationflags"] = opts.creationflags
             proc = subprocess.run(
                 command,
                 shell=shell,
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=opts.timeout,
                 **run_kwargs,
             )
             stdout = proc.stdout or ""
@@ -94,6 +100,7 @@ class CommandRunner:
             return result
 
         if opts.stream:
+            run_kwargs["creationflags"] = opts.creationflags
             process = subprocess.Popen(
                 command,
                 shell=shell,
@@ -112,7 +119,7 @@ class CommandRunner:
                         logger.info(line.rstrip())
                     output_lines.append(line)
 
-            process.wait()
+            process.wait(timeout=opts.timeout)
             combined_output = "".join(output_lines)
             returncode = process.returncode
             if opts.check and returncode != 0:
@@ -128,8 +135,14 @@ class CommandRunner:
                 combined_output=combined_output,
             )
 
+        run_kwargs["creationflags"] = opts.creationflags
         proc = subprocess.run(
-            command, shell=shell, check=False, text=True, **run_kwargs
+            command,
+            shell=shell,
+            check=False,
+            text=True,
+            timeout=opts.timeout,
+            **run_kwargs,
         )
         if opts.check and proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, command)

@@ -1,14 +1,9 @@
-import os
-import subprocess
 import threading
 from typing import Optional
 
-import serial.tools.list_ports
-
 from . import constants as const
+from .device_support import DeviceCommandRunner, is_qualcomm_edl_port
 from .i18n import get_string
-
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 
 class DeviceStatusMonitor:
@@ -20,6 +15,7 @@ class DeviceStatusMonitor:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._command_runner = DeviceCommandRunner()
 
     def get_status_key(self) -> str:
         with self._lock:
@@ -49,9 +45,11 @@ class DeviceStatusMonitor:
     def _detect(self) -> str:
         # 1. Serial ports: EDL (9008) and Diagnostic (900E)
         try:
+            import serial.tools.list_ports
+
             for port in serial.tools.list_ports.comports():
                 hwid = (port.hwid or "").upper()
-                if "VID:PID=05C6:9008" in hwid:
+                if is_qualcomm_edl_port(port):
                     return "device_status_edl"
                 if "VID:PID=05C6:900E" in hwid:
                     return "device_status_diag"
@@ -60,11 +58,10 @@ class DeviceStatusMonitor:
 
         # 2. Fastboot
         try:
-            result = subprocess.run(
+            result = self._command_runner.run(
                 [str(const.FASTBOOT_EXE), "devices"],
-                capture_output=True,
+                capture=True,
                 timeout=5,
-                creationflags=_CREATE_NO_WINDOW,
             )
             if result.stdout.strip():
                 return "device_status_fastboot"
@@ -73,13 +70,13 @@ class DeviceStatusMonitor:
 
         # 3. ADB (starts server automatically if not running)
         try:
-            result = subprocess.run(
+            result = self._command_runner.run(
                 [str(const.ADB_EXE), "devices"],
-                capture_output=True,
+                capture=True,
+                check=False,
                 timeout=5,
-                creationflags=_CREATE_NO_WINDOW,
             )
-            output = result.stdout.decode(errors="replace").strip()
+            output = result.stdout.strip()
             for line in output.splitlines()[1:]:
                 if "\tdevice" in line:
                     return "device_status_adb"

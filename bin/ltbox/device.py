@@ -1,689 +1,18 @@
-import os
 import contextlib
-import ctypes
-import re
-import subprocess
 import time
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Optional
 
-import adbutils
-import serial.tools.list_ports
 from adbutils import AdbError
 
 from . import constants as const
 from . import utils
-from .errors import DeviceCommandError, DeviceConnectionError
+from .device_adb import AdbManager
+from .device_edl import EdlManager
+from .device_fastboot import FastbootManager
+from .device_support import DeviceCommandRunner
+from .errors import DeviceCommandError
 from .i18n import get_string
 from .ui import ui
-
-
-def _default_usb_port_hint() -> Callable[[], None]:
-    return lambda: ui.warn(get_string("device_usb_port_hint"))
-
-
-class BaseDeviceManager:
-    def __init__(self, usb_port_hint: Optional[Callable[[], None]] = None):
-        self._usb_port_hint = usb_port_hint or _default_usb_port_hint()
-
-    def _force_kill_process(self, exe_name: str) -> None:
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", exe_name, "/T"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=(
-                    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-                ),
-            )
-        except (subprocess.CalledProcessError, OSError):
-            pass
-
-    def _force_kill_processes(self, exe_names: List[str]) -> None:
-        for exe_name in exe_names:
-            self._force_kill_process(exe_name)
-
-
-class AdbManager(BaseDeviceManager):
-    def __init__(
-        self,
-        skip_adb: bool,
-        usb_port_hint: Optional[Callable[[], None]] = None,
-    ):
-        super().__init__(usb_port_hint)
-        self.skip_adb = skip_adb
-        self.connected_once = False
-        if const.ADB_EXE.exists():
-            adbutils.adb_path = str(const.ADB_EXE)
-
-    def _get_device(self) -> Optional[adbutils.AdbDevice]:
-        try:
-            return adbutils.adb.device()
-        except AdbError:
-            return None
-
-    def _with_device(
-        self, action: Callable[[adbutils.AdbDevice], Any]
-    ) -> Optional[Any]:
-        if not self.wait_for_device():
-            return None
-        try:
-            device = self._get_device()
-        except AdbError as e:
-            raise DeviceConnectionError(
-                get_string("device_err_wait_adb").format(e=e), e
-            )
-        if not device:
-            return None
-        return action(device)
-
-    def wait_for_device(self) -> bool:
-        if self.skip_adb:
-            ui.warn(get_string("device_skip_adb"))
-            return False
-
-        self._usb_port_hint()
-        if not self.connected_once:
-            ui.box_output(
-                [
-                    get_string("device_wait_mode_title").format(mode="ADB"),
-                    get_string("device_enable_usb_debug"),
-                    get_string("device_usb_prompt_appear"),
-                    get_string("device_check_always_allow"),
-                    get_string("device_wait_cancel_hint"),
-                ]
-            )
-        else:
-            print(get_string("device_wait_adb_loop") + "...", end="\r")
-
-        def _check_adb():
-            try:
-                for d in adbutils.adb.device_list():
-                    if d.get_state() == "device":
-                        return True
-            except (AdbError, OSError):
-                pass
-            return False
-
-        try:
-            utils.wait_for_condition(_check_adb, interval=1.0)
-
-            if not self.connected_once:
-                ui.info(get_string("device_adb_connected"))
-            self.connected_once = True
-            print(" " * 40, end="\r")
-            return True
-
-        except KeyboardInterrupt:
-            ui.warn("\n" + get_string("device_wait_cancelled"))
-            self.skip_adb = True
-            ui.warn(get_string("act_skip_adb_active"))
-            return False
-
-    def get_model(self) -> Optional[str]:
-        try:
-            return self._with_device(lambda d: d.prop.model)
-        except (DeviceConnectionError, AdbError) as e:
-            raise DeviceConnectionError(
-                get_string("device_err_get_model").format(e=e), e
-            )
-
-    def get_slot_suffix(self) -> Optional[str]:
-        try:
-
-            def _read_suffix(device: adbutils.AdbDevice) -> Optional[str]:
-                suffix = device.getprop("ro.boot.slot_suffix")
-                return suffix if suffix in ["_a", "_b"] else None
-
-            return self._with_device(_read_suffix)
-        except (DeviceConnectionError, AdbError) as e:
-            raise DeviceConnectionError(
-                get_string("device_err_get_slot").format(e=e), e
-            )
-
-    def get_kernel_version(self) -> str:
-        try:
-            if not self.wait_for_device():
-                raise DeviceConnectionError(
-                    get_string("dl_lkm_kver_fail").format(ver="SKIP_ADB")
-                )
-
-            print(get_string("dl_lkm_get_kver"))
-
-            def _read_version(device: adbutils.AdbDevice) -> str:
-                version_string = device.shell("cat /proc/version")
-                match = re.search(r"Linux version (\d+\.\d+)", version_string)
-                if not match:
-                    raise DeviceCommandError(
-                        get_string("dl_lkm_kver_fail").format(ver=version_string)
-                    )
-                return match.group(1)
-
-            ver = self._with_device(_read_version)
-            if not ver:
-                raise DeviceConnectionError(
-                    get_string("device_err_wait_adb").format(e="No device")
-                )
-            print(get_string("dl_lkm_kver_found").format(ver=ver))
-            return ver
-        except (DeviceConnectionError, DeviceCommandError, AdbError) as e:
-            raise DeviceCommandError(
-                get_string("dl_lkm_kver_fail").format(ver=str(e)), e
-            )
-
-    def reboot(self, target: str) -> None:
-        try:
-            if not self.wait_for_device():
-                if target == "edl":
-                    ui.warn(get_string("device_manual_edl_req"))
-                return
-
-            def _reboot(device: adbutils.AdbDevice) -> None:
-                if target == "edl":
-                    try:
-                        with device.open_transport() as c:
-                            c.send_command("reboot:edl")
-                            c.check_okay()
-                    except (AdbError, OSError):
-                        device.shell("reboot edl")
-                elif target == "bootloader":
-                    try:
-                        with device.open_transport() as c:
-                            c.send_command("reboot:bootloader")
-                            c.check_okay()
-                    except (AdbError, OSError):
-                        device.shell("reboot bootloader")
-                else:
-                    device.shell(f"reboot {target}")
-
-            self._with_device(_reboot)
-        except (DeviceConnectionError, DeviceCommandError, AdbError) as e:
-            raise DeviceCommandError(get_string("device_err_reboot").format(e=e), e)
-
-    def install(self, apk_path: str) -> None:
-        self._with_device(lambda d: d.install(apk_path))
-
-    def push(self, local: str, remote: str) -> None:
-        self._with_device(lambda d: d.sync.push(local, remote))
-
-    def pull(self, remote: str, local: str) -> None:
-        self._with_device(lambda d: d.sync.pull(remote, local))
-
-    def shell(self, cmd: str) -> str:
-        return self._with_device(lambda d: d.shell(cmd)) or ""
-
-    def force_kill_server(self):
-        self._force_kill_process("adb.exe")
-
-
-class FastbootManager(BaseDeviceManager):
-    def __init__(self, usb_port_hint: Optional[Callable[[], None]] = None):
-        self._usb_port_hint = usb_port_hint or _default_usb_port_hint()
-
-    def force_kill_server(self) -> None:
-        self._force_kill_process("fastboot.exe")
-
-    def get_slot_suffix(self) -> Optional[str]:
-        try:
-            result = utils.run_command(
-                [str(const.FASTBOOT_EXE), "getvar", "current-slot"],
-                capture=True,
-                check=False,
-            )
-            output = utils.format_command_output(result)
-
-            match = re.search(r"current-slot:\s*([a-z]+)", output)
-            if match:
-                slot = match.group(1).strip()
-                if slot in ["a", "b"]:
-                    return f"_{slot}"
-
-            ui.warn(
-                get_string("device_warn_slot_fastboot").format(
-                    snippet=output.splitlines()[0] if output else "None"
-                )
-            )
-            return None
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(
-                get_string("device_err_get_slot_fastboot").format(e=e), e
-            )
-
-    def check_device(self, silent: bool = False) -> bool:
-        if not silent:
-            ui.info(get_string("device_check_fastboot"))
-        try:
-            result = utils.run_command(
-                [str(const.FASTBOOT_EXE), "devices"], capture=True, check=False
-            )
-            output = result.stdout.strip()
-
-            if output:
-                if not silent:
-                    ui.info(get_string("device_found_fastboot").format(output=output))
-                return True
-
-            if not silent:
-                ui.warn(get_string("device_no_fastboot"))
-                ui.warn(get_string("device_connect_fastboot"))
-            return False
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            if not silent:
-                ui.error(get_string("device_err_check_fastboot").format(e=e))
-            return False
-
-    def wait_for_device(self) -> bool:
-        self._usb_port_hint()
-        ui.info(get_string("device_wait_mode_title").format(mode="fastboot"))
-        if self.check_device(silent=True):
-            ui.info(get_string("device_fastboot_connected"))
-            return True
-
-        def _loop_msg():
-            ui.info(get_string("device_wait_fastboot_loop"))
-
-        try:
-            utils.wait_for_condition(
-                lambda: self.check_device(silent=True), interval=2.0, on_loop=_loop_msg
-            )
-            ui.info(get_string("device_fastboot_connected"))
-            return True
-        except KeyboardInterrupt:
-            ui.warn(get_string("device_wait_fastboot_cancel"))
-            raise
-
-    def get_model(self) -> Optional[str]:
-        try:
-            result = utils.run_command(
-                [str(const.FASTBOOT_EXE), "getvar", "modelname"],
-                capture=True,
-                check=False,
-            )
-            output = utils.format_command_output(result)
-
-            match = re.search(r"modelname:\s*(.+)", output)
-            if match:
-                model = match.group(1).strip()
-                if model:
-                    return model
-
-            return None
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(
-                get_string("device_err_get_model_fastboot").format(e=e), e
-            )
-
-    def continue_boot(self) -> None:
-        try:
-            utils.run_command(
-                [str(const.FASTBOOT_EXE), "continue"],
-                capture=True,
-                check=False,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(
-                get_string("device_err_fastboot_continue").format(e=e), e
-            )
-
-    def oem_edl(self) -> bool:
-        try:
-            result = utils.run_command(
-                [str(const.FASTBOOT_EXE), "oem", "edl"],
-                capture=True,
-                check=False,
-            )
-            output = utils.format_command_output(result)
-            if "FAILED" in output:
-                return False
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return False
-
-
-class EdlManager(BaseDeviceManager):
-    _FHLOADER_ERASE_FILENAME = "FHLoaderErase.xml"
-    _FHLOADER_ERASE_LABELS = frozenset({"userdata", "metadata", "frp"})
-
-    @contextlib.contextmanager
-    def _prevent_sleep_during_flash(self):
-        if os.name != "nt":
-            yield
-            return
-
-        es_continuous = 0x80000000
-        es_system_required = 0x00000001
-        es_awaymode_required = 0x00000040
-
-        try:
-            ctypes.windll.kernel32.SetThreadExecutionState(
-                es_continuous | es_system_required | es_awaymode_required
-            )
-        except (OSError, AttributeError):
-            yield
-            return
-
-        try:
-            yield
-        finally:
-            try:
-                ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
-            except (OSError, AttributeError):
-                pass
-
-    def check_device(self, silent: bool = False) -> Optional[str]:
-        if not silent:
-            ui.info(get_string("device_check_edl"))
-
-        try:
-            ports = serial.tools.list_ports.comports()
-            for port in ports:
-                is_qualcomm_port = (
-                    port.description
-                    and "Qualcomm" in port.description
-                    and "9008" in port.description
-                ) or (port.hwid and "VID:PID=05C6:9008" in port.hwid.upper())
-
-                if is_qualcomm_port:
-                    if not silent:
-                        ui.info(
-                            get_string("device_found_edl").format(device=port.device)
-                        )
-                    return port.device
-
-            if not silent:
-                ui.warn(get_string("device_no_edl"))
-                ui.warn(get_string("device_connect_edl"))
-            return None
-        except serial.SerialException as e:
-            if not silent:
-                ui.error(get_string("device_err_check_edl").format(e=e))
-            return None
-
-    def wait_for_device(self) -> str:
-        self._usb_port_hint()
-        ui.info(get_string("device_wait_mode_title").format(mode="EDL"))
-        port_name = self.check_device()
-        if port_name:
-            return port_name
-
-        def _loop_msg():
-            ui.info(get_string("device_wait_edl_loop"))
-
-        try:
-            port_name = utils.wait_for_condition(
-                lambda: self.check_device(silent=True), interval=2.0, on_loop=_loop_msg
-            )
-            ui.info(get_string("device_edl_connected").format(port=port_name))
-            return port_name
-        except KeyboardInterrupt:
-            ui.warn(get_string("device_wait_edl_cancel"))
-            raise
-
-    def load_programmer(self, port: str, loader_path: Path) -> None:
-        if not const.QSAHARASERVER_EXE.exists():
-            raise FileNotFoundError(
-                get_string("device_err_qsahara_missing").format(
-                    path=const.QSAHARASERVER_EXE
-                )
-            )
-
-        port_str = f"\\\\.\\{port}"
-
-        cmd_sahara = [
-            str(const.QSAHARASERVER_EXE),
-            "-p",
-            port_str,
-            "-s",
-            f"13:{loader_path}",
-        ]
-
-        try:
-            with self._prevent_sleep_during_flash():
-                utils.run_command(cmd_sahara, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            msg = get_string("device_fatal_programmer")
-            msg += f"\n{get_string('device_fatal_causes')}"
-            msg += f"\n{get_string('device_cause_1')}"
-            msg += f"\n{get_string('device_cause_2')}"
-            msg += f"\n{get_string('device_cause_3')}"
-            msg += f"\nError: {e}"
-            raise DeviceCommandError(msg, e)
-
-    def load_programmer_safe(self, port: str, loader_path: Path) -> None:
-        ui.info(get_string("device_upload_programmer").format(port=port))
-        self.load_programmer(port, loader_path)
-        time.sleep(2)
-
-    def _build_fhloader_erase_entries(self, raw_xmls: List[Path]) -> List[ET.Element]:
-        erase_entries: List[ET.Element] = []
-        seen_entries: set[tuple[tuple[str, str], ...]] = set()
-
-        for xml_path in raw_xmls:
-            try:
-                tree = ET.parse(xml_path)
-            except (ET.ParseError, OSError) as e:
-                raise RuntimeError(
-                    f"Failed to parse '{xml_path.name}' while building "
-                    f"{self._FHLOADER_ERASE_FILENAME}: {e}"
-                ) from e
-
-            for prog in tree.getroot().findall("program"):
-                if (
-                    prog.get("label", "").strip().lower()
-                    not in self._FHLOADER_ERASE_LABELS
-                ):
-                    continue
-
-                physical_partition_number = prog.get(
-                    "physical_partition_number", ""
-                ).strip()
-                start_sector = prog.get("start_sector", "").strip()
-                num_partition_sectors = prog.get("num_partition_sectors", "").strip()
-
-                if not (
-                    physical_partition_number and start_sector and num_partition_sectors
-                ):
-                    raise RuntimeError(
-                        f"'{prog.get('label', 'unknown')}' entry in '{xml_path.name}' "
-                        f"is missing erase geometry required to build "
-                        f"{self._FHLOADER_ERASE_FILENAME}."
-                    )
-
-                erase_attrib_items = tuple(
-                    (key, value)
-                    for key, value in prog.attrib.items()
-                    if key != "filename"
-                )
-                if not erase_attrib_items:
-                    continue
-                if erase_attrib_items in seen_entries:
-                    continue
-                seen_entries.add(erase_attrib_items)
-
-                erase = ET.Element("erase")
-                for key, value in prog.attrib.items():
-                    if key == "filename":
-                        continue
-                    erase.set(key, value)
-                erase_entries.append(erase)
-
-        if erase_entries:
-            return erase_entries
-
-        raise FileNotFoundError(
-            f"Missing userdata/metadata/frp erase spans required to build "
-            f"{self._FHLOADER_ERASE_FILENAME}."
-        )
-
-    def _build_fhloader_erase_xml(self, work_dir: Path, raw_xmls: List[Path]) -> Path:
-        erase_root = ET.Element("data")
-        for erase_entry in self._build_fhloader_erase_entries(raw_xmls):
-            erase_root.append(erase_entry)
-
-        erase_xml = work_dir / self._FHLOADER_ERASE_FILENAME
-        erase_tree = ET.ElementTree(erase_root)
-        ET.indent(erase_tree, space="  ")
-        erase_tree.write(erase_xml, encoding="utf-8", xml_declaration=True)
-        return erase_xml
-
-    def read_partition(
-        self,
-        port: str,
-        output_filename: str,
-        lun: str,
-        start_sector: str,
-        num_sectors: str,
-        memory_name: str = "UFS",
-    ) -> None:
-        if not const.EDL_EXE.exists():
-            raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
-            )
-
-        dest_file = Path(output_filename).resolve()
-        dest_dir = dest_file.parent
-        dest_filename = dest_file.name
-
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        port_str = f"\\\\.\\{port}"
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={port_str}",
-            "--convertprogram2read",
-            f"--sendimage={dest_filename}",
-            f"--lun={lun}",
-            f"--start_sector={start_sector}",
-            f"--num_sectors={num_sectors}",
-            f"--memoryname={memory_name}",
-            "--noprompt",
-            "--zlpawarehost=1",
-        ]
-
-        try:
-            with self._prevent_sleep_during_flash():
-                utils.run_command(cmd_fh, cwd=dest_dir, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(get_string("device_err_fh_exec").format(e=e), e)
-
-    def write_partition(
-        self,
-        port: str,
-        image_path: Path,
-        lun: str,
-        start_sector: str,
-        memory_name: str = "UFS",
-    ) -> None:
-        if not const.EDL_EXE.exists():
-            raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
-            )
-
-        image_file = Path(image_path).resolve()
-        work_dir = image_file.parent
-        filename = image_file.name
-
-        port_str = f"\\\\.\\{port}"
-
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={port_str}",
-            f"--sendimage={filename}",
-            f"--lun={lun}",
-            f"--start_sector={start_sector}",
-            f"--memoryname={memory_name}",
-            "--noprompt",
-            "--zlpawarehost=1",
-        ]
-
-        try:
-            with self._prevent_sleep_during_flash():
-                utils.run_command(cmd_fh, cwd=work_dir, check=True)
-            ui.info(get_string("device_flash_success").format(filename=filename))
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(get_string("device_err_flash_exec").format(e=e), e)
-
-    def reset(self, port: str) -> None:
-        if not const.EDL_EXE.exists():
-            raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
-            )
-
-        port_str = f"\\\\.\\{port}"
-
-        cmd_fh = [str(const.EDL_EXE), f"--port={port_str}", "--reset", "--noprompt"]
-        try:
-            with self._prevent_sleep_during_flash():
-                utils.run_command(cmd_fh)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(get_string("device_err_reset_fail").format(e=e), e)
-
-    def flash_rawprogram(
-        self,
-        port: str,
-        loader_path: Path,
-        memory_type: str,
-        raw_xmls: List[Path],
-        patch_xmls: List[Path],
-        *,
-        pre_erase: bool = False,
-        reset_after: bool = False,
-    ) -> None:
-        if not const.QSAHARASERVER_EXE.exists() or not const.EDL_EXE.exists():
-            ui.error(
-                get_string("device_err_tools_missing").format(dir=const.TOOLS_DIR.name)
-            )
-            raise FileNotFoundError(get_string("device_err_edl_tools_missing"))
-
-        port_str = f"\\\\.\\{port}"
-        search_path = str(loader_path.parent)
-
-        ui.info(get_string("device_step1_load"))
-        self.load_programmer_safe(port, loader_path)
-
-        raw_xml_str = ",".join([p.name for p in raw_xmls])
-        patch_xml_str = ",".join([p.name for p in patch_xmls])
-
-        try:
-            if pre_erase:
-                self._build_fhloader_erase_xml(loader_path.parent, raw_xmls)
-
-            with self._prevent_sleep_during_flash():
-                if pre_erase:
-                    cmd_erase = [
-                        str(const.EDL_EXE),
-                        f"--port={port_str}",
-                        f"--search_path={search_path}",
-                        f"--sendxml={self._FHLOADER_ERASE_FILENAME}",
-                        f"--memoryname={memory_type}",
-                        "--showpercentagecomplete",
-                        "--zlpawarehost=1",
-                        "--noprompt",
-                    ]
-                    utils.run_command(cmd_erase)
-
-                ui.info(get_string("device_step2_flash"))
-                cmd_fh = [
-                    str(const.EDL_EXE),
-                    f"--port={port_str}",
-                    f"--search_path={search_path}",
-                    f"--sendxml={raw_xml_str}",
-                    f"--sendxml={patch_xml_str}",
-                    "--setactivepartition=1",
-                    f"--memoryname={memory_type}",
-                    "--showpercentagecomplete",
-                    "--zlpawarehost=1",
-                    "--noprompt",
-                ]
-                if reset_after:
-                    cmd_fh.append("--reset")
-
-                utils.run_command(cmd_fh)
-        except (subprocess.CalledProcessError, OSError, RuntimeError) as e:
-            raise DeviceCommandError(
-                get_string("device_err_rawprogram_fail").format(e=e), e
-            )
 
 
 class DeviceController:
@@ -696,21 +25,32 @@ class DeviceController:
     ):
         self._usb_port_hint_shown = False
         self._skip_adb = skip_adb
+        self._command_runner = DeviceCommandRunner()
 
         self.adb = (
             adb_manager
             if adb_manager is not None
-            else AdbManager(skip_adb, self._maybe_warn_usb_port_hint)
+            else AdbManager(
+                skip_adb,
+                self._maybe_warn_usb_port_hint,
+                command_runner=self._command_runner,
+            )
         )
         self.fastboot = (
             fastboot_manager
             if fastboot_manager is not None
-            else FastbootManager(self._maybe_warn_usb_port_hint)
+            else FastbootManager(
+                self._maybe_warn_usb_port_hint,
+                command_runner=self._command_runner,
+            )
         )
         self.edl = (
             edl_manager
             if edl_manager is not None
-            else EdlManager(self._maybe_warn_usb_port_hint)
+            else EdlManager(
+                self._maybe_warn_usb_port_hint,
+                command_runner=self._command_runner,
+            )
         )
 
         self.adb._usb_port_hint = self._maybe_warn_usb_port_hint
@@ -764,6 +104,7 @@ class DeviceController:
                 ui.info(get_string("device_wait_10s_edl"))
                 time.sleep(10)
                 return
+
             ui.warn(get_string("device_oem_edl_failed"))
 
             if not self.skip_adb:
@@ -798,14 +139,16 @@ class DeviceController:
         ui.info(get_string("device_wait_loader_title"))
         required_files = [const.EDL_LOADER_FILENAME]
         prompt = get_string("device_loader_prompt").format(
-            loader=const.EDL_LOADER_FILENAME, folder=const.IMAGE_DIR.name
+            loader=const.EDL_LOADER_FILENAME,
+            folder=const.IMAGE_DIR.name,
         )
 
         const.IMAGE_DIR.mkdir(exist_ok=True)
         utils.wait_for_files(const.IMAGE_DIR, required_files, prompt)
         ui.info(
             get_string("device_loader_found").format(
-                file=const.EDL_LOADER_FILE.name, dir=const.IMAGE_DIR.name
+                file=const.EDL_LOADER_FILE.name,
+                dir=const.IMAGE_DIR.name,
             )
         )
 
