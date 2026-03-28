@@ -3,10 +3,10 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .. import constants as const, downloader, utils
-from ..errors import ToolError
-from ..i18n import get_string
-from ..root_profiles import RootProviderProfile
+from ... import constants as const, downloader, utils
+from ...errors import ToolError
+from ...i18n import get_string
+from ...root_profiles import RootProviderProfile
 
 KERNEL_VERSION_RELEASE_MAP: Dict[str, str] = {
     "5.10": "android12-5.10",

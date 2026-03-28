@@ -18,7 +18,7 @@ from .region import (
     rebuild_vbmeta,
     rescue_after_ota,
 )
-from .root_workflow import (
+from .root.workflow import (
     patch_root_image_file,
     patch_and_flash_root,
     root_device,

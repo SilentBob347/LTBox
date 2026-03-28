@@ -8,7 +8,7 @@ from ltbox import menu_data
 from ltbox.actions import edl
 from ltbox.actions import region
 from ltbox.actions import xml as xml_action
-from ltbox.actions.root_strategies import GkiRootStrategy
+from ltbox.actions.root.strategies import GkiRootStrategy
 from ltbox.patch.avb import vbmeta_has_chain_partition
 
 
@@ -239,15 +239,15 @@ def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):
     (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
 
     with (
-        patch("ltbox.actions.root_strategies.process_boot_image_avb") as process_avb,
+        patch("ltbox.actions.root.strategies.process_boot_image_avb") as process_avb,
         patch(
-            "ltbox.actions.root_strategies.vbmeta_has_chain_partition",
+            "ltbox.actions.root.strategies.vbmeta_has_chain_partition",
             return_value=False,
         ),
         patch(
-            "ltbox.actions.root_strategies.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.root.strategies.rebuild_vbmeta_with_chained_images"
         ) as rebuild_vbmeta,
-        patch("ltbox.actions.root_strategies.const.BASE_DIR", tmp_path),
+        patch("ltbox.actions.root.strategies.const.BASE_DIR", tmp_path),
     ):
         (tmp_path / const.FN_VBMETA_ROOT).write_bytes(b"new-vbmeta")
 
@@ -272,13 +272,13 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     (backup_dir / const.FN_VBMETA_BAK).write_bytes(b"vbmeta")
 
     with (
-        patch("ltbox.actions.root_strategies.process_boot_image_avb") as process_avb,
+        patch("ltbox.actions.root.strategies.process_boot_image_avb") as process_avb,
         patch(
-            "ltbox.actions.root_strategies.vbmeta_has_chain_partition",
+            "ltbox.actions.root.strategies.vbmeta_has_chain_partition",
             return_value=True,
         ),
         patch(
-            "ltbox.actions.root_strategies.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.root.strategies.rebuild_vbmeta_with_chained_images"
         ) as rebuild_vbmeta,
     ):
         final_boot = strategy.finalize_patch(patched_boot, output_dir, backup_dir)

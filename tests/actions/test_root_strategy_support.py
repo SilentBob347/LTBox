@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
-from ltbox.actions.root_strategies import APatchStrategy, LkmRootStrategy
-from ltbox.actions.root_strategy_prompts import StrategySourceSelection
+from ltbox.actions.root.prompts import StrategySourceSelection
+from ltbox.actions.root.strategies import APatchStrategy, LkmRootStrategy
 
 
 def test_apatch_strategy_configure_source_applies_prompt_selection():
@@ -14,7 +14,7 @@ def test_apatch_strategy_configure_source_applies_prompt_selection():
     strategy = APatchStrategy("apatch")
 
     with patch(
-        "ltbox.actions.root_strategies.select_apatch_source",
+        "ltbox.actions.root.strategies.select_apatch_source",
         return_value=selection,
     ) as select_source:
         strategy.configure_source("main > root")
@@ -33,7 +33,7 @@ def test_apatch_strategy_download_resources_uses_download_helper():
     strategy.workflow_id = "run-123"
 
     with patch(
-        "ltbox.actions.root_strategies.download_apatch_resources",
+        "ltbox.actions.root.strategies.download_apatch_resources",
         return_value=True,
     ) as download_resources:
         assert strategy.download_resources() is True
@@ -58,7 +58,7 @@ def test_lkm_strategy_configure_source_applies_prompt_selection():
     strategy = LkmRootStrategy("kernelsu-next")
 
     with patch(
-        "ltbox.actions.root_strategies.select_lkm_source",
+        "ltbox.actions.root.strategies.select_lkm_source",
         return_value=selection,
     ) as select_source:
         strategy.configure_source("main > root")
@@ -79,7 +79,7 @@ def test_lkm_strategy_download_resources_uses_download_helper():
     strategy.is_tagged_build = True
 
     with patch(
-        "ltbox.actions.root_strategies.download_lkm_resources",
+        "ltbox.actions.root.strategies.download_lkm_resources",
         return_value=True,
     ) as download_resources:
         assert strategy.download_resources("6.6.0") is True

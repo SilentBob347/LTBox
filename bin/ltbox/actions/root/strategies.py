@@ -4,25 +4,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .. import constants as const
-from .. import device, downloader, utils
-from ..i18n import get_string
-from ..patch.avb import (
+from ... import constants as const
+from ... import device, downloader, utils
+from ...i18n import get_string
+from ...patch.avb import (
     process_boot_image_avb,
     rebuild_vbmeta_with_chained_images,
     vbmeta_has_chain_partition,
 )
-from ..patch.root import patch_boot_with_root_algo
-from ..root_profiles import (
+from ...patch.root import patch_boot_with_root_algo
+from ...root_profiles import (
     RootProviderFamily,
     get_root_provider_profile,
 )
-from .root_strategy_downloads import (
+from .downloads import (
     cleanup_manager_apk,
     download_apatch_resources,
     download_lkm_resources,
 )
-from .root_strategy_prompts import (
+from .prompts import (
     StrategySourceSelection,
     prompt_apatch_superkey,
     prompt_embed_kpm,

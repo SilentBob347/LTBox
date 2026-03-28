@@ -2,11 +2,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from .. import constants as const, downloader, utils
-from ..i18n import get_string
-from ..menu import TerminalMenu
-from ..prompt_helpers import prompt_multi_select_indices
-from ..root_profiles import (
+from ... import constants as const, downloader, utils
+from ...i18n import get_string
+from ...menu import TerminalMenu
+from ...prompt_helpers import prompt_multi_select_indices
+from ...root_profiles import (
     RootProviderFamily,
     RootProviderProfile,
     get_root_provider_profile,

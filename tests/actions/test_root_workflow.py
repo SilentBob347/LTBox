@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
-from ltbox.actions import root_workflow
-from ltbox.actions.root_strategies import GkiRootStrategy, LkmRootStrategy
+from ltbox.actions.root import workflow as root_workflow
+from ltbox.actions.root.strategies import GkiRootStrategy, LkmRootStrategy
 
 
 def test_root_workflow_session_uses_active_slot_for_partition_map():
@@ -12,8 +12,8 @@ def test_root_workflow_session_uses_active_slot_for_partition_map():
     )
 
     with (
-        patch("ltbox.actions.root_workflow.get_slot_suffix", return_value="_b"),
-        patch("ltbox.actions.root_workflow.utils.ui.echo"),
+        patch("ltbox.actions.root.workflow.get_slot_suffix", return_value="_b"),
+        patch("ltbox.actions.root.workflow.utils.ui.echo"),
     ):
         partition_map = session.resolve_partition_map(MagicMock())
 
@@ -29,8 +29,8 @@ def test_root_workflow_session_falls_back_to_gki_boot_when_slot_missing():
     )
 
     with (
-        patch("ltbox.actions.root_workflow.get_slot_suffix", return_value=""),
-        patch("ltbox.actions.root_workflow.utils.ui.echo"),
+        patch("ltbox.actions.root.workflow.get_slot_suffix", return_value=""),
+        patch("ltbox.actions.root.workflow.utils.ui.echo"),
     ):
         partition_map = session.resolve_partition_map(MagicMock())
 
@@ -46,8 +46,8 @@ def test_root_workflow_session_falls_back_to_lkm_init_boot_when_slot_missing():
     )
 
     with (
-        patch("ltbox.actions.root_workflow.get_slot_suffix", return_value=""),
-        patch("ltbox.actions.root_workflow.utils.ui.echo"),
+        patch("ltbox.actions.root.workflow.get_slot_suffix", return_value=""),
+        patch("ltbox.actions.root.workflow.utils.ui.echo"),
     ):
         partition_map = session.resolve_partition_map(MagicMock())
 

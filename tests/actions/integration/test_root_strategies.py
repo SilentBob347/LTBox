@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from ltbox import constants as const
-from ltbox.actions.root_strategies import (
+from ltbox.actions.root.strategies import (
     APatchStrategy,
     GkiRootStrategy,
     LkmRootStrategy,

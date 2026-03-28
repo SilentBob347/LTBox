@@ -246,7 +246,7 @@ def _root_action_menu(
     root_type: str,
     breadcrumbs: str,
 ) -> MenuReturn:
-    from .actions.root_strategies import get_root_strategy
+    from .actions.root.strategies import get_root_strategy
 
     strategy = get_root_strategy(gki, root_type)
 
