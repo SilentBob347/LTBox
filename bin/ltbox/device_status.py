@@ -1,5 +1,5 @@
 import threading
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 from . import constants as const
 from .device_support import DeviceCommandRunner, is_qualcomm_edl_port
@@ -9,8 +9,9 @@ from .i18n import get_string
 class DeviceStatusMonitor:
     """Polls device connection status in a background thread."""
 
-    def __init__(self, interval: float = 3.0):
+    def __init__(self, interval: float = 3.0, idle_interval: Optional[float] = None):
         self._interval = interval
+        self._idle_interval = idle_interval or max(interval, 5.0)
         self._status_key = "device_status_unknown"
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -42,8 +43,7 @@ class DeviceStatusMonitor:
             self._thread.join(timeout=5)
             self._thread = None
 
-    def _detect(self) -> str:
-        # 1. Serial ports: EDL (9008) and Diagnostic (900E)
+    def _detect_serial_status(self) -> Optional[str]:
         try:
             import serial.tools.list_ports
 
@@ -55,8 +55,9 @@ class DeviceStatusMonitor:
                     return "device_status_diag"
         except Exception:
             pass
+        return None
 
-        # 2. Fastboot
+    def _detect_fastboot_status(self) -> Optional[str]:
         try:
             result = self._command_runner.run(
                 [str(const.FASTBOOT_EXE), "devices"],
@@ -67,8 +68,9 @@ class DeviceStatusMonitor:
                 return "device_status_fastboot"
         except Exception:
             pass
+        return None
 
-        # 3. ADB (starts server automatically if not running)
+    def _detect_adb_status(self) -> Optional[str]:
         try:
             result = self._command_runner.run(
                 [str(const.ADB_EXE), "devices"],
@@ -84,6 +86,37 @@ class DeviceStatusMonitor:
                     return "device_status_adb_required"
         except Exception:
             pass
+        return None
+
+    def _detector_order(self, current_key: str) -> tuple[str, ...]:
+        preferred = {
+            "device_status_adb": ("adb", "serial", "fastboot"),
+            "device_status_adb_required": ("adb", "serial", "fastboot"),
+            "device_status_fastboot": ("fastboot", "serial", "adb"),
+            "device_status_edl": ("serial", "fastboot", "adb"),
+            "device_status_diag": ("serial", "fastboot", "adb"),
+        }
+        return preferred.get(current_key, ("serial", "fastboot", "adb"))
+
+    def _poll_interval_for(self, status_key: str) -> float:
+        if status_key == "device_status_unknown":
+            return self._idle_interval
+        return self._interval
+
+    def _detect(self) -> str:
+        detectors: Dict[str, Callable[[], Optional[str]]] = {
+            "serial": self._detect_serial_status,
+            "fastboot": self._detect_fastboot_status,
+            "adb": self._detect_adb_status,
+        }
+
+        with self._lock:
+            current_key = self._status_key
+
+        for detector_name in self._detector_order(current_key):
+            detected = detectors[detector_name]()
+            if detected:
+                return detected
 
         return "device_status_unknown"
 
@@ -94,5 +127,5 @@ class DeviceStatusMonitor:
                 with self._lock:
                     self._status_key = new_key
             except Exception:
-                pass
-            self._stop_event.wait(self._interval)
+                new_key = "device_status_unknown"
+            self._stop_event.wait(self._poll_interval_for(new_key))
