@@ -19,11 +19,17 @@ def require_partition_params(label: str) -> PartitionParams:
     if not xmls:
         raise FileNotFoundError(get_string("act_err_no_xml_dump"))
 
-    params = get_partition_params(label, xmls)
-    if not params and label == "boot":
-        params = get_partition_params("boot_a", xmls)
-        if not params:
-            params = get_partition_params("boot_b", xmls)
+    catalog = XmlCatalog.from_paths(xmls)
+    labels = [label]
+    if label == "boot":
+        labels.extend(["boot_a", "boot_b"])
+
+    params = None
+    for candidate in labels:
+        record = catalog.find_partition(candidate)
+        if record is not None:
+            params = record.to_params()
+            break
 
     if params:
         return params

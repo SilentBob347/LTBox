@@ -1,7 +1,8 @@
+import functools
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import constants as const
 from . import utils
@@ -10,10 +11,55 @@ from .i18n import get_string
 
 PartitionParams = Dict[str, Optional[str]]
 ErrorReporter = Callable[[str], None]
+PathSignature = Tuple[str, Optional[int], Optional[int]]
+ParseErrorInfo = Tuple[str, str]
 
 
 def _default_error_reporter(message: str) -> None:
     print(message)
+
+
+def _build_path_signature(xml_path: Path) -> PathSignature:
+    resolved = str(xml_path.resolve())
+    try:
+        stat_result = xml_path.stat()
+    except OSError:
+        return resolved, None, None
+    return resolved, stat_result.st_mtime_ns, stat_result.st_size
+
+
+@functools.lru_cache(maxsize=32)
+def _parse_xml_records(
+    path_signature: PathSignature,
+) -> Tuple[Tuple["PartitionRecord", ...], Optional[ParseErrorInfo]]:
+    path_str, _, _ = path_signature
+    xml_path = Path(path_str)
+
+    try:
+        tree = ET.parse(xml_path)
+    except (ET.ParseError, OSError) as error:
+        return (), (xml_path.name, str(error))
+
+    records: List[PartitionRecord] = []
+    root = tree.getroot()
+    for program in root.findall("program"):
+        label = (program.get("label") or "").strip()
+        if not label:
+            continue
+
+        records.append(
+            PartitionRecord(
+                label=label,
+                filename=(program.get("filename") or "").strip(),
+                lun=program.get("physical_partition_number"),
+                start_sector=program.get("start_sector"),
+                num_sectors=program.get("num_partition_sectors"),
+                source_xml=xml_path.name,
+                size_in_kb=program.get("size_in_KB"),
+            )
+        )
+
+    return tuple(records), None
 
 
 @dataclass(frozen=True)
@@ -109,31 +155,20 @@ class XmlCatalog:
         records: List[PartitionRecord] = []
 
         for xml_path in xml_paths:
-            try:
-                tree = ET.parse(xml_path)
-            except (ET.ParseError, OSError) as e:
+            parsed_records, error_info = _parse_xml_records(
+                _build_path_signature(xml_path)
+            )
+            if error_info is not None:
+                name, error_message = error_info
                 reporter(
-                    get_string("act_xml_parse_err").format(name=xml_path.name, e=e)
+                    get_string("act_xml_parse_err").format(
+                        name=name,
+                        e=error_message,
+                    )
                 )
                 continue
 
-            root = tree.getroot()
-            for program in root.findall("program"):
-                label = (program.get("label") or "").strip()
-                if not label:
-                    continue
-
-                records.append(
-                    PartitionRecord(
-                        label=label,
-                        filename=(program.get("filename") or "").strip(),
-                        lun=program.get("physical_partition_number"),
-                        start_sector=program.get("start_sector"),
-                        num_sectors=program.get("num_partition_sectors"),
-                        source_xml=xml_path.name,
-                        size_in_kb=program.get("size_in_KB"),
-                    )
-                )
+            records.extend(parsed_records)
 
         return cls(records)
 

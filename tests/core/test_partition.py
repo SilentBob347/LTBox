@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ltbox import partition
 from ltbox.actions import edl
-from ltbox.xml_catalog import XmlCatalog
+from ltbox.xml_catalog import XmlCatalog, _parse_xml_records
 
 
 def test_require_partition_params_raises_on_missing():
@@ -42,6 +42,50 @@ def test_xml_catalog_groups_ab_and_non_ab_entries(tmp_path):
     assert groups["boot"].b[0].start_sector == "200"
     assert groups["super"].is_ab is False
     assert groups["super"].none[0].filename == "super.img"
+
+
+def test_xml_catalog_reuses_cached_parse_for_unchanged_file(tmp_path):
+    xml_path = tmp_path / "rawprogram0.xml"
+    xml_path.write_text(
+        """<?xml version='1.0'?><data>
+        <program label='boot_a' filename='boot_a.img' physical_partition_number='0' start_sector='100'/>
+        </data>""",
+        encoding="utf-8",
+    )
+
+    _parse_xml_records.cache_clear()
+
+    with patch("ltbox.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
+        XmlCatalog.from_paths([xml_path])
+        XmlCatalog.from_paths([xml_path])
+
+    assert mock_parse.call_count == 1
+
+
+def test_xml_catalog_invalidates_cache_when_file_changes(tmp_path):
+    xml_path = tmp_path / "rawprogram0.xml"
+    xml_path.write_text(
+        """<?xml version='1.0'?><data>
+        <program label='boot_a' filename='boot_a.img' physical_partition_number='0' start_sector='100'/>
+        </data>""",
+        encoding="utf-8",
+    )
+
+    _parse_xml_records.cache_clear()
+
+    with patch("ltbox.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
+        first_catalog = XmlCatalog.from_paths([xml_path])
+        xml_path.write_text(
+            """<?xml version='1.0'?><data>
+            <program label='boot_a' filename='boot_new.img' physical_partition_number='0' start_sector='100'/>
+            </data>""",
+            encoding="utf-8",
+        )
+        second_catalog = XmlCatalog.from_paths([xml_path])
+
+    assert mock_parse.call_count == 2
+    assert first_catalog.find_partition("boot_a").filename == "boot_a.img"
+    assert second_catalog.find_partition("boot_a").filename == "boot_new.img"
 
 
 def _copy_firmware_xml(fw_pkg, image_dir):
