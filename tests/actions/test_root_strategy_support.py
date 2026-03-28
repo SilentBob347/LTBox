@@ -39,7 +39,7 @@ def test_apatch_strategy_download_resources_uses_download_helper():
         assert strategy.download_resources() is True
 
     download_resources.assert_called_once_with(
-        source_name="FolkPatch",
+        profile=strategy.provider,
         staging_dir=strategy._staging_dir,
         repo_config={"repo": "owner/folkpatch"},
         is_nightly=True,
@@ -55,7 +55,7 @@ def test_lkm_strategy_configure_source_applies_prompt_selection():
         workflow_id="",
         is_tagged_build=True,
     )
-    strategy = LkmRootStrategy("ksu")
+    strategy = LkmRootStrategy("kernelsu-next")
 
     with patch(
         "ltbox.actions.root_strategies.select_lkm_source",
@@ -63,7 +63,7 @@ def test_lkm_strategy_configure_source_applies_prompt_selection():
     ) as select_source:
         strategy.configure_source("main > root")
 
-    select_source.assert_called_once_with("ksu", breadcrumbs="main > root")
+    select_source.assert_called_once_with("kernelsu-next", breadcrumbs="main > root")
     assert strategy.repo_config == {"repo": "owner/ksu"}
     assert strategy.source_label == "Release"
     assert strategy.is_nightly is False
@@ -85,9 +85,9 @@ def test_lkm_strategy_download_resources_uses_download_helper():
         assert strategy.download_resources("6.6.0") is True
 
     download_resources.assert_called_once_with(
+        profile=strategy.provider,
         staging_dir=strategy.staging_dir,
         repo_config={"repo": "owner/ksu-next"},
-        root_type="kernelsu-next",
         kernel_version="6.6.0",
         is_nightly=False,
         workflow_id="",

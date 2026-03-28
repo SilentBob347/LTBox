@@ -13,6 +13,10 @@ from ..patch.avb import (
     vbmeta_has_chain_partition,
 )
 from ..patch.root import patch_boot_with_root_algo
+from ..root_profiles import (
+    RootProviderFamily,
+    get_root_provider_profile,
+)
 from .root_strategy_downloads import (
     cleanup_manager_apk,
     download_apatch_resources,
@@ -360,7 +364,10 @@ class APatchStrategy(GkiRootStrategy):
 
     def __init__(self, root_type: str = "folkpatch"):
         super().__init__()
-        self.root_type = root_type
+        self.provider = get_root_provider_profile(root_type)
+        if self.provider.family != RootProviderFamily.APATCH:
+            raise ValueError(f"Expected an APatch-family provider, got: {root_type}")
+        self.root_type = self.provider.provider_id
         self.is_nightly = False
         self.workflow_id: Optional[str] = None
         self.repo_config: Dict[str, Any] = {}
@@ -368,7 +375,7 @@ class APatchStrategy(GkiRootStrategy):
 
     @property
     def source_name(self) -> str:
-        return "FolkPatch" if self.root_type == "folkpatch" else "APatch"
+        return self.provider.display_name
 
     def _apply_source_selection(self, selection: StrategySourceSelection) -> None:
         self.repo_config = selection.repo_config
@@ -378,12 +385,12 @@ class APatchStrategy(GkiRootStrategy):
 
     def configure_source(self, breadcrumbs: Optional[str] = None) -> None:
         self._apply_source_selection(
-            select_apatch_source(self.root_type, breadcrumbs=breadcrumbs)
+            select_apatch_source(self.provider.provider_id, breadcrumbs=breadcrumbs)
         )
 
     def download_resources(self, kernel_version: Optional[str] = None) -> bool:
         return download_apatch_resources(
-            source_name=self.source_name,
+            profile=self.provider,
             staging_dir=self._staging_dir,
             repo_config=self.repo_config,
             is_nightly=self.is_nightly,
@@ -463,7 +470,9 @@ class LkmRootStrategy(InitBootRootStrategy):
     )
 
     def __init__(self, root_type: str = "ksu"):
-        self._root_type = root_type
+        self.provider = get_root_provider_profile(root_type)
+        if self.provider.family != RootProviderFamily.LKM:
+            raise ValueError(f"Expected an LKM provider, got: {root_type}")
         self.is_nightly = False
         self.is_tagged_build = False
         self.workflow_id: Optional[str] = None
@@ -480,7 +489,7 @@ class LkmRootStrategy(InitBootRootStrategy):
 
     @property
     def root_type(self) -> str:
-        return self._root_type
+        return self.provider.provider_id
 
     def print_unroot_step(self, partition_map: Dict[str, str]) -> None:
         utils.ui.echo(get_string("act_unroot_step4_lkm"))
@@ -494,14 +503,14 @@ class LkmRootStrategy(InitBootRootStrategy):
 
     def configure_source(self, breadcrumbs: Optional[str] = None) -> None:
         self._apply_source_selection(
-            select_lkm_source(self.root_type, breadcrumbs=breadcrumbs)
+            select_lkm_source(self.provider.provider_id, breadcrumbs=breadcrumbs)
         )
 
     def download_resources(self, kernel_version: Optional[str] = None) -> bool:
         return download_lkm_resources(
+            profile=self.provider,
             staging_dir=self.staging_dir,
             repo_config=self.repo_config,
-            root_type=self.root_type,
             kernel_version=kernel_version,
             is_nightly=self.is_nightly,
             workflow_id=self.workflow_id,
@@ -510,12 +519,12 @@ class LkmRootStrategy(InitBootRootStrategy):
 
 
 def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
-    if root_type in ("folkpatch", "apatch"):
-        return APatchStrategy(root_type)
-    elif gki:
+    provider = get_root_provider_profile(root_type)
+    if provider.family == RootProviderFamily.APATCH:
+        return APatchStrategy(provider.provider_id)
+    if gki:
         return GkiRootStrategy()
-    else:
-        return LkmRootStrategy(root_type)
+    return LkmRootStrategy(provider.provider_id)
 
 
 _cleanup_manager_apk = cleanup_manager_apk

@@ -1,10 +1,11 @@
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 from .i18n import get_string
 from .logger import logging_context
+from .process_runner import CommandRunner, RunOptions
 from .utils import ui
 
 
@@ -31,8 +32,13 @@ def build_info_scan_command(image_path: Path, constants: Any) -> List[str]:
     ]
 
 
-def run_info_scan(paths: List[str], constants: Any, avb_patch: Any) -> None:
+def run_info_scan(
+    paths: List[str],
+    constants: Any,
+    runner: Optional[CommandRunner] = None,
+) -> None:
     print(get_string("scan_start"))
+    command_runner = runner or CommandRunner()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = constants.BASE_DIR / "log"
@@ -55,7 +61,10 @@ def run_info_scan(paths: List[str], constants: Any, avb_patch: Any) -> None:
 
             try:
                 command = build_info_scan_command(image_path, constants)
-                result = avb_patch.utils.run_command(command, capture=True, check=False)
+                result = command_runner.run(
+                    command,
+                    options=RunOptions(capture=True, check=False),
+                )
 
                 logger.info(result.stdout.strip())
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Union
 
 from .i18n import get_string
+from .root_profiles import RootModeOption, resolve_root_command_variant
 
 
 @dataclass(frozen=True)
@@ -199,97 +200,43 @@ def get_advanced_menu_data(
     return _build_menu(specs)
 
 
-def get_root_mode_menu_data() -> List[MenuItem]:
+def get_root_mode_menu_data(mode_options: List[RootModeOption]) -> List[MenuItem]:
     specs = [
         MenuSpec(
             "option",
-            key="1",
-            text=lambda: get_string("menu_root_mode_1"),
-            action="lkm",
-        ),
-        MenuSpec(
-            "option",
-            key="2",
-            text=lambda: get_string("menu_root_mode_2"),
-            action="gki",
-        ),
-        MenuSpec("separator"),
-        *_navigation_specs(include_back=True, include_return=True, include_exit=True),
+            key=mode_option.key,
+            text=lambda label_key=mode_option.label_key: get_string(label_key),
+            action=mode_option.action,
+        )
+        for mode_option in mode_options
     ]
+    specs.extend(
+        [
+            MenuSpec("separator"),
+            *_navigation_specs(
+                include_back=True, include_return=True, include_exit=True
+            ),
+        ]
+    )
     return _build_menu(specs)
 
 
 def get_root_menu_data(gki: bool, root_type: str = "") -> List[MenuItem]:
-    specs: List[MenuSpec] = []
-
-    if root_type == "folkpatch":
-        specs.extend(
-            [
-                MenuSpec(
-                    "option",
-                    key="1",
-                    text=lambda: get_string("menu_root_1_gki"),
-                    action="root_device_folkpatch",
-                ),
-                MenuSpec(
-                    "option",
-                    key="2",
-                    text=lambda: get_string("menu_root_2_gki"),
-                    action="patch_root_image_file_flash_folkpatch",
-                ),
-            ]
-        )
-    elif root_type == "apatch":
-        specs.extend(
-            [
-                MenuSpec(
-                    "option",
-                    key="1",
-                    text=lambda: get_string("menu_root_1_gki"),
-                    action="root_device_apatch",
-                ),
-                MenuSpec(
-                    "option",
-                    key="2",
-                    text=lambda: get_string("menu_root_2_gki"),
-                    action="patch_root_image_file_flash_apatch",
-                ),
-            ]
-        )
-    elif gki:
-        specs.extend(
-            [
-                MenuSpec(
-                    "option",
-                    key="1",
-                    text=lambda: get_string("menu_root_1_gki"),
-                    action="root_device_gki",
-                ),
-                MenuSpec(
-                    "option",
-                    key="2",
-                    text=lambda: get_string("menu_root_2_gki"),
-                    action="patch_root_image_file_flash_gki",
-                ),
-            ]
-        )
-    else:
-        specs.extend(
-            [
-                MenuSpec(
-                    "option",
-                    key="1",
-                    text=lambda: get_string("menu_root_1_lkm"),
-                    action="root_device_lkm",
-                ),
-                MenuSpec(
-                    "option",
-                    key="2",
-                    text=lambda: get_string("menu_root_2_lkm"),
-                    action="patch_root_image_file_flash_lkm",
-                ),
-            ]
-        )
+    variant = resolve_root_command_variant(gki, root_type)
+    specs: List[MenuSpec] = [
+        MenuSpec(
+            "option",
+            key="1",
+            text=lambda: get_string(variant.root_menu_root_label_key),
+            action=variant.root_device_command,
+        ),
+        MenuSpec(
+            "option",
+            key="2",
+            text=lambda: get_string(variant.root_menu_patch_label_key),
+            action=variant.patch_flash_command,
+        ),
+    ]
 
     specs.extend(
         [

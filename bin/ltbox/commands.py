@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import actions, workflow
 from .i18n import get_string
 from .registry import REGISTRY
+from .root_profiles import RootCommandVariant, iter_root_command_variants
 
 
 @dataclass(frozen=True)
@@ -24,76 +25,7 @@ def _build_command_definitions() -> List[CommandDefinition]:
             func=actions.convert_region_images,
             title=get_string("task_title_convert_rom"),
         ),
-        CommandDefinition(
-            name="root_device_gki",
-            func=actions.root_device,
-            title=get_string("task_title_root_device").format(mode="GKI"),
-            default_kwargs={"gki": True},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_gki",
-            func=actions.patch_root_image_file,
-            title=get_string("task_title_root_file_gki"),
-            require_dev=False,
-            default_kwargs={"gki": True},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_flash_gki",
-            func=actions.patch_and_flash_root,
-            title=get_string("task_title_root_file_gki"),
-            default_kwargs={"gki": True},
-        ),
-        CommandDefinition(
-            name="root_device_apatch",
-            func=actions.root_device,
-            title=get_string("task_title_root_device").format(mode="GKI") + " (APatch)",
-            default_kwargs={"gki": True, "root_type": "apatch"},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_apatch",
-            func=actions.patch_root_image_file,
-            title=get_string("task_title_root_file_gki") + " (APatch)",
-            require_dev=False,
-            default_kwargs={"gki": True, "root_type": "apatch"},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_flash_apatch",
-            func=actions.patch_and_flash_root,
-            title=get_string("task_title_root_file_gki") + " (APatch)",
-            default_kwargs={"gki": True, "root_type": "apatch"},
-        ),
-        CommandDefinition(
-            name="root_device_folkpatch",
-            func=actions.root_device,
-            title=get_string("task_title_root_device").format(mode="GKI")
-            + " (FolkPatch)",
-            default_kwargs={"gki": True, "root_type": "folkpatch"},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_flash_folkpatch",
-            func=actions.patch_and_flash_root,
-            title=get_string("task_title_root_file_gki") + " (FolkPatch)",
-            default_kwargs={"gki": True, "root_type": "folkpatch"},
-        ),
-        CommandDefinition(
-            name="root_device_lkm",
-            func=actions.root_device,
-            title=get_string("task_title_root_device").format(mode="LKM"),
-            default_kwargs={"gki": False},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_lkm",
-            func=actions.patch_root_image_file,
-            title=get_string("task_title_root_file_lkm"),
-            require_dev=False,
-            default_kwargs={"gki": False},
-        ),
-        CommandDefinition(
-            name="patch_root_image_file_flash_lkm",
-            func=actions.patch_and_flash_root,
-            title=get_string("task_title_root_file_lkm"),
-            default_kwargs={"gki": False},
-        ),
+        *_build_root_command_definitions(),
         CommandDefinition(
             name="unroot_device",
             func=actions.unroot_device,
@@ -201,6 +133,55 @@ def _build_command_definitions() -> List[CommandDefinition]:
             log_filename_prefix="log_flash_firmware",
         ),
     ]
+
+
+def _build_root_command_definitions() -> List[CommandDefinition]:
+    command_definitions: List[CommandDefinition] = []
+    for variant in iter_root_command_variants():
+        command_definitions.extend(_build_root_variant_command_definitions(variant))
+    return command_definitions
+
+
+def _build_root_variant_command_definitions(
+    variant: RootCommandVariant,
+) -> List[CommandDefinition]:
+    title_suffix = f" ({variant.title_suffix})" if variant.title_suffix else ""
+    patch_title_key = (
+        "task_title_root_file_gki" if variant.gki else "task_title_root_file_lkm"
+    )
+    default_kwargs = variant.default_kwargs()
+
+    command_definitions = [
+        CommandDefinition(
+            name=variant.root_device_command,
+            func=actions.root_device,
+            title=get_string("task_title_root_device").format(
+                mode=variant.task_mode_label
+            )
+            + title_suffix,
+            default_kwargs=default_kwargs.copy(),
+        ),
+        CommandDefinition(
+            name=variant.patch_flash_command,
+            func=actions.patch_and_flash_root,
+            title=get_string(patch_title_key) + title_suffix,
+            default_kwargs=default_kwargs.copy(),
+        ),
+    ]
+
+    if variant.patch_command:
+        command_definitions.insert(
+            1,
+            CommandDefinition(
+                name=variant.patch_command,
+                func=actions.patch_root_image_file,
+                title=get_string(patch_title_key) + title_suffix,
+                require_dev=False,
+                default_kwargs=default_kwargs.copy(),
+            ),
+        )
+
+    return command_definitions
 
 
 def register_all_commands() -> None:

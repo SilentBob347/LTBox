@@ -13,7 +13,12 @@ from ..backup_sources import find_dp_source_folders, format_dp_folder_label
 from ..edl_partition_service import EdlPartitionService
 from ..i18n import get_string
 from ..partition import require_partition_params
-from ..prompt_helpers import prompt_choice, prompt_index_selection, prompt_yes_no
+from ..prompt_helpers import (
+    prompt_choice,
+    prompt_index_selection,
+    prompt_multi_select_indices,
+    prompt_yes_no,
+)
 from ..xml_catalog import PartitionGroup, PartitionRecord, XmlCatalog
 from . import xml
 
@@ -222,10 +227,7 @@ def _build_full_flash_plan(
 
 
 def _prompt_partition_selection(labels: List[str]) -> List[str]:
-    selected: Set[str] = set()
-
-    while True:
-        utils.ui.clear()
+    def _render(selected_offsets: Set[int]) -> None:
         width = utils.ui.get_term_width()
         utils.ui.echo("\n" + "=" * width)
         utils.ui.echo(f"   {get_string('act_flash_partitions_label_title')}")
@@ -234,12 +236,12 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
         count = len(labels)
         for i in range(0, count, 2):
             label1 = labels[i]
-            mark1 = " [v]" if label1 in selected else ""
+            mark1 = " [v]" if i in selected_offsets else ""
             item1 = f" {i + 1:3d}. {label1}{mark1}"
 
             if i + 1 < count:
                 label2 = labels[i + 1]
-                mark2 = " [v]" if label2 in selected else ""
+                mark2 = " [v]" if (i + 1) in selected_offsets else ""
                 item2 = f"{i + 2:3d}. {label2}{mark2}"
                 utils.ui.echo(f"  {item1:<38} {item2}")
             else:
@@ -249,29 +251,19 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
         utils.ui.echo(f"   c. {get_string('cancel')}")
         utils.ui.echo("\n" + "=" * width + "\n")
 
-        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
-        if choice == "f":
-            return [label for label in labels if label in selected]
-        if choice == "c":
-            return []
-
-        try:
-            idx = int(choice)
-        except ValueError:
-            utils.ui.error(get_string("err_invalid_selection"))
-            input(get_string("press_enter_to_continue"))
-            continue
-
-        if not 1 <= idx <= len(labels):
-            utils.ui.error(get_string("err_invalid_selection"))
-            input(get_string("press_enter_to_continue"))
-            continue
-
-        label = labels[idx - 1]
-        if label in selected:
-            selected.remove(label)
-        else:
-            selected.add(label)
+    selected_offsets = prompt_multi_select_indices(
+        get_string("prompt_select"),
+        item_count=len(labels),
+        render_func=_render,
+        input_func=utils.ui.prompt,
+        error_message=get_string("err_invalid_selection"),
+        error_func=utils.ui.error,
+        pause_func=lambda: input(get_string("press_enter_to_continue")),
+        clear_func=utils.ui.clear,
+    )
+    if selected_offsets is None:
+        return []
+    return [labels[index] for index in selected_offsets]
 
 
 def flash_selected_partitions(

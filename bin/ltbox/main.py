@@ -4,12 +4,10 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from . import i18n, update_service, utils
 from .app_state import AppState
-from .info_scan import build_info_scan_command, collect_info_scan_files, run_info_scan
 from .i18n import get_string
 from .registry import CommandRegistry
+from .scan_api import run_info_scan
 from .settings_store import (
-    AppSettings,
-    SETTINGS_FILE,
     SETTINGS_STORE,
     SettingsStore,
 )
@@ -51,11 +49,10 @@ def _resolve_language_code(
 
 def _initialize_runtime(
     lang_code: str,
-) -> Tuple["DeviceControllerFactoryProtocol", CommandRegistry, Any, Any]:
+) -> Tuple["DeviceControllerFactoryProtocol", CommandRegistry, Any]:
     utils.check_dependencies()
 
     from . import constants, device
-    from .patch import avb
     from .menu_router import prompt_for_language
     from .registry import REGISTRY
     from .commands import register_all_commands
@@ -70,7 +67,7 @@ def _initialize_runtime(
 
     register_all_commands()
 
-    return device.DeviceController, REGISTRY, constants, avb
+    return device.DeviceController, REGISTRY, constants
 
 
 def _run_entry_mode(
@@ -78,14 +75,13 @@ def _run_entry_mode(
     device_controller_class: "DeviceControllerFactoryProtocol",
     registry: CommandRegistry,
     constants_module: Any,
-    avb_patch_module: Any,
     settings_store: Optional[SettingsStore] = None,
 ) -> None:
     check_path_encoding()
 
     if is_info_mode:
         if len(sys.argv) > 2:
-            run_info_scan(sys.argv[2:], constants_module, avb_patch_module)
+            run_info_scan(sys.argv[2:], constants_module)
         else:
             ui.error(get_string("info_no_files_dragged"))
             ui.error(get_string("info_drag_files_prompt"))
@@ -179,7 +175,6 @@ def _init_and_run(is_info_mode: bool, lang_code: str) -> None:
             device_controller_class,
             registry,
             constants_module,
-            avb_patch_module,
         ) = _initialize_runtime(lang_code)
 
         _run_entry_mode(
@@ -187,7 +182,6 @@ def _init_and_run(is_info_mode: bool, lang_code: str) -> None:
             device_controller_class,
             registry,
             constants_module,
-            avb_patch_module,
             settings_store=SETTINGS_STORE,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, ToolError) as e:

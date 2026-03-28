@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from .. import constants as const, downloader, utils
 from ..errors import ToolError
 from ..i18n import get_string
+from ..root_profiles import RootProviderProfile
 
 KERNEL_VERSION_RELEASE_MAP: Dict[str, str] = {
     "5.10": "android12-5.10",
@@ -40,7 +41,7 @@ def get_mapped_kernel_name(kernel_version: str) -> Optional[str]:
 
 def download_apatch_resources(
     *,
-    source_name: str,
+    profile: RootProviderProfile,
     staging_dir: Path,
     repo_config: Dict[str, Any],
     is_nightly: bool,
@@ -55,19 +56,21 @@ def download_apatch_resources(
                 workflow_id,
                 staging_dir,
                 repo=repo_config.get("repo", ""),
-                name=source_name,
+                name=profile.display_name,
             )
         else:
             downloader.download_apatch_release(
                 staging_dir,
                 repo=repo_config.get("repo", ""),
                 tag=repo_config.get("tag", "latest"),
-                name=source_name,
+                name=profile.display_name,
             )
         return True
     except (ToolError, OSError, zipfile.BadZipFile) as error:
         utils.ui.error(
-            get_string("apatch_download_failed").format(e=error, name=source_name)
+            get_string("apatch_download_failed").format(
+                e=error, name=profile.display_name
+            )
         )
         return False
 
@@ -152,9 +155,9 @@ def _download_lkm_nightly_artifacts(
 
 def download_lkm_resources(
     *,
+    profile: RootProviderProfile,
     staging_dir: Path,
     repo_config: Dict[str, Any],
-    root_type: str,
     kernel_version: Optional[str],
     is_nightly: bool,
     workflow_id: Optional[str],
@@ -164,7 +167,7 @@ def download_lkm_resources(
 
     repo = repo_config.get("repo", "")
 
-    if root_type in ("sukisu", "resukisu") or is_nightly:
+    if profile.release_uses_tagged_build or profile.force_nightly or is_nightly:
         if is_nightly and workflow_id:
             resolved_workflow_id = workflow_id
         else:

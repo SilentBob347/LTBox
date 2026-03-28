@@ -5,16 +5,12 @@ from typing import Any, Dict, List, Optional, Set
 from .. import constants as const, downloader, utils
 from ..i18n import get_string
 from ..menu import TerminalMenu
-
-NIGHTLY_WORKFLOW_FILES: Dict[str, str] = {
-    "kernelsu": "build-manager.yml",
-    "ksu": "build-manager.yml",
-    "kernelsu-next": "build-manager-ci.yml",
-    "sukisu": "build-manager.yml",
-    "resukisu": "build-manager.yml",
-    "apatch": "build.yml",
-    "folkpatch": "build-debug.yml",
-}
+from ..prompt_helpers import prompt_multi_select_indices
+from ..root_profiles import (
+    RootProviderFamily,
+    RootProviderProfile,
+    get_root_provider_profile,
+)
 
 
 @dataclass(frozen=True)
@@ -27,10 +23,7 @@ class StrategySourceSelection:
 
 
 def prompt_kpm_selection(kpm_files: List[Path]) -> List[Path]:
-    selected: Set[int] = set()
-
-    while True:
-        utils.ui.clear()
+    def _render(selected: Set[int]) -> None:
         width = utils.ui.get_term_width()
         utils.ui.echo("\n" + "=" * width)
         utils.ui.echo(f"   {get_string('apatch_kpm_select_title')}")
@@ -47,35 +40,21 @@ def prompt_kpm_selection(kpm_files: List[Path]) -> List[Path]:
         utils.ui.echo(f"   c. {get_string('cancel')}")
         utils.ui.echo("\n" + "=" * width + "\n")
 
-        choice = utils.ui.prompt(get_string("prompt_select")).strip().lower()
-        if choice == "f":
-            return [kpm_files[index] for index in sorted(selected)]
-        if choice == "c":
-            return []
-        if choice == "a":
-            selected = set(range(len(kpm_files)))
-            continue
-        if choice == "d":
-            selected.clear()
-            continue
-
-        try:
-            index = int(choice)
-        except ValueError:
-            utils.ui.error(get_string("err_invalid_selection"))
-            input(get_string("press_enter_to_continue"))
-            continue
-
-        if not 1 <= index <= len(kpm_files):
-            utils.ui.error(get_string("err_invalid_selection"))
-            input(get_string("press_enter_to_continue"))
-            continue
-
-        offset = index - 1
-        if offset in selected:
-            selected.remove(offset)
-        else:
-            selected.add(offset)
+    selected = prompt_multi_select_indices(
+        get_string("prompt_select"),
+        item_count=len(kpm_files),
+        render_func=_render,
+        input_func=utils.ui.prompt,
+        error_message=get_string("err_invalid_selection"),
+        error_func=utils.ui.error,
+        pause_func=lambda: input(get_string("press_enter_to_continue")),
+        clear_func=utils.ui.clear,
+        select_all_choice="a",
+        deselect_all_choice="d",
+    )
+    if selected is None:
+        return []
+    return [kpm_files[index] for index in selected]
 
 
 def prompt_nightly_workflow(
@@ -122,84 +101,59 @@ def prompt_nightly_workflow(
     return value
 
 
-def select_apatch_source(
-    root_type: str,
-    breadcrumbs: Optional[str] = None,
-) -> StrategySourceSelection:
+def _load_provider_repo_config(profile: RootProviderProfile) -> Dict[str, Any]:
     settings = const.load_settings_raw()
-    repo_config = settings.get(root_type, {})
-    source_name = "FolkPatch" if root_type == "folkpatch" else "APatch"
+    return settings.get(profile.settings_key, {})
 
-    menu = TerminalMenu(
-        get_string("menu_root_subtype_title").format(name=source_name),
-        breadcrumbs=breadcrumbs,
+
+def _build_source_selection(
+    *,
+    profile: RootProviderProfile,
+    repo_config: Dict[str, Any],
+    is_nightly: bool,
+    workflow_id: Optional[str],
+) -> StrategySourceSelection:
+    source_label_key = (
+        "menu_root_subtype_nightly" if is_nightly else "menu_root_subtype_release"
     )
-    menu.add_option("1", get_string("menu_root_subtype_release"))
-    menu.add_option("2", get_string("menu_root_subtype_nightly"))
-    choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
-
-    if choice == "2":
-        return StrategySourceSelection(
-            repo_config=repo_config,
-            source_label=get_string("menu_root_subtype_nightly"),
-            is_nightly=True,
-            workflow_id=prompt_nightly_workflow(
-                source_name,
-                repo_config.get("repo", ""),
-                NIGHTLY_WORKFLOW_FILES.get(root_type, ""),
-                str(repo_config.get("workflow", "")).strip(),
-                breadcrumbs,
-            ),
-        )
+    release_workflow_id = workflow_id
+    if not is_nightly and profile.family == RootProviderFamily.LKM:
+        release_workflow_id = ""
 
     return StrategySourceSelection(
         repo_config=repo_config,
-        source_label=get_string("menu_root_subtype_release"),
-        is_nightly=False,
-        workflow_id=None,
+        source_label=get_string(source_label_key),
+        is_nightly=is_nightly,
+        workflow_id=release_workflow_id,
+        is_tagged_build=profile.release_uses_tagged_build and not is_nightly,
     )
 
 
-def select_lkm_source(
-    root_type: str,
+def _select_profile_source(
+    profile: RootProviderProfile,
     breadcrumbs: Optional[str] = None,
 ) -> StrategySourceSelection:
-    settings = const.load_settings_raw()
-
-    if root_type == "kernelsu":
-        repo_config = settings.get("kernelsu", {})
-        root_name = "KernelSU"
-    elif root_type == "sukisu":
-        repo_config = settings.get("sukisu-ultra", {})
-        root_name = "SukiSU Ultra"
-    elif root_type == "resukisu":
-        repo_config = settings.get("resukisu", {})
-        root_name = "ReSukiSU"
-    else:
-        repo_config = settings.get("kernelsu-next", {})
-        root_name = "KernelSU Next"
-
+    repo_config = _load_provider_repo_config(profile)
     resolved_breadcrumbs = breadcrumbs or get_string("menu_root_type_title")
     repo = repo_config.get("repo", "")
-    workflow_file = NIGHTLY_WORKFLOW_FILES.get(root_type, "")
+    default_workflow = str(repo_config.get("workflow", "")).strip()
 
-    if root_type == "resukisu":
-        return StrategySourceSelection(
+    if profile.force_nightly:
+        return _build_source_selection(
+            profile=profile,
             repo_config=repo_config,
-            source_label=get_string("menu_root_subtype_nightly"),
             is_nightly=True,
             workflow_id=prompt_nightly_workflow(
-                root_name,
+                profile.display_name,
                 repo,
-                workflow_file,
-                str(repo_config.get("workflow", "")),
+                profile.workflow_file,
+                default_workflow,
                 resolved_breadcrumbs,
             ),
-            is_tagged_build=False,
         )
 
     menu = TerminalMenu(
-        get_string("menu_root_subtype_title").format(name=root_name),
+        get_string("menu_root_subtype_title").format(name=profile.display_name),
         breadcrumbs=resolved_breadcrumbs,
     )
     menu.add_option("1", get_string("menu_root_subtype_release"))
@@ -207,27 +161,45 @@ def select_lkm_source(
     choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
 
     if choice == "2":
-        return StrategySourceSelection(
+        return _build_source_selection(
+            profile=profile,
             repo_config=repo_config,
-            source_label=get_string("menu_root_subtype_nightly"),
             is_nightly=True,
             workflow_id=prompt_nightly_workflow(
-                root_name,
+                profile.display_name,
                 repo,
-                workflow_file,
-                str(repo_config.get("workflow", "")),
+                profile.workflow_file,
+                default_workflow,
                 resolved_breadcrumbs,
             ),
-            is_tagged_build=False,
         )
 
-    return StrategySourceSelection(
+    return _build_source_selection(
+        profile=profile,
         repo_config=repo_config,
-        source_label=get_string("menu_root_subtype_release"),
         is_nightly=False,
-        workflow_id="",
-        is_tagged_build=True,
+        workflow_id=None,
     )
+
+
+def select_apatch_source(
+    root_type: str,
+    breadcrumbs: Optional[str] = None,
+) -> StrategySourceSelection:
+    profile = get_root_provider_profile(root_type)
+    if profile.family != RootProviderFamily.APATCH:
+        raise ValueError(f"Expected an APatch-family provider, got: {root_type}")
+    return _select_profile_source(profile, breadcrumbs)
+
+
+def select_lkm_source(
+    root_type: str,
+    breadcrumbs: Optional[str] = None,
+) -> StrategySourceSelection:
+    profile = get_root_provider_profile(root_type)
+    if profile.family != RootProviderFamily.LKM:
+        raise ValueError(f"Expected an LKM provider, got: {root_type}")
+    return _select_profile_source(profile, breadcrumbs)
 
 
 def prompt_apatch_superkey(source_name: str) -> str:

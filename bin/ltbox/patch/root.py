@@ -9,6 +9,7 @@ from .. import constants as const
 from .. import device, downloader, utils
 from ..errors import ToolError
 from ..i18n import get_string
+from ..root_profiles import RootProviderFamily, get_root_provider_profile
 
 
 def patch_boot_with_root_algo(
@@ -38,8 +39,10 @@ def patch_boot_with_root_algo(
 
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
-    if root_type in ("folkpatch", "apatch"):
-        display_name = "FolkPatch" if root_type == "folkpatch" else "APatch"
+    provider = get_root_provider_profile(root_type)
+
+    if provider.family == RootProviderFamily.APATCH:
+        display_name = provider.display_name
 
         if superkey is None:
             utils.ui.error(
@@ -206,7 +209,7 @@ def patch_boot_with_root_algo(
                 ksuinit_path = work_dir / "init"
                 kmod_path = work_dir / "kernelsu.ko"
 
-                if root_type == "sukisu":
+                if provider.provider_id == "sukisu":
                     if not lkm_kernel_version:
                         print(get_string("img_root_lkm_no_dev"), file=sys.stderr)
                         return None

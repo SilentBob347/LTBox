@@ -381,10 +381,29 @@ class ExternalTool:
         capture: bool = False,
         check: bool = True,
         cwd: Optional[Union[str, Path]] = None,
+        shell: bool = False,
+        env: Optional[dict] = None,
+        timeout: Optional[float] = None,
+        creationflags: int = 0,
+        on_output: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> CommandResult:
         cmd = self.base_cmd + [str(arg) for arg in args]
-        return run_command(cmd, capture=capture, check=check, cwd=cwd, **kwargs)
+        run_env = env if env is not None else _get_tool_env()
+        return CommandRunner().run(
+            cmd,
+            shell=shell,
+            options=RunOptions(
+                capture=capture,
+                stream=not capture,
+                check=check,
+                cwd=cwd,
+                env=run_env,
+                timeout=timeout,
+                creationflags=creationflags,
+            ),
+            on_output=on_output,
+        )
 
 
 class AvbToolWrapper(ExternalTool):

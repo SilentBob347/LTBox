@@ -1,13 +1,18 @@
 import sys
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 from . import i18n, menu_data
 from .app_state import AppState
 from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port
 from .i18n import get_string
 from .menu import TerminalMenu, select_menu_action
+from .root_profiles import (
+    RootProviderProfile,
+    RootRouteKind,
+    iter_root_type_menu_profiles,
+)
 from .utils import ui
 from . import update_service
 from .task_runner import run_task
@@ -32,25 +37,6 @@ class MainMenuAction(str, Enum):
 class RouteResult(str, Enum):
     MAIN = "main"
     RETURN = "return"
-
-
-ROOT_TYPE_MENU_SPEC: List[Optional[Tuple[str, str]]] = [
-    ("1", "menu_root_type_ksu"),
-    ("2", "menu_root_type_ksun"),
-    None,
-    ("3", "menu_root_type_sukisu"),
-    ("4", "menu_root_type_resukisu"),
-    None,
-    ("5", "APatch"),
-    ("6", "FolkPatch"),
-    None,
-    ("b", "menu_back"),
-    ("x", "menu_main_exit"),
-]
-
-ROOT_TYPE_BREADCRUMB_LABELS: Dict[str, str] = {
-    item[0]: item[1] for item in ROOT_TYPE_MENU_SPEC if item is not None
-}
 
 
 class DeviceControllerProtocol(Protocol):
@@ -89,23 +75,6 @@ PRESET_UPDATES: Dict[str, Dict[str, Any]] = {
     },
 }
 ROLLBACK_CYCLE = {"ON": "AUTO", "AUTO": "OFF", "OFF": "ON"}
-
-
-@dataclass(frozen=True)
-class RootRouteSpec:
-    handler: str
-    gki: bool = False
-    root_type: str = ""
-
-
-ROOT_ROUTE_SPECS: Dict[str, RootRouteSpec] = {
-    "1": RootRouteSpec(handler="action", gki=False, root_type="kernelsu"),
-    "2": RootRouteSpec(handler="mode"),
-    "3": RootRouteSpec(handler="action", gki=False, root_type="sukisu"),
-    "4": RootRouteSpec(handler="action", gki=False, root_type="resukisu"),
-    "5": RootRouteSpec(handler="action", gki=True, root_type="apatch"),
-    "6": RootRouteSpec(handler="action", gki=True, root_type="folkpatch"),
-}
 
 
 @dataclass(frozen=True)
@@ -303,28 +272,30 @@ def _root_action_menu(
     return res
 
 
-def _handle_ksu_mode(
+def _handle_root_mode(
     dev: DeviceControllerProtocol,
     registry: CommandRegistry,
+    profile: RootProviderProfile,
     type_breadcrumbs: str,
 ) -> MenuReturn:
-    MODE_LABELS = {"lkm": "LKM", "gki": "GKI"}
+    mode_options = {option.action: option for option in profile.mode_options}
 
     def _handler(mode_action: str) -> MenuReturn:
-        mode_label = MODE_LABELS.get(mode_action, "")
+        mode_option = mode_options.get(mode_action)
+        if mode_option is None:
+            return None
+        mode_label = get_string(mode_option.label_key)
         mode_bc = f"{type_breadcrumbs} > {mode_label}"
-        if mode_action == "lkm":
-            return _root_action_menu(
-                dev, registry, gki=False, root_type="ksu", breadcrumbs=mode_bc
-            )
-        elif mode_action == "gki":
-            return _root_action_menu(
-                dev, registry, gki=True, root_type="ksu", breadcrumbs=mode_bc
-            )
-        return None
+        return _root_action_menu(
+            dev,
+            registry,
+            gki=mode_option.gki,
+            root_type=mode_option.strategy_root_type,
+            breadcrumbs=mode_bc,
+        )
 
     res = _loop_menu(
-        menu_data.get_root_mode_menu_data,
+        lambda: menu_data.get_root_mode_menu_data(list(profile.mode_options)),
         "menu_root_mode_title",
         lambda: type_breadcrumbs,
         _handler,
@@ -334,8 +305,10 @@ def _handle_ksu_mode(
     return res
 
 
-def _resolve_root_type_label(label_key: str) -> str:
-    return get_string(label_key) if label_key.startswith("menu_") else label_key
+def _resolve_root_type_label(profile: RootProviderProfile) -> str:
+    if profile.menu_label_key:
+        return get_string(profile.menu_label_key)
+    return profile.menu_label_literal or profile.display_name
 
 
 def _build_root_dispatch_map(
@@ -344,24 +317,25 @@ def _build_root_dispatch_map(
     type_breadcrumbs: Dict[str, str],
 ) -> Dict[str, Callable[[], MenuReturn]]:
     dispatch_map: Dict[str, Callable[[], MenuReturn]] = {}
-    for key, route_spec in ROOT_ROUTE_SPECS.items():
-        breadcrumbs = type_breadcrumbs[key]
-        if route_spec.handler == "mode":
-            dispatch_map[key] = (
-                lambda breadcrumbs=breadcrumbs: _handle_ksu_mode(
+    for profile in (p for p in iter_root_type_menu_profiles() if p is not None):
+        breadcrumbs = type_breadcrumbs[profile.menu_key]
+        if profile.route_kind == RootRouteKind.MODE:
+            dispatch_map[profile.menu_key] = (
+                lambda profile=profile, breadcrumbs=breadcrumbs: _handle_root_mode(
                     dev,
                     registry,
+                    profile,
                     breadcrumbs,
                 )
             )
             continue
 
-        dispatch_map[key] = (
-            lambda route_spec=route_spec, breadcrumbs=breadcrumbs: _root_action_menu(
+        dispatch_map[profile.menu_key] = (
+            lambda profile=profile, breadcrumbs=breadcrumbs: _root_action_menu(
                 dev,
                 registry,
-                gki=route_spec.gki,
-                root_type=route_spec.root_type,
+                gki=bool(profile.direct_gki),
+                root_type=profile.strategy_root_type,
                 breadcrumbs=breadcrumbs,
             )
         )
@@ -371,16 +345,15 @@ def _build_root_dispatch_map(
 def _build_root_type_menu(main_title: str) -> TerminalMenu:
     menu = TerminalMenu(get_string("menu_root_type_title"), breadcrumbs=main_title)
 
-    for item in ROOT_TYPE_MENU_SPEC:
-        if item is None:
+    for profile in iter_root_type_menu_profiles():
+        if profile is None:
             menu.add_separator()
             continue
 
-        key, label = item
-        menu.add_option(
-            key,
-            get_string(label) if label.startswith("menu_") else label,
-        )
+        menu.add_option(profile.menu_key, _resolve_root_type_label(profile))
+
+    menu.add_option("b", get_string("menu_back"))
+    menu.add_option("x", get_string("menu_main_exit"))
 
     return menu
 
@@ -392,8 +365,9 @@ def root_menu(
     while True:
         main_title = get_string("menu_main_title")
         type_breadcrumbs = {
-            key: f"{main_title} > {_resolve_root_type_label(label)}"
-            for key, label in ROOT_TYPE_BREADCRUMB_LABELS.items()
+            profile.menu_key: f"{main_title} > {_resolve_root_type_label(profile)}"
+            for profile in iter_root_type_menu_profiles()
+            if profile is not None
         }
         dispatch_map = _build_root_dispatch_map(dev, registry, type_breadcrumbs)
         mode_menu = _build_root_type_menu(main_title)
