@@ -144,7 +144,7 @@ def test_root_lkm(firmware_file_getter, tmp_path):
         except Exception as e:
             pytest.fail(f"Failed to extract kernel version: {e}")
 
-        strategy = LkmRootStrategy()
+        strategy = LkmRootStrategy("kernelsu")
         strategy.staging_dir.mkdir(parents=True, exist_ok=True)
 
         if not strategy.download_resources(detected_version_short):
