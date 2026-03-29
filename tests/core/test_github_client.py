@@ -34,7 +34,7 @@ def test_github_client_fetch_release_data_skips_testing_release_with_matching_as
     session = MagicMock()
     session.get.return_value = releases_response
 
-    with patch("ltbox.github_client.net.get_session", return_value=session):
+    with patch("ltbox.github_client.net.get_client", return_value=session):
         release_data = GitHubClient(
             "WildKernels/GKI_KernelSU_SUSFS"
         ).fetch_release_data("latest", ".*Normal.*AnyKernel3\\.zip")
@@ -59,7 +59,7 @@ def test_github_client_workflow_run_id_for_tag_falls_back_to_unfiltered_runs():
     session.get.side_effect = [filtered_runs_response, all_runs_response]
 
     with patch(
-        "ltbox.github_client.net.get_session",
+        "ltbox.github_client.net.get_client",
         return_value=session,
     ):
         run_id = GitHubClient("owner/repo").workflow_run_id_for_tag("v1.2.3")

@@ -1,4 +1,4 @@
-requests
+httpx
 cryptography
 pyserial
 adbutils

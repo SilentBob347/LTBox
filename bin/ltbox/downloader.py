@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Optional, Set
 
-import requests  # type: ignore[import-untyped]
+import httpx
 
 try:
     from tqdm import tqdm
@@ -84,20 +84,20 @@ def download_resource(
                         ncols=80,
                         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
                     ) as pbar:
-                        for chunk in response.iter_content(chunk_size=8192):
+                        for chunk in response.iter_bytes(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
                                 downloaded += len(chunk)
                                 pbar.update(len(chunk))
                 else:
-                    for chunk in response.iter_content(chunk_size=8192):
+                    for chunk in response.iter_bytes(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
 
         msg_success = get_string("dl_download_success").format(filename=dest_path.name)
         utils.ui.echo(msg_success)
-    except (requests.RequestException, OSError) as e:
+    except (httpx.HTTPError, OSError) as e:
         msg_err = get_string("dl_download_failed").format(url=url, error=e)
         utils.ui.error(msg_err)
         if dest_path.exists():
@@ -316,7 +316,7 @@ def _download_manager_artifact(
             if candidate_path != manager_zip:
                 _move_downloaded_file(candidate_path, manager_zip)
             return
-        except (ToolError, requests.RequestException, OSError):
+        except (ToolError, httpx.HTTPError, OSError):
             _cleanup_files(candidate_path)
             continue
 
@@ -378,7 +378,7 @@ def _download_ksuinit_artifact(
 
             if downloaded and not download_all_ksuinit:
                 break
-        except (ToolError, requests.RequestException, zipfile.BadZipFile, OSError):
+        except (ToolError, httpx.HTTPError, zipfile.BadZipFile, OSError):
             _cleanup_files(temp_zip)
             continue
 
@@ -424,7 +424,7 @@ def download_nightly_artifacts(
             get_string("dl_download_success").format(filename="All Artifacts")
         )
 
-    except (ToolError, requests.RequestException, zipfile.BadZipFile, OSError) as e:
+    except (ToolError, httpx.HTTPError, zipfile.BadZipFile, OSError) as e:
         _cleanup_files(manager_zip, ksuinit_dest, lkm_dest)
         raise e
 

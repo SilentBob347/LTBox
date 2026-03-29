@@ -86,7 +86,7 @@ class TestUtils:
         }
 
         with (
-            patch("ltbox.github_client.net.get_session") as get_session,
+            patch("ltbox.github_client.net.get_client") as get_session,
             patch("ltbox.downloader.download_resource") as m_dl,
         ):
             get_session.return_value.get.return_value.json.return_value = resp
@@ -188,7 +188,7 @@ class TestUtils:
         ]
 
         with (
-            patch("ltbox.github_client.net.get_session") as get_session,
+            patch("ltbox.github_client.net.get_client") as get_session,
             patch("ltbox.downloader.download_resource") as m_dl,
         ):
             session = get_session.return_value
@@ -345,7 +345,7 @@ class TestUtils:
         }
 
         with (
-            patch("ltbox.github_client.net.get_session") as get_session,
+            patch("ltbox.github_client.net.get_client") as get_session,
             patch("ltbox.downloader.download_resource") as m_dl,
         ):
             get_session.return_value.get.side_effect = [

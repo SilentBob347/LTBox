@@ -101,7 +101,7 @@ def _download_stream(
             stream=True,
         ) as response:
             with open(dest_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                for chunk in response.iter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE):
                     if chunk:
                         f.write(chunk)
                         if on_progress:
@@ -138,7 +138,7 @@ def _download_range(
             if response.status_code not in (200, 206):
                 raise RuntimeError(f"Unexpected status code: {response.status_code}")
             with open(dest_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                for chunk in response.iter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE):
                     if chunk:
                         f.write(chunk)
                         if on_progress:

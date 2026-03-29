@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import requests  # type: ignore[import-untyped]
+import httpx
 
 from . import net, utils
 from .errors import ToolError
@@ -39,10 +39,10 @@ class GitHubClient:
     ) -> Any:
         api_url = f"https://api.github.com/repos/{self.owner_repo}/{path}"
         try:
-            response = net.get_session().get(api_url, params=params, timeout=timeout)
+            response = net.get_client().get(api_url, params=params, timeout=timeout)
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as error:
+        except httpx.HTTPError as error:
             utils.ui.error(get_string("dl_err_check_network"))
             raise ToolError(get_string("dl_github_failed").format(e=error))
 
