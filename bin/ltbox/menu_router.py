@@ -321,7 +321,7 @@ def _build_root_dispatch_map(
         breadcrumbs = type_breadcrumbs[profile.menu_key]
         if profile.route_kind == RootRouteKind.MODE:
             dispatch_map[profile.menu_key] = (
-                lambda profile=profile, breadcrumbs=breadcrumbs: _handle_root_mode(
+                lambda profile=profile, breadcrumbs=breadcrumbs: _handle_root_mode(  # type: ignore[misc]
                     dev,
                     registry,
                     profile,
@@ -331,7 +331,7 @@ def _build_root_dispatch_map(
             continue
 
         dispatch_map[profile.menu_key] = (
-            lambda profile=profile, breadcrumbs=breadcrumbs: _root_action_menu(
+            lambda profile=profile, breadcrumbs=breadcrumbs: _root_action_menu(  # type: ignore[misc]
                 dev,
                 registry,
                 gki=bool(profile.direct_gki),

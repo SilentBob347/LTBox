@@ -1,8 +1,8 @@
-from typing import Callable, Iterable, Optional, Set
+from typing import Any, Callable, Iterable, Optional, Set
 
 InputFunc = Callable[[str], str]
 ErrorFunc = Callable[[str], None]
-PauseFunc = Callable[[], None]
+PauseFunc = Callable[[], Any]
 ClearFunc = Callable[[], None]
 RenderMultiSelectFunc = Callable[[Set[int]], None]
 

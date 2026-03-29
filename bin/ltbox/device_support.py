@@ -57,7 +57,7 @@ def prevent_sleep_during_flash() -> Iterator[None]:
     es_awaymode_required = 0x00000040
 
     try:
-        ctypes.windll.kernel32.SetThreadExecutionState(
+        ctypes.windll.kernel32.SetThreadExecutionState(  # type: ignore[attr-defined]
             es_continuous | es_system_required | es_awaymode_required
         )
     except (OSError, AttributeError):
@@ -68,7 +68,7 @@ def prevent_sleep_during_flash() -> Iterator[None]:
         yield
     finally:
         try:
-            ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
+            ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)  # type: ignore[attr-defined]
         except (OSError, AttributeError):
             pass
 

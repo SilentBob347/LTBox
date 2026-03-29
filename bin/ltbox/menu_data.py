@@ -205,7 +205,7 @@ def get_root_mode_menu_data(mode_options: List[RootModeOption]) -> List[MenuItem
         MenuSpec(
             "option",
             key=mode_option.key,
-            text=lambda label_key=mode_option.label_key: get_string(label_key),
+            text=lambda label_key=mode_option.label_key: get_string(label_key),  # type: ignore[misc]
             action=mode_option.action,
         )
         for mode_option in mode_options

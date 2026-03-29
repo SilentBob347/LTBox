@@ -110,7 +110,7 @@ def _download_lkm_nightly_artifacts(
         return False
 
     repo = repo_config.get("repo", "")
-    manager_name = repo_config.get("manager")
+    manager_name: str = repo_config.get("manager", "")
 
     try:
         temp_dl_dir = const.TOOLS_DIR / "dl_temp"
