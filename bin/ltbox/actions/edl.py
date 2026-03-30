@@ -403,10 +403,6 @@ def dump_partitions(
     utils.ui.echo(get_string("act_dump_saved").format(dir=const.BACKUP_DIR.name))
 
 
-def _format_dp_folder_label(folder: Path) -> str:
-    return format_dp_folder_label(folder)
-
-
 def _find_dp_source_folders() -> List[Path]:
     return find_dp_source_folders(const.BASE_DIR, const.OUTPUT_DP_DIR)
 
@@ -437,7 +433,7 @@ def _select_dp_source_folder() -> Path:
     width = utils.ui.get_term_width()
     utils.ui.echo("=" * width)
     for i, folder in enumerate(folders, 1):
-        label = _format_dp_folder_label(folder)
+        label = format_dp_folder_label(folder)
         utils.ui.echo(f"  {i}. {label}")
     utils.ui.echo("=" * width)
     utils.ui.echo("")

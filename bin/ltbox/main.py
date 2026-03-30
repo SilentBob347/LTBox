@@ -18,7 +18,6 @@ from .startup_checks import (
     ensure_admin_or_exit as _ensure_admin_or_exit_impl,
     force_kill_processes as _force_kill_processes_impl,
     get_running_processes as _get_running_processes_impl,
-    is_running_as_admin as _is_running_as_admin_impl,
     resolve_process_conflicts as _resolve_process_conflicts_impl,
     setup_console,
 )
@@ -144,10 +143,6 @@ def _check_updates() -> None:
     ui.clear()
     current_version, latest_version, _, _ = update_service.get_update_status()
     update_service.prompt_for_update(current_version, latest_version)
-
-
-def _is_running_as_admin() -> bool:
-    return _is_running_as_admin_impl()
 
 
 def _ensure_admin_or_exit() -> None:

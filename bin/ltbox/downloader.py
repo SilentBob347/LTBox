@@ -174,18 +174,6 @@ def extract_archive_files(
     return extracted_paths
 
 
-def _find_non_testing_release(owner_repo: str, asset_pattern: str) -> Optional[dict]:
-    return _github_client(owner_repo).find_non_testing_release_with_asset(asset_pattern)
-
-
-def _fetch_release_data(owner_repo: str, tag: str, asset_pattern: str) -> dict:
-    return _github_client(owner_repo).fetch_release_data(tag, asset_pattern)
-
-
-def _find_asset_by_pattern(release_data: dict, asset_pattern: str) -> dict:
-    return GitHubClient.find_asset_by_pattern(release_data, asset_pattern)
-
-
 def _download_github_asset(
     repo_url: str, tag: str, asset_pattern: str, dest_dir: Path
 ) -> Path:
