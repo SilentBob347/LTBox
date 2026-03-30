@@ -2,9 +2,7 @@ httpx
 cryptography
 pyserial
 adbutils
-apkutils
 cachetools
 rich
 tqdm
 questionary
-py7zr
