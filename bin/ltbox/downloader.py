@@ -136,7 +136,7 @@ def extract_archive_files(
                     if target_path:
                         f = tf.extractfile(member)
                         if f:
-                            with open(target_path, "wb") as target:
+                            with f, open(target_path, "wb") as target:
                                 shutil.copyfileobj(f, target)
                             extracted_paths.add(target_path)
                             utils.ui.echo(
