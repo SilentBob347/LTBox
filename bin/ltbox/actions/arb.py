@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, NamedTuple, Optional
 
 from .. import constants as const
 from .. import device, utils
@@ -24,6 +24,12 @@ class ArbStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class ArbResult(NamedTuple):
+    status: ArbStatus
+    boot_rollback: int
+    vbmeta_rollback: int
+
+
 def compute_device_rollback_index(
     stored_indices: Dict[int, int],
 ) -> Optional[int]:
@@ -34,7 +40,7 @@ def compute_device_rollback_index(
 def check_image_folder_arb(
     device_rollback_index: int,
     mode: str,
-) -> Tuple[ArbStatus, int, int]:
+) -> ArbResult:
     utils.ui.echo(get_string("act_start_arb"))
     utils.check_dependencies()
 
@@ -46,7 +52,7 @@ def check_image_folder_arb(
             get_string("act_err_new_rom_missing").format(dir=const.IMAGE_DIR.name)
         )
         utils.ui.echo(get_string("act_arb_missing_new"))
-        return ArbStatus.MISSING_NEW, 0, 0
+        return ArbResult(ArbStatus.MISSING_NEW, 0, 0)
 
     try:
         new_boot_info = extract_image_avb_info(new_boot_img)
@@ -57,7 +63,7 @@ def check_image_folder_arb(
     except (ValueError, subprocess.CalledProcessError) as e:
         utils.ui.error(get_string("act_err_read_new_info").format(e=e))
         utils.ui.echo(get_string("act_arb_error"))
-        return ArbStatus.ERROR, 0, 0
+        return ArbResult(ArbStatus.ERROR, 0, 0)
 
     utils.ui.echo(get_string("act_curr_boot_idx").format(idx=device_rollback_index))
     utils.ui.echo(get_string("act_curr_vbmeta_idx").format(idx=device_rollback_index))
@@ -75,12 +81,10 @@ def check_image_folder_arb(
         status = ArbStatus.MATCH
 
     utils.ui.echo(get_string("act_arb_complete").format(status=status.value))
-    return status, device_rollback_index, device_rollback_index
+    return ArbResult(status, device_rollback_index, device_rollback_index)
 
 
-def read_anti_rollback(
-    dumped_boot_path: Path, dumped_vbmeta_path: Path
-) -> Tuple[ArbStatus, int, int]:
+def read_anti_rollback(dumped_boot_path: Path, dumped_vbmeta_path: Path) -> ArbResult:
     utils.ui.echo(get_string("act_start_arb"))
     utils.check_dependencies()
 
@@ -112,7 +116,7 @@ def read_anti_rollback(
 
         utils.ui.error(get_string("act_err_avb_info").format(e=e))
         utils.ui.echo(get_string("act_arb_error"))
-        return ArbStatus.ERROR, 0, 0
+        return ArbResult(ArbStatus.ERROR, 0, 0)
 
     utils.ui.echo(get_string("act_curr_boot_idx").format(idx=boot_rollback))
     utils.ui.echo(get_string("act_curr_vbmeta_idx").format(idx=vbmeta_rollback))
@@ -127,7 +131,7 @@ def read_anti_rollback(
             get_string("act_err_new_rom_missing").format(dir=const.IMAGE_DIR.name)
         )
         utils.ui.echo(get_string("act_arb_missing_new"))
-        return ArbStatus.MISSING_NEW, 0, 0
+        return ArbResult(ArbStatus.MISSING_NEW, 0, 0)
 
     new_boot_rb = 0
     new_vbmeta_rb = 0
@@ -140,7 +144,7 @@ def read_anti_rollback(
     except (ValueError, subprocess.CalledProcessError) as e:
         utils.ui.error(get_string("act_err_read_new_info").format(e=e))
         utils.ui.echo(get_string("act_arb_error"))
-        return ArbStatus.ERROR, 0, 0
+        return ArbResult(ArbStatus.ERROR, 0, 0)
 
     utils.ui.echo(get_string("act_new_boot_idx").format(idx=new_boot_rb))
     utils.ui.echo(get_string("act_new_vbmeta_idx").format(idx=new_vbmeta_rb))
@@ -153,10 +157,10 @@ def read_anti_rollback(
         status = ArbStatus.MATCH
 
     utils.ui.echo(get_string("act_arb_complete").format(status=status.value))
-    return status, boot_rollback, vbmeta_rollback
+    return ArbResult(status, boot_rollback, vbmeta_rollback)
 
 
-def patch_anti_rollback(comparison_result: Tuple[ArbStatus, int, int]) -> None:
+def patch_anti_rollback(comparison_result: ArbResult) -> None:
     utils.ui.echo(get_string("act_start_arb_patch"))
     utils.check_dependencies()
 

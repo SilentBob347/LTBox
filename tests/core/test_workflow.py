@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 from ltbox.execution import TaskResult
 from ltbox import workflow
-from ltbox.actions.arb import ArbStatus
+from ltbox.actions.arb import ArbResult, ArbStatus
 from ltbox.context import TaskContext
 from ltbox.errors import LTBoxError, UserCancelError
 from ltbox.workflow_prompts import BackupChoice
@@ -24,7 +24,7 @@ def test_patch_all_flow_with_stored_rollback_indices(mock_env):
         patch("ltbox.workflow._cleanup_previous_outputs"),
         patch(
             "ltbox.workflow.check_image_folder_arb",
-            return_value=(ArbStatus.MATCH, 0x41B7A200, 0x41B7A200),
+            return_value=ArbResult(ArbStatus.MATCH, 0x41B7A200, 0x41B7A200),
         ) as mock_check,
     ):
         workflow.patch_all(
@@ -130,7 +130,7 @@ def test_patch_all_tb320fc_uses_edl_fallback():
         patch("ltbox.workflow._wait_for_input_images"),
         patch("ltbox.workflow._cleanup_previous_outputs"),
     ):
-        mock_actions.read_anti_rollback.return_value = (ArbStatus.MATCH, 0, 0)
+        mock_actions.read_anti_rollback.return_value = ArbResult(ArbStatus.MATCH, 0, 0)
 
         workflow.patch_all(dev=mock_dev, modify_rollback_index="AUTO")
 

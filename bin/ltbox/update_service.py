@@ -2,11 +2,25 @@ import json
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional
 
 from . import utils
 from .i18n import get_string
 from .utils import ui
+
+
+class LatestVersionResult(NamedTuple):
+    latest_version: Optional[str]
+    latest_release: Optional[str]
+    latest_prerelease: Optional[str]
+
+
+class UpdateStatus(NamedTuple):
+    current_version: str
+    latest_version: Optional[str]
+    latest_release: Optional[str]
+    latest_prerelease: Optional[str]
+
 
 APP_DIR = Path(__file__).parent.resolve()
 
@@ -25,7 +39,7 @@ def read_current_version() -> str:
 
 def get_latest_version(
     current_version: str,
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+) -> LatestVersionResult:
     latest_release, latest_prerelease = utils.get_latest_release_versions(
         "miner7222", "LTBox"
     )
@@ -42,15 +56,17 @@ def get_latest_version(
         if utils.is_update_available(current_version, latest_prerelease):
             latest_version = latest_prerelease
 
-    return latest_version, latest_release, latest_prerelease
+    return LatestVersionResult(latest_version, latest_release, latest_prerelease)
 
 
-def get_update_status() -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+def get_update_status() -> UpdateStatus:
     current_version = read_current_version()
     latest_version, latest_release, latest_prerelease = get_latest_version(
         current_version
     )
-    return current_version, latest_version, latest_release, latest_prerelease
+    return UpdateStatus(
+        current_version, latest_version, latest_release, latest_prerelease
+    )
 
 
 def prompt_for_update(current_version: str, latest_version: Optional[str]) -> bool:

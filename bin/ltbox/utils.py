@@ -9,7 +9,7 @@ import functools
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Generator, Iterable, List, Optional, Union
+from typing import Any, Callable, Generator, Iterable, List, NamedTuple, Optional, Union
 
 from . import constants as const
 from .i18n import get_string
@@ -20,9 +20,12 @@ from .ui import ui
 logger = get_logger()
 
 
-def get_latest_release_versions(
-    repo_owner: str, repo_name: str
-) -> tuple[Optional[str], Optional[str]]:
+class ReleaseVersions(NamedTuple):
+    latest_release: Optional[str]
+    latest_prerelease: Optional[str]
+
+
+def get_latest_release_versions(repo_owner: str, repo_name: str) -> ReleaseVersions:
     url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases?per_page=100"
     latest_release = None
     latest_prerelease = None
@@ -47,8 +50,8 @@ def get_latest_release_versions(
                         ):
                             latest_release = tag
     except (urllib.error.URLError, json.JSONDecodeError, OSError):
-        return None, None
-    return latest_release, latest_prerelease
+        return ReleaseVersions(None, None)
+    return ReleaseVersions(latest_release, latest_prerelease)
 
 
 def is_update_available(current: str, latest: str) -> bool:

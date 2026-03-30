@@ -3,7 +3,7 @@ import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, NamedTuple, Optional, Set
 
 import httpx
 
@@ -234,15 +234,20 @@ def _get_workflow_run_artifacts(owner_repo: str, run_id: str) -> list[str]:
     return _github_client(owner_repo).workflow_run_artifacts(run_id)
 
 
+class WorkflowRunInfo(NamedTuple):
+    run_id: str
+    resolved_tag: str
+
+
 def get_latest_tagged_workflow_run(
     repo: str, tag: Optional[str] = None
-) -> tuple[str, str]:
+) -> WorkflowRunInfo:
     owner_repo = _get_owner_repo(repo)
     resolved_tag = (
         _get_latest_tag_name(owner_repo) if not tag or tag.lower() == "latest" else tag
     )
     run_id = _get_workflow_run_id_for_tag(owner_repo, resolved_tag)
-    return run_id, resolved_tag
+    return WorkflowRunInfo(run_id, resolved_tag)
 
 
 def get_latest_successful_workflow_run(repo: str, workflow_file: str) -> Optional[str]:

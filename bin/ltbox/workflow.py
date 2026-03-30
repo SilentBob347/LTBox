@@ -4,6 +4,7 @@ from typing import Callable, Optional
 
 from . import actions
 from .actions.arb import (
+    ArbResult,
     ArbStatus,
     check_image_folder_arb,
     compute_device_rollback_index,
@@ -181,14 +182,18 @@ def _check_and_patch_arb(ctx: TaskContext) -> None:
             dumped_boot_path=dumped_boot, dumped_vbmeta_path=dumped_vbmeta
         )
 
-        if arb_status_result[0] == "ERROR":
+        if arb_status_result.status == ArbStatus.ERROR:
             raise LTBoxError(get_string("wf_step8_err_arb_abort"))
 
-        status, boot_rb, vbmeta_rb = arb_status_result
-
-        if ctx.modify_rollback_index == "ON" and status == ArbStatus.MATCH:
-            status = ArbStatus.NEEDS_PATCH
-            arb_status_result = (status, boot_rb, vbmeta_rb)
+        if (
+            ctx.modify_rollback_index == "ON"
+            and arb_status_result.status == ArbStatus.MATCH
+        ):
+            arb_status_result = ArbResult(
+                ArbStatus.NEEDS_PATCH,
+                arb_status_result.boot_rollback,
+                arb_status_result.vbmeta_rollback,
+            )
     else:
         if ctx.device_rollback_index is None:
             raise LTBoxError(get_string("wf_err_halted"))
@@ -197,12 +202,10 @@ def _check_and_patch_arb(ctx: TaskContext) -> None:
             ctx.device_rollback_index, ctx.modify_rollback_index
         )
 
-        if arb_status_result[0] == "ERROR":
+        if arb_status_result.status == ArbStatus.ERROR:
             raise LTBoxError(get_string("wf_step8_err_arb_abort"))
 
-        status = arb_status_result[0]
-
-    if status == ArbStatus.NEEDS_PATCH:
+    if arb_status_result.status == ArbStatus.NEEDS_PATCH:
         ctx.arb_patched = True
 
     actions.patch_anti_rollback(comparison_result=arb_status_result)
