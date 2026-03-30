@@ -99,7 +99,7 @@ class FastbootManager(BaseDeviceManager):
 
             ui.warn(
                 get_string("device_warn_slot_fastboot").format(
-                    snippet=output.splitlines()[0] if output else "None"
+                    snippet=(output.splitlines() or ["None"])[0] if output else "None"
                 )
             )
             return None
