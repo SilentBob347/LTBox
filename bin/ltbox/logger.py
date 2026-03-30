@@ -24,9 +24,9 @@ class RichConsoleHandler(logging.Handler):
             msg = self.format(record)
             style = self._detect_style(msg, record)
             if style:
-                console.print(msg, style=style, highlight=False)
+                console.print(msg, style=style, highlight=False, markup=False)
             else:
-                console.print(msg, highlight=False)
+                console.print(msg, highlight=False, markup=False)
         except Exception:
             self.handleError(record)
 
