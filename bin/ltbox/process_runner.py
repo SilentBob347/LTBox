@@ -119,7 +119,12 @@ class CommandRunner:
                         logger.info(line.rstrip())
                     output_lines.append(line)
 
-            process.wait(timeout=opts.timeout)
+            try:
+                process.wait(timeout=opts.timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise
             combined_output = "".join(output_lines)
             returncode = process.returncode
             if opts.check and returncode != 0:
