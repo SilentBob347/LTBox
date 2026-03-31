@@ -78,7 +78,7 @@ def prompt_for_update(current_version: str, latest_version: Optional[str]) -> bo
     prompt_msg = get_string("update_avail_prompt").format(
         curr=current_version, new=latest_version
     )
-    choice = input(prompt_msg).strip().lower()
+    choice = ui.prompt(prompt_msg).strip().lower()
 
     if choice == "y":
         ui.echo(get_string("update_open_web"))

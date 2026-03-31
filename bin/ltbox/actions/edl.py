@@ -713,9 +713,9 @@ def _confirm_full_flash_overwrite(skip_reset_edl: bool) -> bool:
 
     width = utils.ui.get_term_width()
     utils.ui.echo("\n" + "=" * width)
-    utils.ui.echo(get_string("act_warn_overwrite_1"))
-    utils.ui.echo(get_string("act_warn_overwrite_2"))
-    utils.ui.echo(get_string("act_warn_overwrite_3"))
+    utils.ui.warn(get_string("act_warn_overwrite_1"))
+    utils.ui.warn(get_string("act_warn_overwrite_2"))
+    utils.ui.warn(get_string("act_warn_overwrite_3"))
     utils.ui.echo("=" * width + "\n")
 
     result = prompt_yes_no(

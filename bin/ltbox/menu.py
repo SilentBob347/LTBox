@@ -169,7 +169,7 @@ class TerminalMenu:
 
         while True:
             self.show()
-            choice = input(prompt_msg).strip().lower()
+            choice = ui.prompt(prompt_msg).strip().lower()
             if choice in self.valid_keys:
                 return choice
 

@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import contextmanager
 from typing import Optional
 
@@ -17,7 +18,24 @@ class RichConsoleHandler(logging.Handler):
     STYLE_MAP = {
         "[+]": "green",
         "[*]": "cyan",
+        "[-]": "yellow",
+        "[Log]": "dim",
     }
+    _BRACKET_TOKEN_PATTERN = re.compile(r"^\[([^\]]+)\]")
+    _NOTICE_KEYWORDS = (
+        "notice",
+        "action required",
+        "skip adb",
+        "알림",
+        "조치 필요",
+        "주의",
+        "需要操作",
+        "注意",
+        "важно",
+        "требуется",
+        "предупреждение",
+    )
+    _STEP_KEYWORDS = ("step", "단계", "步骤", "шаг")
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -38,6 +56,15 @@ class RichConsoleHandler(logging.Handler):
                 return style
         if stripped.startswith("[!]"):
             return "red" if record.levelno >= logging.ERROR else "yellow"
+        token_match = RichConsoleHandler._BRACKET_TOKEN_PATTERN.match(stripped)
+        if token_match:
+            token = token_match.group(1).casefold()
+            if any(keyword in token for keyword in RichConsoleHandler._NOTICE_KEYWORDS):
+                return "yellow"
+            if any(
+                keyword in token for keyword in RichConsoleHandler._STEP_KEYWORDS
+            ) or any(character.isdigit() for character in token):
+                return "cyan"
         if record.levelno >= logging.ERROR:
             return "red"
         return None
