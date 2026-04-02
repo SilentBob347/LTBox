@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ltbox.device import AdbManager, EdlManager
+from ltbox.device import AdbManager, EdlManager, FastbootManager
 
 
 def test_adb_get_model_retry_success():
@@ -224,6 +224,58 @@ def test_edl_flash_rawprogram_deduplicates_erase_spans_across_xmls(tmp_path):
 
     assert len(erase_entries) == 1
     assert erase_entries[0].get("filename") is None
+
+
+def test_edl_write_partition_leaves_success_logging_to_caller(tmp_path):
+    manager = EdlManager()
+    image_path = tmp_path / "init_boot.img"
+    fh_loader = tmp_path / "fh_loader.exe"
+    image_path.write_text("patched", encoding="utf-8")
+    fh_loader.write_text("x", encoding="utf-8")
+
+    with (
+        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch.object(manager, "_run_command"),
+        patch("ltbox.device_edl.ui") as mock_ui,
+    ):
+        manager.write_partition(
+            port="COM5",
+            image_path=image_path,
+            lun="4",
+            start_sector="205962",
+        )
+
+    mock_ui.info.assert_not_called()
+
+
+def test_fastboot_wait_for_device_uses_transient_status():
+    manager = FastbootManager()
+    status_cm = MagicMock()
+    status_cm.__enter__.return_value = None
+    status_cm.__exit__.return_value = False
+    strings = {
+        "device_wait_mode_title": "WAIT {mode}",
+        "device_wait_fastboot_loop": "[*] Waiting for fastboot...",
+        "device_fastboot_connected": "[+] Fastboot connected.",
+        "device_wait_fastboot_cancel": "[!] Cancelled.",
+    }
+
+    with (
+        patch.object(manager, "_usb_port_hint"),
+        patch.object(manager, "check_device", side_effect=[False, True]),
+        patch("ltbox.device_fastboot.get_string", side_effect=strings.__getitem__),
+        patch("ltbox.device_fastboot.ui") as mock_ui,
+        patch("ltbox.device_fastboot.utils.wait_for_condition") as mock_wait,
+    ):
+        mock_ui.status.return_value = status_cm
+        mock_wait.side_effect = (
+            lambda predicate, interval=1.0, timeout=None, on_loop=None: predicate()
+        )
+
+        assert manager.wait_for_device() is True
+
+    mock_ui.status.assert_called_once_with(strings["device_wait_fastboot_loop"])
+    assert mock_wait.call_args.kwargs.get("on_loop") is None
 
 
 def test_edl_flash_rawprogram_skips_pre_erase_and_inline_reset_when_disabled(

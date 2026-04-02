@@ -209,6 +209,11 @@ def _execute_partition_flash_targets(
             lun=flash_target.lun,
             start_sector=flash_target.start_sector,
         )
+        utils.ui.echo(
+            get_string("device_flash_success").format(
+                filename=flash_target.image_path.name
+            )
+        )
 
 
 def _build_full_flash_plan(

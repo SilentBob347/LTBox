@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -100,3 +101,29 @@ def test_flash_selected_partitions_ab_slot_selection(mock_env):
     dev.edl.write_partition.assert_called_once_with(
         port="COM1", image_path=(img_dir / "boot.img"), lun="0", start_sector="200"
     )
+
+
+def test_execute_partition_flash_targets_logs_success_once_per_target():
+    dev = MagicMock()
+    target = edl.PartitionFlashTarget(
+        target_name="init_boot_a",
+        image_path=Path("init_boot.img"),
+        lun="4",
+        start_sector="205962",
+    )
+    messages = {
+        "act_flashing_target": "[*] Flashing {target}",
+        "device_flashing_part": "[*] Writing '{filename}' ({lun}, {start})",
+        "device_flash_success": "[+] Flashed '{filename}'.",
+    }
+
+    with (
+        patch("ltbox.actions.edl.get_string", side_effect=messages.__getitem__),
+        patch("ltbox.actions.edl.utils.ui") as mock_ui,
+    ):
+        edl._execute_partition_flash_targets(dev, "COM5", [target])
+
+    success_message = messages["device_flash_success"].format(filename="init_boot.img")
+    echoed_messages = [call.args[0] for call in mock_ui.echo.call_args_list]
+
+    assert echoed_messages.count(success_message) == 1

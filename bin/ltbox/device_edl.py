@@ -261,7 +261,6 @@ class EdlManager(BaseDeviceManager):
         try:
             with prevent_sleep_during_flash():
                 self._run_command(cmd_fh, cwd=work_dir)
-            ui.info(get_string("device_flash_success").format(filename=filename))
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(get_string("device_err_flash_exec").format(e=e), e)
 

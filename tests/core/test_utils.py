@@ -52,6 +52,27 @@ class TestUtils:
         assert result.combined_output == "line1\nline2\n"
         assert on_output.call_count == 2
 
+    @patch("ltbox.process_runner.logger.info")
+    @patch("ltbox.process_runner.subprocess.Popen")
+    def test_run_cmd_stream_strips_embedded_tool_timestamps(
+        self, mock_popen, mock_logger
+    ):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(
+            ["02:27:05: INFO: Hello\n", " 02:27:05: Requested ID 13\n", "\n"]
+        )
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        result = CommandRunner().run(["echo"], options=RunOptions(stream=True))
+
+        assert result.stdout == "02:27:05: INFO: Hello\n 02:27:05: Requested ID 13\n\n"
+        assert [call.args[0] for call in mock_logger.call_args_list] == [
+            "INFO: Hello",
+            "Requested ID 13",
+            "",
+        ]
+
     @patch("ltbox.process_runner.subprocess.run")
     def test_run_cmd_failure(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(

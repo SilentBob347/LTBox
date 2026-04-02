@@ -139,15 +139,12 @@ class FastbootManager(BaseDeviceManager):
             ui.info(get_string("device_fastboot_connected"))
             return True
 
-        def _loop_msg() -> None:
-            ui.info(get_string("device_wait_fastboot_loop"))
-
         try:
-            utils.wait_for_condition(
-                lambda: self.check_device(silent=True),
-                interval=2.0,
-                on_loop=_loop_msg,
-            )
+            with ui.status(get_string("device_wait_fastboot_loop")):
+                utils.wait_for_condition(
+                    lambda: self.check_device(silent=True),
+                    interval=2.0,
+                )
             ui.info(get_string("device_fastboot_connected"))
             return True
         except KeyboardInterrupt:

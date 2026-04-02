@@ -1,4 +1,5 @@
 import re
+from contextlib import contextmanager
 from typing import List
 
 from .logger import console, get_logger
@@ -56,6 +57,16 @@ class ConsoleUI:
         ):
             prompt_message += " "
         return input(prompt_message)
+
+    @contextmanager
+    def status(self, message: str, *, spinner: str = "dots"):
+        status_message = _normalize_message(message)
+        with console.status(
+            status_message,
+            spinner=spinner,
+            spinner_style="cyan",
+        ):
+            yield
 
     def clear(self) -> None:
         console.clear()

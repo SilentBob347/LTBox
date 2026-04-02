@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,14 @@ from typing import Callable, Optional, TypedDict, Union
 from .logger import get_logger
 
 logger = get_logger()
+_TOOL_TIMESTAMP_PREFIX = re.compile(r"^\s*\d{2}:\d{2}:\d{2}:\s*")
+
+
+def _normalize_stream_log_line(line: str) -> str:
+    rendered = line.rstrip()
+    if not rendered:
+        return ""
+    return _TOOL_TIMESTAMP_PREFIX.sub("", rendered, count=1)
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,7 @@ class CommandRunner:
                     if on_output is not None:
                         on_output(line)
                     else:
-                        logger.info(line.rstrip())
+                        logger.info(_normalize_stream_log_line(line))
                     output_lines.append(line)
 
             try:
