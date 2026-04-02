@@ -304,6 +304,40 @@ def test_patch_chained_image_rollback_resigns_signed_image(tmp_path):
     )
 
 
+def test_process_boot_image_avb_skips_direct_erase_footer_call(tmp_path):
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    (backup_dir / "boot.bak.img").write_bytes(b"boot-bak")
+    target = tmp_path / "boot.img"
+    target.write_bytes(b"boot-target")
+    key_file = tmp_path / "bootkey.pem"
+    key_file.write_text("key", encoding="utf-8")
+
+    boot_info = {
+        "partition_size": "4096",
+        "name": "boot",
+        "rollback": "20",
+        "salt": "abcd",
+        "algorithm": "SHA256_RSA4096",
+        "pubkey_sha1": "boot-key",
+    }
+
+    with (
+        patch("ltbox.patch.avb.extract_image_avb_info", return_value=boot_info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"boot-key": key_file}),
+        patch("ltbox.patch.avb._apply_avb_integrity_footer") as apply_footer,
+        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+    ):
+        from ltbox.patch.avb import process_boot_image_avb
+
+        process_boot_image_avb(target, gki=True, backup_dir=backup_dir)
+
+    apply_footer.assert_called_once_with(
+        image_path=target, image_info=boot_info, key_file=key_file
+    )
+    mock_avbtool.assert_not_called()
+
+
 def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):
     strategy = GkiRootStrategy()
     patched_boot = tmp_path / "boot_patched.img"

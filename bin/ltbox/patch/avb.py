@@ -314,18 +314,6 @@ def process_boot_image_avb(
         boot_bak_img,
     )
 
-    try:
-        utils.ui.info(
-            get_string("img_avb_erase_footer").format(name=image_to_process.name)
-        )
-        avbtool = utils.AvbToolWrapper()
-        avbtool.run(
-            "erase_footer", "--image", image_to_process, capture=True, check=False
-        )
-        utils.ui.info(get_string("img_avb_erase_footer_ok"))
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        utils.ui.info(get_string("img_avb_erase_footer_fail").format(e=e))
-
     key_file = None
     if gki:
         boot_pubkey = boot_info.get("pubkey_sha1")
