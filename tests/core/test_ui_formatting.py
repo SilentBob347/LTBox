@@ -2,38 +2,37 @@ from ltbox.logger import RichConsoleHandler
 from ltbox.ui import _normalize_message
 
 
-def test_normalize_message_trims_indent_and_reflows_wrapped_lines():
+def test_normalize_message_preserves_indentation_for_ascii_art_and_breadcrumbs():
     message = (
-        "\n  [NOTICE] You must manually flash the generated\n"
-        "       images to your device using Fastboot.\n"
+        "\n  Main > Root > APatch\n"
+        "      _             (done)\n"
+        "     | |\n"
+        "   __| | ___  _ __   ___\n"
     )
 
     normalized = _normalize_message(message)
 
     assert (
-        normalized
-        == "\n[NOTICE] You must manually flash the generated images to your device using Fastboot.\n"
+        normalized == "\n  Main > Root > APatch\n"
+        "      _             (done)\n"
+        "     | |\n"
+        "   __| | ___  _ __   ___\n"
     )
 
 
-def test_normalize_message_keeps_header_blocks_but_removes_padding():
+def test_normalize_message_collapses_extra_space_after_status_prefix():
     message = (
-        "[!] No backup found.\n\n"
-        "  [LKM Unroot]\n"
-        "  Place init_boot.img + vbmeta.img\n"
-        "  in 'lkm'.\n\n"
-        "  [GKI Unroot]\n"
-        "  Place boot.img + vbmeta.img in 'gki'."
+        "\n[*]  매니저 APK 다운로드 중...\n"
+        "[+]  매니저 APK 다운로드됨.\n"
+        "  [!]  수동 확인 필요\n"
     )
 
     normalized = _normalize_message(message)
 
     assert normalized == (
-        "[!] No backup found.\n\n"
-        "[LKM Unroot]\n"
-        "Place init_boot.img + vbmeta.img in 'lkm'.\n\n"
-        "[GKI Unroot]\n"
-        "Place boot.img + vbmeta.img in 'gki'."
+        "\n[*] 매니저 APK 다운로드 중...\n"
+        "[+] 매니저 APK 다운로드됨.\n"
+        "  [!] 수동 확인 필요\n"
     )
 
 
