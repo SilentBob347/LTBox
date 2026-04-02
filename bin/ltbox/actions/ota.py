@@ -1,14 +1,17 @@
+import os
+import shlex
 import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import List, Set
+from typing import List, Optional, Set
 
 from .. import constants as const
-from .. import downloader, partition, utils
+from .. import downloader, ota_super, partition, utils
 from ..errors import MissingFileError, ToolError, UserCancelError
 from ..i18n import get_string
 from ..process_runner import CommandRunner, RunOptions
+from ..xml_catalog import PartitionGroup, XmlCatalog
 
 
 def _payload_dumper_cmd(args: List[str]) -> List[str]:
@@ -159,21 +162,19 @@ def _prompt_partition_selection(labels: List[str]) -> List[str]:
             selected.add(label)
 
 
-def _build_partition_file_map(partitions: List[str]) -> dict[str, Path]:
+def _build_partition_file_map(
+    partitions: List[str], catalog: XmlCatalog
+) -> dict[str, Path]:
     """Map partition names to actual filenames via rawprogram*.xml lookup.
 
     The XML ``<program>`` entries use ``label`` for the partition name (with _a/_b
     suffix for A/B slots) and ``filename`` for the real file on disk.
     """
-    xml_paths = partition.scan_and_decrypt_xmls()
     file_map: dict[str, Path] = {}
     for name in partitions:
-        # Try label as-is, then with _a suffix (A/B slot — the _a entry has the filename)
-        params = partition.get_partition_params(name, xml_paths)
-        if not params or not params.get("filename"):
-            params = partition.get_partition_params(f"{name}_a", xml_paths)
-        if params and params.get("filename"):
-            path = const.IMAGE_DIR / params["filename"]
+        record = catalog.find_partition(name) or catalog.find_partition(f"{name}_a")
+        if record and record.filename:
+            path = const.IMAGE_DIR / record.filename
             if path.exists():
                 file_map[name] = path
     return file_map
@@ -187,6 +188,46 @@ def _verify_source_images(partitions: List[str], file_map: dict[str, Path]) -> N
                 files=", ".join(missing), dir=const.IMAGE_DIR.name
             )
         )
+
+
+def _load_xml_catalog() -> tuple[list[Path], XmlCatalog]:
+    xml_paths = partition.scan_and_decrypt_xmls()
+    if not xml_paths:
+        raise MissingFileError(get_string("act_err_no_xml_dump"))
+    return xml_paths, XmlCatalog.from_paths(xml_paths, on_error=utils.ui.error)
+
+
+def _find_super_group(catalog: XmlCatalog) -> Optional[PartitionGroup]:
+    return catalog.group_by_base_label(with_files_only=True).get("super")
+
+
+def _resolve_dynamic_partition_sources(
+    selected: List[str],
+    file_map: dict[str, Path],
+    super_group: Optional[PartitionGroup],
+    working_dir: Path,
+) -> tuple[Optional[ota_super.SuperLayout], Optional[Path]]:
+    missing = [name for name in selected if name not in file_map]
+    if not missing or super_group is None:
+        _verify_source_images(selected, file_map)
+        return None, None
+
+    layout = ota_super.parse_super_layout(super_group.none, const.IMAGE_DIR)
+    dynamic_targets = [
+        name for name in missing if name in layout.dynamic_partition_names
+    ]
+
+    dynamic_dir: Optional[Path] = None
+    if dynamic_targets:
+        dynamic_dir = working_dir / "dynamic_old"
+        ota_super.extract_partition_images(layout, dynamic_dir)
+        for name in dynamic_targets:
+            image_path = dynamic_dir / f"{name}.img"
+            if image_path.exists():
+                file_map[name] = image_path
+
+    _verify_source_images(selected, file_map)
+    return layout, dynamic_dir
 
 
 def _stage_old_images(
@@ -250,6 +291,71 @@ def _run_differential_patch(
     utils.ui.echo(get_string("ota_patch_complete").format(dir=output_dir.name))
 
 
+def _resolve_lpmake_command() -> list[str]:
+    configured_cmd = os.environ.get("LTBOX_LPMAKE_CMD", "").strip()
+    if configured_cmd:
+        return shlex.split(configured_cmd, posix=False)
+
+    configured_path = os.environ.get("LTBOX_LPMAKE", "").strip()
+    if configured_path:
+        return [configured_path]
+
+    for candidate in ("lpmake.exe", "lpmake"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return [resolved]
+
+    raise ToolError("lpmake not found. Set LTBOX_LPMAKE or LTBOX_LPMAKE_CMD.")
+
+
+def _copy_flash_xmls(output_dir: Path, rawprogram_paths: List[Path]) -> None:
+    patch_paths: list[Path] = []
+    seen_patch_names: set[str] = set()
+    candidate_dirs = {const.IMAGE_DIR, *[path.parent for path in rawprogram_paths]}
+    for candidate_dir in candidate_dirs:
+        for patch_path in sorted(candidate_dir.glob("patch*.xml")):
+            if patch_path.name in seen_patch_names:
+                continue
+            seen_patch_names.add(patch_path.name)
+            patch_paths.append(patch_path)
+
+    ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
+    ota_super.create_keep_data_ota_xml(output_dir)
+
+
+def _rebuild_dynamic_super(
+    layout: ota_super.SuperLayout,
+    extracted_dynamic_dir: Path,
+) -> None:
+    dynamic_build_dir = const.OTA_WORKING_DIR / "dynamic_build"
+    if dynamic_build_dir.exists():
+        shutil.rmtree(dynamic_build_dir)
+    shutil.copytree(extracted_dynamic_dir, dynamic_build_dir)
+
+    for partition_name in sorted(layout.dynamic_partition_names):
+        patched_image = const.IMAGE_NEW_DIR / f"{partition_name}.img"
+        if patched_image.exists():
+            shutil.copy2(patched_image, dynamic_build_dir / patched_image.name)
+
+    rebuilt_super = const.OTA_WORKING_DIR / "super_rebuilt.img"
+    lpmake_parts = _resolve_lpmake_command()
+    lpmake_command = [
+        *lpmake_parts[:-1],
+        *ota_super.build_lpmake_command(
+            layout,
+            dynamic_build_dir,
+            rebuilt_super,
+            lpmake_parts[-1],
+        ),
+    ]
+
+    CommandRunner().run(
+        lpmake_command,
+        options=RunOptions(stream=True, check=True),
+    )
+    ota_super.split_rebuilt_super(layout, rebuilt_super, const.IMAGE_NEW_DIR)
+
+
 def apply_incremental_ota() -> None:
     utils.ui.echo(get_string("ota_start"))
 
@@ -265,6 +371,7 @@ def apply_incremental_ota() -> None:
 
     # Ensure payload_dumper is available
     downloader.ensure_payload_dumper()
+    rawprogram_paths, catalog = _load_xml_catalog()
 
     # Extract zip and find payload.bin
     with utils.temporary_workspace(const.OTA_WORKING_DIR):
@@ -288,8 +395,13 @@ def apply_incremental_ota() -> None:
         )
 
         # Resolve actual filenames from rawprogram XMLs
-        file_map = _build_partition_file_map(selected)
-        _verify_source_images(selected, file_map)
+        file_map = _build_partition_file_map(selected, catalog)
+        super_layout, extracted_dynamic_dir = _resolve_dynamic_partition_sources(
+            selected,
+            file_map,
+            _find_super_group(catalog),
+            const.OTA_WORKING_DIR,
+        )
 
         # Stage old images as .img files for payload_dumper
         old_staging_dir = const.OTA_DIR / "image_old"
@@ -300,6 +412,9 @@ def apply_incremental_ota() -> None:
             _run_differential_patch(
                 payload_bin, selected, const.IMAGE_NEW_DIR, old_staging_dir
             )
+            _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths)
+            if super_layout is not None and extracted_dynamic_dir is not None:
+                _rebuild_dynamic_super(super_layout, extracted_dynamic_dir)
         finally:
             if old_staging_dir.exists():
                 shutil.rmtree(old_staging_dir)

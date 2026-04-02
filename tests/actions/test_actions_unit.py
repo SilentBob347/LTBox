@@ -47,6 +47,25 @@ def test_xml_select(mock_env):
     assert "patch0.xml" in p_names
 
 
+def test_xml_select_prefers_ota_keep_data_xml(mock_env):
+    img_dir = mock_env["IMAGE_DIR"]
+    files = [
+        "rawprogram1.xml",
+        "rawprogram_save_persist_unsparse0.xml",
+        "rawprogram_save_persist_ota_unsparse0.xml",
+        "patch0.xml",
+    ]
+    create_xmls(img_dir, files)
+
+    with patch("ltbox.actions.edl.utils.ui"):
+        raw, _patch_files = edl._select_flash_xmls(skip_dp=False)
+
+    r_names = [p.name for p in raw]
+
+    assert "rawprogram_save_persist_ota_unsparse0.xml" in r_names
+    assert "rawprogram_save_persist_unsparse0.xml" not in r_names
+
+
 def test_flash_args(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     files = ["rawprogram1.xml", "rawprogram_unsparse0.xml", "patch0.xml"]
@@ -503,6 +522,16 @@ def test_advanced_menu_option_13_rebuilds_vbmeta_and_14_is_recovery():
 
     assert options["13"].action == "rebuild_vbmeta"
     assert options["14"].action == "sign_and_flash_recovery"
+
+
+def test_main_menu_option_3_is_incremental_ota():
+    menu_items = menu_data.get_main_menu_data("ROW")
+    options = {item.key: item for item in menu_items if item.item_type == "option"}
+
+    assert options["3"].action == "apply_incremental_ota"
+    assert options["4"].action == "disable_ota"
+    assert options["5"].action == "reenable_ota"
+    assert options["6"].action == "rescue_ota"
 
 
 def test_rebuild_vbmeta_requires_vbmeta_and_one_image(tmp_path):

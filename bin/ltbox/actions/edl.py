@@ -612,6 +612,7 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
 
     persist_write_xml = const.IMAGE_DIR / "rawprogram_write_persist_unsparse0.xml"
     persist_save_xml = const.IMAGE_DIR / "rawprogram_save_persist_unsparse0.xml"
+    persist_save_ota_xml = const.IMAGE_DIR / "rawprogram_save_persist_ota_unsparse0.xml"
     raw_unsparse0 = const.IMAGE_DIR / "rawprogram_unsparse0.xml"
     raw_unsparse0_half = const.IMAGE_DIR / "rawprogram_unsparse0-half.xml"
 
@@ -627,6 +628,7 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
         not in [
             persist_write_xml.name,
             persist_save_xml.name,
+            persist_save_ota_xml.name,
             raw_unsparse0.name,
             raw_unsparse0_half.name,
         ]
@@ -635,6 +637,9 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
     if persist_write_xml.exists() and has_patched_persist and not skip_dp:
         utils.ui.echo(get_string("act_use_patched_persist"))
         raw_xmls.append(persist_write_xml)
+    elif persist_save_ota_xml.exists():
+        utils.ui.echo(get_string("act_skip_persist_flash"))
+        raw_xmls.append(persist_save_ota_xml)
     elif persist_save_xml.exists():
         utils.ui.echo(get_string("act_skip_persist_flash"))
         raw_xmls.append(persist_save_xml)
