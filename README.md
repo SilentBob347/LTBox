@@ -22,7 +22,8 @@ Because of this vulnerability, the device's bootloader trusts and boots any imag
 
 ### Target Models
 
-* Lenovo Legion Y700 2nd, 3rd, 4th Gen (aka Legion Tab)
+* Lenovo Legion Tab Y700 2nd, 3rd Gen
+* Lenovo Legion Tab Y700 4th Gen (ZUXOS 1.5.10.138 and below)
 * Lenovo Yoga Pad Pro AI (aka Yoga Tab Plus AI)
 * Lenovo Xiaoxin Pad Pro GT (aka Yoga Tab 11.1 AI)
 * *...Other recent Lenovo devices (released between 2023 and before 2026 with Qualcomm chipsets) may also be vulnerable.*

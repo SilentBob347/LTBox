@@ -22,7 +22,8 @@
 
 ### 目标型号
 
-* 联想拯救者 Y700 2nd, 3rd, 4th Gen (又名 Legion Tab)
+* 联想拯救者 Y700 二代、三代
+* 联想拯救者 Y700 四代（截至 ZUXOS 1.5.10.138）
 * 联想 Yoga Pad Pro AI (又名 Yoga Tab Plus AI)
 * 联想小新 Pad Pro GT (又名 Yoga Tab 11.1 AI)
 * *...其他在 2023 年至 2026 年之前发布、采用高通芯片组的联想设备也可能存在此漏洞。*

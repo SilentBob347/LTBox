@@ -22,7 +22,8 @@
 
 ### 적용 대상 모델
 
-* Lenovo Legion Y700 2세대, 3세대, 4세대 (Legion Tab)
+* Lenovo Legion Tab Y700 2세대, 3세대
+* Lenovo Legion Tab Y700 4세대 (ZUXOS 1.5.10.138 이하)
 * Lenovo Yoga Pad Pro AI (Yoga Tab Plus AI)
 * Lenovo Xiaoxin Pad Pro GT (Yoga Tab 11.1 AI)
 * *...그 외 2023년부터 2026년 전까지 출시된 퀄컴 칩셋 탑재 레노버 기기들도 이 취약점을 가지고 있을 수 있습니다.*
