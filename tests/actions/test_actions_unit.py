@@ -9,7 +9,7 @@ from ltbox.actions import edl
 from ltbox.actions import region
 from ltbox.actions import xml as xml_action
 from ltbox.actions.root.strategies import GkiRootStrategy
-from ltbox.patch.avb import vbmeta_has_chain_partition
+from ltbox.patch.avb import patch_vbmeta_image_rollback, vbmeta_has_chain_partition
 
 
 def create_xmls(img_dir, names):
@@ -225,6 +225,41 @@ def test_vbmeta_has_chain_partition_parses_descriptor(tmp_path):
 
         assert vbmeta_has_chain_partition(vbmeta_img, "boot") is True
         assert vbmeta_has_chain_partition(vbmeta_img, "init_boot") is False
+
+
+def test_patch_vbmeta_image_rollback_resigns_copied_image(tmp_path):
+    source = tmp_path / "vbmeta_system.img"
+    source.write_bytes(b"vbmeta-data")
+    patched = tmp_path / "vbmeta_system_patched.img"
+    key_file = tmp_path / "testkey.pem"
+    key_file.write_text("key", encoding="utf-8")
+
+    info = {
+        "algorithm": "SHA256_RSA2048",
+        "pubkey_sha1": "known-key",
+        "rollback": "10",
+    }
+
+    with (
+        patch("ltbox.patch.avb.extract_image_avb_info", return_value=info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"known-key": key_file}),
+        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+    ):
+        patch_vbmeta_image_rollback("vbmeta_system.img", 11, source, patched)
+
+    assert patched.exists()
+    assert patched.read_bytes() == source.read_bytes()
+    mock_avbtool.return_value.run.assert_called_once_with(
+        "resign_image",
+        "--image",
+        patched,
+        "--key",
+        key_file,
+        "--algorithm",
+        "SHA256_RSA2048",
+        "--rollback_index",
+        11,
+    )
 
 
 def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):

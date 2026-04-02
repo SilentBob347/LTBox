@@ -182,6 +182,27 @@ def _apply_avb_integrity_footer(
     utils.ui.info(get_string("img_footer_success").format(name=image_path.name))
 
 
+def _resign_avb_image(
+    image_path: Path,
+    key_file: Path,
+    algorithm: str,
+    rollback_index: Optional[int] = None,
+) -> None:
+    avbtool = utils.AvbToolWrapper()
+    cmd: List[Any] = [
+        "resign_image",
+        "--image",
+        image_path,
+        "--key",
+        key_file,
+        "--algorithm",
+        algorithm,
+    ]
+    if rollback_index is not None:
+        cmd.extend(["--rollback_index", rollback_index])
+    avbtool.run(*cmd)
+
+
 def patch_chained_image_rollback(
     image_name: str,
     current_rb_index: int,
@@ -246,24 +267,13 @@ def patch_vbmeta_image_rollback(
                 )
             )
 
-        avbtool = utils.AvbToolWrapper()
-        remake_cmd = [
-            "make_vbmeta_image",
-            "--output",
-            patched_image_path,
-            "--key",
-            key_file,
-            "--algorithm",
-            info["algorithm"],
-            "--rollback_index",
-            current_rb_index,
-            "--flags",
-            info.get("flags", "0"),
-            "--include_descriptors_from_image",
-            new_image_path,
-        ]
-
-        avbtool.run(*remake_cmd)
+        shutil.copy(new_image_path, patched_image_path)
+        _resign_avb_image(
+            image_path=patched_image_path,
+            key_file=key_file,
+            algorithm=info["algorithm"],
+            rollback_index=current_rb_index,
+        )
         utils.ui.info(get_string("img_patch_success").format(name=image_name))
 
     except (KeyError, subprocess.CalledProcessError, FileNotFoundError) as e:
