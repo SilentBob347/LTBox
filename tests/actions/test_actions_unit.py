@@ -338,6 +338,102 @@ def test_process_boot_image_avb_skips_direct_erase_footer_call(tmp_path):
     mock_avbtool.assert_not_called()
 
 
+def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
+    output_path = tmp_path / "vbmeta.out.img"
+    original_vbmeta = tmp_path / "vbmeta.img"
+    original_vbmeta.write_bytes(b"vbmeta")
+    partition_image = tmp_path / "vendor_boot.img"
+    partition_image.write_bytes(b"vendor_boot")
+    key_file = tmp_path / "vbmeta.pem"
+    key_file.write_text("key", encoding="utf-8")
+
+    vbmeta_info = {
+        "pubkey_sha1": "vbmeta-key",
+        "algorithm": "SHA256_RSA4096",
+        "rollback": "0",
+        "flags": "0",
+    }
+
+    with (
+        patch("ltbox.patch.avb.extract_image_avb_info", return_value=vbmeta_info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"vbmeta-key": key_file}),
+        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+    ):
+        from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
+
+        rebuild_vbmeta_with_chained_images(
+            output_path, original_vbmeta, [partition_image]
+        )
+
+    mock_avbtool.return_value.run.assert_called_once_with(
+        "update_partition_descriptor",
+        "--image",
+        original_vbmeta,
+        "--partition_image",
+        partition_image,
+        "--output",
+        output_path,
+        "--key",
+        key_file,
+        "--algorithm",
+        "SHA256_RSA4096",
+        "--rollback_index",
+        "0",
+        "--flags",
+        "0",
+    )
+
+
+def test_rebuild_vbmeta_with_multiple_images_falls_back_to_make_vbmeta(tmp_path):
+    output_path = tmp_path / "vbmeta.out.img"
+    original_vbmeta = tmp_path / "vbmeta.img"
+    original_vbmeta.write_bytes(b"vbmeta")
+    img1 = tmp_path / "vendor_boot.img"
+    img2 = tmp_path / "dtbo.img"
+    img1.write_bytes(b"vendor_boot")
+    img2.write_bytes(b"dtbo")
+    key_file = tmp_path / "vbmeta.pem"
+    key_file.write_text("key", encoding="utf-8")
+
+    vbmeta_info = {
+        "pubkey_sha1": "vbmeta-key",
+        "algorithm": "SHA256_RSA4096",
+        "rollback": "0",
+        "flags": "0",
+    }
+
+    with (
+        patch("ltbox.patch.avb.extract_image_avb_info", return_value=vbmeta_info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"vbmeta-key": key_file}),
+        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+    ):
+        from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
+
+        rebuild_vbmeta_with_chained_images(output_path, original_vbmeta, [img1, img2])
+
+    mock_avbtool.return_value.run.assert_called_once_with(
+        "make_vbmeta_image",
+        "--output",
+        output_path,
+        "--key",
+        key_file,
+        "--algorithm",
+        "SHA256_RSA4096",
+        "--padding_size",
+        "8192",
+        "--flags",
+        "0",
+        "--rollback_index",
+        "0",
+        "--include_descriptors_from_image",
+        original_vbmeta,
+        "--include_descriptors_from_image",
+        img1,
+        "--include_descriptors_from_image",
+        img2,
+    )
+
+
 def test_gki_finalize_patch_rebuilds_vbmeta_when_boot_chain_missing(tmp_path):
     strategy = GkiRootStrategy()
     patched_boot = tmp_path / "boot_patched.img"
