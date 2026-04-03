@@ -126,6 +126,12 @@ def _check_backup_critical(ctx: TaskContext) -> None:
     )
     if backup_choice.force_dump:
         ctx.force_dp_workflow = True
+        ctx.skip_dp_flash = False
+        return
+    if backup_choice.skip_all:
+        ctx.skip_dp_workflow = True
+        ctx.skip_dp_flash = True
+        ctx.use_backup_dp = False
         return
     if backup_choice.selected_dir is None:
         return
@@ -141,8 +147,16 @@ def _check_backup_critical(ctx: TaskContext) -> None:
     ctx.backup_dir_name = chosen.name
 
 
+def _should_skip_dp_workflow(ctx: TaskContext) -> bool:
+    return (
+        ctx.use_backup_dp
+        or ctx.skip_dp_flash
+        or (ctx.wipe == 0 and not ctx.force_dp_workflow)
+    )
+
+
 def _dump_images(ctx: TaskContext) -> None:
-    ctx.skip_dp_workflow = ctx.wipe == 0 and not ctx.force_dp_workflow
+    ctx.skip_dp_workflow = _should_skip_dp_workflow(ctx)
 
     suffix = ctx.active_slot_suffix if ctx.active_slot_suffix else ""
     ctx.boot_target = f"boot{suffix}"
@@ -212,7 +226,7 @@ def _check_and_patch_arb(ctx: TaskContext) -> None:
 
 
 def _flash_images(ctx: TaskContext) -> None:
-    skip_dp = ctx.skip_dp_workflow and not ctx.use_backup_dp
+    skip_dp = ctx.skip_dp_flash or (ctx.skip_dp_workflow and not ctx.use_backup_dp)
     actions.flash_full_firmware(
         dev=ctx.dev,
         skip_reset_edl=True,

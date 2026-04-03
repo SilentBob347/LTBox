@@ -764,6 +764,7 @@
   "wf_arb_tb320fc_fallback": "[*] 저장된 롤백 인덱스 없이 TB320FC 감지됨. 파티션 덤프로 안티 롤백 감지를 수행합니다.",
   "wf_backup_critical_dump": "기기에서 추출 후 패치",
   "wf_backup_critical_found": "[*] backup_critical 폴더가 존재합니다. 저장된 파일을 사용할까요, 아니면 기기에서 추출할까요?",
+  "wf_backup_critical_skip": "건너뛰기",
   "wf_backup_notice": "  '{dir}' 폴더에 기기 고유 정보가 담긴\n  원본 devinfo/persist.img가 저장되었습니다.\n  여러 기기 작업 시 파일이 섞이지 않게\n  일련번호 등으로 구분하여 보관하세요.",
   "wf_err_fastboot_model": "치명적인 오류: Fastboot를 통해 기기 모델을 확인하지 못했습니다. 중단합니다.",
   "wf_err_get_model": "치명적인 오류: 기기 모델 확인 오류: {e}",

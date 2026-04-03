@@ -12,6 +12,7 @@ from .ui import ui
 class BackupChoice:
     force_dump: bool = False
     selected_dir: Path | None = None
+    skip_all: bool = False
 
 
 class WorkflowPrompts(Protocol):
@@ -34,13 +35,15 @@ class UiWorkflowPrompts:
         for index, folder in enumerate(backup_dirs, 1):
             ui.echo(f"  {index}. {format_dp_folder_label(folder)}")
         dump_option = len(backup_dirs) + 1
+        skip_option = dump_option + 1
         ui.echo(f"  {dump_option}. {get_string('wf_backup_critical_dump')}")
+        ui.echo(f"  {skip_option}. {get_string('wf_backup_critical_skip')}")
         ui.echo("=" * width)
         ui.echo("")
 
         selected_index = prompt_index_selection(
             get_string("prompt_select"),
-            max_index=dump_option,
+            max_index=skip_option,
             error_message=get_string("err_invalid_selection"),
             input_func=ui.prompt,
             error_func=ui.error,
@@ -49,6 +52,8 @@ class UiWorkflowPrompts:
         ui.clear()
         if selected_index == dump_option:
             return BackupChoice(force_dump=True)
+        if selected_index == skip_option:
+            return BackupChoice(skip_all=True)
         return BackupChoice(selected_dir=backup_dirs[selected_index - 1])
 
     def confirm(self, message: str) -> bool:

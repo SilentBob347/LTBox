@@ -8,7 +8,8 @@ from ltbox import workflow
 from ltbox.actions.arb import ArbResult, ArbStatus
 from ltbox.context import TaskContext
 from ltbox.errors import LTBoxError, UserCancelError
-from ltbox.workflow_prompts import BackupChoice
+from ltbox.i18n import get_string
+from ltbox.workflow_prompts import BackupChoice, UiWorkflowPrompts
 from tests.helpers import make_device_mock
 
 
@@ -174,6 +175,102 @@ def test_check_backup_critical_uses_injected_prompt_service(tmp_path):
     assert ctx.use_backup_dp is True
     assert ctx.backup_dir_name == backup_dir.name
     assert (output_dp_dir / "devinfo.img").read_bytes() == b"devinfo"
+
+
+def test_check_backup_critical_skip_option_sets_skip_dp_flags(tmp_path):
+    mock_dev = make_device_mock()
+    backup_dir = tmp_path / "backup_critical_20260101"
+    backup_dir.mkdir()
+    (backup_dir / "devinfo.img").write_bytes(b"devinfo")
+
+    class PromptStub:
+        def choose_backup_source(self, backup_dirs):
+            assert list(backup_dirs) == [backup_dir]
+            return BackupChoice(skip_all=True)
+
+        def confirm(self, message: str) -> bool:
+            raise AssertionError(f"confirm should not be called: {message}")
+
+    ctx = TaskContext(
+        dev=mock_dev,
+        modify_region_code=False,
+        on_log=lambda _message: None,
+        prompts=PromptStub(),
+    )
+
+    with patch.multiple("ltbox.workflow.const", BASE_DIR=tmp_path):
+        workflow._check_backup_critical(ctx)
+
+    assert ctx.skip_dp_workflow is True
+    assert ctx.skip_dp_flash is True
+    assert ctx.use_backup_dp is False
+
+
+def test_dump_images_skips_default_dp_targets_when_backup_selected():
+    mock_dev = make_device_mock()
+    ctx = TaskContext(
+        dev=mock_dev,
+        wipe=1,
+        modify_region_code=False,
+        use_backup_dp=True,
+        on_log=lambda _message: None,
+    )
+
+    with patch("ltbox.workflow.actions") as mock_actions:
+        workflow._dump_images(ctx)
+
+    assert ctx.skip_dp_workflow is True
+    mock_actions.dump_partitions.assert_not_called()
+
+
+def test_flash_images_uses_backup_dp_even_when_dp_workflow_is_skipped():
+    mock_dev = make_device_mock()
+    ctx = TaskContext(
+        dev=mock_dev,
+        wipe=1,
+        use_backup_dp=True,
+        skip_dp_workflow=True,
+        on_log=lambda _message: None,
+    )
+
+    with patch("ltbox.workflow.actions") as mock_actions:
+        workflow._flash_images(ctx)
+
+    assert mock_actions.flash_full_firmware.call_args.kwargs["skip_dp"] is False
+
+
+def test_flash_images_skips_dp_when_user_explicitly_skips_it():
+    mock_dev = make_device_mock()
+    ctx = TaskContext(
+        dev=mock_dev,
+        wipe=1,
+        skip_dp_workflow=True,
+        skip_dp_flash=True,
+        on_log=lambda _message: None,
+    )
+
+    with patch("ltbox.workflow.actions") as mock_actions:
+        workflow._flash_images(ctx)
+
+    assert mock_actions.flash_full_firmware.call_args.kwargs["skip_dp"] is True
+
+
+def test_ui_backup_prompt_returns_skip_choice(tmp_path):
+    backup_dir = tmp_path / "backup_critical_20260101"
+    backup_dir.mkdir()
+
+    with (
+        patch("ltbox.workflow_prompts.ui") as mock_ui,
+        patch(
+            "ltbox.workflow_prompts.prompt_index_selection", return_value=3
+        ) as prompt,
+    ):
+        mock_ui.get_term_width.return_value = 80
+        choice = UiWorkflowPrompts().choose_backup_source([backup_dir])
+
+    assert choice == BackupChoice(skip_all=True)
+    assert prompt.call_args.kwargs["max_index"] == 3
+    mock_ui.echo.assert_any_call(f"  3. {get_string('wf_backup_critical_skip')}")
 
 
 def test_patch_all_keyboard_interrupt_is_mapped_to_user_cancel():

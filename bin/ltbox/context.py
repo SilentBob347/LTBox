@@ -25,6 +25,7 @@ class TaskContext:
     arb_patched: bool = False
     use_backup_dp: bool = False
     force_dp_workflow: bool = False
+    skip_dp_flash: bool = False
 
     on_log: Callable[[str], None] = field(default_factory=lambda: lambda s: print(s))
     prompts: WorkflowPrompts | None = None
