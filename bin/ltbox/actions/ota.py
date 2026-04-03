@@ -2,7 +2,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .. import constants as const
 from .. import ota_super, partition, update_engine_payload, utils
@@ -41,18 +41,29 @@ def _find_zip_files() -> List[Path]:
     return sorted(const.OTA_DIR.glob("*.zip"))
 
 
+def _run_cleared_prompt(prompt_func: Callable[[], object]) -> object:
+    utils.ui.clear()
+    try:
+        return prompt_func()
+    finally:
+        utils.ui.clear()
+
+
 def _select_zip_file(zip_files: List[Path]) -> Path:
     if len(zip_files) == 1:
         utils.ui.echo(get_string("ota_zip_found").format(name=zip_files[0].name))
         return zip_files[0]
 
-    utils.ui.echo(get_string("ota_multiple_zips"))
-    for i, zf in enumerate(zip_files, 1):
-        utils.ui.echo(f"   {i}. {zf.name}")
-    utils.ui.echo("")
-
     while True:
-        choice = utils.ui.prompt(get_string("prompt_select")).strip()
+
+        def _prompt_once() -> str:
+            utils.ui.echo(get_string("ota_multiple_zips"))
+            for i, zf in enumerate(zip_files, 1):
+                utils.ui.echo(f"   {i}. {zf.name}")
+            utils.ui.echo("")
+            return utils.ui.prompt(get_string("prompt_select")).strip()
+
+        choice = str(_run_cleared_prompt(_prompt_once))
         try:
             idx = int(choice)
             if 1 <= idx <= len(zip_files):
@@ -299,20 +310,23 @@ def _confirm_ota_output_resign(candidate_paths: dict[str, Path]) -> bool:
     if not candidate_paths:
         return False
 
-    utils.ui.echo("")
-    utils.ui.echo(
-        get_string("ota_resign_ready").format(
-            images=", ".join(path.name for path in candidate_paths.values())
+    def _prompt_once() -> bool:
+        utils.ui.echo("")
+        utils.ui.echo(
+            get_string("ota_resign_ready").format(
+                images=", ".join(path.name for path in candidate_paths.values())
+            )
         )
-    )
-    return bool(
-        prompt_yes_no(
-            get_string("ota_resign_prompt"),
-            input_func=utils.ui.prompt,
-            error_message=get_string("act_invalid_selection"),
-            error_func=utils.ui.error,
+        return bool(
+            prompt_yes_no(
+                get_string("ota_resign_prompt"),
+                input_func=utils.ui.prompt,
+                error_message=get_string("act_invalid_selection"),
+                error_func=utils.ui.error,
+            )
         )
-    )
+
+    return bool(_run_cleared_prompt(_prompt_once))
 
 
 def _resolve_ota_testkey_path(key_name: str) -> Path:
@@ -418,17 +432,20 @@ def _resign_incremental_ota_outputs(candidate_paths: dict[str, Path]) -> None:
 
 
 def _confirm_dynamic_super_rebuild() -> bool:
-    utils.ui.echo("")
-    utils.ui.echo(
-        get_string("ota_super_rebuild_ready").format(dir=const.IMAGE_NEW_DIR.name)
-    )
-    result = prompt_yes_no(
-        get_string("ota_super_rebuild_prompt"),
-        input_func=utils.ui.prompt,
-        error_message=get_string("act_invalid_selection"),
-        error_func=utils.ui.error,
-    )
-    return bool(result)
+    def _prompt_once() -> bool:
+        utils.ui.echo("")
+        utils.ui.echo(
+            get_string("ota_super_rebuild_ready").format(dir=const.IMAGE_NEW_DIR.name)
+        )
+        result = prompt_yes_no(
+            get_string("ota_super_rebuild_prompt"),
+            input_func=utils.ui.prompt,
+            error_message=get_string("act_invalid_selection"),
+            error_func=utils.ui.error,
+        )
+        return bool(result)
+
+    return bool(_run_cleared_prompt(_prompt_once))
 
 
 def _rebuild_dynamic_super(

@@ -24,6 +24,18 @@ def create_xmls(img_dir, names):
         (img_dir / n).touch()
 
 
+def test_select_zip_file_clears_before_and_after_prompt():
+    zip_files = [const.OTA_DIR / "a.zip", const.OTA_DIR / "b.zip"]
+
+    with patch("ltbox.actions.ota.utils.ui") as mock_ui:
+        mock_ui.prompt.return_value = "2"
+
+        selected = ota._select_zip_file(zip_files)
+
+    assert selected == zip_files[1]
+    assert mock_ui.clear.call_count == 2
+
+
 def test_xml_select(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     files = [
@@ -509,6 +521,7 @@ def test_confirm_dynamic_super_rebuild_accepts_yes():
     ):
         assert ota._confirm_dynamic_super_rebuild() is True
 
+    assert mock_ui.clear.call_count == 2
     mock_ui.echo.assert_called()
     mock_prompt.assert_called_once()
 
@@ -519,6 +532,20 @@ def test_confirm_dynamic_super_rebuild_skips_on_no():
         patch("ltbox.actions.ota.prompt_yes_no", return_value=False),
     ):
         assert ota._confirm_dynamic_super_rebuild() is False
+
+
+def test_confirm_ota_output_resign_clears_before_and_after_prompt(tmp_path):
+    candidate = tmp_path / "system.img"
+    candidate.write_bytes(b"img")
+
+    with (
+        patch("ltbox.actions.ota.utils.ui") as mock_ui,
+        patch("ltbox.actions.ota.prompt_yes_no", return_value=True) as mock_prompt,
+    ):
+        assert ota._confirm_ota_output_resign({"system": candidate}) is True
+
+    assert mock_ui.clear.call_count == 2
+    mock_prompt.assert_called_once()
 
 
 def test_rebuild_dynamic_super_removes_patched_dynamic_images(tmp_path):
