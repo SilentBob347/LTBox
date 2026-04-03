@@ -833,5 +833,17 @@
   "ota_resign_prompt": "이 이미지들을 재서명할까요? (y/n): ",
   "ota_resign_done_image": "[+] {name}을(를) {key} ({algorithm})로 재서명했습니다.",
   "ota_resign_skip_none": "[*] {name}: 알고리즘이 NONE이라 건너뜁니다.",
-  "ota_outputs_promoted": "[+] 패치된 이미지들이 '{dir}' 폴더로 이동되었습니다."
+  "ota_outputs_promoted": "[+] 패치된 이미지들이 '{dir}' 폴더로 이동되었습니다.",
+  "ota_super_unpack_complete": "[+] {count}개 동적 파티션을 '{dir}'에 추출했습니다: {names}",
+  "ota_wait_resign_source": "[1단계] 재서명할 이미지를 '{out_dir}' 폴더에 넣거나, 원본 펌웨어의 AVB 이미지와 'vbmeta*.img' 파일을 '{dir}' 폴더에 넣으세요.",
+  "menu_adv_super_repack": "super 리팩",
+  "menu_adv_resign_testkeys": "펌웨어를 테스트키로 재서명",
+  "ota_resign_standalone_start": "[*] 펌웨어 테스트키 재서명 시작...",
+  "ota_super_unpack_start": "[*] super 언팩 시작...",
+  "menu_adv_super_unpack": "super 언팩",
+  "ota_super_repack_complete": "[+] super 리팩이 완료되었습니다. 결과물이 '{dir}'에 저장되었습니다.",
+  "ota_super_repack_start": "[*] super 리팩 시작...",
+  "ota_wait_resign_key": "[1단계] '{key}' 파일을 '{dir}' 폴더에 넣으세요.",
+  "ota_resign_standalone_complete": "[+] 테스트키 재서명이 완료되었습니다. 결과물이 '{dir}'에 저장되었습니다.",
+  "ota_wait_super_source": "[1단계] 원본 펌웨어의 'super_*.img'와 'rawprogram*.xml' 파일을 '{dir}' 폴더에 넣으세요."
 }

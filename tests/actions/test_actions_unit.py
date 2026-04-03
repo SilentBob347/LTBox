@@ -424,6 +424,88 @@ def test_promote_incremental_ota_outputs_preserves_abl_after_resign(tmp_path):
     assert not image_new_dir.exists()
 
 
+def test_unpack_super_images_extracts_dynamic_partitions_to_image_new(tmp_path):
+    image_new_dir = tmp_path / "image_new"
+    image_new_dir.mkdir()
+    stale_system = image_new_dir / "system.img"
+    stale_vendor = image_new_dir / "vendor.img"
+    stale_system.write_bytes(b"stale-system")
+    stale_vendor.write_bytes(b"stale-vendor")
+
+    layout = MagicMock()
+    layout.dynamic_partition_names = {"system", "vendor"}
+
+    with (
+        patch(
+            "ltbox.actions.ota._wait_for_source_super_layout",
+            return_value=([], MagicMock(), layout),
+        ),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota.ota_super.extract_partition_images", return_value={}),
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota.unpack_super_images()
+
+    assert not stale_system.exists()
+    assert not stale_vendor.exists()
+
+
+def test_repack_super_images_rebuilds_super_into_image_new(tmp_path):
+    image_new_dir = tmp_path / "image_new"
+    ota_working_dir = tmp_path / "ota_working"
+    rawprogram_path = tmp_path / "rawprogram_unsparse0.xml"
+    layout = MagicMock()
+
+    with (
+        patch(
+            "ltbox.actions.ota._wait_for_source_super_layout",
+            return_value=([rawprogram_path], MagicMock(), layout),
+        ),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota.const.OTA_WORKING_DIR", ota_working_dir),
+        patch("ltbox.actions.ota._copy_flash_xmls_for_super_repack") as mock_copy_xmls,
+        patch("ltbox.actions.ota.ota_super.extract_partition_images") as mock_extract,
+        patch("ltbox.actions.ota._rebuild_dynamic_super") as mock_rebuild,
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota.repack_super_images()
+
+    extracted_dynamic_dir = ota_working_dir / "dynamic_old"
+    mock_copy_xmls.assert_called_once_with(image_new_dir, [rawprogram_path])
+    mock_extract.assert_called_once_with(layout, extracted_dynamic_dir)
+    mock_rebuild.assert_called_once_with(layout, extracted_dynamic_dir)
+    assert not ota_working_dir.exists()
+
+
+def test_resign_firmware_with_testkeys_prepares_targets_in_image_new(tmp_path):
+    image_new_dir = tmp_path / "image_new"
+    image_new_dir.mkdir()
+
+    boot_img = tmp_path / "boot.img"
+    boot_img.write_bytes(b"boot")
+    system_img = image_new_dir / "system.img"
+    system_img.write_bytes(b"system")
+
+    with (
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota._ensure_ota_resign_key_available"),
+        patch(
+            "ltbox.actions.ota._wait_for_standalone_resign_targets",
+            return_value={"boot": boot_img, "system": system_img},
+        ),
+        patch("ltbox.actions.ota._resign_incremental_ota_outputs") as mock_resign,
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota.resign_firmware_with_testkeys()
+
+    prepared_targets = mock_resign.call_args.args[0]
+    assert prepared_targets == {
+        "boot": image_new_dir / "boot.img",
+        "system": system_img,
+    }
+    assert (image_new_dir / "boot.img").read_bytes() == b"boot"
+
+
 def test_resolve_ota_resign_targets_filters_existing_requested_images(tmp_path):
     output_dir = tmp_path / "image_new"
     output_dir.mkdir()
@@ -1556,7 +1638,7 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     assert not (output_dir / const.FN_VBMETA).exists()
 
 
-def test_advanced_menu_includes_incremental_ota_before_flash_options():
+def test_advanced_menu_places_super_tools_before_flash_options():
     menu_items = menu_data.get_advanced_menu_data("ROW")
     options = {item.key: item for item in menu_items if item.item_type == "option"}
     separators = [
@@ -1564,23 +1646,26 @@ def test_advanced_menu_includes_incremental_ota_before_flash_options():
     ]
 
     assert options["11"].action == "apply_incremental_ota"
-    assert options["12"].action == "flash_full_firmware"
-    assert options["13"].action == "flash_selected_partitions"
-    assert options["14"].action == "rebuild_vbmeta"
-    assert options["15"].action == "sign_and_flash_recovery"
+    assert options["12"].action == "unpack_super_images"
+    assert options["13"].action == "repack_super_images"
+    assert options["14"].action == "resign_firmware_with_testkeys"
+    assert options["15"].action == "flash_full_firmware"
+    assert options["16"].action == "flash_selected_partitions"
+    assert options["17"].action == "rebuild_vbmeta"
+    assert options["18"].action == "sign_and_flash_recovery"
 
-    option_11_index = next(
+    option_14_index = next(
         index
         for index, item in enumerate(menu_items)
-        if item.item_type == "option" and item.key == "11"
+        if item.item_type == "option" and item.key == "14"
     )
-    option_12_index = next(
+    option_15_index = next(
         index
         for index, item in enumerate(menu_items)
-        if item.item_type == "option" and item.key == "12"
+        if item.item_type == "option" and item.key == "15"
     )
     assert any(
-        option_11_index < separator_index < option_12_index
+        option_14_index < separator_index < option_15_index
         for separator_index in separators
     )
 

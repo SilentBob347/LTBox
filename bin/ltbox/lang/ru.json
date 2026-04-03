@@ -833,5 +833,17 @@
   "ota_resign_prompt": "Переподписать эти образы сейчас? (y/n): ",
   "ota_resign_done_image": "[+] {name} переподписан ключом {key} ({algorithm}).",
   "ota_resign_skip_none": "[*] {name}: алгоритм NONE. Пропуск.",
-  "ota_outputs_promoted": "[+] Патченные образы перемещены в папку '{dir}'."
+  "ota_outputs_promoted": "[+] Патченные образы перемещены в папку '{dir}'.",
+  "ota_super_unpack_complete": "[+] Извлечено {count} динамических разделов в '{dir}': {names}",
+  "ota_wait_resign_source": "[ШАГ 1] Поместите образы для переподписи в папку '{out_dir}', либо поместите AVB-образы исходной прошивки и файлы 'vbmeta*.img' в папку '{dir}'.",
+  "menu_adv_super_repack": "Пересобрать super-разделы",
+  "menu_adv_resign_testkeys": "Переподписать прошивку тестовыми ключами",
+  "ota_resign_standalone_start": "[*] Запуск переподписи прошивки тестовыми ключами...",
+  "ota_super_unpack_start": "[*] Запуск распаковки super...",
+  "menu_adv_super_unpack": "Распаковать super-разделы",
+  "ota_super_repack_complete": "[+] Пересборка super завершена. Результаты сохранены в '{dir}'.",
+  "ota_super_repack_start": "[*] Запуск пересборки super...",
+  "ota_wait_resign_key": "[ШАГ 1] Поместите '{key}' в папку '{dir}'.",
+  "ota_resign_standalone_complete": "[+] Переподпись тестовыми ключами завершена. Результаты сохранены в '{dir}'.",
+  "ota_wait_super_source": "[ШАГ 1] Поместите файлы исходной прошивки 'super_*.img' и 'rawprogram*.xml' в папку '{dir}'."
 }

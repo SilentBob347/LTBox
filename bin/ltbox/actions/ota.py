@@ -2,7 +2,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from .. import constants as const
 from .. import ota_super, partition, update_engine_payload, utils
@@ -52,6 +52,31 @@ _OTA_VBMETA_DESCRIPTOR_PARTITIONS = (
     "vendor_boot",
     "vendor_dlkm",
 )
+
+
+def _wait_for_prompted_condition(
+    predicate: Callable[[], Any],
+    prompt_message: str,
+    *directories: Path,
+) -> Any:
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    def _prompt_loop() -> None:
+        utils.ui.clear()
+        utils.ui.echo(get_string("utils_wait_resource"))
+        utils.ui.echo(prompt_message)
+        utils.ui.echo(get_string("press_enter_to_continue"))
+        try:
+            utils.ui.prompt()
+        except EOFError as exc:
+            raise RuntimeError(get_string("act_op_cancel")) from exc
+
+    return utils.wait_for_condition(
+        predicate,
+        interval=0.1,
+        on_loop=_prompt_loop,
+    )
 
 
 def _find_zip_files() -> List[Path]:
@@ -175,6 +200,40 @@ def _find_super_group(catalog: XmlCatalog) -> Optional[PartitionGroup]:
     return catalog.group_by_base_label(with_files_only=True).get("super")
 
 
+def _try_load_source_super_layout() -> Optional[
+    tuple[list[Path], XmlCatalog, ota_super.SuperLayout]
+]:
+    try:
+        rawprogram_paths, catalog = _load_xml_catalog()
+    except MissingFileError:
+        return None
+
+    super_group = _find_super_group(catalog)
+    if super_group is None:
+        return None
+
+    try:
+        layout = ota_super.parse_super_layout(super_group.none, const.IMAGE_DIR)
+    except MissingFileError:
+        return None
+
+    return rawprogram_paths, catalog, layout
+
+
+def _wait_for_source_super_layout() -> tuple[
+    list[Path], XmlCatalog, ota_super.SuperLayout
+]:
+    prompt = get_string("ota_wait_super_source").format(dir=const.IMAGE_DIR.name)
+    result = _wait_for_prompted_condition(
+        _try_load_source_super_layout,
+        prompt,
+        const.IMAGE_DIR,
+    )
+    if result is None:
+        raise RuntimeError(get_string("act_op_cancel"))
+    return result
+
+
 def _resolve_dynamic_partition_sources(
     selected: List[str],
     file_map: dict[str, Path],
@@ -296,6 +355,13 @@ def _copy_flash_xmls(
     rawprogram_paths: List[Path],
     xml_filename_updates: dict[str, str],
 ) -> None:
+    patch_paths = _collect_patch_xml_paths(rawprogram_paths)
+    copied_xmls = ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
+    ota_super.rewrite_xml_filenames(copied_xmls, xml_filename_updates)
+    ota_super.create_keep_data_ota_xml(output_dir)
+
+
+def _collect_patch_xml_paths(rawprogram_paths: List[Path]) -> list[Path]:
     patch_paths: list[Path] = []
     seen_patch_names: set[str] = set()
     candidate_dirs = {const.IMAGE_DIR, *[path.parent for path in rawprogram_paths]}
@@ -305,10 +371,7 @@ def _copy_flash_xmls(
                 continue
             seen_patch_names.add(patch_path.name)
             patch_paths.append(patch_path)
-
-    copied_xmls = ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
-    ota_super.rewrite_xml_filenames(copied_xmls, xml_filename_updates)
-    ota_super.create_keep_data_ota_xml(output_dir)
+    return patch_paths
 
 
 def _promote_incremental_ota_outputs(
@@ -500,6 +563,81 @@ def _rebuild_incremental_ota_vbmeta(candidate_paths: dict[str, Path]) -> None:
     _rebuild_ota_vbmeta_image("vbmeta", vbmeta_inputs)
 
 
+def _ensure_ota_resign_key_available() -> Path:
+    prompt = get_string("ota_wait_resign_key").format(
+        key=_OTA_AVB_DEFAULT_RESIGN_KEY_NAME,
+        dir=const.TOOLS_DIR.name,
+    )
+    utils.wait_for_files(
+        const.TOOLS_DIR,
+        [_OTA_AVB_DEFAULT_RESIGN_KEY_NAME],
+        prompt,
+    )
+    return _resolve_ota_testkey_path(_OTA_AVB_DEFAULT_RESIGN_KEY_NAME)
+
+
+def _collect_standalone_resign_targets() -> Optional[dict[str, Path]]:
+    image_targets = _resolve_ota_resign_targets(const.IMAGE_DIR, {})
+    output_targets = _resolve_ota_resign_targets(const.IMAGE_NEW_DIR, {})
+    combined_targets = {**image_targets, **output_targets}
+    if not combined_targets:
+        return None
+
+    vbmeta_base_path = const.IMAGE_NEW_DIR / "vbmeta.img"
+    if not vbmeta_base_path.exists():
+        vbmeta_base_path = const.IMAGE_DIR / "vbmeta.img"
+    if not vbmeta_base_path.exists():
+        return None
+
+    needs_vbmeta_system = "vbmeta_system" in combined_targets or any(
+        partition_name in combined_targets
+        for partition_name in _OTA_VBMETA_SYSTEM_DESCRIPTOR_PARTITIONS
+    )
+    if needs_vbmeta_system:
+        vbmeta_system_base_path = const.IMAGE_NEW_DIR / "vbmeta_system.img"
+        if not vbmeta_system_base_path.exists():
+            vbmeta_system_base_path = const.IMAGE_DIR / "vbmeta_system.img"
+        if not vbmeta_system_base_path.exists():
+            return None
+
+    return combined_targets
+
+
+def _wait_for_standalone_resign_targets() -> dict[str, Path]:
+    prompt = get_string("ota_wait_resign_source").format(
+        dir=const.IMAGE_DIR.name,
+        out_dir=const.IMAGE_NEW_DIR.name,
+    )
+    result = _wait_for_prompted_condition(
+        _collect_standalone_resign_targets,
+        prompt,
+        const.IMAGE_DIR,
+        const.IMAGE_NEW_DIR,
+    )
+    if result is None:
+        raise RuntimeError(get_string("act_op_cancel"))
+    return result
+
+
+def _prepare_standalone_resign_targets(
+    source_targets: dict[str, Path],
+) -> dict[str, Path]:
+    const.IMAGE_NEW_DIR.mkdir(parents=True, exist_ok=True)
+    prepared_targets: dict[str, Path] = {}
+
+    for partition_name, source_path in source_targets.items():
+        if source_path.parent == const.IMAGE_NEW_DIR:
+            prepared_targets[partition_name] = source_path
+            continue
+
+        destination_path = const.IMAGE_NEW_DIR / source_path.name
+        if not destination_path.exists():
+            shutil.copy2(source_path, destination_path)
+        prepared_targets[partition_name] = destination_path
+
+    return prepared_targets
+
+
 def _resign_incremental_ota_outputs(candidate_paths: dict[str, Path]) -> None:
     if not candidate_paths:
         return
@@ -627,6 +765,62 @@ def _rebuild_dynamic_super(
     )
     for patched_image in rebuilt_dynamic_outputs:
         patched_image.unlink(missing_ok=True)
+
+
+def unpack_super_images() -> None:
+    utils.ui.echo(get_string("ota_super_unpack_start"))
+    _rawprogram_paths, _catalog, layout = _wait_for_source_super_layout()
+
+    const.IMAGE_NEW_DIR.mkdir(parents=True, exist_ok=True)
+    for partition_name in sorted(layout.dynamic_partition_names):
+        (const.IMAGE_NEW_DIR / f"{partition_name}.img").unlink(missing_ok=True)
+
+    extracted = ota_super.extract_partition_images(layout, const.IMAGE_NEW_DIR)
+    utils.ui.echo(
+        get_string("ota_super_unpack_complete").format(
+            dir=const.IMAGE_NEW_DIR.name,
+            count=len(extracted),
+            names=", ".join(sorted(extracted)),
+        )
+    )
+
+
+def _copy_flash_xmls_for_super_repack(
+    output_dir: Path,
+    rawprogram_paths: List[Path],
+) -> None:
+    patch_paths = _collect_patch_xml_paths(rawprogram_paths)
+    ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
+
+
+def repack_super_images() -> None:
+    utils.ui.echo(get_string("ota_super_repack_start"))
+    rawprogram_paths, _catalog, layout = _wait_for_source_super_layout()
+
+    const.IMAGE_NEW_DIR.mkdir(parents=True, exist_ok=True)
+    _copy_flash_xmls_for_super_repack(const.IMAGE_NEW_DIR, rawprogram_paths)
+
+    with utils.temporary_workspace(const.OTA_WORKING_DIR):
+        extracted_dynamic_dir = const.OTA_WORKING_DIR / "dynamic_old"
+        ota_super.extract_partition_images(layout, extracted_dynamic_dir)
+        _rebuild_dynamic_super(layout, extracted_dynamic_dir)
+
+    utils.ui.echo(
+        get_string("ota_super_repack_complete").format(dir=const.IMAGE_NEW_DIR.name)
+    )
+
+
+def resign_firmware_with_testkeys() -> None:
+    utils.ui.echo(get_string("ota_resign_standalone_start"))
+    _ensure_ota_resign_key_available()
+    source_targets = _wait_for_standalone_resign_targets()
+    prepared_targets = _prepare_standalone_resign_targets(source_targets)
+    _resign_incremental_ota_outputs(prepared_targets)
+    utils.ui.echo(
+        get_string("ota_resign_standalone_complete").format(
+            dir=const.IMAGE_NEW_DIR.name
+        )
+    )
 
 
 def apply_incremental_ota() -> None:

@@ -833,5 +833,17 @@
   "ota_resign_prompt": "Re-sign these images now (y/n): ",
   "ota_resign_done_image": "[+] Re-signed {name} with {key} ({algorithm}).",
   "ota_resign_skip_none": "[*] {name}: algorithm is NONE. Skipping.",
-  "ota_outputs_promoted": "[+] Patched images moved to '{dir}'."
+  "ota_outputs_promoted": "[+] Patched images moved to '{dir}'.",
+  "ota_super_unpack_complete": "[+] Extracted {count} dynamic partitions to '{dir}': {names}",
+  "ota_wait_resign_source": "[STEP 1] Place images to resign into the '{out_dir}' folder, or place the source firmware's AVB images and 'vbmeta*.img' files into the '{dir}' folder.",
+  "menu_adv_super_repack": "Repack super partitions",
+  "menu_adv_resign_testkeys": "Resign firmware with test keys",
+  "ota_resign_standalone_start": "[*] Starting firmware test-key resign...",
+  "ota_super_unpack_start": "[*] Starting super unpack...",
+  "menu_adv_super_unpack": "Unpack super partitions",
+  "ota_super_repack_complete": "[+] Super repack complete. Outputs were saved to '{dir}'.",
+  "ota_super_repack_start": "[*] Starting super repack...",
+  "ota_wait_resign_key": "[STEP 1] Place '{key}' into the '{dir}' folder.",
+  "ota_resign_standalone_complete": "[+] Test-key resign complete. Outputs were saved to '{dir}'.",
+  "ota_wait_super_source": "[STEP 1] Place the source firmware's 'super_*.img' and 'rawprogram*.xml' files into the '{dir}' folder."
 }
