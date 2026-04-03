@@ -440,10 +440,12 @@ def _rebuild_dynamic_super(
         shutil.rmtree(dynamic_build_dir)
     shutil.copytree(extracted_dynamic_dir, dynamic_build_dir)
 
+    rebuilt_dynamic_outputs: list[Path] = []
     for partition_name in sorted(layout.dynamic_partition_names):
         patched_image = const.IMAGE_NEW_DIR / f"{partition_name}.img"
         if patched_image.exists():
             shutil.copy2(patched_image, dynamic_build_dir / patched_image.name)
+            rebuilt_dynamic_outputs.append(patched_image)
 
     rebuilt_super = const.OTA_WORKING_DIR / "super_rebuilt.img"
     lpmake_parts = _resolve_lpmake_command()
@@ -477,6 +479,8 @@ def _rebuild_dynamic_super(
         sorted(const.IMAGE_NEW_DIR.glob("rawprogram*.xml")),
         rebuilt_chunks,
     )
+    for patched_image in rebuilt_dynamic_outputs:
+        patched_image.unlink(missing_ok=True)
 
 
 def apply_incremental_ota() -> None:

@@ -521,6 +521,63 @@ def test_confirm_dynamic_super_rebuild_skips_on_no():
         assert ota._confirm_dynamic_super_rebuild() is False
 
 
+def test_rebuild_dynamic_super_removes_patched_dynamic_images(tmp_path):
+    image_new_dir = tmp_path / "image_new"
+    image_new_dir.mkdir()
+    ota_working_dir = tmp_path / "ota_working"
+    ota_working_dir.mkdir()
+    extracted_dynamic_dir = tmp_path / "dynamic_old"
+    extracted_dynamic_dir.mkdir()
+
+    (extracted_dynamic_dir / "system.img").write_bytes(b"old-system")
+    (extracted_dynamic_dir / "vendor.img").write_bytes(b"old-vendor")
+
+    system_img = image_new_dir / "system.img"
+    vendor_img = image_new_dir / "vendor.img"
+    boot_img = image_new_dir / "boot.img"
+    system_img.write_bytes(b"new-system")
+    vendor_img.write_bytes(b"new-vendor")
+    boot_img.write_bytes(b"boot")
+
+    layout = MagicMock()
+    layout.dynamic_partition_names = {"system", "vendor"}
+    layout.chunks = [MagicMock(start_sector=90504, sector_size_bytes=4096)]
+
+    runner = MagicMock()
+    rebuilt_layout = MagicMock()
+    rebuilt_chunks = [MagicMock(filename="super_1.img")]
+
+    with (
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota.const.OTA_WORKING_DIR", ota_working_dir),
+        patch(
+            "ltbox.actions.ota._resolve_lpmake_command",
+            return_value=["wsl.exe", "--exec", "/usr/bin/env", "/mnt/tool/lpmake"],
+        ),
+        patch("ltbox.actions.ota.CommandRunner", return_value=runner),
+        patch("ltbox.actions.ota.ota_super.build_lpmake_command", return_value=[]),
+        patch(
+            "ltbox.actions.ota.ota_super.parse_full_super_image",
+            return_value=rebuilt_layout,
+        ) as mock_parse,
+        patch(
+            "ltbox.actions.ota.ota_super.plan_rebuilt_super_chunks",
+            return_value=rebuilt_chunks,
+        ) as mock_plan,
+        patch("ltbox.actions.ota.ota_super.write_rebuilt_super_chunks") as mock_write,
+        patch("ltbox.actions.ota.ota_super.rewrite_super_xml_entries") as mock_rewrite,
+    ):
+        ota._rebuild_dynamic_super(layout, extracted_dynamic_dir)
+
+    assert not system_img.exists()
+    assert not vendor_img.exists()
+    assert boot_img.exists()
+    mock_parse.assert_called_once()
+    mock_plan.assert_called_once_with(layout, rebuilt_layout)
+    mock_write.assert_called_once()
+    mock_rewrite.assert_called_once()
+
+
 def test_apply_incremental_ota_prompts_for_resign_before_super_rebuild(tmp_path):
     payload_bin = tmp_path / "payload.bin"
     payload_bin.write_bytes(b"payload")
