@@ -797,7 +797,7 @@
   "dl_payload_dumper_installing_deps": "[*] Установка зависимостей payload_dumper...",
   "dl_payload_dumper_not_found": "[!] Инструмент payload_dumper не найден. Загрузка...",
   "dl_payload_dumper_ready": "[+] payload_dumper готов.",
-  "menu_main_apply_ota": "Применить инкрементальное OTA обновление",
+  "menu_main_apply_ota": "Применить инкрементальное OTA к прошивке",
   "ota_analyzing_payload": "[*] Анализ payload на наличие дифференциальных разделов...",
   "ota_err_missing_images": "[!] Отсутствуют исходные образы в '{dir}': {files}",
   "ota_err_no_diff_partitions": "[!] Дифференциальные разделы не найдены в payload. Возможно, это полное OTA, а не инкрементальное.",

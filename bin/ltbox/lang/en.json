@@ -797,7 +797,7 @@
   "dl_payload_dumper_installing_deps": "[*] Installing payload_dumper dependencies...",
   "dl_payload_dumper_not_found": "[!] payload_dumper tool not found. Downloading...",
   "dl_payload_dumper_ready": "[+] payload_dumper ready.",
-  "menu_main_apply_ota": "Apply Incremental OTA",
+  "menu_main_apply_ota": "Apply Incremental OTA to Firmware",
   "ota_analyzing_payload": "[*] Analyzing payload for differential partitions...",
   "ota_err_missing_images": "[!] Missing source images in '{dir}': {files}",
   "ota_err_no_diff_partitions": "[!] No differential partitions found in payload. This may be a full OTA, not incremental.",

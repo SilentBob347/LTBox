@@ -1556,22 +1556,48 @@ def test_gki_finalize_patch_skips_vbmeta_rebuild_when_boot_chain_exists(tmp_path
     assert not (output_dir / const.FN_VBMETA).exists()
 
 
-def test_advanced_menu_option_13_rebuilds_vbmeta_and_14_is_recovery():
+def test_advanced_menu_includes_incremental_ota_before_flash_options():
     menu_items = menu_data.get_advanced_menu_data("ROW")
     options = {item.key: item for item in menu_items if item.item_type == "option"}
+    separators = [
+        index for index, item in enumerate(menu_items) if item.item_type == "separator"
+    ]
 
-    assert options["13"].action == "rebuild_vbmeta"
-    assert options["14"].action == "sign_and_flash_recovery"
+    assert options["11"].action == "apply_incremental_ota"
+    assert options["12"].action == "flash_full_firmware"
+    assert options["13"].action == "flash_selected_partitions"
+    assert options["14"].action == "rebuild_vbmeta"
+    assert options["15"].action == "sign_and_flash_recovery"
+
+    option_11_index = next(
+        index
+        for index, item in enumerate(menu_items)
+        if item.item_type == "option" and item.key == "11"
+    )
+    option_12_index = next(
+        index
+        for index, item in enumerate(menu_items)
+        if item.item_type == "option" and item.key == "12"
+    )
+    assert any(
+        option_11_index < separator_index < option_12_index
+        for separator_index in separators
+    )
 
 
-def test_main_menu_option_3_is_incremental_ota():
+def test_main_menu_no_longer_lists_incremental_ota():
     menu_items = menu_data.get_main_menu_data("ROW")
     options = {item.key: item for item in menu_items if item.item_type == "option"}
 
-    assert options["3"].action == "apply_incremental_ota"
-    assert options["4"].action == "disable_ota"
-    assert options["5"].action == "reenable_ota"
-    assert options["6"].action == "rescue_ota"
+    assert {item.action for item in options.values()} >= {
+        "disable_ota",
+        "reenable_ota",
+        "rescue_ota",
+    }
+    assert "apply_incremental_ota" not in {item.action for item in options.values()}
+    assert options["3"].action == "disable_ota"
+    assert options["4"].action == "reenable_ota"
+    assert options["5"].action == "rescue_ota"
 
 
 def test_rebuild_vbmeta_requires_vbmeta_and_one_image(tmp_path):

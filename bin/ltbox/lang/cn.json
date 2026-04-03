@@ -797,7 +797,7 @@
   "dl_payload_dumper_installing_deps": "[*] 正在安装 payload_dumper 依赖...",
   "dl_payload_dumper_not_found": "[!] 未找到 payload_dumper 工具。正在下载...",
   "dl_payload_dumper_ready": "[+] payload_dumper 已就绪。",
-  "menu_main_apply_ota": "应用增量 OTA 更新",
+  "menu_main_apply_ota": "向固件应用增量 OTA",
   "ota_analyzing_payload": "[*] 正在分析 payload 以查找差分分区...",
   "ota_err_missing_images": "[!] '{dir}' 中缺少源镜像: {files}",
   "ota_err_no_diff_partitions": "[!] 未在 payload 中找到差分分区。这可能是完整 OTA 而非增量 OTA。",
