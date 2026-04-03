@@ -395,7 +395,7 @@
   "device_wait_edl_loop": "[*] Ожидание устройств EDL (9008)... (Ctrl+C для отмены)",
   "device_wait_edl_title": "\n=== ОЖИДАНИЕ EDL ===",
   "device_wait_fastboot_cancel": "\n[!] Ожидание Fastboot отменено",
-  "device_wait_fastboot_loop": "[*] Ожидание Fastboot... (Ctrl+C для отмены)",
+  "device_wait_fastboot_loop": "Ожидание Fastboot... (Ctrl+C для отмены)",
   "device_wait_fastboot_title": "\n=== ОЖИДАНИЕ FASTBOOT ===",
   "device_wait_loader_title": "[*] [Настройка EDL] Ожидание загрузчика EDL...",
   "device_wait_mode_title": "\n=== ОЖИДАНИЕ {mode} ===",

@@ -255,7 +255,7 @@ def test_fastboot_wait_for_device_uses_transient_status():
     status_cm.__exit__.return_value = False
     strings = {
         "device_wait_mode_title": "WAIT {mode}",
-        "device_wait_fastboot_loop": "[*] Waiting for fastboot...",
+        "device_wait_fastboot_loop": "Waiting for fastboot...",
         "device_fastboot_connected": "[+] Fastboot connected.",
         "device_wait_fastboot_cancel": "[!] Cancelled.",
     }

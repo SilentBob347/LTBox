@@ -395,7 +395,7 @@
   "device_wait_edl_loop": "[*] Waiting for EDL (9008)... (Ctrl+C to cancel)",
   "device_wait_edl_title": "\n=== WAITING FOR EDL ===",
   "device_wait_fastboot_cancel": "\n[!] Fastboot wait cancelled.",
-  "device_wait_fastboot_loop": "[*] Waiting for fastboot... (Ctrl+C to cancel)",
+  "device_wait_fastboot_loop": "Waiting for fastboot... (Ctrl+C to cancel)",
   "device_wait_fastboot_title": "\n=== WAITING FOR FASTBOOT ===",
   "device_wait_loader_title": "[*] [EDL Setup] Waiting for EDL Loader...",
   "device_wait_mode_title": "\n=== WAITING FOR {mode} ===",

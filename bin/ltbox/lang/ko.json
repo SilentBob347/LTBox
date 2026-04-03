@@ -395,7 +395,7 @@
   "device_wait_edl_loop": "[*] EDL (9008) 대기 중... (취소하려면 Ctrl+C)",
   "device_wait_edl_title": "\n=== EDL 대기 중 ===",
   "device_wait_fastboot_cancel": "\n[!] Fastboot 대기 취소됨.",
-  "device_wait_fastboot_loop": "[*] Fastboot 대기 중... (취소하려면 Ctrl+C)",
+  "device_wait_fastboot_loop": "Fastboot 대기 중... (취소하려면 Ctrl+C)",
   "device_wait_fastboot_title": "\n=== FASTBOOT 대기 중 ===",
   "device_wait_loader_title": "[*] [EDL 설정] EDL 로더 대기 중...",
   "device_wait_mode_title": "\n=== {mode} 대기 중 ===",
