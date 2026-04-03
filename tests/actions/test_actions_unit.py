@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -10,6 +11,7 @@ from ltbox.actions import ota
 from ltbox.actions import region
 from ltbox.actions import xml as xml_action
 from ltbox.errors import ToolError
+from ltbox.patch import avb as avb_patch
 from ltbox.actions.root.strategies import GkiRootStrategy
 from ltbox.patch.avb import (
     patch_chained_image_rollback,
@@ -553,7 +555,7 @@ def test_resign_incremental_ota_outputs_rebuilds_vbmeta_images_from_updated_chil
         patch("ltbox.actions.ota.extract_image_avb_info", side_effect=_fake_info),
         patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
         patch(
-            "ltbox.actions.ota.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.ota.rebuild_vbmeta_preserving_descriptors"
         ) as mock_rebuild_vbmeta,
         patch("ltbox.actions.ota.utils.ui"),
     ):
@@ -637,7 +639,7 @@ def test_resign_incremental_ota_outputs_rebuilds_vbmeta_system_from_source(
         ),
         patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
         patch(
-            "ltbox.actions.ota.rebuild_vbmeta_with_chained_images"
+            "ltbox.actions.ota.rebuild_vbmeta_preserving_descriptors"
         ) as mock_rebuild_vbmeta,
         patch("ltbox.actions.ota.utils.ui"),
     ):
@@ -660,6 +662,88 @@ def test_resign_incremental_ota_outputs_rebuilds_vbmeta_system_from_source(
             algorithm="SHA256_RSA4096",
         ),
     ]
+
+
+def test_replace_vbmeta_descriptors_keeps_root_chain_descriptors_intact():
+    class FakeChainDescriptor:
+        def __init__(
+            self,
+            partition_name="",
+            rollback_index_location=0,
+            public_key=b"",
+            flags=0,
+        ):
+            self.partition_name = partition_name
+            self.rollback_index_location = rollback_index_location
+            self.public_key = public_key
+            self.flags = flags
+
+    class FakeHashDescriptor:
+        def __init__(self, partition_name=""):
+            self.partition_name = partition_name
+
+    class FakeHashtreeDescriptor:
+        def __init__(self, partition_name=""):
+            self.partition_name = partition_name
+
+    class FakeModule:
+        AvbChainPartitionDescriptor = FakeChainDescriptor
+        AvbHashDescriptor = FakeHashDescriptor
+        AvbHashtreeDescriptor = FakeHashtreeDescriptor
+
+    original_descriptors = [
+        FakeChainDescriptor("boot", 3, b"boot-old", 0),
+        FakeChainDescriptor("recovery", 1, b"recovery-old", 0),
+        FakeChainDescriptor("vbmeta_system", 2, b"vbmeta-system-old", 0),
+        FakeHashDescriptor("dtbo"),
+        FakeHashtreeDescriptor("vendor"),
+    ]
+
+    replacement_images = [
+        avb_patch._ParsedAvbImage(
+            path=Path("boot.img"),
+            partition_name="boot",
+            footer=None,
+            header=MagicMock(required_libavb_version_minor=0),
+            descriptors=[FakeHashDescriptor("boot")],
+            image_size=0,
+            public_key=b"boot-new",
+            public_key_metadata=b"",
+        ),
+        avb_patch._ParsedAvbImage(
+            path=Path("vbmeta_system.img"),
+            partition_name="vbmeta_system",
+            footer=None,
+            header=MagicMock(required_libavb_version_minor=0),
+            descriptors=[
+                FakeHashDescriptor("pvmfw"),
+                FakeHashtreeDescriptor("product"),
+                FakeHashtreeDescriptor("system"),
+                FakeHashtreeDescriptor("system_ext"),
+            ],
+            image_size=0,
+            public_key=b"vbmeta-system-new",
+            public_key_metadata=b"",
+        ),
+    ]
+
+    required_minor = avb_patch._replace_vbmeta_descriptors(
+        FakeModule,
+        original_descriptors,
+        replacement_images,
+    )
+
+    assert required_minor == 0
+    assert len(original_descriptors) == 5
+    assert isinstance(original_descriptors[0], FakeChainDescriptor)
+    assert original_descriptors[0].public_key == b"boot-new"
+    assert isinstance(original_descriptors[2], FakeChainDescriptor)
+    assert original_descriptors[2].public_key == b"vbmeta-system-new"
+    assert not any(
+        getattr(descriptor, "partition_name", None)
+        in {"pvmfw", "product", "system", "system_ext"}
+        for descriptor in original_descriptors
+    )
 
 
 def test_confirm_dynamic_super_rebuild_accepts_yes():

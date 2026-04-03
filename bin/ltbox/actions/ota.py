@@ -10,7 +10,7 @@ from ..errors import MissingFileError, ToolError
 from ..i18n import get_string
 from ..patch.avb import (
     extract_image_avb_info,
-    rebuild_vbmeta_with_chained_images,
+    rebuild_vbmeta_preserving_descriptors,
     resign_avb_image,
 )
 from ..process_runner import CommandRunner, RunOptions
@@ -433,7 +433,7 @@ def _rebuild_ota_vbmeta_image(
         str(base_vbmeta_info.get("algorithm", "NONE")).upper(),
     )
     try:
-        rebuild_vbmeta_with_chained_images(
+        rebuild_vbmeta_preserving_descriptors(
             output_path=output_path,
             original_vbmeta_path=base_path,
             chained_images=chained_images,
