@@ -832,5 +832,6 @@
   "ota_resign_summary": "[*] OTA image re-sign complete. Re-signed: {resigned}, NONE skipped: {skipped_none}, unreadable skipped: {skipped_scan}",
   "ota_resign_prompt": "Re-sign these images now (y/n): ",
   "ota_resign_done_image": "[+] Re-signed {name} with {key} ({algorithm}).",
-  "ota_resign_skip_none": "[*] {name}: algorithm is NONE. Skipping."
+  "ota_resign_skip_none": "[*] {name}: algorithm is NONE. Skipping.",
+  "ota_outputs_promoted": "[+] Patched images moved to '{dir}'."
 }

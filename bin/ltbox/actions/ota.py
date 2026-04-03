@@ -311,6 +311,39 @@ def _copy_flash_xmls(
     ota_super.create_keep_data_ota_xml(output_dir)
 
 
+def _promote_incremental_ota_outputs(
+    source_dir: Path,
+    target_dir: Path,
+    preserve_abl: bool = False,
+) -> None:
+    if not source_dir.exists():
+        raise MissingFileError(
+            get_string("ota_err_missing_images").format(
+                files=source_dir.name,
+                dir=source_dir.parent.name,
+            )
+        )
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    skipped_names = {"abl.elf"} if preserve_abl else set()
+
+    for source_path in sorted(source_dir.iterdir()):
+        if source_path.name in skipped_names:
+            continue
+
+        target_path = target_dir / source_path.name
+        if target_path.exists():
+            if target_path.is_dir():
+                shutil.rmtree(target_path)
+            else:
+                target_path.unlink()
+
+        shutil.move(str(source_path), str(target_path))
+
+    shutil.rmtree(source_dir)
+    utils.ui.echo(get_string("ota_outputs_promoted").format(dir=target_dir.name))
+
+
 def _resolve_ota_resign_targets(
     output_dir: Path,
     output_filenames: dict[str, str],
@@ -657,8 +690,10 @@ def apply_incremental_ota() -> None:
             const.IMAGE_NEW_DIR,
             output_filenames,
         )
+        did_resign_outputs = False
         if _confirm_ota_output_resign(ota_resign_targets):
             _resign_incremental_ota_outputs(ota_resign_targets)
+            did_resign_outputs = True
         if super_layout is not None and extracted_dynamic_dir is not None:
             if not _confirm_dynamic_super_rebuild():
                 utils.ui.echo(
@@ -668,5 +703,10 @@ def apply_incremental_ota() -> None:
                 )
                 return
             _rebuild_dynamic_super(super_layout, extracted_dynamic_dir)
+        _promote_incremental_ota_outputs(
+            const.IMAGE_NEW_DIR,
+            const.IMAGE_DIR,
+            preserve_abl=did_resign_outputs,
+        )
 
     utils.ui.echo(get_string("ota_finished"))

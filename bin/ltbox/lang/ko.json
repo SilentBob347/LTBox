@@ -832,5 +832,6 @@
   "ota_resign_summary": "[*] OTA 이미지 재서명 완료. 재서명: {resigned}, NONE 건너뜀: {skipped_none}, 읽기 실패 건너뜀: {skipped_scan}",
   "ota_resign_prompt": "이 이미지들을 재서명할까요? (y/n): ",
   "ota_resign_done_image": "[+] {name}을(를) {key} ({algorithm})로 재서명했습니다.",
-  "ota_resign_skip_none": "[*] {name}: 알고리즘이 NONE이라 건너뜁니다."
+  "ota_resign_skip_none": "[*] {name}: 알고리즘이 NONE이라 건너뜁니다.",
+  "ota_outputs_promoted": "[+] 패치된 이미지들이 '{dir}' 폴더로 이동되었습니다."
 }

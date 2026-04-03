@@ -311,6 +311,7 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
         ),
         patch("ltbox.actions.ota._run_differential_patch") as mock_patch,
         patch("ltbox.actions.ota._copy_flash_xmls") as mock_copy_xmls,
+        patch("ltbox.actions.ota._promote_incremental_ota_outputs"),
     ):
         ota.apply_incremental_ota()
 
@@ -379,6 +380,48 @@ def test_copy_flash_xmls_updates_keep_data_xml_in_place(mock_env, tmp_path):
     assert files["system"] == "system.img"
     assert files["userdata"] == ""
     assert files["metadata"] == ""
+
+
+def test_promote_incremental_ota_outputs_moves_files_and_removes_image_new(tmp_path):
+    image_dir = tmp_path / "image"
+    image_new_dir = tmp_path / "image_new"
+    image_dir.mkdir()
+    image_new_dir.mkdir()
+
+    (image_dir / "boot.img").write_bytes(b"old-boot")
+    (image_dir / "persist.img").write_bytes(b"persist")
+    (image_new_dir / "boot.img").write_bytes(b"new-boot")
+    (image_new_dir / "rawprogram1.xml").write_text("<data />", encoding="utf-8")
+
+    with patch("ltbox.actions.ota.utils.ui"):
+        ota._promote_incremental_ota_outputs(image_new_dir, image_dir)
+
+    assert (image_dir / "boot.img").read_bytes() == b"new-boot"
+    assert (image_dir / "persist.img").read_bytes() == b"persist"
+    assert (image_dir / "rawprogram1.xml").read_text(encoding="utf-8") == "<data />"
+    assert not image_new_dir.exists()
+
+
+def test_promote_incremental_ota_outputs_preserves_abl_after_resign(tmp_path):
+    image_dir = tmp_path / "image"
+    image_new_dir = tmp_path / "image_new"
+    image_dir.mkdir()
+    image_new_dir.mkdir()
+
+    (image_dir / "abl.elf").write_bytes(b"original-abl")
+    (image_new_dir / "abl.elf").write_bytes(b"patched-abl")
+    (image_new_dir / "boot.img").write_bytes(b"new-boot")
+
+    with patch("ltbox.actions.ota.utils.ui"):
+        ota._promote_incremental_ota_outputs(
+            image_new_dir,
+            image_dir,
+            preserve_abl=True,
+        )
+
+    assert (image_dir / "abl.elf").read_bytes() == b"original-abl"
+    assert (image_dir / "boot.img").read_bytes() == b"new-boot"
+    assert not image_new_dir.exists()
 
 
 def test_resolve_ota_resign_targets_filters_existing_requested_images(tmp_path):
@@ -900,6 +943,118 @@ def test_apply_incremental_ota_prompts_for_resign_before_super_rebuild(tmp_path)
         ota.apply_incremental_ota()
 
     assert order == ["resign", "super"]
+
+
+def test_apply_incremental_ota_promotes_outputs_to_image_dir(tmp_path):
+    payload_bin = tmp_path / "payload.bin"
+    payload_bin.write_bytes(b"payload")
+    zip_path = tmp_path / "update.zip"
+    zip_path.write_bytes(b"zip")
+
+    image_dir = tmp_path / "image"
+    image_new_dir = tmp_path / "image_new"
+    image_dir.mkdir()
+    image_new_dir.mkdir()
+
+    with (
+        patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
+        patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
+        patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
+        patch("ltbox.actions.ota._extract_payload_bin", return_value=payload_bin),
+        patch(
+            "ltbox.actions.ota._get_payload_partition_infos",
+            return_value=[
+                ota.update_engine_payload.PayloadPartitionInfo(
+                    name="system", new_size=24
+                )
+            ],
+        ),
+        patch(
+            "ltbox.actions.ota._build_partition_file_map",
+            return_value={"system": tmp_path / "system.img"},
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_output_filenames",
+            return_value=({"system": "system.img"}, {"system.img": "system.img"}),
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_dynamic_partition_sources",
+            return_value=(None, None),
+        ),
+        patch("ltbox.actions.ota._run_differential_patch"),
+        patch("ltbox.actions.ota._copy_flash_xmls"),
+        patch("ltbox.actions.ota._resolve_ota_resign_targets", return_value={}),
+        patch("ltbox.actions.ota._confirm_ota_output_resign", return_value=False),
+        patch("ltbox.actions.ota._promote_incremental_ota_outputs") as mock_promote,
+    ):
+        ota.apply_incremental_ota()
+
+    mock_promote.assert_called_once_with(
+        image_new_dir,
+        image_dir,
+        preserve_abl=False,
+    )
+
+
+def test_apply_incremental_ota_preserves_abl_when_resign_was_requested(tmp_path):
+    payload_bin = tmp_path / "payload.bin"
+    payload_bin.write_bytes(b"payload")
+    zip_path = tmp_path / "update.zip"
+    zip_path.write_bytes(b"zip")
+
+    image_dir = tmp_path / "image"
+    image_new_dir = tmp_path / "image_new"
+    image_dir.mkdir()
+    image_new_dir.mkdir()
+
+    with (
+        patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
+        patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
+        patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
+        patch("ltbox.actions.ota._extract_payload_bin", return_value=payload_bin),
+        patch(
+            "ltbox.actions.ota._get_payload_partition_infos",
+            return_value=[
+                ota.update_engine_payload.PayloadPartitionInfo(
+                    name="system", new_size=24
+                )
+            ],
+        ),
+        patch(
+            "ltbox.actions.ota._build_partition_file_map",
+            return_value={"system": tmp_path / "system.img"},
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_output_filenames",
+            return_value=({"system": "system.img"}, {"system.img": "system.img"}),
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_dynamic_partition_sources",
+            return_value=(None, None),
+        ),
+        patch("ltbox.actions.ota._run_differential_patch"),
+        patch("ltbox.actions.ota._copy_flash_xmls"),
+        patch(
+            "ltbox.actions.ota._resolve_ota_resign_targets",
+            return_value={"system": tmp_path / "system.img"},
+        ),
+        patch("ltbox.actions.ota._confirm_ota_output_resign", return_value=True),
+        patch("ltbox.actions.ota._resign_incremental_ota_outputs"),
+        patch("ltbox.actions.ota._promote_incremental_ota_outputs") as mock_promote,
+    ):
+        ota.apply_incremental_ota()
+
+    mock_promote.assert_called_once_with(
+        image_new_dir,
+        image_dir,
+        preserve_abl=True,
+    )
 
 
 def test_flash_args(mock_env):
