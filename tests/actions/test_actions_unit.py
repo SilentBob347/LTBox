@@ -746,6 +746,17 @@ def test_replace_vbmeta_descriptors_keeps_root_chain_descriptors_intact():
     )
 
 
+def test_resolve_avbtool_openssl_binary_prefers_local_tool(tmp_path):
+    tool_dir = tmp_path / "tools"
+    tool_dir.mkdir()
+    source_path = tool_dir / "avbtool.py"
+    source_path.write_text("# stub", encoding="utf-8")
+    openssl_path = tool_dir / "openssl.exe"
+    openssl_path.write_text("stub", encoding="utf-8")
+
+    assert avb_patch._resolve_avbtool_openssl_binary(source_path) == str(openssl_path)
+
+
 def test_confirm_dynamic_super_rebuild_accepts_yes():
     with (
         patch("ltbox.actions.ota.utils.ui") as mock_ui,

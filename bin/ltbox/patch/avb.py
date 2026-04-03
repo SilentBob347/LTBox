@@ -39,6 +39,21 @@ def _resolve_avbtool_source_path() -> Path:
     )
 
 
+def _resolve_avbtool_openssl_binary(source_path: Path) -> Optional[str]:
+    tool_dir = source_path.resolve().parent
+    candidates = (
+        "avb_openssl",
+        "avb_openssl.exe",
+        "openssl",
+        "openssl.exe",
+    )
+    for candidate in candidates:
+        candidate_path = tool_dir / candidate
+        if candidate_path.exists():
+            return str(candidate_path)
+    return None
+
+
 @lru_cache(maxsize=4)
 def _load_avbtool_module(source_path: str) -> ModuleType:
     module_name = f"_ltbox_avbtool_{abs(hash(source_path))}"
@@ -51,7 +66,15 @@ def _load_avbtool_module(source_path: str) -> ModuleType:
 
 
 def _get_avbtool_module() -> ModuleType:
-    return _load_avbtool_module(str(_resolve_avbtool_source_path()))
+    source_path = _resolve_avbtool_source_path()
+    module = _load_avbtool_module(str(source_path))
+    openssl_binary = _resolve_avbtool_openssl_binary(source_path)
+    if openssl_binary:
+        module.AVB_OPENSSL = openssl_binary
+        mldsa_cls = getattr(module, "MLDSAPublicKey", None)
+        if mldsa_cls is not None:
+            mldsa_cls._IS_SUPPORTED = None
+    return module
 
 
 def _close_image_handler(image_handler: Any) -> None:
