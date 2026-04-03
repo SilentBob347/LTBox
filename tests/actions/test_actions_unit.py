@@ -312,6 +312,53 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
     }
 
 
+def test_copy_flash_xmls_replaces_legacy_keep_data_xml(mock_env, tmp_path):
+    image_dir = mock_env["IMAGE_DIR"]
+    output_dir = tmp_path / "image_new"
+    output_dir.mkdir()
+
+    rawprogram1 = image_dir / "rawprogram1.xml"
+    rawprogram1.write_text(
+        """<?xml version='1.0'?>
+<data>
+  <program label='boot_a' filename='boot.elf' />
+</data>
+""",
+        encoding="utf-8",
+    )
+    save_persist = image_dir / "rawprogram_save_persist_unsparse0.xml"
+    save_persist.write_text(
+        """<?xml version='1.0'?>
+<data>
+  <program label='system' filename='system.img' />
+  <program label='userdata' filename='userdata.img' />
+  <program label='metadata' filename='metadata.img' />
+</data>
+""",
+        encoding="utf-8",
+    )
+    patch0 = image_dir / "patch0.xml"
+    patch0.write_text(
+        """<?xml version='1.0'?>
+<patches>
+  <patch filename="boot.elf" />
+</patches>
+""",
+        encoding="utf-8",
+    )
+
+    ota._copy_flash_xmls(
+        output_dir,
+        [rawprogram1, save_persist],
+        {"boot.elf": "boot.elf"},
+    )
+
+    assert (output_dir / "rawprogram1.xml").exists()
+    assert (output_dir / "patch0.xml").exists()
+    assert (output_dir / "rawprogram_save_persist_ota_unsparse0.xml").exists()
+    assert not (output_dir / "rawprogram_save_persist_unsparse0.xml").exists()
+
+
 def test_confirm_dynamic_super_rebuild_accepts_yes():
     with (
         patch("ltbox.actions.ota.utils.ui") as mock_ui,
