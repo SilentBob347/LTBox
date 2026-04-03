@@ -16,6 +16,7 @@ from ltbox.patch.avb import (
     patch_vbmeta_image_rollback,
     vbmeta_has_chain_partition,
 )
+from ltbox.xml_catalog import PartitionRecord, XmlCatalog
 
 
 def create_xmls(img_dir, names):
@@ -152,11 +153,52 @@ def test_resolve_delta_generator_command_uses_bundled_tool(tmp_path):
     assert command[4].endswith("/tools/otatools/linux/bin/delta_generator")
 
 
+def test_resolve_output_filenames_preserves_original_xml_filenames():
+    catalog = XmlCatalog(
+        [
+            PartitionRecord(
+                label="xbl_a",
+                filename="xbl.elf",
+                lun="0",
+                start_sector="0",
+                num_sectors="1",
+                source_xml="rawprogram0.xml",
+                size_in_kb=None,
+                sector_size_bytes="4096",
+            ),
+            PartitionRecord(
+                label="vbmeta_a",
+                filename="vbmeta.img",
+                lun="0",
+                start_sector="1",
+                num_sectors="1",
+                source_xml="rawprogram0.xml",
+                size_in_kb=None,
+                sector_size_bytes="4096",
+            ),
+        ]
+    )
+
+    output_filenames, xml_filename_updates = ota._resolve_output_filenames(
+        ["xbl", "vbmeta", "system"], catalog
+    )
+
+    assert output_filenames == {
+        "xbl": "xbl.elf",
+        "vbmeta": "vbmeta.img",
+        "system": "system.img",
+    }
+    assert xml_filename_updates == {
+        "xbl.elf": "xbl.elf",
+        "vbmeta.img": "vbmeta.img",
+    }
+
+
 def test_run_differential_patch_uses_delta_generator(tmp_path):
     payload_bin = tmp_path / "payload.bin"
     payload_bin.write_bytes(b"payload")
 
-    old_boot = tmp_path / "boot.img"
+    old_boot = tmp_path / "boot.elf"
     old_boot.write_bytes(b"old-boot")
     old_system = tmp_path / "system.img"
     old_system.write_bytes(b"old-system")
@@ -164,6 +206,7 @@ def test_run_differential_patch_uses_delta_generator(tmp_path):
     output_dir = tmp_path / "image_new"
     file_map = {"boot": old_boot, "system": old_system}
     new_sizes = {"boot": 16, "system": 24}
+    output_filenames = {"boot": "boot.elf", "system": "system.img"}
 
     runner = MagicMock()
 
@@ -181,7 +224,12 @@ def test_run_differential_patch_uses_delta_generator(tmp_path):
         patch("ltbox.actions.ota.utils.ui"),
     ):
         ota._run_differential_patch(
-            payload_bin, ["boot", "system"], output_dir, file_map, new_sizes
+            payload_bin,
+            ["boot", "system"],
+            output_dir,
+            file_map,
+            new_sizes,
+            output_filenames,
         )
 
     command = runner.run.call_args.args[0]
@@ -197,14 +245,14 @@ def test_run_differential_patch_uses_delta_generator(tmp_path):
         for arg in command
     )
     assert any(
-        arg.startswith("-old_partitions=/mnt/") and "/boot.img:/mnt/" in arg
+        arg.startswith("-old_partitions=/mnt/") and "/boot.elf:/mnt/" in arg
         for arg in command
     )
     assert any(
-        arg.startswith("-new_partitions=/mnt/") and "/boot.img:/mnt/" in arg
+        arg.startswith("-new_partitions=/mnt/") and "/boot.elf:/mnt/" in arg
         for arg in command
     )
-    assert (output_dir / "boot.img").stat().st_size == 16
+    assert (output_dir / "boot.elf").stat().st_size == 16
     assert (output_dir / "system.img").stat().st_size == 24
 
 
@@ -237,18 +285,31 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
             },
         ) as mock_build_map,
         patch(
+            "ltbox.actions.ota._resolve_output_filenames",
+            return_value=(
+                {"boot": "boot.elf", "system": "system.img"},
+                {"boot.img": "boot.elf", "system.img": "system.img"},
+            ),
+        ) as mock_output_names,
+        patch(
             "ltbox.actions.ota._resolve_dynamic_partition_sources",
             return_value=(None, None),
         ),
         patch("ltbox.actions.ota._run_differential_patch") as mock_patch,
-        patch("ltbox.actions.ota._copy_flash_xmls"),
+        patch("ltbox.actions.ota._copy_flash_xmls") as mock_copy_xmls,
     ):
         ota.apply_incremental_ota()
 
     mock_build_map.assert_called_once()
+    mock_output_names.assert_called_once()
     assert mock_build_map.call_args.args[0] == ["boot", "system"]
     assert mock_patch.call_args.args[1] == ["boot", "system"]
     assert mock_patch.call_args.args[4] == {"boot": 16, "system": 24}
+    assert mock_patch.call_args.args[5] == {"boot": "boot.elf", "system": "system.img"}
+    assert mock_copy_xmls.call_args.args[2] == {
+        "boot.img": "boot.elf",
+        "system.img": "system.img",
+    }
 
 
 def test_confirm_dynamic_super_rebuild_accepts_yes():

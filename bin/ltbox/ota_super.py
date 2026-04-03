@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import struct
 import xml.etree.ElementTree as ET
@@ -541,6 +542,47 @@ def copy_flash_xmls(
         copied.append(destination)
 
     return copied
+
+
+def rewrite_xml_filenames(
+    xml_paths: Iterable[Path], filename_map: dict[str, str]
+) -> list[Path]:
+    normalized_map = {
+        old_name.strip(): Path(new_name).name
+        for old_name, new_name in filename_map.items()
+        if old_name.strip() and Path(new_name).name
+    }
+    if not normalized_map:
+        return []
+
+    updated_paths: list[Path] = []
+    pattern = re.compile(
+        r"(?P<prefix>\bfilename\s*=\s*)(?P<quote>[\"'])(?P<name>.*?)(?P=quote)"
+    )
+
+    for xml_path in xml_paths:
+        xml_text = xml_path.read_text(encoding="utf-8")
+        changed = False
+
+        def _replace(match: re.Match[str]) -> str:
+            nonlocal changed
+            old_name = match.group("name")
+            new_name = normalized_map.get(old_name)
+            if not new_name or new_name == old_name:
+                return match.group(0)
+            changed = True
+            return (
+                f"{match.group('prefix')}{match.group('quote')}"
+                f"{new_name}{match.group('quote')}"
+            )
+
+        updated_text = pattern.sub(_replace, xml_text)
+        if not changed:
+            continue
+        xml_path.write_text(updated_text, encoding="utf-8")
+        updated_paths.append(xml_path)
+
+    return updated_paths
 
 
 def create_keep_data_ota_xml(output_dir: Path) -> Path:

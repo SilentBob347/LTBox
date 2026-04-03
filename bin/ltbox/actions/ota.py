@@ -83,6 +83,25 @@ def _build_partition_file_map(
     return file_map
 
 
+def _resolve_output_filenames(
+    partitions: List[str], catalog: XmlCatalog
+) -> tuple[dict[str, str], dict[str, str]]:
+    output_filenames: dict[str, str] = {}
+    xml_filename_updates: dict[str, str] = {}
+
+    for name in partitions:
+        record = catalog.find_partition(name) or catalog.find_partition(f"{name}_a")
+        if record and record.filename:
+            output_filename = Path(record.filename).name
+            xml_filename_updates[record.filename] = output_filename
+        else:
+            output_filename = f"{name}.img"
+
+        output_filenames[name] = output_filename
+
+    return output_filenames, xml_filename_updates
+
+
 def _verify_source_images(partitions: List[str], file_map: dict[str, Path]) -> None:
     missing = [name for name in partitions if name not in file_map]
     if missing:
@@ -139,6 +158,7 @@ def _run_differential_patch(
     output_dir: Path,
     file_map: dict[str, Path],
     new_sizes: dict[str, int],
+    output_filenames: dict[str, str],
 ) -> None:
     utils.recreate_dir(output_dir)
 
@@ -147,7 +167,7 @@ def _run_differential_patch(
 
     new_images = []
     for name in partitions:
-        image_path = output_dir / f"{name}.img"
+        image_path = output_dir / output_filenames.get(name, f"{name}.img")
         image_path.parent.mkdir(parents=True, exist_ok=True)
         with open(image_path, "wb") as f:
             f.truncate(new_sizes[name])
@@ -219,7 +239,11 @@ def _windows_to_wsl_path(path: Path) -> str:
     return f"/mnt/{drive}/{tail}"
 
 
-def _copy_flash_xmls(output_dir: Path, rawprogram_paths: List[Path]) -> None:
+def _copy_flash_xmls(
+    output_dir: Path,
+    rawprogram_paths: List[Path],
+    xml_filename_updates: dict[str, str],
+) -> None:
     patch_paths: list[Path] = []
     seen_patch_names: set[str] = set()
     candidate_dirs = {const.IMAGE_DIR, *[path.parent for path in rawprogram_paths]}
@@ -230,7 +254,8 @@ def _copy_flash_xmls(output_dir: Path, rawprogram_paths: List[Path]) -> None:
             seen_patch_names.add(patch_path.name)
             patch_paths.append(patch_path)
 
-    ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
+    copied_xmls = ota_super.copy_flash_xmls(rawprogram_paths, patch_paths, output_dir)
+    ota_super.rewrite_xml_filenames(copied_xmls, xml_filename_updates)
     ota_super.create_keep_data_ota_xml(output_dir)
 
 
@@ -319,6 +344,9 @@ def apply_incremental_ota() -> None:
 
         # Resolve actual filenames from rawprogram XMLs
         file_map = _build_partition_file_map(partitions, catalog)
+        output_filenames, xml_filename_updates = _resolve_output_filenames(
+            partitions, catalog
+        )
         super_layout, extracted_dynamic_dir = _resolve_dynamic_partition_sources(
             partitions,
             file_map,
@@ -328,9 +356,14 @@ def apply_incremental_ota() -> None:
 
         # Run differential patch
         _run_differential_patch(
-            payload_bin, partitions, const.IMAGE_NEW_DIR, file_map, partition_sizes
+            payload_bin,
+            partitions,
+            const.IMAGE_NEW_DIR,
+            file_map,
+            partition_sizes,
+            output_filenames,
         )
-        _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths)
+        _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths, xml_filename_updates)
         if super_layout is not None and extracted_dynamic_dir is not None:
             if not _confirm_dynamic_super_rebuild():
                 utils.ui.echo(

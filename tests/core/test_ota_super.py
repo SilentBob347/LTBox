@@ -17,6 +17,7 @@ from ltbox.ota_super import (
     create_keep_data_ota_xml,
     extract_partition_images,
     parse_super_layout,
+    rewrite_xml_filenames,
     split_rebuilt_super,
 )
 from ltbox.xml_catalog import PartitionRecord
@@ -428,3 +429,37 @@ def test_create_keep_data_ota_xml_blanks_userdata_and_metadata(tmp_path):
     assert files["system"] == "system.img"
     assert files["userdata"] == ""
     assert files["metadata"] == ""
+
+
+def test_rewrite_xml_filenames_updates_rawprogram_and_patch_entries(tmp_path):
+    rawprogram_xml = tmp_path / "rawprogram0.xml"
+    patch_xml = tmp_path / "patch0.xml"
+    rawprogram_xml.write_text(
+        """<?xml version='1.0'?>
+<data>
+  <program label='xbl_a' filename='xbl.img' />
+  <program label='vbmeta_a' filename='vbmeta.img' />
+</data>
+""",
+        encoding="utf-8",
+    )
+    patch_xml.write_text(
+        """<?xml version='1.0'?>
+<patches>
+  <patch filename="xbl.img" />
+  <patch filename="DISK" />
+</patches>
+""",
+        encoding="utf-8",
+    )
+
+    updated = rewrite_xml_filenames(
+        [rawprogram_xml, patch_xml],
+        {"xbl.img": "xbl.elf", "vbmeta.img": "vbmeta.bin"},
+    )
+
+    assert updated == [rawprogram_xml, patch_xml]
+    assert "filename='xbl.elf'" in rawprogram_xml.read_text(encoding="utf-8")
+    assert "filename='vbmeta.bin'" in rawprogram_xml.read_text(encoding="utf-8")
+    assert 'filename="xbl.elf"' in patch_xml.read_text(encoding="utf-8")
+    assert 'filename="DISK"' in patch_xml.read_text(encoding="utf-8")
