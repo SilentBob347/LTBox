@@ -845,5 +845,6 @@
   "ota_super_repack_start": "[*] 开始重新打包 super...",
   "ota_wait_resign_key": "[步骤 1] 请将 '{key}' 放入 '{dir}' 文件夹。",
   "ota_resign_standalone_complete": "[+] 测试密钥重签名完成。结果已保存到 '{dir}'。",
-  "ota_wait_super_source": "[步骤 1] 请将原始固件的 'super_*.img' 和 'rawprogram*.xml' 文件放入 '{dir}' 文件夹。"
+  "ota_wait_super_source": "[步骤 1] 请将原始固件的 'super_*.img' 和 'rawprogram*.xml' 文件放入 '{dir}' 文件夹。",
+  "ota_err_wsl_required": "[!] 此功能需要 WSL。请先安装并完成 WSL 初始设置后再试。"
 }

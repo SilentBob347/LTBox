@@ -845,5 +845,6 @@
   "ota_super_repack_start": "[*] Запуск пересборки super...",
   "ota_wait_resign_key": "[ШАГ 1] Поместите '{key}' в папку '{dir}'.",
   "ota_resign_standalone_complete": "[+] Переподпись тестовыми ключами завершена. Результаты сохранены в '{dir}'.",
-  "ota_wait_super_source": "[ШАГ 1] Поместите файлы исходной прошивки 'super_*.img' и 'rawprogram*.xml' в папку '{dir}'."
+  "ota_wait_super_source": "[ШАГ 1] Поместите файлы исходной прошивки 'super_*.img' и 'rawprogram*.xml' в папку '{dir}'.",
+  "ota_err_wsl_required": "[!] Для этой функции требуется WSL. Установите и завершите первоначальную настройку WSL, затем повторите попытку."
 }

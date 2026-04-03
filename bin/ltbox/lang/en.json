@@ -845,5 +845,6 @@
   "ota_super_repack_start": "[*] Starting super repack...",
   "ota_wait_resign_key": "[STEP 1] Place '{key}' into the '{dir}' folder.",
   "ota_resign_standalone_complete": "[+] Test-key resign complete. Outputs were saved to '{dir}'.",
-  "ota_wait_super_source": "[STEP 1] Place the source firmware's 'super_*.img' and 'rawprogram*.xml' files into the '{dir}' folder."
+  "ota_wait_super_source": "[STEP 1] Place the source firmware's 'super_*.img' and 'rawprogram*.xml' files into the '{dir}' folder.",
+  "ota_err_wsl_required": "[!] This feature requires WSL. Install and set up WSL, then try again."
 }

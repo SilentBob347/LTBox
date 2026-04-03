@@ -307,6 +307,32 @@ def _run_differential_patch(
     utils.ui.echo(get_string("ota_patch_complete").format(dir=output_dir.name))
 
 
+def _wsl_is_available() -> bool:
+    wsl_exe = shutil.which("wsl.exe")
+    if not wsl_exe:
+        return False
+
+    try:
+        result = subprocess.run(
+            [wsl_exe, "--exec", "/usr/bin/env", "true"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return result.returncode == 0
+
+
+def _ensure_wsl_available() -> None:
+    if _wsl_is_available():
+        return
+    raise ToolError(get_string("ota_err_wsl_required"))
+
+
 def _resolve_otatools_linux_command(tool_path: Path) -> list[str]:
     if not tool_path.exists():
         raise ToolError(
@@ -314,11 +340,10 @@ def _resolve_otatools_linux_command(tool_path: Path) -> list[str]:
             f"{tool_path}. Re-download or re-extract the LTBox release package."
         )
 
+    _ensure_wsl_available()
     wsl_exe = shutil.which("wsl.exe")
     if not wsl_exe:
-        raise ToolError(
-            "WSL is required for OTA super rebuilding. Install WSL and re-run LTBox."
-        )
+        raise ToolError(get_string("ota_err_wsl_required"))
 
     ld_library_paths = []
     for lib_dir in (const.OTATOOLS_LINUX_LIB64_DIR, const.OTATOOLS_LINUX_LIB_DIR):
@@ -794,6 +819,7 @@ def _copy_flash_xmls_for_super_repack(
 
 
 def repack_super_images() -> None:
+    _ensure_wsl_available()
     utils.ui.echo(get_string("ota_super_repack_start"))
     rawprogram_paths, _catalog, layout = _wait_for_source_super_layout()
 
@@ -824,6 +850,7 @@ def resign_firmware_with_testkeys() -> None:
 
 
 def apply_incremental_ota() -> None:
+    _ensure_wsl_available()
     utils.ui.echo(get_string("ota_start"))
 
     # Find zip files in ota folder

@@ -136,8 +136,14 @@ def test_resolve_lpmake_command_requires_wsl(tmp_path):
         ),
         patch("ltbox.actions.ota.shutil.which", return_value=None),
     ):
-        with pytest.raises(ToolError, match="WSL is required"):
+        with pytest.raises(ToolError, match="requires WSL"):
             ota._resolve_lpmake_command()
+
+
+def test_ensure_wsl_available_requires_ready_wsl():
+    with patch("ltbox.actions.ota.shutil.which", return_value=None):
+        with pytest.raises(ToolError, match="WSL"):
+            ota._ensure_wsl_available()
 
 
 def test_resolve_delta_generator_command_uses_bundled_tool(tmp_path):
@@ -327,6 +333,20 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
     }
 
 
+def test_apply_incremental_ota_checks_wsl_before_loading_inputs():
+    with (
+        patch(
+            "ltbox.actions.ota._ensure_wsl_available",
+            side_effect=ToolError("WSL required"),
+        ),
+        patch("ltbox.actions.ota._find_zip_files") as mock_find_zip_files,
+    ):
+        with pytest.raises(ToolError, match="WSL required"):
+            ota.apply_incremental_ota()
+
+    mock_find_zip_files.assert_not_called()
+
+
 def test_copy_flash_xmls_updates_keep_data_xml_in_place(mock_env, tmp_path):
     image_dir = mock_env["IMAGE_DIR"]
     output_dir = tmp_path / "image_new"
@@ -475,6 +495,20 @@ def test_repack_super_images_rebuilds_super_into_image_new(tmp_path):
     mock_extract.assert_called_once_with(layout, extracted_dynamic_dir)
     mock_rebuild.assert_called_once_with(layout, extracted_dynamic_dir)
     assert not ota_working_dir.exists()
+
+
+def test_repack_super_images_checks_wsl_before_waiting_for_inputs():
+    with (
+        patch(
+            "ltbox.actions.ota._ensure_wsl_available",
+            side_effect=ToolError("WSL required"),
+        ),
+        patch("ltbox.actions.ota._wait_for_source_super_layout") as mock_wait_layout,
+    ):
+        with pytest.raises(ToolError, match="WSL required"):
+            ota.repack_super_images()
+
+    mock_wait_layout.assert_not_called()
 
 
 def test_resign_firmware_with_testkeys_prepares_targets_in_image_new(tmp_path):
