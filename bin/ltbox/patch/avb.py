@@ -182,11 +182,12 @@ def _apply_avb_integrity_footer(
     utils.ui.info(get_string("img_footer_success").format(name=image_path.name))
 
 
-def _resign_avb_image(
+def resign_avb_image(
     image_path: Path,
     key_file: Path,
     algorithm: str,
     rollback_index: Optional[int] = None,
+    auto_resize: bool = False,
 ) -> None:
     avbtool = utils.AvbToolWrapper()
     cmd: List[Any] = [
@@ -198,9 +199,25 @@ def _resign_avb_image(
         "--algorithm",
         algorithm,
     ]
+    if auto_resize:
+        cmd.append("--auto_resize")
     if rollback_index is not None:
         cmd.extend(["--rollback_index", rollback_index])
     avbtool.run(*cmd)
+
+
+def _resign_avb_image(
+    image_path: Path,
+    key_file: Path,
+    algorithm: str,
+    rollback_index: Optional[int] = None,
+) -> None:
+    resign_avb_image(
+        image_path=image_path,
+        key_file=key_file,
+        algorithm=algorithm,
+        rollback_index=rollback_index,
+    )
 
 
 def _update_vbmeta_partition_descriptor(

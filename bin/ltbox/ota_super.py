@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 import shutil
 import struct
@@ -149,6 +150,16 @@ class SuperLayout:
             ):
                 return partition
         return None
+
+
+@dataclass(frozen=True)
+class SuperFlashChunk:
+    filename: str
+    start_sector: int
+    num_sectors: int
+    sector_size_bytes: int
+    source_offset_bytes: int
+    size_bytes: int
 
 
 def _find_geometry_offset(data: bytes) -> int:
@@ -340,6 +351,25 @@ def _parse_metadata(
     return header_flags, tuple(block_devices), tuple(groups), tuple(partitions)
 
 
+def _dedupe_super_records(
+    super_records: Sequence[PartitionRecord],
+) -> list[PartitionRecord]:
+    unique_records: list[PartitionRecord] = []
+    seen_keys: set[tuple[str, int, int, int]] = set()
+    for record in super_records:
+        key = (
+            record.filename.strip().lower(),
+            int(record.start_sector or "0"),
+            int(record.num_sectors or "0"),
+            int(record.sector_size_bytes or LP_SECTOR_SIZE),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_records.append(record)
+    return unique_records
+
+
 def parse_super_layout(
     super_records: Sequence[PartitionRecord],
     image_dir: Path,
@@ -354,6 +384,7 @@ def parse_super_layout(
     usable_records = [record for record in ordered_records if record.filename]
     if not usable_records:
         raise MissingFileError("no usable super chunks were found")
+    usable_records = _dedupe_super_records(usable_records)
 
     first_sector_size_bytes = int(usable_records[0].sector_size_bytes or LP_SECTOR_SIZE)
     first_start_byte = (
@@ -370,6 +401,13 @@ def parse_super_layout(
         sector_size_bytes = int(record.sector_size_bytes or LP_SECTOR_SIZE)
         start_byte = start_sector * sector_size_bytes
         size_bytes = num_sectors * sector_size_bytes
+        actual_size_bytes = chunk_path.stat().st_size
+        if actual_size_bytes != size_bytes:
+            raise ToolError(
+                "super chunk size mismatch for "
+                f"{chunk_path.name}: expected {size_bytes} bytes from XML, "
+                f"found {actual_size_bytes}"
+            )
         chunks.append(
             SuperChunk(
                 filename=record.filename,
@@ -378,7 +416,7 @@ def parse_super_layout(
                 num_sectors=num_sectors,
                 sector_size_bytes=sector_size_bytes,
                 start_byte=start_byte,
-                size_bytes=size_bytes,
+                size_bytes=actual_size_bytes,
                 relative_start_byte=start_byte - first_start_byte,
             )
         )
@@ -393,6 +431,45 @@ def parse_super_layout(
         groups=groups,
         partitions=partitions,
         chunks=tuple(chunks),
+    )
+
+
+def parse_full_super_image(
+    super_image: Path,
+    *,
+    start_sector: int = 0,
+    sector_size_bytes: int = LP_SECTOR_SIZE,
+) -> SuperLayout:
+    if not super_image.exists():
+        raise MissingFileError(f"rebuilt super image not found: {super_image.name}")
+
+    size_bytes = super_image.stat().st_size
+    num_sectors = (
+        (size_bytes + sector_size_bytes - 1) // sector_size_bytes
+        if sector_size_bytes > 0
+        else 0
+    )
+    geometry = _parse_geometry(super_image)
+    header_flags, block_devices, groups, partitions = _parse_metadata(super_image)
+
+    return SuperLayout(
+        geometry=geometry,
+        header_flags=header_flags,
+        block_devices=block_devices,
+        groups=groups,
+        partitions=partitions,
+        chunks=(
+            SuperChunk(
+                filename=super_image.name,
+                path=super_image,
+                start_sector=start_sector,
+                num_sectors=num_sectors,
+                sector_size_bytes=sector_size_bytes,
+                start_byte=start_sector * sector_size_bytes,
+                size_bytes=size_bytes,
+                relative_start_byte=0,
+            ),
+        ),
     )
 
 
@@ -510,6 +587,81 @@ def build_lpmake_command(
     return command
 
 
+def plan_rebuilt_super_chunks(
+    source_layout: SuperLayout,
+    rebuilt_layout: SuperLayout,
+) -> tuple[SuperFlashChunk, ...]:
+    if not source_layout.chunks:
+        raise ToolError("source super layout does not define any chunks")
+
+    metadata_chunk = source_layout.chunks[0]
+    flash_sector_size = metadata_chunk.sector_size_bytes
+    base_start_sector = metadata_chunk.start_sector
+
+    planned_chunks: list[SuperFlashChunk] = [
+        SuperFlashChunk(
+            filename=metadata_chunk.filename,
+            start_sector=metadata_chunk.start_sector,
+            num_sectors=metadata_chunk.num_sectors,
+            sector_size_bytes=metadata_chunk.sector_size_bytes,
+            source_offset_bytes=0,
+            size_bytes=metadata_chunk.size_bytes,
+        )
+    ]
+
+    data_chunks: list[SuperFlashChunk] = []
+    for partition in rebuilt_layout.partitions:
+        if partition.slot_suffix == "b" or partition.logical_size <= 0:
+            continue
+        for extent in partition.extents:
+            if extent.target_type == LP_TARGET_TYPE_ZERO:
+                continue
+            if extent.target_type != LP_TARGET_TYPE_LINEAR:
+                raise ToolError(
+                    f"unsupported super extent type {extent.target_type} for {partition.name}"
+                )
+
+            source_offset_bytes = extent.target_data * LP_SECTOR_SIZE
+            size_bytes = extent.num_sectors * LP_SECTOR_SIZE
+            if size_bytes <= 0:
+                continue
+            if source_offset_bytes % flash_sector_size != 0:
+                raise ToolError(
+                    f"super extent offset is not aligned to XML sector size: {partition.name}"
+                )
+            if size_bytes % flash_sector_size != 0:
+                raise ToolError(
+                    f"super extent size is not aligned to XML sector size: {partition.name}"
+                )
+
+            data_chunks.append(
+                SuperFlashChunk(
+                    filename="",
+                    start_sector=base_start_sector
+                    + (source_offset_bytes // flash_sector_size),
+                    num_sectors=size_bytes // flash_sector_size,
+                    sector_size_bytes=flash_sector_size,
+                    source_offset_bytes=source_offset_bytes,
+                    size_bytes=size_bytes,
+                )
+            )
+
+    data_chunks.sort(key=lambda chunk: chunk.source_offset_bytes)
+    for index, chunk in enumerate(data_chunks, start=2):
+        planned_chunks.append(
+            SuperFlashChunk(
+                filename=f"super_{index}.img",
+                start_sector=chunk.start_sector,
+                num_sectors=chunk.num_sectors,
+                sector_size_bytes=chunk.sector_size_bytes,
+                source_offset_bytes=chunk.source_offset_bytes,
+                size_bytes=chunk.size_bytes,
+            )
+        )
+
+    return tuple(planned_chunks)
+
+
 def split_rebuilt_super(
     layout: SuperLayout, super_image: Path, output_dir: Path
 ) -> list[Path]:
@@ -521,8 +673,46 @@ def split_rebuilt_super(
     with open(super_image, "rb") as source:
         for chunk in layout.chunks:
             chunk_path = output_dir / chunk.filename
+            source.seek(chunk.relative_start_byte)
+            chunk_bytes = source.read(chunk.size_bytes)
+            if len(chunk_bytes) != chunk.size_bytes:
+                raise ToolError(
+                    f"unexpected EOF while reading rebuilt super for {chunk.filename}"
+                )
             with open(chunk_path, "wb") as target:
-                target.write(source.read(chunk.size_bytes))
+                target.write(chunk_bytes)
+            created_files.append(chunk_path)
+
+    return created_files
+
+
+def write_rebuilt_super_chunks(
+    super_image: Path,
+    chunk_plans: Sequence[SuperFlashChunk],
+    output_dir: Path,
+) -> list[Path]:
+    if not super_image.exists():
+        raise MissingFileError(f"rebuilt super image not found: {super_image.name}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    desired_names = {chunk.filename for chunk in chunk_plans}
+    for stale_chunk in output_dir.glob("super_*.img"):
+        if stale_chunk.name not in desired_names:
+            stale_chunk.unlink()
+
+    created_files: list[Path] = []
+    with open(super_image, "rb") as source:
+        for chunk in chunk_plans:
+            source.seek(chunk.source_offset_bytes)
+            chunk_bytes = source.read(chunk.size_bytes)
+            if len(chunk_bytes) != chunk.size_bytes:
+                raise ToolError(
+                    f"unexpected EOF while writing rebuilt super chunk {chunk.filename}"
+                )
+
+            chunk_path = output_dir / chunk.filename
+            with open(chunk_path, "wb") as target:
+                target.write(chunk_bytes)
             created_files.append(chunk_path)
 
     return created_files
@@ -580,6 +770,51 @@ def rewrite_xml_filenames(
         if not changed:
             continue
         xml_path.write_text(updated_text, encoding="utf-8")
+        updated_paths.append(xml_path)
+
+    return updated_paths
+
+
+def rewrite_super_xml_entries(
+    xml_paths: Iterable[Path],
+    chunk_plans: Sequence[SuperFlashChunk],
+) -> list[Path]:
+    updated_paths: list[Path] = []
+    for xml_path in xml_paths:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        children = list(root)
+        super_nodes = [
+            (index, node)
+            for index, node in enumerate(children)
+            if node.tag == "program" and (node.get("label") or "").lower() == "super"
+        ]
+        if not super_nodes:
+            continue
+
+        insertion_index = super_nodes[0][0]
+        template = copy.deepcopy(super_nodes[0][1])
+        for _, node in reversed(super_nodes):
+            root.remove(node)
+
+        for offset, chunk in enumerate(chunk_plans):
+            program = copy.deepcopy(template)
+            program.set("filename", chunk.filename)
+            program.set("start_sector", str(chunk.start_sector))
+            program.set("num_partition_sectors", str(chunk.num_sectors))
+            program.set("SECTOR_SIZE_IN_BYTES", str(chunk.sector_size_bytes))
+
+            size_in_kb = chunk.size_bytes // 1024
+            if "size_in_KB" in program.attrib:
+                program.set("size_in_KB", str(size_in_kb))
+            if "size_in_kb" in program.attrib:
+                program.set("size_in_kb", str(size_in_kb))
+
+            root.insert(insertion_index + offset, program)
+
+        if hasattr(ET, "indent"):
+            ET.indent(tree, space="  ")
+        tree.write(xml_path, encoding="utf-8", xml_declaration=True)
         updated_paths.append(xml_path)
 
     return updated_paths

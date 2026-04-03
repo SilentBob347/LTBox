@@ -822,5 +822,15 @@
   "task_title_apply_ota": "Apply Incremental OTA Patch",
   "ota_super_rebuild_skipped": "[*] Super rebuild skipped. Patched images and flash XML remain in '{dir}'.",
   "ota_super_rebuild_ready": "[*] Dynamic partition patching is complete. Patched images and flash XML are ready in '{dir}'.",
-  "ota_super_rebuild_prompt": "Rebuild the super images now (y/n): "
+  "ota_super_rebuild_prompt": "Rebuild the super images now (y/n): ",
+  "ota_err_missing_resign_key": "[!] Required OTA resign key missing: {path}",
+  "ota_err_unsupported_resign_algorithm": "[!] Unsupported AVB resign algorithm for OTA output: {algorithm}",
+  "ota_resign_ready": "[*] OTA patching is complete. AVB re-sign candidates: {images}",
+  "ota_resign_scanning": "[*] Scanning OTA output images for AVB signatures...",
+  "ota_resign_scan_image": "[*] Checking {name}...",
+  "ota_resign_skip_unreadable": "[*] {name}: AVB metadata could not be read. Skipping. ({e})",
+  "ota_resign_summary": "[*] OTA image re-sign complete. Re-signed: {resigned}, NONE skipped: {skipped_none}, unreadable skipped: {skipped_scan}",
+  "ota_resign_prompt": "Re-sign these images now (y/n): ",
+  "ota_resign_done_image": "[+] Re-signed {name} with {key} ({algorithm}).",
+  "ota_resign_skip_none": "[*] {name}: algorithm is NONE. Skipping."
 }

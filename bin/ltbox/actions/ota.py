@@ -8,9 +8,32 @@ from .. import constants as const
 from .. import ota_super, partition, update_engine_payload, utils
 from ..errors import MissingFileError, ToolError
 from ..i18n import get_string
+from ..patch.avb import extract_image_avb_info, resign_avb_image
 from ..process_runner import CommandRunner, RunOptions
 from ..prompt_helpers import prompt_yes_no
 from ..xml_catalog import PartitionGroup, XmlCatalog
+
+_OTA_AVB_RESIGN_TARGETS = (
+    "boot",
+    "dtbo",
+    "init_boot",
+    "odm",
+    "product",
+    "pvmfw",
+    "recovery",
+    "system_ext",
+    "system",
+    "system_dlkm",
+    "vendor",
+    "vendor_boot",
+    "vendor_dlkm",
+    "vbmeta_system",
+)
+_OTA_AVB_DEFAULT_RESIGN_KEY_NAME = "testkey_rsa4096.pem"
+_OTA_AVB_DEFAULT_RSA_BITS = 4096
+_OTA_AVB_SPECIAL_RESIGN_KEYS = {
+    "vbmeta_system": ("testkey_rsa2048.pem", 2048),
+}
 
 
 def _find_zip_files() -> List[Path]:
@@ -263,6 +286,141 @@ def _copy_flash_xmls(
         legacy_keep_data_xml.unlink()
 
 
+def _resolve_ota_resign_targets(
+    output_dir: Path,
+    output_filenames: dict[str, str],
+) -> dict[str, Path]:
+    targets: dict[str, Path] = {}
+    for partition_name in _OTA_AVB_RESIGN_TARGETS:
+        image_name = output_filenames.get(partition_name, f"{partition_name}.img")
+        image_path = output_dir / image_name
+        if image_path.exists():
+            targets[partition_name] = image_path
+    return targets
+
+
+def _confirm_ota_output_resign(candidate_paths: dict[str, Path]) -> bool:
+    if not candidate_paths:
+        return False
+
+    utils.ui.echo("")
+    utils.ui.echo(
+        get_string("ota_resign_ready").format(
+            images=", ".join(path.name for path in candidate_paths.values())
+        )
+    )
+    return bool(
+        prompt_yes_no(
+            get_string("ota_resign_prompt"),
+            input_func=utils.ui.prompt,
+            error_message=get_string("act_invalid_selection"),
+            error_func=utils.ui.error,
+        )
+    )
+
+
+def _resolve_ota_testkey_path(key_name: str) -> Path:
+    key_path = const.TOOLS_DIR / key_name
+    if not key_path.exists():
+        raise MissingFileError(
+            get_string("ota_err_missing_resign_key").format(path=key_path)
+        )
+    return key_path
+
+
+def _resolve_testkey_resign_algorithm(
+    original_algorithm: str,
+    rsa_bits: int,
+) -> str:
+    normalized = original_algorithm.upper()
+    if normalized == "NONE":
+        return normalized
+
+    parts = normalized.split("_")
+    if (
+        len(parts) != 2
+        or not parts[0].startswith("SHA")
+        or not parts[1].startswith("RSA")
+    ):
+        raise ToolError(
+            get_string("ota_err_unsupported_resign_algorithm").format(
+                algorithm=original_algorithm
+            )
+        )
+    return f"{parts[0]}_RSA{rsa_bits}"
+
+
+def _resolve_ota_resign_policy(
+    partition_name: str, original_algorithm: str
+) -> tuple[Path, str]:
+    key_name, rsa_bits = _OTA_AVB_SPECIAL_RESIGN_KEYS.get(
+        partition_name,
+        (_OTA_AVB_DEFAULT_RESIGN_KEY_NAME, _OTA_AVB_DEFAULT_RSA_BITS),
+    )
+    return (
+        _resolve_ota_testkey_path(key_name),
+        _resolve_testkey_resign_algorithm(original_algorithm, rsa_bits),
+    )
+
+
+def _resign_incremental_ota_outputs(candidate_paths: dict[str, Path]) -> None:
+    if not candidate_paths:
+        return
+
+    resigned_count = 0
+    skipped_none_count = 0
+    skipped_unreadable_count = 0
+
+    utils.ui.echo(get_string("ota_resign_scanning"))
+
+    for partition_name, image_path in candidate_paths.items():
+        utils.ui.echo(get_string("ota_resign_scan_image").format(name=image_path.name))
+        try:
+            image_info = extract_image_avb_info(image_path)
+        except subprocess.CalledProcessError as e:
+            skipped_unreadable_count += 1
+            utils.ui.echo(
+                get_string("ota_resign_skip_unreadable").format(
+                    name=image_path.name, e=e
+                )
+            )
+            continue
+
+        algorithm = str(image_info.get("algorithm", "NONE")).upper()
+        if algorithm == "NONE":
+            skipped_none_count += 1
+            utils.ui.echo(
+                get_string("ota_resign_skip_none").format(name=image_path.name)
+            )
+            continue
+
+        key_path, resign_algorithm = _resolve_ota_resign_policy(
+            partition_name,
+            algorithm,
+        )
+        resign_avb_image(
+            image_path=image_path,
+            key_file=key_path,
+            algorithm=resign_algorithm,
+        )
+        resigned_count += 1
+        utils.ui.echo(
+            get_string("ota_resign_done_image").format(
+                name=image_path.name,
+                key=key_path.name,
+                algorithm=resign_algorithm,
+            )
+        )
+
+    utils.ui.echo(
+        get_string("ota_resign_summary").format(
+            resigned=resigned_count,
+            skipped_none=skipped_none_count,
+            skipped_scan=skipped_unreadable_count,
+        )
+    )
+
+
 def _confirm_dynamic_super_rebuild() -> bool:
     utils.ui.echo("")
     utils.ui.echo(
@@ -308,7 +466,21 @@ def _rebuild_dynamic_super(
         lpmake_command,
         options=RunOptions(stream=True, check=True),
     )
-    ota_super.split_rebuilt_super(layout, rebuilt_super, const.IMAGE_NEW_DIR)
+    rebuilt_layout = ota_super.parse_full_super_image(
+        rebuilt_super,
+        start_sector=layout.chunks[0].start_sector,
+        sector_size_bytes=layout.chunks[0].sector_size_bytes,
+    )
+    rebuilt_chunks = ota_super.plan_rebuilt_super_chunks(layout, rebuilt_layout)
+    ota_super.write_rebuilt_super_chunks(
+        rebuilt_super,
+        rebuilt_chunks,
+        const.IMAGE_NEW_DIR,
+    )
+    ota_super.rewrite_super_xml_entries(
+        sorted(const.IMAGE_NEW_DIR.glob("rawprogram*.xml")),
+        rebuilt_chunks,
+    )
 
 
 def apply_incremental_ota() -> None:
@@ -368,6 +540,12 @@ def apply_incremental_ota() -> None:
             output_filenames,
         )
         _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths, xml_filename_updates)
+        ota_resign_targets = _resolve_ota_resign_targets(
+            const.IMAGE_NEW_DIR,
+            output_filenames,
+        )
+        if _confirm_ota_output_resign(ota_resign_targets):
+            _resign_incremental_ota_outputs(ota_resign_targets)
         if super_layout is not None and extracted_dynamic_dir is not None:
             if not _confirm_dynamic_super_rebuild():
                 utils.ui.echo(

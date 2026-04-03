@@ -822,5 +822,15 @@
   "task_title_apply_ota": "Применение инкрементального OTA патча",
   "ota_super_rebuild_skipped": "[*] Пересборка super пропущена. Патченные образы и flash XML остаются в '{dir}'.",
   "ota_super_rebuild_ready": "[*] Патч динамических разделов завершен. Патченные образы и flash XML готовы в '{dir}'.",
-  "ota_super_rebuild_prompt": "Пересобрать super-образы сейчас? (y/n): "
+  "ota_super_rebuild_prompt": "Пересобрать super-образы сейчас? (y/n): ",
+  "ota_err_missing_resign_key": "[!] Не найден обязательный ключ для переподписи OTA: {path}",
+  "ota_err_unsupported_resign_algorithm": "[!] Неподдерживаемый алгоритм AVB для переподписи OTA-образа: {algorithm}",
+  "ota_resign_ready": "[*] Патч OTA завершен. Кандидаты на AVB-переподпись: {images}",
+  "ota_resign_scanning": "[*] Сканирование OTA-образов на наличие AVB-подписей...",
+  "ota_resign_scan_image": "[*] Проверка {name}...",
+  "ota_resign_skip_unreadable": "[*] {name}: не удалось прочитать метаданные AVB. Пропуск. ({e})",
+  "ota_resign_summary": "[*] Переподпись OTA-образов завершена. Переподписано: {resigned}, пропущено NONE: {skipped_none}, пропущено из-за чтения: {skipped_scan}",
+  "ota_resign_prompt": "Переподписать эти образы сейчас? (y/n): ",
+  "ota_resign_done_image": "[+] {name} переподписан ключом {key} ({algorithm}).",
+  "ota_resign_skip_none": "[*] {name}: алгоритм NONE. Пропуск."
 }

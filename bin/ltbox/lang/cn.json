@@ -822,5 +822,15 @@
   "task_title_apply_ota": "应用增量 OTA 补丁",
   "ota_super_rebuild_skipped": "[*] 已跳过 super 重建。补丁后的镜像和刷机 XML 仍保留在 '{dir}' 中。",
   "ota_super_rebuild_ready": "[*] 动态分区补丁已完成。补丁后的镜像和刷机 XML 已准备在 '{dir}' 中。",
-  "ota_super_rebuild_prompt": "现在重建 super 镜像吗？(y/n): "
+  "ota_super_rebuild_prompt": "现在重建 super 镜像吗？(y/n): ",
+  "ota_err_missing_resign_key": "[!] 缺少 OTA 重签名密钥: {path}",
+  "ota_err_unsupported_resign_algorithm": "[!] OTA 输出镜像的 AVB 算法不支持重签名: {algorithm}",
+  "ota_resign_ready": "[*] OTA 补丁已完成。可进行 AVB 重签名的镜像: {images}",
+  "ota_resign_scanning": "[*] 正在扫描 OTA 输出镜像的 AVB 签名...",
+  "ota_resign_scan_image": "[*] 正在检查 {name}...",
+  "ota_resign_skip_unreadable": "[*] {name}: 无法读取 AVB 元数据，已跳过。({e})",
+  "ota_resign_summary": "[*] OTA 镜像重签名完成。已重签名: {resigned}，NONE 跳过: {skipped_none}，读取失败跳过: {skipped_scan}",
+  "ota_resign_prompt": "要重新签名这些镜像吗？(y/n): ",
+  "ota_resign_done_image": "[+] 已使用 {key} ({algorithm}) 重新签名 {name}。",
+  "ota_resign_skip_none": "[*] {name}: 算法为 NONE，跳过。"
 }

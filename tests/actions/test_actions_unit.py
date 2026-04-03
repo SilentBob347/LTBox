@@ -1,5 +1,5 @@
 import xml.etree.ElementTree as ET
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -359,6 +359,141 @@ def test_copy_flash_xmls_replaces_legacy_keep_data_xml(mock_env, tmp_path):
     assert not (output_dir / "rawprogram_save_persist_unsparse0.xml").exists()
 
 
+def test_resolve_ota_resign_targets_filters_existing_requested_images(tmp_path):
+    output_dir = tmp_path / "image_new"
+    output_dir.mkdir()
+    for name in (
+        "boot.img",
+        "system.img",
+        "vbmeta.img",
+        "vendor_boot.img",
+        "vbmeta_system.img",
+    ):
+        (output_dir / name).write_bytes(b"img")
+
+    targets = ota._resolve_ota_resign_targets(
+        output_dir,
+        {
+            "boot": "boot.img",
+            "system": "system.img",
+            "vendor_boot": "vendor_boot.img",
+            "vbmeta": "vbmeta.img",
+            "vbmeta_system": "vbmeta_system.img",
+        },
+    )
+
+    assert targets == {
+        "boot": output_dir / "boot.img",
+        "system": output_dir / "system.img",
+        "vendor_boot": output_dir / "vendor_boot.img",
+        "vbmeta_system": output_dir / "vbmeta_system.img",
+    }
+
+
+def test_resolve_testkey_resign_algorithm_upgrades_rsa_key_size():
+    assert (
+        ota._resolve_testkey_resign_algorithm("SHA256_RSA2048", 4096)
+        == "SHA256_RSA4096"
+    )
+    assert (
+        ota._resolve_testkey_resign_algorithm("SHA512_RSA8192", 2048)
+        == "SHA512_RSA2048"
+    )
+
+    with pytest.raises(ToolError, match="Unsupported AVB resign algorithm"):
+        ota._resolve_testkey_resign_algorithm("MLDSA87", 4096)
+
+
+def test_resolve_ota_resign_policy_uses_2048_key_for_vbmeta_system(tmp_path):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    key_4096 = tools_dir / "testkey_rsa4096.pem"
+    key_2048 = tools_dir / "testkey_rsa2048.pem"
+    key_4096.write_text("4096", encoding="utf-8")
+    key_2048.write_text("2048", encoding="utf-8")
+
+    with patch("ltbox.actions.ota.const.TOOLS_DIR", tools_dir):
+        key_path, algorithm = ota._resolve_ota_resign_policy(
+            "vbmeta_system",
+            "SHA256_RSA2048",
+        )
+        default_key_path, default_algorithm = ota._resolve_ota_resign_policy(
+            "boot",
+            "SHA256_RSA2048",
+        )
+
+    assert key_path == key_2048
+    assert algorithm == "SHA256_RSA2048"
+    assert default_key_path == key_4096
+    assert default_algorithm == "SHA256_RSA4096"
+
+
+def test_resign_incremental_ota_outputs_resigns_signed_images_only(tmp_path):
+    output_dir = tmp_path / "image_new"
+    output_dir.mkdir()
+    boot_img = output_dir / "boot.img"
+    init_boot_img = output_dir / "init_boot.img"
+    system_img = output_dir / "system.img"
+    vbmeta_system_img = output_dir / "vbmeta_system.img"
+    for path in (boot_img, init_boot_img, system_img, vbmeta_system_img):
+        path.write_bytes(b"img")
+
+    key_file_4096 = tmp_path / "testkey_rsa4096.pem"
+    key_file_2048 = tmp_path / "testkey_rsa2048.pem"
+    key_file_4096.write_text("key4096", encoding="utf-8")
+    key_file_2048.write_text("key2048", encoding="utf-8")
+
+    def _fake_info(path):
+        if path == boot_img:
+            return {"algorithm": "SHA256_RSA2048"}
+        if path == init_boot_img:
+            return {"algorithm": "NONE"}
+        if path == system_img:
+            return {"algorithm": "SHA512_RSA4096"}
+        if path == vbmeta_system_img:
+            return {"algorithm": "SHA256_RSA2048"}
+        raise AssertionError(f"unexpected path: {path}")
+
+    with (
+        patch(
+            "ltbox.actions.ota._resolve_ota_testkey_path",
+            side_effect=lambda key_name: {
+                "testkey_rsa4096.pem": key_file_4096,
+                "testkey_rsa2048.pem": key_file_2048,
+            }[key_name],
+        ),
+        patch("ltbox.actions.ota.extract_image_avb_info", side_effect=_fake_info),
+        patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota._resign_incremental_ota_outputs(
+            {
+                "boot": boot_img,
+                "init_boot": init_boot_img,
+                "system": system_img,
+                "vbmeta_system": vbmeta_system_img,
+            }
+        )
+
+    assert mock_resign.call_args_list == [
+        call(
+            image_path=boot_img,
+            key_file=key_file_4096,
+            algorithm="SHA256_RSA4096",
+        ),
+        call(
+            image_path=system_img,
+            key_file=key_file_4096,
+            algorithm="SHA512_RSA4096",
+        ),
+        call(
+            image_path=vbmeta_system_img,
+            key_file=key_file_2048,
+            algorithm="SHA256_RSA2048",
+        ),
+    ]
+
+
 def test_confirm_dynamic_super_rebuild_accepts_yes():
     with (
         patch("ltbox.actions.ota.utils.ui") as mock_ui,
@@ -376,6 +511,60 @@ def test_confirm_dynamic_super_rebuild_skips_on_no():
         patch("ltbox.actions.ota.prompt_yes_no", return_value=False),
     ):
         assert ota._confirm_dynamic_super_rebuild() is False
+
+
+def test_apply_incremental_ota_prompts_for_resign_before_super_rebuild(tmp_path):
+    payload_bin = tmp_path / "payload.bin"
+    payload_bin.write_bytes(b"payload")
+    zip_path = tmp_path / "update.zip"
+    zip_path.write_bytes(b"zip")
+
+    order = []
+
+    with (
+        patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
+        patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
+        patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
+        patch("ltbox.actions.ota._extract_payload_bin", return_value=payload_bin),
+        patch(
+            "ltbox.actions.ota._get_payload_partition_infos",
+            return_value=[
+                ota.update_engine_payload.PayloadPartitionInfo(
+                    name="system", new_size=24
+                )
+            ],
+        ),
+        patch(
+            "ltbox.actions.ota._build_partition_file_map",
+            return_value={"system": tmp_path / "system.img"},
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_output_filenames",
+            return_value=({"system": "system.img"}, {"system.img": "system.img"}),
+        ),
+        patch(
+            "ltbox.actions.ota._resolve_dynamic_partition_sources",
+            return_value=(MagicMock(), tmp_path / "dynamic_old"),
+        ),
+        patch("ltbox.actions.ota._run_differential_patch"),
+        patch("ltbox.actions.ota._copy_flash_xmls"),
+        patch(
+            "ltbox.actions.ota._resolve_ota_resign_targets",
+            return_value={"system": tmp_path / "system.img"},
+        ),
+        patch(
+            "ltbox.actions.ota._confirm_ota_output_resign",
+            side_effect=lambda *_args, **_kwargs: order.append("resign") or False,
+        ),
+        patch(
+            "ltbox.actions.ota._confirm_dynamic_super_rebuild",
+            side_effect=lambda: order.append("super") or False,
+        ),
+    ):
+        ota.apply_incremental_ota()
+
+    assert order == ["resign", "super"]
 
 
 def test_flash_args(mock_env):
