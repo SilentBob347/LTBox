@@ -8,7 +8,11 @@ from .. import constants as const
 from .. import ota_super, partition, update_engine_payload, utils
 from ..errors import MissingFileError, ToolError
 from ..i18n import get_string
-from ..patch.avb import extract_image_avb_info, resign_avb_image
+from ..patch.avb import (
+    extract_image_avb_info,
+    rebuild_vbmeta_with_chained_images,
+    resign_avb_image,
+)
 from ..process_runner import CommandRunner, RunOptions
 from ..prompt_helpers import prompt_yes_no
 from ..xml_catalog import PartitionGroup, XmlCatalog
@@ -34,6 +38,23 @@ _OTA_AVB_DEFAULT_RSA_BITS = 4096
 _OTA_AVB_SPECIAL_RESIGN_KEYS = {
     "vbmeta_system": ("testkey_rsa2048.pem", 2048),
 }
+_OTA_VBMETA_SYSTEM_DESCRIPTOR_PARTITIONS = (
+    "pvmfw",
+    "product",
+    "system",
+    "system_ext",
+)
+_OTA_VBMETA_DESCRIPTOR_PARTITIONS = (
+    "boot",
+    "dtbo",
+    "init_boot",
+    "odm",
+    "recovery",
+    "system_dlkm",
+    "vendor",
+    "vendor_boot",
+    "vendor_dlkm",
+)
 
 
 def _find_zip_files() -> List[Path]:
@@ -373,6 +394,77 @@ def _resolve_ota_resign_policy(
     )
 
 
+def _resolve_ota_vbmeta_inputs(
+    partition_names: tuple[str, ...], candidate_paths: dict[str, Path]
+) -> list[Path]:
+    return [
+        candidate_paths[name] for name in partition_names if name in candidate_paths
+    ]
+
+
+def _prepare_ota_vbmeta_rebuild_base(
+    output_path: Path,
+) -> tuple[Path, Optional[Path]]:
+    if output_path.exists():
+        temp_dir = const.OTA_WORKING_DIR / "vbmeta_rebuild"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_copy = temp_dir / output_path.name
+        shutil.copy2(output_path, temp_copy)
+        return temp_copy, temp_copy
+
+    source_path = const.IMAGE_DIR / output_path.name
+    if not source_path.exists():
+        raise MissingFileError(
+            get_string("ota_err_missing_images").format(
+                files=output_path.name,
+                dir=const.IMAGE_DIR.name,
+            )
+        )
+    return source_path, None
+
+
+def _rebuild_ota_vbmeta_image(
+    partition_name: str,
+    chained_images: list[Path],
+) -> Optional[Path]:
+    if not chained_images:
+        return None
+
+    output_path = const.IMAGE_NEW_DIR / f"{partition_name}.img"
+    base_path, temp_copy = _prepare_ota_vbmeta_rebuild_base(output_path)
+    try:
+        rebuild_vbmeta_with_chained_images(
+            output_path=output_path,
+            original_vbmeta_path=base_path,
+            chained_images=chained_images,
+        )
+    finally:
+        if temp_copy is not None and temp_copy.exists():
+            temp_copy.unlink()
+    return output_path
+
+
+def _rebuild_incremental_ota_vbmeta(candidate_paths: dict[str, Path]) -> None:
+    rebuilt_vbmeta_system = _rebuild_ota_vbmeta_image(
+        "vbmeta_system",
+        _resolve_ota_vbmeta_inputs(
+            _OTA_VBMETA_SYSTEM_DESCRIPTOR_PARTITIONS,
+            candidate_paths,
+        ),
+    )
+
+    vbmeta_inputs = _resolve_ota_vbmeta_inputs(
+        _OTA_VBMETA_DESCRIPTOR_PARTITIONS,
+        candidate_paths,
+    )
+    if rebuilt_vbmeta_system is not None:
+        vbmeta_inputs.append(rebuilt_vbmeta_system)
+    elif "vbmeta_system" in candidate_paths:
+        vbmeta_inputs.append(candidate_paths["vbmeta_system"])
+
+    _rebuild_ota_vbmeta_image("vbmeta", vbmeta_inputs)
+
+
 def _resign_incremental_ota_outputs(candidate_paths: dict[str, Path]) -> None:
     if not candidate_paths:
         return
@@ -421,6 +513,8 @@ def _resign_incremental_ota_outputs(candidate_paths: dict[str, Path]) -> None:
                 algorithm=resign_algorithm,
             )
         )
+
+    _rebuild_incremental_ota_vbmeta(candidate_paths)
 
     utils.ui.echo(
         get_string("ota_resign_summary").format(

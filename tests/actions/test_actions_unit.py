@@ -484,6 +484,7 @@ def test_resign_incremental_ota_outputs_resigns_signed_images_only(tmp_path):
         ),
         patch("ltbox.actions.ota.extract_image_avb_info", side_effect=_fake_info),
         patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
+        patch("ltbox.actions.ota._rebuild_incremental_ota_vbmeta"),
         patch("ltbox.actions.ota.utils.ui"),
     ):
         ota._resign_incremental_ota_outputs(
@@ -510,6 +511,139 @@ def test_resign_incremental_ota_outputs_resigns_signed_images_only(tmp_path):
             image_path=vbmeta_system_img,
             key_file=key_file_2048,
             algorithm="SHA256_RSA2048",
+        ),
+    ]
+
+
+def test_resign_incremental_ota_outputs_rebuilds_vbmeta_images_from_updated_children(
+    tmp_path,
+):
+    image_dir = tmp_path / "image_original"
+    output_dir = tmp_path / "image_new"
+    working_dir = tmp_path / "ota_work"
+    image_dir.mkdir()
+    output_dir.mkdir()
+    working_dir.mkdir()
+
+    boot_img = output_dir / "boot.img"
+    system_img = output_dir / "system.img"
+    vbmeta_system_img = output_dir / "vbmeta_system.img"
+    vbmeta_img = image_dir / "vbmeta.img"
+
+    for path in (boot_img, system_img, vbmeta_system_img, vbmeta_img):
+        path.write_bytes(b"img")
+
+    key_file_4096 = tmp_path / "testkey_rsa4096.pem"
+    key_file_2048 = tmp_path / "testkey_rsa2048.pem"
+    key_file_4096.write_text("key4096", encoding="utf-8")
+    key_file_2048.write_text("key2048", encoding="utf-8")
+
+    def _fake_info(path):
+        if path == boot_img:
+            return {"algorithm": "SHA256_RSA2048"}
+        if path == system_img:
+            return {"algorithm": "NONE"}
+        if path == vbmeta_system_img:
+            return {"algorithm": "SHA256_RSA2048"}
+        raise AssertionError(f"unexpected path: {path}")
+
+    with (
+        patch(
+            "ltbox.actions.ota._resolve_ota_testkey_path",
+            side_effect=lambda key_name: {
+                "testkey_rsa4096.pem": key_file_4096,
+                "testkey_rsa2048.pem": key_file_2048,
+            }[key_name],
+        ),
+        patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", output_dir),
+        patch("ltbox.actions.ota.const.OTA_WORKING_DIR", working_dir),
+        patch("ltbox.actions.ota.extract_image_avb_info", side_effect=_fake_info),
+        patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
+        patch(
+            "ltbox.actions.ota.rebuild_vbmeta_with_chained_images"
+        ) as mock_rebuild_vbmeta,
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota._resign_incremental_ota_outputs(
+            {
+                "boot": boot_img,
+                "system": system_img,
+                "vbmeta_system": vbmeta_system_img,
+            }
+        )
+
+    assert mock_resign.call_args_list == [
+        call(
+            image_path=boot_img,
+            key_file=key_file_4096,
+            algorithm="SHA256_RSA4096",
+        ),
+        call(
+            image_path=vbmeta_system_img,
+            key_file=key_file_2048,
+            algorithm="SHA256_RSA2048",
+        ),
+    ]
+    assert mock_rebuild_vbmeta.call_args_list == [
+        call(
+            output_path=output_dir / "vbmeta_system.img",
+            original_vbmeta_path=working_dir / "vbmeta_rebuild" / "vbmeta_system.img",
+            chained_images=[system_img],
+        ),
+        call(
+            output_path=output_dir / "vbmeta.img",
+            original_vbmeta_path=vbmeta_img,
+            chained_images=[boot_img, output_dir / "vbmeta_system.img"],
+        ),
+    ]
+    assert not (working_dir / "vbmeta_rebuild" / "vbmeta_system.img").exists()
+
+
+def test_resign_incremental_ota_outputs_rebuilds_vbmeta_system_from_source(
+    tmp_path,
+):
+    image_dir = tmp_path / "image_original"
+    output_dir = tmp_path / "image_new"
+    working_dir = tmp_path / "ota_work"
+    image_dir.mkdir()
+    output_dir.mkdir()
+    working_dir.mkdir()
+
+    system_img = output_dir / "system.img"
+    vbmeta_img = image_dir / "vbmeta.img"
+    vbmeta_system_img = image_dir / "vbmeta_system.img"
+
+    for path in (system_img, vbmeta_img, vbmeta_system_img):
+        path.write_bytes(b"img")
+
+    with (
+        patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
+        patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", output_dir),
+        patch("ltbox.actions.ota.const.OTA_WORKING_DIR", working_dir),
+        patch(
+            "ltbox.actions.ota.extract_image_avb_info",
+            return_value={"algorithm": "NONE"},
+        ),
+        patch("ltbox.actions.ota.resign_avb_image") as mock_resign,
+        patch(
+            "ltbox.actions.ota.rebuild_vbmeta_with_chained_images"
+        ) as mock_rebuild_vbmeta,
+        patch("ltbox.actions.ota.utils.ui"),
+    ):
+        ota._resign_incremental_ota_outputs({"system": system_img})
+
+    mock_resign.assert_not_called()
+    assert mock_rebuild_vbmeta.call_args_list == [
+        call(
+            output_path=output_dir / "vbmeta_system.img",
+            original_vbmeta_path=vbmeta_system_img,
+            chained_images=[system_img],
+        ),
+        call(
+            output_path=output_dir / "vbmeta.img",
+            original_vbmeta_path=vbmeta_img,
+            chained_images=[output_dir / "vbmeta_system.img"],
         ),
     ]
 
