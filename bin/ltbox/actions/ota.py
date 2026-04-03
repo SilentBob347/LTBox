@@ -340,7 +340,6 @@ def _resolve_otatools_linux_command(tool_path: Path) -> list[str]:
             f"{tool_path}. Re-download or re-extract the LTBox release package."
         )
 
-    _ensure_wsl_available()
     wsl_exe = shutil.which("wsl.exe")
     if not wsl_exe:
         raise ToolError(get_string("ota_err_wsl_required"))

@@ -289,6 +289,7 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
 
     with (
         patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota._ensure_wsl_available"),
         patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
         patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
         patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
@@ -481,6 +482,7 @@ def test_repack_super_images_rebuilds_super_into_image_new(tmp_path):
             "ltbox.actions.ota._wait_for_source_super_layout",
             return_value=([rawprogram_path], MagicMock(), layout),
         ),
+        patch("ltbox.actions.ota._ensure_wsl_available"),
         patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
         patch("ltbox.actions.ota.const.OTA_WORKING_DIR", ota_working_dir),
         patch("ltbox.actions.ota._copy_flash_xmls_for_super_repack") as mock_copy_xmls,
@@ -1017,6 +1019,7 @@ def test_apply_incremental_ota_prompts_for_resign_before_super_rebuild(tmp_path)
 
     with (
         patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota._ensure_wsl_available"),
         patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
         patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
         patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
@@ -1076,6 +1079,7 @@ def test_apply_incremental_ota_promotes_outputs_to_image_dir(tmp_path):
         patch("ltbox.actions.ota.utils.ui"),
         patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
         patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota._ensure_wsl_available"),
         patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
         patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
         patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
@@ -1130,6 +1134,7 @@ def test_apply_incremental_ota_preserves_abl_when_resign_was_requested(tmp_path)
         patch("ltbox.actions.ota.utils.ui"),
         patch("ltbox.actions.ota.const.IMAGE_DIR", image_dir),
         patch("ltbox.actions.ota.const.IMAGE_NEW_DIR", image_new_dir),
+        patch("ltbox.actions.ota._ensure_wsl_available"),
         patch("ltbox.actions.ota._find_zip_files", return_value=[zip_path]),
         patch("ltbox.actions.ota._select_zip_file", return_value=zip_path),
         patch("ltbox.actions.ota._load_xml_catalog", return_value=([], MagicMock())),
