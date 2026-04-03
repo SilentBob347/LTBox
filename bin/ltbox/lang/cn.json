@@ -819,5 +819,8 @@
   "ota_selected_partitions": "[*] 已选择 {count} 个分区: {names}",
   "ota_start": "[*] 正在执行增量 OTA 流程...",
   "ota_zip_found": "[+] 找到 OTA zip: {name}",
-  "task_title_apply_ota": "应用增量 OTA 补丁"
+  "task_title_apply_ota": "应用增量 OTA 补丁",
+  "ota_super_rebuild_skipped": "[*] 已跳过 super 重建。补丁后的镜像和刷机 XML 仍保留在 '{dir}' 中。",
+  "ota_super_rebuild_ready": "[*] 动态分区补丁已完成。补丁后的镜像和刷机 XML 已准备在 '{dir}' 中。",
+  "ota_super_rebuild_prompt": "现在重建 super 镜像吗？(y/n): "
 }

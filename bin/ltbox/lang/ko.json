@@ -819,5 +819,8 @@
   "ota_selected_partitions": "[*] {count}개 파티션 선택됨: {names}",
   "ota_start": "[*] 증분 OTA 적용 프로세스...",
   "ota_zip_found": "[+] OTA zip 발견: {name}",
-  "task_title_apply_ota": "증분 OTA 패치 적용"
+  "task_title_apply_ota": "증분 OTA 패치 적용",
+  "ota_super_rebuild_skipped": "[*] super 재조립을 건너뛰었습니다. 패치된 이미지와 플래시 XML은 '{dir}'에 그대로 남아 있습니다.",
+  "ota_super_rebuild_ready": "[*] 동적 파티션 패치가 완료되었습니다. 패치된 이미지와 플래시 XML이 '{dir}'에 준비되었습니다.",
+  "ota_super_rebuild_prompt": "지금 super 이미지를 재조립할까요? (y/n): "
 }

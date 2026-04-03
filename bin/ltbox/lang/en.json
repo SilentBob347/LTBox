@@ -819,5 +819,8 @@
   "ota_selected_partitions": "[*] Selected {count} partition(s): {names}",
   "ota_start": "[*] Apply Incremental OTA Process...",
   "ota_zip_found": "[+] Found OTA zip: {name}",
-  "task_title_apply_ota": "Apply Incremental OTA Patch"
+  "task_title_apply_ota": "Apply Incremental OTA Patch",
+  "ota_super_rebuild_skipped": "[*] Super rebuild skipped. Patched images and flash XML remain in '{dir}'.",
+  "ota_super_rebuild_ready": "[*] Dynamic partition patching is complete. Patched images and flash XML are ready in '{dir}'.",
+  "ota_super_rebuild_prompt": "Rebuild the super images now (y/n): "
 }

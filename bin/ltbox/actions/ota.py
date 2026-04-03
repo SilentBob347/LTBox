@@ -9,6 +9,7 @@ from .. import downloader, ota_super, partition, utils
 from ..errors import MissingFileError, ToolError, UserCancelError
 from ..i18n import get_string
 from ..process_runner import CommandRunner, RunOptions
+from ..prompt_helpers import prompt_yes_no
 from ..xml_catalog import PartitionGroup, XmlCatalog
 
 
@@ -340,6 +341,20 @@ def _copy_flash_xmls(output_dir: Path, rawprogram_paths: List[Path]) -> None:
     ota_super.create_keep_data_ota_xml(output_dir)
 
 
+def _confirm_dynamic_super_rebuild() -> bool:
+    utils.ui.echo("")
+    utils.ui.echo(
+        get_string("ota_super_rebuild_ready").format(dir=const.IMAGE_NEW_DIR.name)
+    )
+    result = prompt_yes_no(
+        get_string("ota_super_rebuild_prompt"),
+        input_func=utils.ui.prompt,
+        error_message=get_string("act_invalid_selection"),
+        error_func=utils.ui.error,
+    )
+    return bool(result)
+
+
 def _rebuild_dynamic_super(
     layout: ota_super.SuperLayout,
     extracted_dynamic_dir: Path,
@@ -432,6 +447,13 @@ def apply_incremental_ota() -> None:
             )
             _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths)
             if super_layout is not None and extracted_dynamic_dir is not None:
+                if not _confirm_dynamic_super_rebuild():
+                    utils.ui.echo(
+                        get_string("ota_super_rebuild_skipped").format(
+                            dir=const.IMAGE_NEW_DIR.name
+                        )
+                    )
+                    return
                 _rebuild_dynamic_super(super_layout, extracted_dynamic_dir)
         finally:
             if old_staging_dir.exists():

@@ -125,6 +125,25 @@ def test_resolve_lpmake_command_requires_wsl(tmp_path):
             ota._resolve_lpmake_command()
 
 
+def test_confirm_dynamic_super_rebuild_accepts_yes():
+    with (
+        patch("ltbox.actions.ota.utils.ui") as mock_ui,
+        patch("ltbox.actions.ota.prompt_yes_no", return_value=True) as mock_prompt,
+    ):
+        assert ota._confirm_dynamic_super_rebuild() is True
+
+    mock_ui.echo.assert_called()
+    mock_prompt.assert_called_once()
+
+
+def test_confirm_dynamic_super_rebuild_skips_on_no():
+    with (
+        patch("ltbox.actions.ota.utils.ui"),
+        patch("ltbox.actions.ota.prompt_yes_no", return_value=False),
+    ):
+        assert ota._confirm_dynamic_super_rebuild() is False
+
+
 def test_flash_args(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     files = ["rawprogram1.xml", "rawprogram_unsparse0.xml", "patch0.xml"]

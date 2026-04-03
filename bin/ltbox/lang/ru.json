@@ -819,5 +819,8 @@
   "ota_selected_partitions": "[*] Выбрано {count} разделов: {names}",
   "ota_start": "[*] Применение инкрементального OTA...",
   "ota_zip_found": "[+] Найден OTA zip: {name}",
-  "task_title_apply_ota": "Применение инкрементального OTA патча"
+  "task_title_apply_ota": "Применение инкрементального OTA патча",
+  "ota_super_rebuild_skipped": "[*] Пересборка super пропущена. Патченные образы и flash XML остаются в '{dir}'.",
+  "ota_super_rebuild_ready": "[*] Патч динамических разделов завершен. Патченные образы и flash XML готовы в '{dir}'.",
+  "ota_super_rebuild_prompt": "Пересобрать super-образы сейчас? (y/n): "
 }
