@@ -122,7 +122,7 @@ class LTBoxConfig:
 
     @property
     def apatch_repo(self) -> str:
-        return self._get_val("folkpatch", "repo", default="matsuzaka-yuki/FolkPatch")
+        return self._get_val("folkpatch", "repo", default="LyraVoid/FolkPatch")
 
     @property
     def apatch_tag(self) -> str:
