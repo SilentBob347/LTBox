@@ -1,3 +1,4 @@
+import functools
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -40,7 +41,7 @@ class RawProgramXml:
         self.tree = ET.parse(path)
         self.root = self.tree.getroot()
 
-    @property
+    @functools.cached_property
     def programs(self) -> List[ProgramEntry]:
         return [ProgramEntry(el) for el in self.root.findall("program")]
 
