@@ -546,6 +546,25 @@ def write_anti_rollback(dev: device.DeviceController, skip_reset: bool = False) 
     utils.ui.echo(get_string("act_arb_write_finish"))
 
 
+def _sync_tree(src_dir: Path, dst_dir: Path) -> None:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for src_file in src_dir.rglob("*"):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(src_dir)
+        dst_file = dst_dir / rel
+        if dst_file.exists():
+            src_stat = src_file.stat()
+            dst_stat = dst_file.stat()
+            if (
+                src_stat.st_size == dst_stat.st_size
+                and src_stat.st_mtime <= dst_stat.st_mtime
+            ):
+                continue
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dst_file)
+
+
 def _prepare_flash_files(skip_dp: bool = False) -> None:
     utils.ui.echo(get_string("act_copy_patched"))
     output_folders_to_copy = [
@@ -558,7 +577,7 @@ def _prepare_flash_files(skip_dp: bool = False) -> None:
     for folder in output_folders_to_copy:
         if folder.exists():
             try:
-                shutil.copytree(folder, const.IMAGE_DIR, dirs_exist_ok=True)
+                _sync_tree(folder, const.IMAGE_DIR)
                 utils.ui.echo(
                     get_string("act_copied_content").format(
                         src=folder.name, dst=const.IMAGE_DIR.name
@@ -571,9 +590,7 @@ def _prepare_flash_files(skip_dp: bool = False) -> None:
     if not skip_dp:
         if const.OUTPUT_DP_DIR.exists():
             try:
-                shutil.copytree(
-                    const.OUTPUT_DP_DIR, const.IMAGE_DIR, dirs_exist_ok=True
-                )
+                _sync_tree(const.OUTPUT_DP_DIR, const.IMAGE_DIR)
                 utils.ui.echo(
                     get_string("act_copied_content").format(
                         src=const.OUTPUT_DP_DIR.name, dst=const.IMAGE_DIR.name
