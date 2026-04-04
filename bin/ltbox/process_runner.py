@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, TypedDict, Union
@@ -119,21 +120,44 @@ class CommandRunner:
                 bufsize=1,
                 **run_kwargs,
             )
-            output_lines: list[str] = []
-            if process.stdout:
-                for line in process.stdout:
-                    if on_output is not None:
-                        on_output(line)
-                    else:
-                        logger.info(_normalize_stream_log_line(line))
-                    output_lines.append(line)
+            # When a timeout is set, start a watchdog that kills the process if
+            # the entire stream read + wait exceeds the limit.  Without this,
+            # a hung process that keeps stdout open would block indefinitely in
+            # the ``for line in process.stdout`` loop below.
+            watchdog: Optional[threading.Timer] = None
+            if opts.timeout is not None:
 
+                def _kill_on_timeout() -> None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+
+                watchdog = threading.Timer(opts.timeout, _kill_on_timeout)
+                watchdog.start()
+
+            output_lines: list[str] = []
+            timed_out = False
             try:
+                if process.stdout:
+                    for line in process.stdout:
+                        if on_output is not None:
+                            on_output(line)
+                        else:
+                            logger.info(_normalize_stream_log_line(line))
+                        output_lines.append(line)
+
                 process.wait(timeout=opts.timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-                raise
+                timed_out = True
+            finally:
+                if watchdog is not None:
+                    watchdog.cancel()
+
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, opts.timeout)
             combined_output = "".join(output_lines)
             returncode = process.returncode
             if opts.check and returncode != 0:
