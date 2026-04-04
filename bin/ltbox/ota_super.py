@@ -177,8 +177,22 @@ def _find_geometry_offset(data: bytes) -> int:
     return geometry_offset
 
 
+_HEADER_SCAN_SIZE = 64 * 1024
+
+
+def _read_header_region(primary_chunk: Path) -> bytes:
+    """Read only the initial header region of a super chunk.
+
+    LP metadata headers are always located within the first few kilobytes of the
+    chunk.  Reading a small fixed region avoids loading multi-gigabyte super
+    images entirely into memory.
+    """
+    with open(primary_chunk, "rb") as fh:
+        return fh.read(_HEADER_SCAN_SIZE)
+
+
 def _parse_geometry(primary_chunk: Path) -> SuperGeometry:
-    data = primary_chunk.read_bytes()
+    data = _read_header_region(primary_chunk)
     if len(data) < _GEOMETRY_STRUCT.size:
         raise ToolError(
             f"super chunk too small to contain geometry: {primary_chunk.name}"
@@ -236,6 +250,38 @@ def _iter_table_entries(
         yield data[record_offset : record_offset + struct_size]
 
 
+def _read_metadata_region(primary_chunk: Path) -> bytes:
+    """Read enough data from the chunk to cover LP metadata tables.
+
+    The initial header scan region may be too small for large metadata blocks.
+    We first peek at the geometry to learn ``metadata_max_size`` and
+    ``metadata_slot_count``, then read enough bytes to cover the full metadata
+    area starting from the header offset.
+    """
+    header_data = _read_header_region(primary_chunk)
+    header_offset = _find_header_offset(header_data)
+
+    try:
+        geometry_offset = _find_geometry_offset(header_data)
+        (
+            _magic,
+            _struct_size,
+            _checksum,
+            metadata_max_size,
+            slot_count,
+            _logical_block_size,
+        ) = _GEOMETRY_STRUCT.unpack_from(header_data, geometry_offset)
+        required_bytes = header_offset + metadata_max_size * slot_count
+    except (ToolError, struct.error):
+        required_bytes = 4 * 1024 * 1024  # conservative 4 MB fallback
+
+    if len(header_data) >= required_bytes:
+        return header_data
+
+    with open(primary_chunk, "rb") as fh:
+        return fh.read(required_bytes)
+
+
 def _parse_metadata(
     primary_chunk: Path,
 ) -> tuple[
@@ -244,7 +290,7 @@ def _parse_metadata(
     tuple[SuperGroup, ...],
     tuple[SuperPartition, ...],
 ]:
-    data = primary_chunk.read_bytes()
+    data = _read_metadata_region(primary_chunk)
     header_offset = _find_header_offset(data)
 
     header_values = _HEADER_V1_0_STRUCT.unpack_from(data, header_offset)
@@ -502,7 +548,12 @@ def extract_partition_images(
             for extent in partition.extents:
                 extent_size_bytes = extent.num_sectors * LP_SECTOR_SIZE
                 if extent.target_type == LP_TARGET_TYPE_ZERO:
-                    target.write(b"\x00" * extent_size_bytes)
+                    zero_remaining = extent_size_bytes
+                    zero_chunk = b"\x00" * min(zero_remaining, 4 * 1024 * 1024)
+                    while zero_remaining > 0:
+                        write_size = min(zero_remaining, len(zero_chunk))
+                        target.write(zero_chunk[:write_size])
+                        zero_remaining -= write_size
                     continue
                 if extent.target_type != LP_TARGET_TYPE_LINEAR:
                     raise ToolError(
