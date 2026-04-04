@@ -889,5 +889,7 @@ def create_keep_data_ota_xml(output_dir: Path) -> Path:
         if label.startswith("metadata") or label.startswith("userdata"):
             program.set("filename", "")
 
-    tree.write(source_xml, encoding="utf-8", xml_declaration=True)
+    temp_xml = source_xml.with_suffix(".xml.tmp")
+    tree.write(temp_xml, encoding="utf-8", xml_declaration=True)
+    temp_xml.replace(source_xml)
     return source_xml
