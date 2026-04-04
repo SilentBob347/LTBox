@@ -159,9 +159,11 @@ class EdlManager(BaseDeviceManager):
                     )
 
                 erase_attrib_items = tuple(
-                    (key, value)
-                    for key, value in program.attrib.items()
-                    if key != "filename"
+                    sorted(
+                        (key, value)
+                        for key, value in program.attrib.items()
+                        if key != "filename"
+                    )
                 )
                 if not erase_attrib_items or erase_attrib_items in seen_entries:
                     continue
