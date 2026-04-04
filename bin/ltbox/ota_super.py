@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import copy
 import re
 import shutil
@@ -7,7 +8,7 @@ import struct
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import BinaryIO, Callable, Iterable, Optional, Sequence
 
 from .errors import MissingFileError, ToolError
 from .xml_catalog import PartitionRecord
@@ -519,8 +520,18 @@ def parse_full_super_image(
     )
 
 
-def _find_chunk(layout: SuperLayout, logical_byte: int) -> SuperChunk:
-    for chunk in layout.chunks:
+def _build_chunk_index(chunks: tuple[SuperChunk, ...]) -> list[int]:
+    return [chunk.relative_start_byte for chunk in chunks]
+
+
+def _find_chunk(
+    chunks: tuple[SuperChunk, ...],
+    chunk_starts: list[int],
+    logical_byte: int,
+) -> SuperChunk:
+    idx = bisect.bisect_right(chunk_starts, logical_byte) - 1
+    if 0 <= idx < len(chunks):
+        chunk = chunks[idx]
         if chunk.relative_start_byte <= logical_byte < chunk.relative_end_byte:
             return chunk
     raise ToolError(f"no super chunk covers logical byte offset {logical_byte}")
@@ -536,55 +547,62 @@ def extract_partition_images(
     if partition_names is not None:
         requested = {name.lower() for name in partition_names}
 
-    extracted: dict[str, Path] = {}
-    for partition in layout.partitions:
-        if partition.slot_suffix == "b" or partition.logical_size <= 0:
-            continue
-        if requested is not None and partition.base_name.lower() not in requested:
-            continue
+    chunk_starts = _build_chunk_index(layout.chunks)
+    chunk_files: dict[Path, BinaryIO] = {}
+    try:
+        extracted: dict[str, Path] = {}
+        for partition in layout.partitions:
+            if partition.slot_suffix == "b" or partition.logical_size <= 0:
+                continue
+            if requested is not None and partition.base_name.lower() not in requested:
+                continue
 
-        output_path = output_dir / f"{partition.base_name}.img"
-        with open(output_path, "wb") as target:
-            for extent in partition.extents:
-                extent_size_bytes = extent.num_sectors * LP_SECTOR_SIZE
-                if extent.target_type == LP_TARGET_TYPE_ZERO:
-                    zero_remaining = extent_size_bytes
-                    zero_chunk = b"\x00" * min(zero_remaining, 4 * 1024 * 1024)
-                    while zero_remaining > 0:
-                        write_size = min(zero_remaining, len(zero_chunk))
-                        target.write(zero_chunk[:write_size])
-                        zero_remaining -= write_size
-                    continue
-                if extent.target_type != LP_TARGET_TYPE_LINEAR:
-                    raise ToolError(
-                        f"unsupported super extent type {extent.target_type} for {partition.name}"
-                    )
-
-                remaining_bytes = extent_size_bytes
-                current_byte = extent.target_data * LP_SECTOR_SIZE
-                while remaining_bytes > 0:
-                    chunk = _find_chunk(layout, current_byte)
-                    byte_offset = current_byte - chunk.relative_start_byte
-                    readable_bytes = min(
-                        remaining_bytes,
-                        chunk.size_bytes - byte_offset,
-                    )
-                    read_offset = byte_offset
-                    read_size = readable_bytes
-                    with open(chunk.path, "rb") as source:
-                        source.seek(read_offset)
-                        chunk_bytes = source.read(read_size)
-                    if len(chunk_bytes) != read_size:
+            output_path = output_dir / f"{partition.base_name}.img"
+            with open(output_path, "wb") as target:
+                for extent in partition.extents:
+                    extent_size_bytes = extent.num_sectors * LP_SECTOR_SIZE
+                    if extent.target_type == LP_TARGET_TYPE_ZERO:
+                        zero_remaining = extent_size_bytes
+                        zero_chunk = b"\x00" * min(zero_remaining, 4 * 1024 * 1024)
+                        while zero_remaining > 0:
+                            write_size = min(zero_remaining, len(zero_chunk))
+                            target.write(zero_chunk[:write_size])
+                            zero_remaining -= write_size
+                        continue
+                    if extent.target_type != LP_TARGET_TYPE_LINEAR:
                         raise ToolError(
-                            f"unexpected EOF while reading {chunk.filename} for {partition.name}"
+                            f"unsupported super extent type {extent.target_type} for {partition.name}"
                         )
-                    target.write(chunk_bytes)
-                    remaining_bytes -= readable_bytes
-                    current_byte += readable_bytes
 
-        extracted[partition.base_name] = output_path
+                    remaining_bytes = extent_size_bytes
+                    current_byte = extent.target_data * LP_SECTOR_SIZE
+                    while remaining_bytes > 0:
+                        chunk = _find_chunk(layout.chunks, chunk_starts, current_byte)
+                        byte_offset = current_byte - chunk.relative_start_byte
+                        readable_bytes = min(
+                            remaining_bytes,
+                            chunk.size_bytes - byte_offset,
+                        )
+                        source = chunk_files.get(chunk.path)
+                        if source is None:
+                            source = open(chunk.path, "rb")
+                            chunk_files[chunk.path] = source
+                        source.seek(byte_offset)
+                        chunk_bytes = source.read(readable_bytes)
+                        if len(chunk_bytes) != readable_bytes:
+                            raise ToolError(
+                                f"unexpected EOF while reading {chunk.filename} for {partition.name}"
+                            )
+                        target.write(chunk_bytes)
+                        remaining_bytes -= readable_bytes
+                        current_byte += readable_bytes
 
-    return extracted
+            extracted[partition.base_name] = output_path
+
+        return extracted
+    finally:
+        for fh in chunk_files.values():
+            fh.close()
 
 
 def build_lpmake_command(
