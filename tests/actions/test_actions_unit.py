@@ -1478,16 +1478,27 @@ def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
     key_file = tmp_path / "vbmeta.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    vbmeta_info = {
-        "pubkey_sha1": "vbmeta-key",
-        "algorithm": "SHA256_RSA4096",
-        "rollback": "0",
-        "flags": "0",
-    }
+    # sha1 of b"fake-public-key"
+    import hashlib
+
+    fake_pubkey = b"fake-public-key"
+    pubkey_sha1 = hashlib.sha1(fake_pubkey).hexdigest()
+
+    mock_header = MagicMock()
+    mock_header.algorithm_type = 5
+    mock_header.rollback_index = 0
+    mock_header.flags = 0
+    mock_parsed = MagicMock()
+    mock_parsed.public_key = fake_pubkey
+    mock_parsed.header = mock_header
+
+    mock_avb_module = MagicMock()
+    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA4096", None)
 
     with (
-        patch("ltbox.patch.avb.extract_image_avb_info", return_value=vbmeta_info),
-        patch("ltbox.patch.avb.const.KEY_MAP", {"vbmeta-key": key_file}),
+        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
+        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
+        patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
         patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
@@ -1526,16 +1537,26 @@ def test_rebuild_vbmeta_with_multiple_images_falls_back_to_make_vbmeta(tmp_path)
     key_file = tmp_path / "vbmeta.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    vbmeta_info = {
-        "pubkey_sha1": "vbmeta-key",
-        "algorithm": "SHA256_RSA4096",
-        "rollback": "0",
-        "flags": "0",
-    }
+    import hashlib
+
+    fake_pubkey = b"fake-public-key"
+    pubkey_sha1 = hashlib.sha1(fake_pubkey).hexdigest()
+
+    mock_header = MagicMock()
+    mock_header.algorithm_type = 5
+    mock_header.rollback_index = 0
+    mock_header.flags = 0
+    mock_parsed = MagicMock()
+    mock_parsed.public_key = fake_pubkey
+    mock_parsed.header = mock_header
+
+    mock_avb_module = MagicMock()
+    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA4096", None)
 
     with (
-        patch("ltbox.patch.avb.extract_image_avb_info", return_value=vbmeta_info),
-        patch("ltbox.patch.avb.const.KEY_MAP", {"vbmeta-key": key_file}),
+        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
+        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
+        patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
         patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
@@ -1574,15 +1595,20 @@ def test_rebuild_vbmeta_with_override_key_skips_pubkey_validation(tmp_path):
     key_file = tmp_path / "testkey_rsa4096.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    vbmeta_info = {
-        "pubkey_sha1": "unknown-key",
-        "algorithm": "SHA256_RSA2048",
-        "rollback": "7",
-        "flags": "0",
-    }
+    mock_header = MagicMock()
+    mock_header.algorithm_type = 3
+    mock_header.rollback_index = 7
+    mock_header.flags = 0
+    mock_parsed = MagicMock()
+    mock_parsed.public_key = b"unknown-key"
+    mock_parsed.header = mock_header
+
+    mock_avb_module = MagicMock()
+    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA2048", None)
 
     with (
-        patch("ltbox.patch.avb.extract_image_avb_info", return_value=vbmeta_info),
+        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
+        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
         patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images

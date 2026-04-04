@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import re
 import shutil
@@ -711,10 +712,19 @@ def rebuild_vbmeta_preserving_descriptors(
         shutil.copy2(original_vbmeta_path, output_path)
         return
 
-    vbmeta_info = extract_image_avb_info(original_vbmeta_path)
+    avb_module = _get_avbtool_module()
+    original_image = _parse_avb_image(
+        original_vbmeta_path,
+        partition_name=original_vbmeta_path.stem,
+    )
+
     resolved_key_file = key_file
     if resolved_key_file is None:
-        vbmeta_pubkey = vbmeta_info.get("pubkey_sha1")
+        vbmeta_pubkey = (
+            hashlib.sha1(original_image.public_key).hexdigest()
+            if original_image.public_key
+            else None
+        )
         resolved_key_file = const.KEY_MAP.get(str(vbmeta_pubkey))
 
         utils.ui.info(get_string("act_verify_vbmeta_key"))
@@ -725,14 +735,15 @@ def rebuild_vbmeta_preserving_descriptors(
             raise KeyError(get_string("act_err_unknown_key").format(key=vbmeta_pubkey))
         utils.ui.info(get_string("img_key_matched").format(name=resolved_key_file.name))
 
-    resolved_algorithm = algorithm or vbmeta_info["algorithm"]
+    if algorithm:
+        resolved_algorithm = algorithm
+    else:
+        alg_name, _ = avb_module.lookup_algorithm_by_type(
+            original_image.header.algorithm_type
+        )
+        resolved_algorithm = alg_name
     utils.ui.info(get_string("act_remaking_vbmeta"))
 
-    avb_module = _get_avbtool_module()
-    original_image = _parse_avb_image(
-        original_vbmeta_path,
-        partition_name=original_vbmeta_path.stem,
-    )
     parsed_images = [_parse_avb_image(image_path) for image_path in chained_images]
     descriptors = list(original_image.descriptors)
     required_minor = _replace_vbmeta_descriptors(
@@ -767,10 +778,19 @@ def rebuild_vbmeta_with_chained_images(
     algorithm: Optional[str] = None,
 ) -> None:
     utils.ui.info(get_string("act_remake_vbmeta"))
-    vbmeta_info = extract_image_avb_info(original_vbmeta_path)
+    avb_module = _get_avbtool_module()
+    parsed_vbmeta = _parse_avb_image(
+        original_vbmeta_path,
+        partition_name=original_vbmeta_path.stem,
+    )
+
     resolved_key_file = key_file
     if resolved_key_file is None:
-        vbmeta_pubkey = vbmeta_info.get("pubkey_sha1")
+        vbmeta_pubkey = (
+            hashlib.sha1(parsed_vbmeta.public_key).hexdigest()
+            if parsed_vbmeta.public_key
+            else None
+        )
         resolved_key_file = const.KEY_MAP.get(str(vbmeta_pubkey))
 
         utils.ui.info(get_string("act_verify_vbmeta_key"))
@@ -781,7 +801,16 @@ def rebuild_vbmeta_with_chained_images(
             raise KeyError(get_string("act_err_unknown_key").format(key=vbmeta_pubkey))
         utils.ui.info(get_string("img_key_matched").format(name=resolved_key_file.name))
 
-    resolved_algorithm = algorithm or vbmeta_info["algorithm"]
+    if algorithm:
+        resolved_algorithm = algorithm
+    else:
+        alg_name, _ = avb_module.lookup_algorithm_by_type(
+            parsed_vbmeta.header.algorithm_type
+        )
+        resolved_algorithm = alg_name
+
+    rollback_str = str(parsed_vbmeta.header.rollback_index)
+    flags_str = str(parsed_vbmeta.header.flags)
 
     utils.ui.info(get_string("act_remaking_vbmeta"))
 
@@ -793,8 +822,8 @@ def rebuild_vbmeta_with_chained_images(
                 partition_image=chained_images[0],
                 key_file=resolved_key_file,
                 algorithm=resolved_algorithm,
-                rollback_index=vbmeta_info.get("rollback", "0"),
-                flags=vbmeta_info.get("flags", "0"),
+                rollback_index=rollback_str,
+                flags=flags_str,
             )
             return
         except subprocess.CalledProcessError as e:
@@ -816,9 +845,9 @@ def rebuild_vbmeta_with_chained_images(
         "--padding_size",
         padding_size,
         "--flags",
-        vbmeta_info.get("flags", "0"),
+        flags_str,
         "--rollback_index",
-        vbmeta_info.get("rollback", "0"),
+        rollback_str,
         "--include_descriptors_from_image",
         original_vbmeta_path,
     ]
