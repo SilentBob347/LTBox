@@ -120,14 +120,18 @@ def _extract_payload_bin(zip_path: Path, working_dir: Path) -> Path:
     utils.ui.echo(get_string("ota_extracting_zip").format(name=zip_path.name))
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(working_dir)
-
-    payload_bin = working_dir / "payload.bin"
-    if not payload_bin.exists():
-        found = list(working_dir.rglob("payload.bin"))
-        if not found:
+        # Only extract payload.bin to avoid extracting the entire multi-GB OTA
+        # package and to prevent zip-slip (path traversal) attacks.
+        payload_members = [
+            m for m in zf.namelist() if m == "payload.bin" or m.endswith("/payload.bin")
+        ]
+        if not payload_members:
             raise MissingFileError(get_string("ota_err_no_payload_bin"))
-        payload_bin = found[0]
+        zf.extract(payload_members[0], working_dir)
+
+    payload_bin = working_dir / payload_members[0]
+    if not payload_bin.exists():
+        raise MissingFileError(get_string("ota_err_no_payload_bin"))
 
     utils.ui.echo(get_string("ota_payload_found").format(path=payload_bin.name))
     return payload_bin
