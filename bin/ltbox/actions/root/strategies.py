@@ -60,6 +60,10 @@ class RootStrategy(ABC):
         pass
 
     @property
+    def requires_vbmeta(self) -> bool:
+        return const.FN_VBMETA in self.required_files
+
+    @property
     @abstractmethod
     def log_output_dir_name(self) -> str:
         pass
@@ -201,7 +205,7 @@ class ConfigurableRootStrategy(RootStrategy):
     @property
     def unroot_files(self) -> Dict[str, Path]:
         files = {"main": self.backup_dir / self.image_name}
-        if const.FN_VBMETA in self.required_files:
+        if self.requires_vbmeta:
             files["vbmeta"] = self.backup_dir / const.FN_VBMETA
         return files
 
@@ -211,7 +215,7 @@ class ConfigurableRootStrategy(RootStrategy):
 
     def get_partition_map(self, suffix: str) -> Dict[str, str]:
         partition_map = {"main": f"{self.spec.main_partition}{suffix}", "vbmeta": ""}
-        if const.FN_VBMETA in self.required_files:
+        if self.requires_vbmeta:
             partition_map["vbmeta"] = f"vbmeta{suffix}"
         return partition_map
 

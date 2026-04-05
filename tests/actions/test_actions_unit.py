@@ -1456,7 +1456,7 @@ def test_process_boot_image_avb_skips_direct_erase_footer_call(tmp_path):
     with (
         patch("ltbox.patch.avb.extract_image_avb_info", return_value=boot_info),
         patch("ltbox.patch.avb.const.KEY_MAP", {"boot-key": key_file}),
-        patch("ltbox.patch.avb._apply_avb_integrity_footer") as apply_footer,
+        patch("ltbox.patch.avb.apply_avb_integrity_footer") as apply_footer,
         patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
     ):
         from ltbox.patch.avb import process_boot_image_avb
@@ -1785,7 +1785,7 @@ def test_convert_region_images_skips_validation_and_avb_when_region_modify_disab
         patch("ltbox.actions.region.const.BACKUP_DIR", backup_dir),
         patch("ltbox.actions.region.edit_vendor_boot") as edit_vendor_boot,
         patch("ltbox.actions.region.extract_image_avb_info") as extract_info,
-        patch("ltbox.actions.region._apply_avb_integrity_footer") as apply_footer,
+        patch("ltbox.actions.region.apply_avb_integrity_footer") as apply_footer,
         patch(
             "ltbox.actions.region.rebuild_vbmeta_with_chained_images"
         ) as rebuild_vbmeta,

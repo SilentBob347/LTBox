@@ -78,6 +78,17 @@ def _get_avbtool_module() -> ModuleType:
     return module
 
 
+def _resolve_signing_key(pubkey_sha1: Optional[str], image_name: str) -> Optional[Path]:
+    if not pubkey_sha1:
+        return None
+    key_file = const.KEY_MAP.get(str(pubkey_sha1))
+    if not key_file:
+        raise KeyError(
+            get_string("img_err_unknown_key").format(key=pubkey_sha1, name=image_name)
+        )
+    return key_file
+
+
 def _close_image_handler(image_handler: Any) -> None:
     image_file = getattr(image_handler, "_image", None)
     if image_file is not None:
@@ -349,7 +360,7 @@ def _analyze_rollback_target(
     return info
 
 
-def _require_info_keys(
+def require_info_keys(
     info: Dict[str, Any],
     required_keys: List[str],
     image_path: Path,
@@ -447,7 +458,7 @@ def vbmeta_has_chain_partition(vbmeta_path: Path, partition_name: str) -> bool:
     return partition_name in descriptors
 
 
-def _apply_avb_integrity_footer(
+def apply_avb_integrity_footer(
     image_path: Path,
     image_info: Dict[str, Any],
     key_file: Optional[Path],
@@ -521,20 +532,6 @@ def resign_avb_image(
     avbtool.run(*cmd)
 
 
-def _resign_avb_image(
-    image_path: Path,
-    key_file: Path,
-    algorithm: str,
-    rollback_index: Optional[int] = None,
-) -> None:
-    resign_avb_image(
-        image_path=image_path,
-        key_file=key_file,
-        algorithm=algorithm,
-        rollback_index=rollback_index,
-    )
-
-
 def _update_vbmeta_partition_descriptor(
     output_path: Path,
     original_vbmeta_path: Path,
@@ -577,31 +574,23 @@ def patch_chained_image_rollback(
         if info is None:
             return
 
-        _require_info_keys(
+        require_info_keys(
             info, ["partition_size", "name", "salt", "algorithm"], new_image_path
         )
 
-        key_file = None
-        if "pubkey_sha1" in info:
-            key_file = const.KEY_MAP.get(str(info["pubkey_sha1"]))
-            if not key_file:
-                raise KeyError(
-                    get_string("img_err_unknown_key").format(
-                        key=info["pubkey_sha1"], name=new_image_path.name
-                    )
-                )
+        key_file = _resolve_signing_key(info.get("pubkey_sha1"), new_image_path.name)
 
         shutil.copy(new_image_path, patched_image_path)
 
         if key_file and info["algorithm"] != "NONE":
-            _resign_avb_image(
+            resign_avb_image(
                 image_path=patched_image_path,
                 key_file=key_file,
                 algorithm=info["algorithm"],
                 rollback_index=current_rb_index,
             )
         else:
-            _apply_avb_integrity_footer(
+            apply_avb_integrity_footer(
                 image_path=patched_image_path,
                 image_info=info,
                 key_file=key_file,
@@ -626,18 +615,12 @@ def patch_vbmeta_image_rollback(
         if info is None:
             return
 
-        _require_info_keys(info, ["algorithm", "pubkey_sha1"], new_image_path)
+        require_info_keys(info, ["algorithm", "pubkey_sha1"], new_image_path)
 
-        key_file = const.KEY_MAP.get(info["pubkey_sha1"])
-        if not key_file:
-            raise KeyError(
-                get_string("img_err_unknown_key").format(
-                    key=info["pubkey_sha1"], name=new_image_path.name
-                )
-            )
+        key_file = _resolve_signing_key(info["pubkey_sha1"], new_image_path.name)
 
         shutil.copy(new_image_path, patched_image_path)
-        _resign_avb_image(
+        resign_avb_image(
             image_path=patched_image_path,
             key_file=key_file,
             algorithm=info["algorithm"],
@@ -669,7 +652,7 @@ def process_boot_image_avb(
     utils.ui.info(get_string("img_avb_extract_info").format(name=boot_bak_img.name))
     boot_info = extract_image_avb_info(boot_bak_img)
 
-    _require_info_keys(
+    require_info_keys(
         boot_info,
         ["partition_size", "name", "rollback", "salt", "algorithm"],
         boot_bak_img,
@@ -694,9 +677,43 @@ def process_boot_image_avb(
         else:
             utils.ui.info(get_string("img_warn_no_sig_key"))
 
-    _apply_avb_integrity_footer(
+    apply_avb_integrity_footer(
         image_path=image_to_process, image_info=boot_info, key_file=key_file
     )
+
+
+def _resolve_vbmeta_key_and_algorithm(
+    avb_module: ModuleType,
+    parsed_image: _ParsedAvbImage,
+    key_file: Optional[Path],
+    algorithm: Optional[str],
+) -> tuple[Path, str]:
+    resolved_key_file = key_file
+    if resolved_key_file is None:
+        vbmeta_pubkey = (
+            hashlib.sha1(parsed_image.public_key).hexdigest()
+            if parsed_image.public_key
+            else None
+        )
+        resolved_key_file = const.KEY_MAP.get(str(vbmeta_pubkey))
+
+        utils.ui.info(get_string("act_verify_vbmeta_key"))
+        if not resolved_key_file:
+            utils.ui.info(
+                get_string("act_err_vbmeta_key_mismatch").format(key=vbmeta_pubkey)
+            )
+            raise KeyError(get_string("act_err_unknown_key").format(key=vbmeta_pubkey))
+        utils.ui.info(get_string("img_key_matched").format(name=resolved_key_file.name))
+
+    if algorithm:
+        resolved_algorithm = algorithm
+    else:
+        alg_name, _ = avb_module.lookup_algorithm_by_type(
+            parsed_image.header.algorithm_type
+        )
+        resolved_algorithm = alg_name
+
+    return resolved_key_file, resolved_algorithm
 
 
 def rebuild_vbmeta_preserving_descriptors(
@@ -718,30 +735,9 @@ def rebuild_vbmeta_preserving_descriptors(
         partition_name=original_vbmeta_path.stem,
     )
 
-    resolved_key_file = key_file
-    if resolved_key_file is None:
-        vbmeta_pubkey = (
-            hashlib.sha1(original_image.public_key).hexdigest()
-            if original_image.public_key
-            else None
-        )
-        resolved_key_file = const.KEY_MAP.get(str(vbmeta_pubkey))
-
-        utils.ui.info(get_string("act_verify_vbmeta_key"))
-        if not resolved_key_file:
-            utils.ui.info(
-                get_string("act_err_vbmeta_key_mismatch").format(key=vbmeta_pubkey)
-            )
-            raise KeyError(get_string("act_err_unknown_key").format(key=vbmeta_pubkey))
-        utils.ui.info(get_string("img_key_matched").format(name=resolved_key_file.name))
-
-    if algorithm:
-        resolved_algorithm = algorithm
-    else:
-        alg_name, _ = avb_module.lookup_algorithm_by_type(
-            original_image.header.algorithm_type
-        )
-        resolved_algorithm = alg_name
+    resolved_key_file, resolved_algorithm = _resolve_vbmeta_key_and_algorithm(
+        avb_module, original_image, key_file, algorithm
+    )
     utils.ui.info(get_string("act_remaking_vbmeta"))
 
     parsed_images = [_parse_avb_image(image_path) for image_path in chained_images]
@@ -784,30 +780,9 @@ def rebuild_vbmeta_with_chained_images(
         partition_name=original_vbmeta_path.stem,
     )
 
-    resolved_key_file = key_file
-    if resolved_key_file is None:
-        vbmeta_pubkey = (
-            hashlib.sha1(parsed_vbmeta.public_key).hexdigest()
-            if parsed_vbmeta.public_key
-            else None
-        )
-        resolved_key_file = const.KEY_MAP.get(str(vbmeta_pubkey))
-
-        utils.ui.info(get_string("act_verify_vbmeta_key"))
-        if not resolved_key_file:
-            utils.ui.info(
-                get_string("act_err_vbmeta_key_mismatch").format(key=vbmeta_pubkey)
-            )
-            raise KeyError(get_string("act_err_unknown_key").format(key=vbmeta_pubkey))
-        utils.ui.info(get_string("img_key_matched").format(name=resolved_key_file.name))
-
-    if algorithm:
-        resolved_algorithm = algorithm
-    else:
-        alg_name, _ = avb_module.lookup_algorithm_by_type(
-            parsed_vbmeta.header.algorithm_type
-        )
-        resolved_algorithm = alg_name
+    resolved_key_file, resolved_algorithm = _resolve_vbmeta_key_and_algorithm(
+        avb_module, parsed_vbmeta, key_file, algorithm
+    )
 
     rollback_str = str(parsed_vbmeta.header.rollback_index)
     flags_str = str(parsed_vbmeta.header.flags)

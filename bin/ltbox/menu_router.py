@@ -1,8 +1,11 @@
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
+from . import constants as const
 from . import i18n, menu_data
 from .app_state import AppState
 from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port
@@ -392,10 +395,6 @@ def root_menu(
 
 
 def _execute_reboot_command(action: str) -> None:
-    import subprocess
-
-    from . import constants as const
-
     adb_cmds = {
         "reboot_adb_system": [str(const.ADB_EXE), "reboot"],
         "reboot_adb_bootloader": [str(const.ADB_EXE), "reboot", "bootloader"],
@@ -433,10 +432,6 @@ def _execute_reboot_command(action: str) -> None:
 
 
 def _reboot_from_edl() -> None:
-    import subprocess
-
-    from . import constants as const
-
     ui.clear()
     ui.info(get_string("reboot_edl_start"))
 
@@ -468,9 +463,6 @@ def _reboot_from_edl() -> None:
             f"13:{const.EDL_LOADER_FILE}",
         ]
         runner.run(cmd_sahara, timeout=30)
-
-        import time
-
         time.sleep(2)
 
         ui.info(get_string("reboot_edl_resetting"))

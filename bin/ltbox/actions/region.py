@@ -9,8 +9,8 @@ from ..errors import ToolError
 from ..i18n import get_string
 from ..menu import TerminalMenu
 from ..patch.avb import (
-    _apply_avb_integrity_footer,
-    _require_info_keys,
+    apply_avb_integrity_footer,
+    require_info_keys,
     extract_image_avb_info,
     rebuild_vbmeta_with_chained_images,
 )
@@ -49,13 +49,13 @@ def rebuild_vbmeta(
         shutil.copy(src, dst)
 
         image_info = extract_image_avb_info(src)
-        _require_info_keys(
+        require_info_keys(
             image_info,
             ["partition_size", "name", "rollback", "salt", "algorithm"],
             src,
         )
 
-        _apply_avb_integrity_footer(dst, image_info, None)
+        apply_avb_integrity_footer(dst, image_info, None)
         rebuilt_inputs.append(dst)
 
     rebuilt_vbmeta = const.OUTPUT_DIR / const.FN_VBMETA
@@ -193,13 +193,13 @@ def convert_region_images(
 
     on_log(get_string("act_add_footer_vb"))
 
-    _require_info_keys(
+    require_info_keys(
         vendor_boot_info,
         ["partition_size", "name", "rollback", "salt", "algorithm"],
         vendor_boot_bak,
     )
 
-    _apply_avb_integrity_footer(vendor_boot_patched, vendor_boot_info, None)
+    apply_avb_integrity_footer(vendor_boot_patched, vendor_boot_info, None)
 
     vbmeta_img = const.BASE_DIR / const.FN_VBMETA
     rebuild_vbmeta_with_chained_images(
@@ -437,7 +437,7 @@ def rescue_after_ota(
         on_log(get_string("rescue_remaking_vbmeta").format(slot=slot))
 
         vb_info = extract_image_avb_info(vb_path)
-        _require_info_keys(
+        require_info_keys(
             vb_info,
             ["partition_size", "name", "rollback", "salt", "algorithm"],
             vb_path,
@@ -449,7 +449,7 @@ def rescue_after_ota(
             },
         )
 
-        _apply_avb_integrity_footer(dest_vb, vb_info, None)
+        apply_avb_integrity_footer(dest_vb, vb_info, None)
 
         dest_vbmeta = const.OUTPUT_DIR / f"{vbmeta_target}.img"
 

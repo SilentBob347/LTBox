@@ -43,7 +43,7 @@ class RootWorkflowSession:
         utils.ui.echo(get_string("act_warn_root_slot"))
         if self.gki:
             partition_map["main"] = "boot"
-            if const.FN_VBMETA in self.strategy.required_files:
+            if self.strategy.requires_vbmeta:
                 partition_map["vbmeta"] = "vbmeta"
         else:
             partition_map["main"] = "init_boot"
@@ -102,7 +102,7 @@ def _patch_root_from_folder(
     utils.ui.echo(get_string("act_wait_image").format(image=wait_image))
     const.IMAGE_DIR.mkdir(exist_ok=True)
 
-    requires_vbmeta = const.FN_VBMETA in strategy.required_files
+    requires_vbmeta = strategy.requires_vbmeta
 
     prompt = get_string("act_prompt_boot").format(name=const.IMAGE_DIR.name)
     if requires_vbmeta:
@@ -333,7 +333,7 @@ def _generate_root_image(
             try:
                 _dump_partition(dev, port, main_partition, dumped_main)
 
-                if const.FN_VBMETA in strategy.required_files:
+                if strategy.requires_vbmeta:
                     vbmeta_partition = partition_map["vbmeta"]
                     dumped_vbmeta = const.WORKING_BOOT_DIR / const.FN_VBMETA
                     _dump_partition(dev, port, vbmeta_partition, dumped_vbmeta)
@@ -358,7 +358,7 @@ def _generate_root_image(
             utils.ui.echo(get_string("act_temp_backup_avb"))
             shutil.copy(dumped_main, base_main_bak)
 
-            if const.FN_VBMETA in strategy.required_files:
+            if strategy.requires_vbmeta:
                 shutil.copy(
                     const.WORKING_BOOT_DIR / const.FN_VBMETA,
                     strategy.backup_dir / const.FN_VBMETA,
@@ -397,12 +397,12 @@ def _generate_root_image(
             else:
                 utils.ui.error(get_string("act_err_avb_footer").format(e=e))
             base_main_bak.unlink(missing_ok=True)
-            if const.FN_VBMETA in strategy.required_files:
+            if strategy.requires_vbmeta:
                 (const.BASE_DIR / const.FN_VBMETA_BAK).unlink(missing_ok=True)
             raise
 
         base_main_bak.unlink(missing_ok=True)
-        if const.FN_VBMETA in strategy.required_files:
+        if strategy.requires_vbmeta:
             (const.BASE_DIR / const.FN_VBMETA_BAK).unlink(missing_ok=True)
 
         return strategy.output_dir / strategy.image_name
@@ -637,16 +637,14 @@ def sign_and_flash_recovery(dev: device.DeviceController) -> None:
 
         utils.ui.echo(get_string("act_sign_twrp_start"))
 
-        from ...patch.avb import _apply_avb_integrity_footer, extract_image_avb_info
+        from ...patch.avb import (
+            apply_avb_integrity_footer,
+            _resolve_signing_key,
+            extract_image_avb_info,
+        )
 
         rec_info = extract_image_avb_info(dumped_recovery)
-
-        pubkey = rec_info.get("pubkey_sha1")
-        key_file = const.KEY_MAP.get(str(pubkey))
-
-        if not key_file:
-            utils.ui.error(get_string("img_err_boot_key_mismatch").format(key=pubkey))
-            raise KeyError(f"Unknown key: {pubkey}")
+        key_file = _resolve_signing_key(rec_info.get("pubkey_sha1"), twrp_name)
 
         final_twrp = out_dir / twrp_name
         shutil.copy(twrp_src, final_twrp)
@@ -662,7 +660,7 @@ def sign_and_flash_recovery(dev: device.DeviceController) -> None:
             capture_output=True,
         )
 
-        _apply_avb_integrity_footer(
+        apply_avb_integrity_footer(
             image_path=final_twrp, image_info=rec_info, key_file=key_file
         )
         utils.ui.echo(get_string("act_sign_twrp_ok"))
