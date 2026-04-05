@@ -618,6 +618,9 @@ def patch_vbmeta_image_rollback(
         require_info_keys(info, ["algorithm", "pubkey_sha1"], new_image_path)
 
         key_file = _resolve_signing_key(info["pubkey_sha1"], new_image_path.name)
+        assert key_file is not None, (
+            f"Resolved key_file cannot be None for {new_image_path.name}"
+        )
 
         shutil.copy(new_image_path, patched_image_path)
         resign_avb_image(

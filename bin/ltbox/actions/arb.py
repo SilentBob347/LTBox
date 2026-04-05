@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, NamedTuple, Optional
+from typing import Mapping, NamedTuple, Optional
 
 from .. import constants as const
 from .. import device, utils
@@ -31,7 +31,7 @@ class ArbResult(NamedTuple):
 
 
 def compute_device_rollback_index(
-    stored_indices: Dict[int, int],
+    stored_indices: Mapping[int, int],
 ) -> Optional[int]:
     meaningful = [v for v in stored_indices.values() if v > 1]
     return max(meaningful) if meaningful else None

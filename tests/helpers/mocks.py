@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from typing import Dict, Optional
 from unittest.mock import MagicMock
 
@@ -22,6 +23,6 @@ def make_device_mock(
         model=model,
         slot_suffix=active_slot,
         serialno=serialno,
-        stored_rollback_indices=stored_rollback_indices or {},
+        stored_rollback_indices=MappingProxyType(stored_rollback_indices or {}),
     )
     return dev

@@ -157,7 +157,7 @@ class CommandRunner:
                     watchdog.cancel()
 
             if timed_out:
-                raise subprocess.TimeoutExpired(command, opts.timeout)
+                raise subprocess.TimeoutExpired(command, opts.timeout or 0.0)
             combined_output = "".join(output_lines)
             returncode = process.returncode
             if opts.check and returncode != 0:

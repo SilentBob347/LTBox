@@ -284,7 +284,7 @@ def _read_metadata_region(primary_chunk: Path) -> bytes:
 
 
 def _parse_extents_table(
-    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+    data: bytes, header_offset: int, header_size: int, descriptor: TableDescriptor
 ) -> list[SuperExtent]:
     extents: list[SuperExtent] = []
     for raw_extent in _iter_table_entries(
@@ -309,7 +309,7 @@ def _parse_extents_table(
 
 
 def _parse_groups_table(
-    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+    data: bytes, header_offset: int, header_size: int, descriptor: TableDescriptor
 ) -> list[SuperGroup]:
     groups: list[SuperGroup] = []
     for raw_group in _iter_table_entries(
@@ -330,7 +330,7 @@ def _parse_groups_table(
 
 
 def _parse_block_devices_table(
-    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+    data: bytes, header_offset: int, header_size: int, descriptor: TableDescriptor
 ) -> list[SuperBlockDevice]:
     block_devices: list[SuperBlockDevice] = []
     for raw_device in _iter_table_entries(
@@ -361,7 +361,7 @@ def _parse_partitions_table(
     data: bytes,
     header_offset: int,
     header_size: int,
-    descriptor: tuple,
+    descriptor: TableDescriptor,
     extents: list[SuperExtent],
     groups: list[SuperGroup],
 ) -> list[SuperPartition]:
