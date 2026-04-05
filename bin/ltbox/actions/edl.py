@@ -614,43 +614,23 @@ def _prepare_flash_files(skip_dp: bool = False) -> None:
         utils.ui.echo(get_string("act_no_output_folders"))
 
 
-def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
-    all_raw_xmls = sorted(list(const.IMAGE_DIR.glob("rawprogram*.xml")))
-    patch_xmls = sorted(list(const.IMAGE_DIR.glob("patch*.xml")))
-
-    raw_xmls = []
-    for xml_file in all_raw_xmls:
-        name = xml_file.name
-        if "WIPE_PARTITIONS" in name or "BLANK_GPT" in name:
-            continue
-        if name == "rawprogram0.xml":
-            continue
-        raw_xmls.append(xml_file)
-
+def _resolve_persist_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
     persist_write_xml = const.IMAGE_DIR / "rawprogram_write_persist_unsparse0.xml"
     persist_save_xml = const.IMAGE_DIR / "rawprogram_save_persist_unsparse0.xml"
     persist_save_ota_xml = const.IMAGE_DIR / "rawprogram_save_persist_ota_unsparse0.xml"
     raw_unsparse0 = const.IMAGE_DIR / "rawprogram_unsparse0.xml"
     raw_unsparse0_half = const.IMAGE_DIR / "rawprogram_unsparse0-half.xml"
 
-    devinfo_write_xml = const.IMAGE_DIR / "rawprogram4_write_devinfo.xml"
-    devinfo_original_xml = const.IMAGE_DIR / "rawprogram4.xml"
+    excluded_names = {
+        persist_write_xml.name,
+        persist_save_xml.name,
+        persist_save_ota_xml.name,
+        raw_unsparse0.name,
+        raw_unsparse0_half.name,
+    }
+    raw_xmls = [x for x in raw_xmls if x.name not in excluded_names]
 
     has_patched_persist = (const.OUTPUT_DP_DIR / "persist.img").exists()
-
-    raw_xmls = [
-        x
-        for x in raw_xmls
-        if x.name
-        not in [
-            persist_write_xml.name,
-            persist_save_xml.name,
-            persist_save_ota_xml.name,
-            raw_unsparse0.name,
-            raw_unsparse0_half.name,
-        ]
-    ]
-
     if persist_write_xml.exists() and has_patched_persist and not skip_dp:
         utils.ui.echo(get_string("act_use_patched_persist"))
         raw_xmls.append(persist_write_xml)
@@ -667,6 +647,12 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
         utils.ui.echo(get_string("act_using_xml_full_wipe"))
         raw_xmls.append(raw_unsparse0)
 
+    return raw_xmls
+
+
+def _resolve_devinfo_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
+    devinfo_write_xml = const.IMAGE_DIR / "rawprogram4_write_devinfo.xml"
+    devinfo_original_xml = const.IMAGE_DIR / "rawprogram4.xml"
     has_patched_devinfo = (const.OUTPUT_DP_DIR / "devinfo.img").exists()
 
     if devinfo_write_xml.exists() and has_patched_devinfo and not skip_dp:
@@ -678,6 +664,23 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
             utils.ui.echo(get_string("act_skip_devinfo_flash"))
             raw_xmls = [x for x in raw_xmls if x.name != devinfo_write_xml.name]
 
+    return raw_xmls
+
+
+def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
+    all_raw_xmls = sorted(list(const.IMAGE_DIR.glob("rawprogram*.xml")))
+    patch_xmls = sorted(list(const.IMAGE_DIR.glob("patch*.xml")))
+
+    raw_xmls = [
+        x
+        for x in all_raw_xmls
+        if "WIPE_PARTITIONS" not in x.name
+        and "BLANK_GPT" not in x.name
+        and x.name != "rawprogram0.xml"
+    ]
+
+    raw_xmls = _resolve_persist_xml(raw_xmls, skip_dp)
+    raw_xmls = _resolve_devinfo_xml(raw_xmls, skip_dp)
     raw_xmls.sort(key=lambda x: x.name)
 
     if not raw_xmls or not patch_xmls:

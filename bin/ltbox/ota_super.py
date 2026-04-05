@@ -283,6 +283,117 @@ def _read_metadata_region(primary_chunk: Path) -> bytes:
         return fh.read(required_bytes)
 
 
+def _parse_extents_table(
+    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+) -> list[SuperExtent]:
+    extents: list[SuperExtent] = []
+    for raw_extent in _iter_table_entries(
+        data,
+        header_offset=header_offset,
+        header_size=header_size,
+        descriptor=descriptor,
+        struct_size=_EXTENT_STRUCT.size,
+    ):
+        num_sectors, target_type, target_data, target_source = _EXTENT_STRUCT.unpack(
+            raw_extent
+        )
+        extents.append(
+            SuperExtent(
+                num_sectors=num_sectors,
+                target_type=target_type,
+                target_data=target_data,
+                target_source=target_source,
+            )
+        )
+    return extents
+
+
+def _parse_groups_table(
+    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+) -> list[SuperGroup]:
+    groups: list[SuperGroup] = []
+    for raw_group in _iter_table_entries(
+        data,
+        header_offset=header_offset,
+        header_size=header_size,
+        descriptor=descriptor,
+        struct_size=_GROUP_STRUCT.size,
+    ):
+        name, _flags, maximum_size = _GROUP_STRUCT.unpack(raw_group)
+        groups.append(
+            SuperGroup(
+                name=_decode_c_string(name),
+                maximum_size=maximum_size,
+            )
+        )
+    return groups
+
+
+def _parse_block_devices_table(
+    data: bytes, header_offset: int, header_size: int, descriptor: tuple
+) -> list[SuperBlockDevice]:
+    block_devices: list[SuperBlockDevice] = []
+    for raw_device in _iter_table_entries(
+        data,
+        header_offset=header_offset,
+        header_size=header_size,
+        descriptor=descriptor,
+        struct_size=_BLOCK_DEVICE_STRUCT.size,
+    ):
+        (
+            _first_logical_sector,
+            _alignment,
+            _alignment_offset,
+            size,
+            partition_name,
+            _flags,
+        ) = _BLOCK_DEVICE_STRUCT.unpack(raw_device)
+        block_devices.append(
+            SuperBlockDevice(
+                name=_decode_c_string(partition_name),
+                size=size,
+            )
+        )
+    return block_devices
+
+
+def _parse_partitions_table(
+    data: bytes,
+    header_offset: int,
+    header_size: int,
+    descriptor: tuple,
+    extents: list[SuperExtent],
+    groups: list[SuperGroup],
+) -> list[SuperPartition]:
+    partitions: list[SuperPartition] = []
+    for raw_partition in _iter_table_entries(
+        data,
+        header_offset=header_offset,
+        header_size=header_size,
+        descriptor=descriptor,
+        struct_size=_PARTITION_STRUCT.size,
+    ):
+        name, attributes, first_extent_index, num_extents, group_index = (
+            _PARTITION_STRUCT.unpack(raw_partition)
+        )
+        partition_name = _decode_c_string(name)
+        group_name = (
+            groups[group_index].name if group_index < len(groups) else "default"
+        )
+        partition_extents = tuple(
+            extents[first_extent_index + index] for index in range(num_extents)
+        )
+        partitions.append(
+            SuperPartition(
+                name=partition_name,
+                attributes=attributes,
+                group_name=group_name,
+                extents=partition_extents,
+            )
+        )
+    return partitions
+
+
 def _parse_metadata(
     primary_chunk: Path,
 ) -> tuple[
@@ -309,91 +420,14 @@ def _parse_metadata(
     if header_size >= 132:
         header_flags = struct.unpack_from("<I", data, header_offset + 128)[0]
 
-    extents: list[SuperExtent] = []
-    for raw_extent in _iter_table_entries(
-        data,
-        header_offset=header_offset,
-        header_size=header_size,
-        descriptor=extents_desc,
-        struct_size=_EXTENT_STRUCT.size,
-    ):
-        num_sectors, target_type, target_data, target_source = _EXTENT_STRUCT.unpack(
-            raw_extent
-        )
-        extents.append(
-            SuperExtent(
-                num_sectors=num_sectors,
-                target_type=target_type,
-                target_data=target_data,
-                target_source=target_source,
-            )
-        )
-
-    groups: list[SuperGroup] = []
-    for raw_group in _iter_table_entries(
-        data,
-        header_offset=header_offset,
-        header_size=header_size,
-        descriptor=groups_desc,
-        struct_size=_GROUP_STRUCT.size,
-    ):
-        name, _flags, maximum_size = _GROUP_STRUCT.unpack(raw_group)
-        groups.append(
-            SuperGroup(
-                name=_decode_c_string(name),
-                maximum_size=maximum_size,
-            )
-        )
-
-    block_devices: list[SuperBlockDevice] = []
-    for raw_device in _iter_table_entries(
-        data,
-        header_offset=header_offset,
-        header_size=header_size,
-        descriptor=block_devices_desc,
-        struct_size=_BLOCK_DEVICE_STRUCT.size,
-    ):
-        (
-            _first_logical_sector,
-            _alignment,
-            _alignment_offset,
-            size,
-            partition_name,
-            _flags,
-        ) = _BLOCK_DEVICE_STRUCT.unpack(raw_device)
-        block_devices.append(
-            SuperBlockDevice(
-                name=_decode_c_string(partition_name),
-                size=size,
-            )
-        )
-
-    partitions: list[SuperPartition] = []
-    for raw_partition in _iter_table_entries(
-        data,
-        header_offset=header_offset,
-        header_size=header_size,
-        descriptor=partitions_desc,
-        struct_size=_PARTITION_STRUCT.size,
-    ):
-        name, attributes, first_extent_index, num_extents, group_index = (
-            _PARTITION_STRUCT.unpack(raw_partition)
-        )
-        partition_name = _decode_c_string(name)
-        group_name = (
-            groups[group_index].name if group_index < len(groups) else "default"
-        )
-        partition_extents = tuple(
-            extents[first_extent_index + index] for index in range(num_extents)
-        )
-        partitions.append(
-            SuperPartition(
-                name=partition_name,
-                attributes=attributes,
-                group_name=group_name,
-                extents=partition_extents,
-            )
-        )
+    extents = _parse_extents_table(data, header_offset, header_size, extents_desc)
+    groups = _parse_groups_table(data, header_offset, header_size, groups_desc)
+    block_devices = _parse_block_devices_table(
+        data, header_offset, header_size, block_devices_desc
+    )
+    partitions = _parse_partitions_table(
+        data, header_offset, header_size, partitions_desc, extents, groups
+    )
 
     return header_flags, tuple(block_devices), tuple(groups), tuple(partitions)
 

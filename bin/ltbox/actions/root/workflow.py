@@ -589,6 +589,39 @@ def unroot_device(dev: device.DeviceController) -> None:
     utils.ui.echo(get_string("act_unroot_finish"))
 
 
+def _sign_recovery_image(
+    dumped_recovery: Path, twrp_src: Path, out_dir: Path, twrp_name: str
+) -> Path:
+    from ...patch.avb import (
+        apply_avb_integrity_footer,
+        _resolve_signing_key,
+        extract_image_avb_info,
+    )
+
+    rec_info = extract_image_avb_info(dumped_recovery)
+    key_file = _resolve_signing_key(rec_info.get("pubkey_sha1"), twrp_name)
+
+    final_twrp = out_dir / twrp_name
+    shutil.copy(twrp_src, final_twrp)
+
+    subprocess.run(
+        [
+            str(const.PYTHON_EXE),
+            str(const.AVBTOOL_PY),
+            "erase_footer",
+            "--image",
+            str(final_twrp),
+        ],
+        capture_output=True,
+    )
+
+    apply_avb_integrity_footer(
+        image_path=final_twrp, image_info=rec_info, key_file=key_file
+    )
+    utils.ui.echo(get_string("act_sign_twrp_ok"))
+    return final_twrp
+
+
 def sign_and_flash_recovery(dev: device.DeviceController) -> None:
     utils.ui.echo(get_string("act_start_rec_flash"))
 
@@ -636,34 +669,7 @@ def sign_and_flash_recovery(dev: device.DeviceController) -> None:
             utils.ui.echo(get_string("act_backup_recovery_ok"))
 
         utils.ui.echo(get_string("act_sign_twrp_start"))
-
-        from ...patch.avb import (
-            apply_avb_integrity_footer,
-            _resolve_signing_key,
-            extract_image_avb_info,
-        )
-
-        rec_info = extract_image_avb_info(dumped_recovery)
-        key_file = _resolve_signing_key(rec_info.get("pubkey_sha1"), twrp_name)
-
-        final_twrp = out_dir / twrp_name
-        shutil.copy(twrp_src, final_twrp)
-
-        subprocess.run(
-            [
-                str(const.PYTHON_EXE),
-                str(const.AVBTOOL_PY),
-                "erase_footer",
-                "--image",
-                str(final_twrp),
-            ],
-            capture_output=True,
-        )
-
-        apply_avb_integrity_footer(
-            image_path=final_twrp, image_info=rec_info, key_file=key_file
-        )
-        utils.ui.echo(get_string("act_sign_twrp_ok"))
+        final_twrp = _sign_recovery_image(dumped_recovery, twrp_src, out_dir, twrp_name)
 
         utils.ui.echo(get_string("act_reboot_edl_flash"))
         if not dev.skip_adb:

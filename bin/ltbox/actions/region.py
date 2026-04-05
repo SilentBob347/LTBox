@@ -98,6 +98,46 @@ def rebuild_vbmeta(
             edl.flash_partition_target(dev, port, target, image_path)
 
 
+def _finalize_region_outputs(
+    final_images: List[Path],
+    on_log: Callable[[str], None],
+) -> None:
+    on_log(get_string("act_finalize"))
+    on_log(get_string("act_move_final").format(dir=const.OUTPUT_DIR.name))
+    utils.move_existing_files(final_images, const.OUTPUT_DIR)
+    on_log(get_string("act_move_backup").format(dir=const.BACKUP_DIR.name))
+    utils.move_existing_files(const.BASE_DIR.glob("*.bak.img"), const.BACKUP_DIR)
+    on_log("")
+
+    width = utils.ui.get_term_width()
+    on_log("  " + "=" * width)
+    on_log(get_string("act_success"))
+    on_log(get_string("act_final_saved").format(dir=const.OUTPUT_DIR.name))
+    on_log("  " + "=" * width)
+
+
+def _validate_device_model(
+    device_model: str,
+    vendor_boot_info: dict,
+    on_log: Callable[[str], None],
+) -> None:
+    device_model = device_model.replace(" ", "")
+    on_log(get_string("act_val_model").format(model=device_model))
+    fingerprint_key = "com.android.build.vendor_boot.fingerprint"
+    if fingerprint_key in vendor_boot_info:
+        fingerprint = vendor_boot_info[fingerprint_key]
+        on_log(get_string("act_found_fp").format(fp=fingerprint))
+        if device_model in fingerprint:
+            on_log(get_string("act_model_match").format(model=device_model))
+        else:
+            on_log(get_string("act_model_mismatch").format(model=device_model))
+            on_log(get_string("act_rom_mismatch_abort"))
+            raise RuntimeError(get_string("act_err_firmware_mismatch"))
+    else:
+        on_log(get_string("act_warn_fp_missing").format(key=fingerprint_key))
+        on_log(get_string("act_skip_val"))
+
+
 def convert_region_images(
     dev: device.DeviceController,
     device_model: Optional[str] = None,
@@ -140,7 +180,6 @@ def convert_region_images(
     if not modify_region_code:
         on_log(get_string("act_skip_region_modify"))
         on_log(get_string("act_skip_val"))
-        on_log(get_string("act_finalize"))
         on_log(get_string("act_rename_final"))
 
         final_vendor_boot = const.BASE_DIR / const.FN_VENDOR_BOOT
@@ -148,18 +187,7 @@ def convert_region_images(
         shutil.copy(vendor_boot_bak, final_vendor_boot)
         shutil.copy(vbmeta_bak, final_vbmeta)
 
-        final_images = [final_vendor_boot, final_vbmeta]
-        on_log(get_string("act_move_final").format(dir=const.OUTPUT_DIR.name))
-        utils.move_existing_files(final_images, const.OUTPUT_DIR)
-        on_log(get_string("act_move_backup").format(dir=const.BACKUP_DIR.name))
-        utils.move_existing_files(const.BASE_DIR.glob("*.bak.img"), const.BACKUP_DIR)
-        on_log("")
-
-        width = utils.ui.get_term_width()
-        on_log("  " + "=" * width)
-        on_log(get_string("act_success"))
-        on_log(get_string("act_final_saved").format(dir=const.OUTPUT_DIR.name))
-        on_log("  " + "=" * width)
+        _finalize_region_outputs([final_vendor_boot, final_vbmeta], on_log)
         return
 
     edit_vendor_boot(str(vendor_boot_bak), target_region=target_region)
@@ -175,21 +203,7 @@ def convert_region_images(
     on_log(get_string("act_info_extracted"))
 
     if device_model and not dev.skip_adb:
-        device_model = device_model.replace(" ", "")
-        on_log(get_string("act_val_model").format(model=device_model))
-        fingerprint_key = "com.android.build.vendor_boot.fingerprint"
-        if fingerprint_key in vendor_boot_info:
-            fingerprint = vendor_boot_info[fingerprint_key]
-            on_log(get_string("act_found_fp").format(fp=fingerprint))
-            if device_model in fingerprint:
-                on_log(get_string("act_model_match").format(model=device_model))
-            else:
-                on_log(get_string("act_model_mismatch").format(model=device_model))
-                on_log(get_string("act_rom_mismatch_abort"))
-                raise RuntimeError(get_string("act_err_firmware_mismatch"))
-        else:
-            on_log(get_string("act_warn_fp_missing").format(key=fingerprint_key))
-            on_log(get_string("act_skip_val"))
+        _validate_device_model(device_model, vendor_boot_info, on_log)
 
     on_log(get_string("act_add_footer_vb"))
 
@@ -209,25 +223,13 @@ def convert_region_images(
     )
     on_log("")
 
-    on_log(get_string("act_finalize"))
     on_log(get_string("act_rename_final"))
     final_vendor_boot = const.BASE_DIR / const.FN_VENDOR_BOOT
     shutil.move(const.BASE_DIR / const.FN_VENDOR_BOOT_PRC, final_vendor_boot)
 
-    final_images = [final_vendor_boot, const.BASE_DIR / const.FN_VBMETA]
-
-    on_log(get_string("act_move_final").format(dir=const.OUTPUT_DIR.name))
-    utils.move_existing_files(final_images, const.OUTPUT_DIR)
-
-    on_log(get_string("act_move_backup").format(dir=const.BACKUP_DIR.name))
-    utils.move_existing_files(const.BASE_DIR.glob("*.bak.img"), const.BACKUP_DIR)
-    on_log("")
-
-    width = utils.ui.get_term_width()
-    on_log("  " + "=" * width)
-    on_log(get_string("act_success"))
-    on_log(get_string("act_final_saved").format(dir=const.OUTPUT_DIR.name))
-    on_log("  " + "=" * width)
+    _finalize_region_outputs(
+        [final_vendor_boot, const.BASE_DIR / const.FN_VBMETA], on_log
+    )
 
 
 def _default_select_callback(options: List[Tuple[str, str]], prompt_msg: str) -> str:
@@ -240,6 +242,37 @@ def _default_select_callback(options: List[Tuple[str, str]], prompt_msg: str) ->
 
     idx = int(choice) - 1
     return options[idx][0]
+
+
+def _display_detected_codes(
+    detected_codes: dict,
+    on_log: Callable[[str], None],
+) -> int:
+    status_messages = []
+    files_found = 0
+    display_order = [const.FN_PERSIST, const.FN_DEVINFO]
+
+    for fname in display_order:
+        if fname in detected_codes:
+            code = detected_codes[fname]
+            display_name = Path(fname).stem
+
+            if code:
+                status_messages.append(
+                    get_string("act_detect_status_found").format(
+                        display_name=display_name, code=code
+                    )
+                )
+                files_found += 1
+            else:
+                status_messages.append(
+                    get_string("act_detect_status_null").format(
+                        display_name=display_name
+                    )
+                )
+
+    on_log(get_string("act_detect_result").format(res=", ".join(status_messages)))
+    return files_found
 
 
 def edit_devinfo_persist(
@@ -287,32 +320,7 @@ def edit_devinfo_persist(
 
     on_log(get_string("act_detect_codes"))
     detected_codes = detect_country_codes()
-
-    status_messages = []
-    files_found = 0
-
-    display_order = [const.FN_PERSIST, const.FN_DEVINFO]
-
-    for fname in display_order:
-        if fname in detected_codes:
-            code = detected_codes[fname]
-            display_name = Path(fname).stem
-
-            if code:
-                status_messages.append(
-                    get_string("act_detect_status_found").format(
-                        display_name=display_name, code=code
-                    )
-                )
-                files_found += 1
-            else:
-                status_messages.append(
-                    get_string("act_detect_status_null").format(
-                        display_name=display_name
-                    )
-                )
-
-    on_log(get_string("act_detect_result").format(res=", ".join(status_messages)))
+    files_found = _display_detected_codes(detected_codes, on_log)
 
     if files_found == 0:
         on_log(get_string("act_no_codes_skip"))
