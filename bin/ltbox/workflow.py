@@ -1,6 +1,6 @@
 import shutil
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from . import actions
 from .actions.arb import (
@@ -351,7 +351,7 @@ def _run_patch_all(ctx: TaskContext) -> TaskResult:
 
 def patch_all(
     dev: device.DeviceController,
-    wipe: int = 0,
+    wipe: Literal[0, 1] = 0,
     modify_region_code: bool = True,
     target_region: str = "PRC",
     modify_rollback_index: str = "ON",

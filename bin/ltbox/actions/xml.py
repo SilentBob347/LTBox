@@ -2,7 +2,7 @@ import functools
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from .. import constants as const
 from .. import utils
@@ -327,7 +327,7 @@ def _ensure_rawprogram_save_persist(output_dir: Path) -> Path:
         raise FileNotFoundError(msg)
 
 
-def _patch_xml_for_wipe(xml_path: Path, wipe: int) -> None:
+def _patch_xml_for_wipe(xml_path: Path, wipe: Literal[0, 1]) -> None:
     try:
         rp = RawProgramXml(xml_path)
 
@@ -366,7 +366,7 @@ def _cleanup_garbage_xmls(output_dir: Path) -> None:
         utils.ui.info(get_string("img_xml_no_del"))
 
 
-def _modify_xml_algo(output_dir: Path, wipe: int = 0) -> None:
+def _modify_xml_algo(output_dir: Path, wipe: Literal[0, 1] = 0) -> None:
     _ensure_rawprogram4(output_dir)
 
     rawprogram_save = _ensure_rawprogram_save_persist(output_dir)
@@ -421,7 +421,7 @@ def _create_write_xml(
         utils.ui.error(get_string(error_key).format(name=dest_xml_path.name, e=e))
 
 
-def modify_xml(wipe: int = 0, skip_dp: bool = False) -> None:
+def modify_xml(wipe: Literal[0, 1] = 0, skip_dp: bool = False) -> None:
     utils.ui.info(get_string("act_start_xml_mod"))
 
     if not const.OUTPUT_XML_DIR.exists() or not any(const.OUTPUT_XML_DIR.iterdir()):

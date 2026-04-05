@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from .device import DeviceController
 from .workflow_prompts import WorkflowPrompts
@@ -8,7 +8,7 @@ from .workflow_prompts import WorkflowPrompts
 @dataclass
 class TaskContext:
     dev: DeviceController
-    wipe: int = 0
+    wipe: Literal[0, 1] = 0
     skip_rollback: bool = False
     modify_rollback_index: str = "ON"
     modify_region_code: bool = True
