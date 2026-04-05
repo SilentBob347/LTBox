@@ -531,7 +531,12 @@ def download_apatch_nightly(
     artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
 
     target_artifact = next(
-        (name for name in artifact_names if name.lower().startswith("folkpatch")), None
+        (
+            artifact_name
+            for artifact_name in artifact_names
+            if artifact_name.lower().startswith("folkpatch")
+        ),
+        None,
     )
     if not target_artifact:
         raise ToolError(

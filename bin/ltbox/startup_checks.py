@@ -99,12 +99,12 @@ def acquire_single_instance_mutex() -> Optional[Any]:
     if windll is None:
         return None
 
-    kernel32 = windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     mutex_name = "Global\\LTBox_Singleton_Mutex"
 
     mutex = kernel32.CreateMutexW(None, False, mutex_name)
 
-    if kernel32.GetLastError() == 183:
+    if ctypes.get_last_error() == 183:
         return None
 
     return mutex

@@ -24,7 +24,6 @@ class DeviceController:
         edl_manager: Optional[EdlManager] = None,
     ):
         self._usb_port_hint_shown = False
-        self._skip_adb = skip_adb
         self._command_runner = DeviceCommandRunner()
 
         self.adb = (
@@ -72,7 +71,6 @@ class DeviceController:
 
     @skip_adb.setter
     def skip_adb(self, value: bool) -> None:
-        self._skip_adb = value
         self.adb.skip_adb = value
 
     def detect_active_slot(self) -> Optional[str]:

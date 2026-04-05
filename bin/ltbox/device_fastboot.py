@@ -1,5 +1,6 @@
 import re
 import subprocess
+import types
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
@@ -17,7 +18,9 @@ class FastbootVars:
     model: Optional[str] = None
     slot_suffix: Optional[str] = None
     serialno: Optional[str] = None
-    stored_rollback_indices: Dict[int, int] = field(default_factory=dict)
+    stored_rollback_indices: types.MappingProxyType = field(
+        default_factory=lambda: types.MappingProxyType({})
+    )
 
 
 def _parse_getvar_all(output: str) -> FastbootVars:
@@ -54,7 +57,7 @@ def _parse_getvar_all(output: str) -> FastbootVars:
         model=model,
         slot_suffix=slot_suffix,
         serialno=serialno,
-        stored_rollback_indices=stored_indices,
+        stored_rollback_indices=types.MappingProxyType(stored_indices),
     )
 
 
