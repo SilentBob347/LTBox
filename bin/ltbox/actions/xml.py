@@ -421,7 +421,34 @@ def _create_write_xml(
         utils.ui.error(get_string(error_key).format(name=dest_xml_path.name, e=e))
 
 
-def modify_xml(wipe: Literal[0, 1] = 0, skip_dp: bool = False) -> None:
+def create_write_xmls_for_dp() -> None:
+    """Create write XMLs for devinfo/persist partitions.
+
+    Called lazily from flash preparation when patched DP images will be flashed,
+    rather than unconditionally during XML modification.
+    """
+    utils.ui.info(get_string("act_create_write_xml"))
+
+    _create_write_xml(
+        src_xml_path=(const.OUTPUT_XML_DIR / "rawprogram_save_persist_unsparse0.xml"),
+        dest_xml_path=(const.OUTPUT_XML_DIR / "rawprogram_write_persist_unsparse0.xml"),
+        target_label="persist",
+        new_filename="persist.img",
+        success_key="act_created_xml",
+        error_key="act_err_create_xml",
+    )
+
+    _create_write_xml(
+        src_xml_path=(const.OUTPUT_XML_DIR / "rawprogram4.xml"),
+        dest_xml_path=(const.OUTPUT_XML_DIR / "rawprogram4_write_devinfo.xml"),
+        target_label="devinfo",
+        new_filename="devinfo.img",
+        success_key="act_created_xml",
+        error_key="act_err_create_xml",
+    )
+
+
+def modify_xml(wipe: Literal[0, 1] = 0) -> None:
     utils.ui.info(get_string("act_start_xml_mod"))
 
     if not const.OUTPUT_XML_DIR.exists() or not any(const.OUTPUT_XML_DIR.iterdir()):
@@ -437,33 +464,6 @@ def modify_xml(wipe: Literal[0, 1] = 0, skip_dp: bool = False) -> None:
         utils.ui.info(get_string("act_create_temp").format(dir=const.WORKING_DIR.name))
         try:
             _modify_xml_algo(const.OUTPUT_XML_DIR, wipe=wipe)
-
-            if not skip_dp:
-                utils.ui.info(get_string("act_create_write_xml"))
-
-                _create_write_xml(
-                    src_xml_path=(
-                        const.OUTPUT_XML_DIR / "rawprogram_save_persist_unsparse0.xml"
-                    ),
-                    dest_xml_path=(
-                        const.OUTPUT_XML_DIR / "rawprogram_write_persist_unsparse0.xml"
-                    ),
-                    target_label="persist",
-                    new_filename="persist.img",
-                    success_key="act_created_xml",
-                    error_key="act_err_create_xml",
-                )
-
-                _create_write_xml(
-                    src_xml_path=(const.OUTPUT_XML_DIR / "rawprogram4.xml"),
-                    dest_xml_path=(
-                        const.OUTPUT_XML_DIR / "rawprogram4_write_devinfo.xml"
-                    ),
-                    target_label="devinfo",
-                    new_filename="devinfo.img",
-                    success_key="act_created_xml",
-                    error_key="act_err_create_xml",
-                )
 
         except (OSError, FileNotFoundError, ET.ParseError) as e:
             utils.ui.error(get_string("act_err_xml_mod").format(e=e))

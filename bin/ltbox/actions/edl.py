@@ -604,6 +604,7 @@ def _prepare_flash_files(skip_dp: bool = False) -> None:
                         name=const.OUTPUT_DP_DIR.name, e=e
                     )
                 )
+            xml.create_write_xmls_for_dp()
         else:
             utils.ui.echo(
                 get_string("act_skip_dp_copy").format(dir=const.OUTPUT_DP_DIR.name)
