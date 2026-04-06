@@ -311,11 +311,22 @@ def _log_active_slot(ctx: TaskContext) -> None:
     ctx.on_log(get_string("act_active_slot").format(slot=active_slot_str))
 
 
-def _log_target_region(target_region: str) -> None:
-    if target_region == "ROW":
-        utils.ui.info(get_string("menu_main_install_keep_row"))
+def _log_target_region(ctx: "TaskContext") -> None:
+    if not ctx.modify_region_code:
+        key = "menu_main_install_keep" if ctx.wipe == 0 else "menu_main_install_wipe"
+    elif ctx.target_region == "ROW":
+        key = (
+            "menu_main_install_keep_row"
+            if ctx.wipe == 0
+            else "menu_main_install_wipe_row"
+        )
     else:
-        utils.ui.info(get_string("menu_main_install_keep_prc"))
+        key = (
+            "menu_main_install_keep_prc"
+            if ctx.wipe == 0
+            else "menu_main_install_wipe_prc"
+        )
+    utils.ui.info(get_string(key))
 
 
 def _build_success_result(ctx: TaskContext) -> TaskResult:
@@ -338,12 +349,7 @@ def _build_success_result(ctx: TaskContext) -> TaskResult:
 
 
 def _run_patch_all(ctx: TaskContext) -> TaskResult:
-    _log_target_region(ctx.target_region)
-
-    if ctx.wipe == 1:
-        ctx.on_log(get_string("wf_wipe_mode_start"))
-    else:
-        ctx.on_log(get_string("wf_nowipe_mode_start"))
+    _log_target_region(ctx)
 
     _run_steps(ctx, _build_steps(ctx))
     return _build_success_result(ctx)
