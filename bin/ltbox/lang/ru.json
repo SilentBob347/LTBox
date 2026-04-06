@@ -267,6 +267,7 @@
   "act_wait_vbmeta_rebuild_images": "Поместите vbmeta.img и хотя бы один из dtbo.img/init_boot.img/vendor_boot.img в папку 'image'.",
   "act_warn_devinfo_label_missing": "[!] Предупреждение: заголовок 'devinfo' не найден в {name}.",
   "act_warn_devinfo_xml_missing": "[!] Предупреждение: отсутствует '{name}'. Невозможно создать XML devinfo.",
+  "act_warn_dp_in_xml": "[!] ВНИМАНИЕ: '{filename}' найден в '{xml}' несмотря на skip_dp. Этот раздел НЕ будет сохранён.",
   "act_warn_fp_missing": "[!] Предупреждение: отпечаток '{key}' отсутствует в vendor_boot.",
   "act_warn_missing_sector_info": "Не найдена информация о секторах для {partition}. Пропуск.",
   "act_warn_overwrite_1": "  ВНИМАНИЕ: В ПАПКЕ 'image' БУДУТ ЗАМЕНЕНЫ",

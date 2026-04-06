@@ -267,6 +267,7 @@
   "act_wait_vbmeta_rebuild_images": "请将 vbmeta.img 以及 dtbo.img/init_boot.img/vendor_boot.img 中至少一个放入 'image' 文件夹。",
   "act_warn_devinfo_label_missing": "[!] 警告：在 {name} 中未找到 'devinfo' 标签",
   "act_warn_devinfo_xml_missing": "[!] 警告：'{name}' 缺失。无法创建 devinfo XML。",
+  "act_warn_dp_in_xml": "[!] 警告：尽管设置了 skip_dp，'{xml}' 中仍包含 '{filename}'。该分区将不会被保留。",
   "act_warn_fp_missing": "[!] 警告：vendor_boot 中缺失指纹 '{key}'。",
   "act_warn_missing_sector_info": "找不到 {partition} 的扇区信息，已跳过。",
   "act_warn_overwrite_1": "  警告：这将覆盖 'image' 文件夹中的文件",

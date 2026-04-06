@@ -267,6 +267,7 @@
   "act_wait_vbmeta_rebuild_images": "Place vbmeta.img and at least one of dtbo.img/init_boot.img/vendor_boot.img in the 'image' folder.",
   "act_warn_devinfo_label_missing": "[!] Warning: 'devinfo' label not found in {name}",
   "act_warn_devinfo_xml_missing": "[!] Warning: '{name}' missing. Cannot create devinfo XML.",
+  "act_warn_dp_in_xml": "[!] WARNING: '{filename}' found in '{xml}' despite skip_dp. This partition will NOT be preserved.",
   "act_warn_fp_missing": "[!] Warning: Fingerprint '{key}' missing in vendor_boot.",
   "act_warn_missing_sector_info": "Cannot find sector info for {partition}. Skipping.",
   "act_warn_overwrite_1": "  WARNING: THIS WILL OVERWRITE FILES IN 'image'",

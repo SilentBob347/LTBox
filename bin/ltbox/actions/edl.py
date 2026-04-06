@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import time
 import traceback
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -669,6 +670,30 @@ def _resolve_devinfo_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
     return raw_xmls
 
 
+_DP_FILENAMES = {"persist.img", "devinfo.img"}
+
+
+def _verify_no_dp_filenames(raw_xmls: List[Path]) -> None:
+    """Warn if any selected rawprogram XML references persist.img or devinfo.img.
+
+    Called when skip_dp is True to catch accidental inclusion of DP images
+    in the flash plan.
+    """
+    for xml_path in raw_xmls:
+        try:
+            tree = ET.parse(xml_path)
+            for prog in tree.getroot().findall("program"):
+                fname = prog.get("filename", "").strip()
+                if fname.lower() in _DP_FILENAMES:
+                    utils.ui.warn(
+                        get_string("act_warn_dp_in_xml").format(
+                            filename=fname, xml=xml_path.name
+                        )
+                    )
+        except ET.ParseError:
+            pass
+
+
 def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
     all_raw_xmls = sorted(list(const.IMAGE_DIR.glob("rawprogram*.xml")))
     patch_xmls = sorted(list(const.IMAGE_DIR.glob("patch*.xml")))
@@ -684,6 +709,9 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
     raw_xmls = _resolve_persist_xml(raw_xmls, skip_dp)
     raw_xmls = _resolve_devinfo_xml(raw_xmls, skip_dp)
     raw_xmls.sort(key=lambda x: x.name)
+
+    if skip_dp:
+        _verify_no_dp_filenames(raw_xmls)
 
     if not raw_xmls or not patch_xmls:
         utils.ui.echo(
