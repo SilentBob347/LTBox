@@ -154,4 +154,5 @@ def test_flash_partition_target_uses_firmware_params(fw_pkg, mock_env):
         image_path=image_path,
         lun=program.get("physical_partition_number"),
         start_sector=program.get("start_sector"),
+        partition_name=label,
     )
