@@ -49,7 +49,8 @@
     "workflow": ""
   },
   "edl": {
-    "loader_filename": "xbl_s_devprg_ns.melf"
+    "loader_filename": "xbl_s_devprg_ns.melf",
+    "use_qdlrs": false
   },
   "patterns": {
     "row_dot": "2E524F57",
