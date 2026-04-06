@@ -1,0 +1,3 @@
+[submodule "vendor/qdlrs"]
+	path = vendor/qdlrs
+	url = https://github.com/qualcomm/qdlrs.git

@@ -40,6 +40,13 @@ jobs:
           name: tools-exe
           path: bin/tools/
 
+      - name: Download qdl-rs artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: qdl-rs-windows
+          path: bin/tools/
+        continue-on-error: true
+
       - name: Bundle base tools
         run: python .github/scripts/release/bundle-tools.py
 
@@ -70,6 +77,13 @@ jobs:
               throw "[build] Missing required file: $required"
             }
             Write-Host "[build] Found $required"
+          }
+
+          # Optional: qdl-rs (will become required after qdlrs migration)
+          if (Test-Path 'bin/tools/qdl-rs.exe') {
+            Write-Host "[build] Found bin/tools/qdl-rs.exe (optional)"
+          } else {
+            Write-Host "[build] qdl-rs.exe not found (optional, skipping)"
           }
 
       - name: Create Archive

@@ -17,6 +17,9 @@ jobs:
     uses: ./.github/workflows/windows_test.yml
     secrets: inherit
 
+  build-qdlrs:
+    uses: ./.github/workflows/build-qdlrs.yml
+
   preflight:
     needs: test
     runs-on: windows-latest
@@ -44,7 +47,7 @@ jobs:
           "- Config version matches tag ?" >> $env:GITHUB_STEP_SUMMARY
 
   build:
-    needs: preflight
+    needs: [preflight, build-qdlrs]
     uses: ./.github/workflows/build-archive.yml
     with:
       tag-name: ${{ needs.preflight.outputs.tag_name }}
