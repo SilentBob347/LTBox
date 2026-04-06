@@ -197,10 +197,15 @@ class GitHubClient:
             if isinstance(artifact, dict) and artifact.get("name")
         ]
 
-    def latest_successful_workflow_run(self, workflow_file: str) -> Optional[str]:
+    def latest_successful_workflow_run(
+        self, workflow_file: str, branch: Optional[str] = None
+    ) -> Optional[str]:
+        params: dict[str, str | int] = {"status": "success", "per_page": 1}
+        if branch:
+            params["branch"] = branch
         runs = self._request_object(
             f"actions/workflows/{workflow_file}/runs",
-            params={"status": "success", "per_page": 1},
+            params=params,
         ).get("workflow_runs", [])
         if isinstance(runs, list) and runs:
             return str(runs[0]["id"])

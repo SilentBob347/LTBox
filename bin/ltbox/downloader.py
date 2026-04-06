@@ -247,8 +247,12 @@ def get_latest_tagged_workflow_run(
     return WorkflowRunInfo(run_id, resolved_tag)
 
 
-def get_latest_successful_workflow_run(repo: str, workflow_file: str) -> Optional[str]:
-    return _github_client(repo).latest_successful_workflow_run(workflow_file)
+def get_latest_successful_workflow_run(
+    repo: str, workflow_file: str, branch: Optional[str] = None
+) -> Optional[str]:
+    return _github_client(repo).latest_successful_workflow_run(
+        workflow_file, branch=branch
+    )
 
 
 def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:

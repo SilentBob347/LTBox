@@ -69,6 +69,7 @@ class RootProviderProfile:
     aliases: tuple[str, ...] = ()
     force_nightly: bool = False
     release_uses_tagged_build: bool = False
+    nightly_branch: str = "main"
 
     @property
     def has_translated_menu_label(self) -> bool:
@@ -163,6 +164,7 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         ),
         aliases=("ksu",),
         release_uses_tagged_build=True,
+        nightly_branch="dev",
     ),
     RootProviderProfile(
         provider_id="sukisu",

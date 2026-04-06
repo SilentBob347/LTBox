@@ -63,6 +63,7 @@ def prompt_nightly_workflow(
     workflow_file: str,
     default_id: str,
     breadcrumbs: Optional[str] = None,
+    branch: Optional[str] = None,
 ) -> str:
     menu = TerminalMenu(
         get_string("prompt_workflow_source_title"),
@@ -79,7 +80,9 @@ def prompt_nightly_workflow(
         utils.ui.clear()
         utils.ui.echo(get_string("prompt_workflow_retrieving"))
         try:
-            run_id = downloader.get_latest_successful_workflow_run(repo, workflow_file)
+            run_id = downloader.get_latest_successful_workflow_run(
+                repo, workflow_file, branch=branch
+            )
             if run_id:
                 utils.ui.info(get_string("prompt_workflow_retrieved").format(id=run_id))
                 input(get_string("press_enter_to_continue"))
@@ -149,6 +152,7 @@ def _select_profile_source(
                 profile.workflow_file,
                 default_workflow,
                 resolved_breadcrumbs,
+                branch=profile.nightly_branch,
             ),
         )
 
@@ -171,6 +175,7 @@ def _select_profile_source(
                 profile.workflow_file,
                 default_workflow,
                 resolved_breadcrumbs,
+                branch=profile.nightly_branch,
             ),
         )
 
