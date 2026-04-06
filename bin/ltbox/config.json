@@ -50,7 +50,7 @@
   },
   "edl": {
     "loader_filename": "xbl_s_devprg_ns.melf",
-    "use_qdlrs": false
+    "use_qdlrs": true
   },
   "patterns": {
     "row_dot": "2E524F57",

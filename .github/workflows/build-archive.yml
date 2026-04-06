@@ -45,7 +45,6 @@ jobs:
         with:
           name: qdl-rs-windows
           path: bin/tools/
-        continue-on-error: true
 
       - name: Bundle base tools
         run: python .github/scripts/release/bundle-tools.py
@@ -79,12 +78,11 @@ jobs:
             Write-Host "[build] Found $required"
           }
 
-          # Optional: qdl-rs (will become required after qdlrs migration)
-          if (Test-Path 'bin/tools/qdl-rs.exe') {
-            Write-Host "[build] Found bin/tools/qdl-rs.exe (optional)"
-          } else {
-            Write-Host "[build] qdl-rs.exe not found (optional, skipping)"
+          # qdl-rs is the default EDL backend; fh_loader/QSaharaServer kept as fallback
+          if (-not (Test-Path 'bin/tools/qdl-rs.exe')) {
+            throw "[build] Missing required file: bin/tools/qdl-rs.exe"
           }
+          Write-Host "[build] Found bin/tools/qdl-rs.exe"
 
       - name: Create Archive
         run: ./.github/scripts/release/create-archive.ps1 -TagName "$env:TAG_NAME"

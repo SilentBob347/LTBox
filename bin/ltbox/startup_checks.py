@@ -179,6 +179,7 @@ def resolve_process_conflicts(
         "Software Fix.exe",
         "fh_loader.exe",
         "QSaharaServer.exe",
+        "qdl-rs.exe",
     ]
     running = get_running_processes(process_names)
     if not running:
