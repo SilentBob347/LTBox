@@ -1,28 +1,27 @@
 import subprocess
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Callable, List, Optional
 
 import serial
 
 from . import constants as const
-from . import utils
 from .device_support import (
     BaseDeviceManager,
     DeviceCommandRunner,
     find_edl_port,
-    format_serial_port,
+    format_serial_port_bare,
     prevent_sleep_during_flash,
 )
 from .errors import DeviceCommandError
 from .i18n import get_string
 from .ui import ui
 
+_ERASE_LABELS = frozenset({"userdata", "metadata", "frp"})
+
 
 class EdlManager(BaseDeviceManager):
-    _FHLOADER_ERASE_FILENAME = "FHLoaderErase.xml"
-    _FHLOADER_ERASE_LABELS = frozenset({"userdata", "metadata", "frp"})
+    """EDL device manager using qdl-rs."""
 
     def __init__(
         self,
@@ -62,6 +61,8 @@ class EdlManager(BaseDeviceManager):
             ui.info(get_string("device_wait_edl_loop"))
 
         try:
+            from . import utils
+
             port_name = utils.wait_for_condition(
                 lambda: self.check_device(silent=True),
                 interval=2.0,
@@ -90,25 +91,29 @@ class EdlManager(BaseDeviceManager):
             timeout=timeout,
         )
 
-    def load_programmer(self, port: str, loader_path: Path) -> None:
-        if not const.QSAHARASERVER_EXE.exists():
-            raise FileNotFoundError(
-                get_string("device_err_qsahara_missing").format(
-                    path=const.QSAHARASERVER_EXE
-                )
-            )
-
-        cmd_sahara = [
-            str(const.QSAHARASERVER_EXE),
-            "-p",
-            format_serial_port(port),
+    def _base_cmd(self, port: str, loader_path: Path) -> list[str]:
+        return [
+            str(const.QDLRS_EXE),
+            "--backend",
+            "serial",
+            "-d",
+            format_serial_port_bare(port),
+            "-l",
+            str(loader_path),
             "-s",
-            f"13:{loader_path}",
+            "ufs",
         ]
 
+    def load_programmer(self, port: str, loader_path: Path) -> None:
+        if not const.QDLRS_EXE.exists():
+            raise FileNotFoundError(
+                get_string("device_err_qdlrs_missing").format(path=const.QDLRS_EXE)
+            )
+
+        cmd = self._base_cmd(port, loader_path) + ["nop"]
         try:
             with prevent_sleep_during_flash():
-                self._run_command(cmd_sahara, timeout=30.0)
+                self._run_command(cmd, timeout=30.0)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             msg = get_string("device_fatal_programmer")
             msg += f"\n{get_string('device_fatal_causes')}"
@@ -123,77 +128,6 @@ class EdlManager(BaseDeviceManager):
         self.load_programmer(port, loader_path)
         time.sleep(2)
 
-    def _build_fhloader_erase_entries(self, raw_xmls: List[Path]) -> List[ET.Element]:
-        erase_entries: List[ET.Element] = []
-        seen_entries: set[tuple[tuple[str, str], ...]] = set()
-
-        for xml_path in raw_xmls:
-            try:
-                tree = ET.parse(xml_path)
-            except (ET.ParseError, OSError) as e:
-                raise RuntimeError(
-                    f"Failed to parse '{xml_path.name}' while building "
-                    f"{self._FHLOADER_ERASE_FILENAME}: {e}"
-                ) from e
-
-            for program in tree.getroot().findall("program"):
-                if (
-                    program.get("label", "").strip().lower()
-                    not in self._FHLOADER_ERASE_LABELS
-                ):
-                    continue
-
-                physical_partition_number = program.get(
-                    "physical_partition_number", ""
-                ).strip()
-                start_sector = program.get("start_sector", "").strip()
-                num_partition_sectors = program.get("num_partition_sectors", "").strip()
-
-                if not (
-                    physical_partition_number and start_sector and num_partition_sectors
-                ):
-                    raise RuntimeError(
-                        f"'{program.get('label', 'unknown')}' entry in '{xml_path.name}' "
-                        f"is missing erase geometry required to build "
-                        f"{self._FHLOADER_ERASE_FILENAME}."
-                    )
-
-                erase_attrib_items = tuple(
-                    sorted(
-                        (key, value)
-                        for key, value in program.attrib.items()
-                        if key != "filename"
-                    )
-                )
-                if not erase_attrib_items or erase_attrib_items in seen_entries:
-                    continue
-
-                seen_entries.add(erase_attrib_items)
-                erase = ET.Element("erase")
-                for key, value in program.attrib.items():
-                    if key != "filename":
-                        erase.set(key, value)
-                erase_entries.append(erase)
-
-        if erase_entries:
-            return erase_entries
-
-        raise FileNotFoundError(
-            f"Missing userdata/metadata/frp erase spans required to build "
-            f"{self._FHLOADER_ERASE_FILENAME}."
-        )
-
-    def _build_fhloader_erase_xml(self, work_dir: Path, raw_xmls: List[Path]) -> Path:
-        erase_root = ET.Element("data")
-        for erase_entry in self._build_fhloader_erase_entries(raw_xmls):
-            erase_root.append(erase_entry)
-
-        erase_xml = work_dir / self._FHLOADER_ERASE_FILENAME
-        erase_tree = ET.ElementTree(erase_root)
-        ET.indent(erase_tree, space="  ")
-        erase_tree.write(erase_xml, encoding="utf-8", xml_declaration=True)
-        return erase_xml
-
     def read_partition(
         self,
         port: str,
@@ -202,35 +136,42 @@ class EdlManager(BaseDeviceManager):
         start_sector: str,
         num_sectors: str,
         memory_name: str = "UFS",
+        *,
+        partition_name: Optional[str] = None,
     ) -> None:
-        if not const.EDL_EXE.exists():
+        if not const.QDLRS_EXE.exists():
             raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
+                get_string("device_err_qdlrs_missing").format(path=const.QDLRS_EXE)
             )
 
         dest_file = Path(output_filename).resolve()
         dest_dir = dest_file.parent
-        dest_filename = dest_file.name
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={format_serial_port(port)}",
-            "--convertprogram2read",
-            f"--sendimage={dest_filename}",
-            f"--lun={lun}",
-            f"--start_sector={start_sector}",
-            f"--num_sectors={num_sectors}",
-            f"--memoryname={memory_name}",
-            "--noprompt",
-            "--zlpawarehost=1",
-        ]
+        loader_path = const.CONF.edl_loader_file
+
+        if partition_name:
+            cmd = self._base_cmd(port, loader_path) + [
+                "dump-part",
+                "-o",
+                str(dest_dir),
+                partition_name,
+            ]
+        else:
+            cmd = self._base_cmd(port, loader_path) + [
+                "-L",
+                str(lun),
+                "dump-part",
+                "-o",
+                str(dest_dir),
+                dest_file.stem,
+            ]
 
         try:
             with prevent_sleep_during_flash():
-                self._run_command(cmd_fh, cwd=dest_dir)
+                self._run_command(cmd, cwd=dest_dir)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(get_string("device_err_fh_exec").format(e=e), e)
+            raise DeviceCommandError(get_string("device_err_edl_read").format(e=e), e)
 
     def write_partition(
         self,
@@ -239,50 +180,55 @@ class EdlManager(BaseDeviceManager):
         lun: str,
         start_sector: str,
         memory_name: str = "UFS",
+        *,
+        partition_name: Optional[str] = None,
     ) -> None:
-        if not const.EDL_EXE.exists():
+        if not const.QDLRS_EXE.exists():
             raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
+                get_string("device_err_qdlrs_missing").format(path=const.QDLRS_EXE)
             )
 
         image_file = Path(image_path).resolve()
-        work_dir = image_file.parent
-        filename = image_file.name
+        loader_path = const.CONF.edl_loader_file
 
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={format_serial_port(port)}",
-            f"--sendimage={filename}",
-            f"--lun={lun}",
-            f"--start_sector={start_sector}",
-            f"--memoryname={memory_name}",
-            "--noprompt",
-            "--zlpawarehost=1",
-        ]
+        if partition_name:
+            cmd = self._base_cmd(port, loader_path) + [
+                "write",
+                partition_name,
+                str(image_file),
+            ]
+        else:
+            cmd = self._base_cmd(port, loader_path) + [
+                "-L",
+                str(lun),
+                "write",
+                image_file.stem,
+                str(image_file),
+            ]
 
         try:
             with prevent_sleep_during_flash():
-                self._run_command(cmd_fh, cwd=work_dir)
+                self._run_command(cmd)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            raise DeviceCommandError(get_string("device_err_flash_exec").format(e=e), e)
+            raise DeviceCommandError(get_string("device_err_edl_write").format(e=e), e)
 
-    def reset(self, port: str) -> None:
-        if not const.EDL_EXE.exists():
+    def reset(self, port: str, *, mode: str = "system") -> None:
+        if not const.QDLRS_EXE.exists():
             raise FileNotFoundError(
-                get_string("device_err_fh_missing").format(path=const.EDL_EXE)
+                get_string("device_err_qdlrs_missing").format(path=const.QDLRS_EXE)
             )
 
-        cmd_fh = [
-            str(const.EDL_EXE),
-            f"--port={format_serial_port(port)}",
-            "--reset",
-            "--noprompt",
-        ]
+        loader_path = const.CONF.edl_loader_file
+        cmd = self._base_cmd(port, loader_path) + ["reset", mode]
         try:
             with prevent_sleep_during_flash():
-                self._run_command(cmd_fh, timeout=30.0)
+                self._run_command(cmd, timeout=30.0)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise DeviceCommandError(get_string("device_err_reset_fail").format(e=e), e)
+
+    def reset_to_edl(self, port: str) -> None:
+        """Reset device back to EDL mode (stays in Sahara, no system reboot)."""
+        self.reset(port, mode="edl")
 
     def flash_rawprogram(
         self,
@@ -295,54 +241,32 @@ class EdlManager(BaseDeviceManager):
         pre_erase: bool = False,
         reset_after: bool = False,
     ) -> None:
-        if not const.QSAHARASERVER_EXE.exists() or not const.EDL_EXE.exists():
-            ui.error(
-                get_string("device_err_tools_missing").format(dir=const.TOOLS_DIR.name)
+        if not const.QDLRS_EXE.exists():
+            raise FileNotFoundError(
+                get_string("device_err_qdlrs_missing").format(path=const.QDLRS_EXE)
             )
-            raise FileNotFoundError(get_string("device_err_edl_tools_missing"))
 
-        search_path = str(loader_path.parent)
         ui.info(get_string("device_step1_load"))
         self.load_programmer_safe(port, loader_path)
 
-        raw_xml_str = ",".join(path.name for path in raw_xmls)
-        patch_xml_str = ",".join(path.name for path in patch_xmls)
-
         try:
-            if pre_erase:
-                self._build_fhloader_erase_xml(loader_path.parent, raw_xmls)
-
             with prevent_sleep_during_flash():
                 if pre_erase:
-                    cmd_erase = [
-                        str(const.EDL_EXE),
-                        f"--port={format_serial_port(port)}",
-                        f"--search_path={search_path}",
-                        f"--sendxml={self._FHLOADER_ERASE_FILENAME}",
-                        f"--memoryname={memory_type}",
-                        "--showpercentagecomplete",
-                        "--zlpawarehost=1",
-                        "--noprompt",
-                    ]
-                    self._run_command(cmd_erase)
+                    for label in sorted(_ERASE_LABELS):
+                        self._run_command(
+                            self._base_cmd(port, loader_path) + ["erase", label]
+                        )
 
                 ui.info(get_string("device_step2_flash"))
-                cmd_fh = [
-                    str(const.EDL_EXE),
-                    f"--port={format_serial_port(port)}",
-                    f"--search_path={search_path}",
-                    f"--sendxml={raw_xml_str}",
-                    f"--sendxml={patch_xml_str}",
-                    "--setactivepartition=1",
-                    f"--memoryname={memory_type}",
-                    "--showpercentagecomplete",
-                    "--zlpawarehost=1",
-                    "--noprompt",
-                ]
-                if reset_after:
-                    cmd_fh.append("--reset")
+                cmd = self._base_cmd(port, loader_path) + ["flasher"]
+                for xml_path in raw_xmls:
+                    cmd.extend(["-p", str(xml_path)])
+                for xml_path in patch_xmls:
+                    cmd.extend(["-x", str(xml_path)])
+                self._run_command(cmd)
 
-                self._run_command(cmd_fh)
+                if reset_after:
+                    self.reset(port, mode="system")
         except (subprocess.CalledProcessError, OSError, RuntimeError) as e:
             raise DeviceCommandError(
                 get_string("device_err_rawprogram_fail").format(e=e),

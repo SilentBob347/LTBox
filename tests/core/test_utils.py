@@ -236,8 +236,7 @@ class TestUtils:
         adb_exe = tmp_path / "adb.exe"
         fastboot_exe = tmp_path / "fastboot.exe"
         avbtool_py = tmp_path / "avbtool.py"
-        edl_exe = tmp_path / "fh_loader.exe"
-        qs_exe = tmp_path / "Qsaharaserver.exe"
+        qdlrs_exe = tmp_path / "qdl-rs.exe"
 
         for path in (python_exe, adb_exe, fastboot_exe, avbtool_py):
             path.write_text("ok", encoding="utf-8")
@@ -248,8 +247,7 @@ class TestUtils:
             patch("ltbox.utils.const.ADB_EXE", adb_exe),
             patch("ltbox.utils.const.FASTBOOT_EXE", fastboot_exe),
             patch("ltbox.utils.const.AVBTOOL_PY", avbtool_py),
-            patch("ltbox.utils.const.EDL_EXE", edl_exe),
-            patch("ltbox.utils.const.QSAHARASERVER_EXE", qs_exe),
+            patch("ltbox.utils.const.QDLRS_EXE", qdlrs_exe),
             patch("ltbox.utils.const.KEY_MAP", {}),
             patch("ltbox.utils._check_required_windows_drivers"),
             patch("ltbox.utils.ui") as mock_ui,
@@ -319,19 +317,10 @@ class TestUtils:
         adb_exe = tmp_path / "adb.exe"
         fastboot_exe = tmp_path / "fastboot.exe"
         avbtool_py = tmp_path / "avbtool.py"
-        edl_exe = tmp_path / "fh_loader.exe"
-        qs_exe = tmp_path / "Qsaharaserver.exe"
+        qdlrs_exe = tmp_path / "qdl-rs.exe"
 
-        for path in (python_exe, adb_exe, fastboot_exe, avbtool_py):
+        for path in (python_exe, adb_exe, fastboot_exe, avbtool_py, qdlrs_exe):
             path.write_text("ok", encoding="utf-8")
-
-        src_fh_loader = fw_pkg.get("fh_loader.exe")
-        src_qsahara = fw_pkg.get("QSaharaServer.exe")
-        assert src_fh_loader is not None
-        assert src_qsahara is not None
-
-        edl_exe.write_bytes(Path(src_fh_loader).read_bytes())
-        qs_exe.write_bytes(Path(src_qsahara).read_bytes())
 
         with (
             patch("ltbox.utils.const.BASE_DIR", base_dir),
@@ -339,8 +328,7 @@ class TestUtils:
             patch("ltbox.utils.const.ADB_EXE", adb_exe),
             patch("ltbox.utils.const.FASTBOOT_EXE", fastboot_exe),
             patch("ltbox.utils.const.AVBTOOL_PY", avbtool_py),
-            patch("ltbox.utils.const.EDL_EXE", edl_exe),
-            patch("ltbox.utils.const.QSAHARASERVER_EXE", qs_exe),
+            patch("ltbox.utils.const.QDLRS_EXE", qdlrs_exe),
             patch("ltbox.utils.const.KEY_MAP", {}),
             patch("ltbox.utils._check_required_windows_drivers"),
             patch("ltbox.utils.ui") as mock_ui,

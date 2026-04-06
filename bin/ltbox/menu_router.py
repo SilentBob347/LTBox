@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 from . import constants as const
 from . import i18n, menu_data
 from .app_state import AppState
-from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port
+from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port_bare
 from .i18n import get_string
 from .menu import TerminalMenu, select_menu_action
 from .root_profiles import (
@@ -452,27 +452,25 @@ def _reboot_from_edl() -> None:
         input(get_string("press_enter_to_continue"))
         return
 
-    runner = DeviceCommandRunner()
     try:
         ui.info(get_string("reboot_edl_uploading"))
-        cmd_sahara = [
-            str(const.QSAHARASERVER_EXE),
-            "-p",
-            format_serial_port(edl_port),
+        base_cmd = [
+            str(const.QDLRS_EXE),
+            "--backend",
+            "serial",
+            "-d",
+            format_serial_port_bare(edl_port),
+            "-l",
+            str(const.EDL_LOADER_FILE),
             "-s",
-            f"13:{const.EDL_LOADER_FILE}",
+            "ufs",
         ]
-        runner.run(cmd_sahara, timeout=30)
+
+        subprocess.run(base_cmd + ["nop"], check=True, timeout=30)
         time.sleep(2)
 
         ui.info(get_string("reboot_edl_resetting"))
-        cmd_reset = [
-            str(const.EDL_EXE),
-            f"--port={format_serial_port(edl_port)}",
-            "--reset",
-            "--noprompt",
-        ]
-        runner.run(cmd_reset, timeout=30)
+        subprocess.run(base_cmd + ["reset", "system"], check=True, timeout=30)
 
         ui.info(get_string("reboot_sent_success"))
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:

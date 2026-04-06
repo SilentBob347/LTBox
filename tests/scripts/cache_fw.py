@@ -39,8 +39,6 @@ TARGETS = [
     "vendor_boot.img",
     "rawprogram_unsparse0.xml",
     "rawprogram_save_persist_unsparse0.xml",
-    "fh_loader.exe",
-    "QSaharaServer.exe",
 ]
 
 

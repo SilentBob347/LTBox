@@ -1,4 +1,3 @@
-import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,69 +63,21 @@ def test_adb_reboot_non_edl_does_not_kill_edl_related_processes():
     kill_processes.assert_not_called()
 
 
-def test_edl_flash_rawprogram_sends_pre_erase_and_inline_reset(tmp_path):
+def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
     manager = EdlManager()
     loader_path = tmp_path / "xbl_s_devprg_ns.melf"
     raw_xml = tmp_path / "rawprogram1.xml"
     patch_xml = tmp_path / "patch0.xml"
-    fh_loader = tmp_path / "fh_loader.exe"
-    qsahara = tmp_path / "QSaharaServer.exe"
+    qdlrs = tmp_path / "qdl-rs.exe"
 
-    for path in (loader_path, patch_xml, fh_loader, qsahara):
+    for path in (loader_path, raw_xml, patch_xml, qdlrs):
         path.write_text("x", encoding="utf-8")
 
-    raw_xml.write_text(
-        """<?xml version="1.0"?>
-<data>
-  <program
-    label="metadata"
-    physical_partition_number="0"
-    partofsingleimage="false"
-    filename="metadata_1.img"
-    start_sector="100"
-    num_partition_sectors="2"
-    readbackverify="false"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-  <program
-    label="frp"
-    physical_partition_number="0"
-    partofsingleimage="false"
-    filename=""
-    sparse="false"
-    start_sector="200"
-    num_partition_sectors="128"
-    start_byte_hex="0x16108000"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-  <program
-    label="userdata"
-    physical_partition_number="6"
-    partofsingleimage="false"
-    filename="userdata_1.img"
-    start_sector="4096"
-    num_partition_sectors="8192"
-    readbackverify="false"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-  <program
-    label="super"
-    physical_partition_number="0"
-    start_sector="9999"
-    num_partition_sectors="32"
-    filename="super.img"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-</data>
-""",
-        encoding="utf-8",
-    )
-
     with (
-        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
-        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
         patch.object(manager, "load_programmer_safe"),
-        patch.object(manager, "_run_command") as mock_run_command,
+        patch.object(manager, "_run_command") as mock_run,
+        patch.object(manager, "reset") as mock_reset,
     ):
         manager.flash_rawprogram(
             "COM1",
@@ -138,106 +89,70 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_inline_reset(tmp_path):
             reset_after=True,
         )
 
-    erase_cmd = mock_run_command.call_args_list[0].args[0]
-    flash_cmd = mock_run_command.call_args_list[1].args[0]
-    erase_xml = tmp_path / "FHLoaderErase.xml"
-    erase_root = ET.parse(erase_xml).getroot()
-    erase_entries = erase_root.findall("erase")
+    # 3 erase calls (frp, metadata, userdata sorted) + 1 flasher call
+    assert mock_run.call_count == 4
 
-    assert "--sendxml=FHLoaderErase.xml" in erase_cmd
-    assert "--reset" in flash_cmd
-    assert erase_xml.exists()
-    assert [erase.get("label") for erase in erase_entries] == [
-        "metadata",
-        "frp",
-        "userdata",
-    ]
-    assert all(erase.get("filename") is None for erase in erase_entries)
-    assert erase_entries[0].get("partofsingleimage") == "false"
-    assert erase_entries[1].get("start_byte_hex") == "0x16108000"
-    assert erase_entries[2].get("physical_partition_number") == "6"
-    assert erase_entries[2].get("start_sector") == "4096"
-    assert erase_entries[2].get("num_partition_sectors") == "8192"
-    assert erase_entries[2].get("SECTOR_SIZE_IN_BYTES") == "4096"
+    erase_cmds = [mock_run.call_args_list[i].args[0] for i in range(3)]
+    for cmd in erase_cmds:
+        assert "erase" in cmd
+
+    erase_labels = [cmd[-1] for cmd in erase_cmds]
+    assert erase_labels == ["frp", "metadata", "userdata"]
+
+    flash_cmd = mock_run.call_args_list[3].args[0]
+    assert "flasher" in flash_cmd
+    assert "-p" in flash_cmd
+    assert "-x" in flash_cmd
+
+    mock_reset.assert_called_once_with("COM1", mode="system")
 
 
-def test_edl_flash_rawprogram_deduplicates_erase_spans_across_xmls(tmp_path):
+def test_edl_flash_rawprogram_skips_erase_and_reset_when_disabled(tmp_path):
     manager = EdlManager()
     loader_path = tmp_path / "xbl_s_devprg_ns.melf"
     raw_xml = tmp_path / "rawprogram1.xml"
-    raw_xml_dup = tmp_path / "rawprogram2.xml"
     patch_xml = tmp_path / "patch0.xml"
-    fh_loader = tmp_path / "fh_loader.exe"
-    qsahara = tmp_path / "QSaharaServer.exe"
+    qdlrs = tmp_path / "qdl-rs.exe"
 
-    for path in (loader_path, patch_xml, fh_loader, qsahara):
+    for path in (loader_path, raw_xml, patch_xml, qdlrs):
         path.write_text("x", encoding="utf-8")
 
-    raw_xml.write_text(
-        """<?xml version="1.0"?>
-<data>
-  <program
-    label="userdata"
-    physical_partition_number="0"
-    filename="userdata_1.img"
-    start_sector="1024"
-    num_partition_sectors="2048"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-</data>
-""",
-        encoding="utf-8",
-    )
-    raw_xml_dup.write_text(
-        """<?xml version="1.0"?>
-<data>
-  <program
-    label="userdata"
-    physical_partition_number="0"
-    filename="userdata_1.img"
-    start_sector="1024"
-    num_partition_sectors="2048"
-    SECTOR_SIZE_IN_BYTES="4096"
-  />
-</data>
-""",
-        encoding="utf-8",
-    )
-
     with (
-        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
-        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
+        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
         patch.object(manager, "load_programmer_safe"),
-        patch.object(manager, "_run_command"),
+        patch.object(manager, "_run_command") as mock_run,
     ):
         manager.flash_rawprogram(
             "COM1",
             loader_path,
             "UFS",
-            [raw_xml, raw_xml_dup],
+            [raw_xml],
             [patch_xml],
-            pre_erase=True,
+            pre_erase=False,
             reset_after=False,
         )
 
-    erase_entries = ET.parse(tmp_path / "FHLoaderErase.xml").getroot().findall("erase")
-
-    assert len(erase_entries) == 1
-    assert erase_entries[0].get("filename") is None
+    # Only the flasher command
+    assert mock_run.call_count == 1
+    flash_cmd = mock_run.call_args_list[0].args[0]
+    assert "flasher" in flash_cmd
+    assert "erase" not in flash_cmd
 
 
 def test_edl_write_partition_leaves_success_logging_to_caller(tmp_path):
     manager = EdlManager()
     image_path = tmp_path / "init_boot.img"
-    fh_loader = tmp_path / "fh_loader.exe"
+    qdlrs = tmp_path / "qdl-rs.exe"
     image_path.write_text("patched", encoding="utf-8")
-    fh_loader.write_text("x", encoding="utf-8")
+    qdlrs.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
+        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device_edl.const.CONF") as mock_conf,
         patch.object(manager, "_run_command"),
         patch("ltbox.device_edl.ui") as mock_ui,
     ):
+        mock_conf.edl_loader_file = tmp_path / "loader.melf"
         manager.write_partition(
             port="COM5",
             image_path=image_path,
@@ -278,81 +193,31 @@ def test_fastboot_wait_for_device_uses_transient_status():
     assert mock_wait.call_args.kwargs.get("on_loop") is None
 
 
-def test_edl_flash_rawprogram_skips_pre_erase_and_inline_reset_when_disabled(
-    tmp_path,
-):
+def test_edl_reset_to_edl_calls_reset_with_edl_mode(tmp_path):
     manager = EdlManager()
-    loader_path = tmp_path / "xbl_s_devprg_ns.melf"
-    raw_xml = tmp_path / "rawprogram1.xml"
-    patch_xml = tmp_path / "patch0.xml"
-    fh_loader = tmp_path / "fh_loader.exe"
-    qsahara = tmp_path / "QSaharaServer.exe"
-
-    for path in (loader_path, raw_xml, patch_xml, fh_loader, qsahara):
-        path.write_text("x", encoding="utf-8")
+    qdlrs = tmp_path / "qdl-rs.exe"
+    qdlrs.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
-        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
-        patch.object(manager, "load_programmer_safe"),
-        patch.object(manager, "_run_command") as mock_run_command,
+        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device_edl.const.CONF") as mock_conf,
+        patch.object(manager, "_run_command") as mock_run,
     ):
-        manager.flash_rawprogram(
-            "COM1",
-            loader_path,
-            "UFS",
-            [raw_xml],
-            [patch_xml],
-            pre_erase=False,
-            reset_after=False,
-        )
+        mock_conf.edl_loader_file = tmp_path / "loader.melf"
+        manager.reset_to_edl("COM3")
 
-    flash_cmd = mock_run_command.call_args_list[0].args[0]
-
-    assert mock_run_command.call_count == 1
-    assert "--sendxml=FHLoaderErase.xml" not in flash_cmd
-    assert "--reset" not in flash_cmd
+    cmd = mock_run.call_args.args[0]
+    assert cmd[-2:] == ["reset", "edl"]
 
 
-def test_edl_flash_rawprogram_requires_erase_spans_for_pre_erase(tmp_path):
-    from ltbox.device import DeviceCommandError
-
+def test_edl_base_cmd_uses_qdlrs_serial_backend(tmp_path):
     manager = EdlManager()
-    loader_path = tmp_path / "xbl_s_devprg_ns.melf"
-    raw_xml = tmp_path / "rawprogram1.xml"
-    patch_xml = tmp_path / "patch0.xml"
-    fh_loader = tmp_path / "fh_loader.exe"
-    qsahara = tmp_path / "QSaharaServer.exe"
+    loader = tmp_path / "loader.melf"
 
-    for path in (loader_path, patch_xml, fh_loader, qsahara):
-        path.write_text("x", encoding="utf-8")
-
-    raw_xml.write_text(
-        """<?xml version="1.0"?>
-<data>
-  <program
-    label="super"
-    physical_partition_number="0"
-    start_sector="1"
-    num_partition_sectors="2"
-  />
-</data>
-""",
-        encoding="utf-8",
-    )
-
-    with (
-        patch("ltbox.device_edl.const.EDL_EXE", fh_loader),
-        patch("ltbox.device_edl.const.QSAHARASERVER_EXE", qsahara),
-        patch.object(manager, "load_programmer_safe"),
-    ):
-        with pytest.raises(DeviceCommandError, match="erase spans"):
-            manager.flash_rawprogram(
-                "COM1",
-                loader_path,
-                "UFS",
-                [raw_xml],
-                [patch_xml],
-                pre_erase=True,
-                reset_after=False,
-            )
+    cmd = manager._base_cmd("COM12", loader)
+    assert "--backend" in cmd
+    assert "serial" in cmd
+    assert "-d" in cmd
+    assert "COM12" in cmd
+    assert "-s" in cmd
+    assert "ufs" in cmd

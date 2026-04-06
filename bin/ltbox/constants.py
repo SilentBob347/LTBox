@@ -69,8 +69,6 @@ class LTBoxConfig:
         self.adb_exe = self.tools_dir / "adb.exe"
         self.fastboot_exe = self.tools_dir / "fastboot.exe"
         self.avbtool_py = self.tools_dir / "avbtool.py"
-        self.qsaharaserver_exe = self.tools_dir / "Qsaharaserver.exe"
-        self.edl_exe = self.tools_dir / "fh_loader.exe"
         self.qdlrs_exe = self.tools_dir / "qdl-rs.exe"
         self.magiskboot_exe = self.tools_dir / "magiskboot.exe"
         self.otatools_dir = self.tools_dir / "otatools"
@@ -168,10 +166,6 @@ class LTBoxConfig:
             return self._get_val("wildkernels", "zip")
         except RuntimeError:
             return self._get_val("kernelsu-next", "anykernel_zip")
-
-    @property
-    def use_qdlrs(self) -> bool:
-        return self._get_val("edl", "use_qdlrs", default=False)
 
     @property
     def edl_loader_filename(self) -> str:
@@ -280,8 +274,6 @@ PYTHON_EXE = CONF.python_exe
 ADB_EXE = CONF.adb_exe
 FASTBOOT_EXE = CONF.fastboot_exe
 AVBTOOL_PY = CONF.avbtool_py
-QSAHARASERVER_EXE = CONF.qsaharaserver_exe
-EDL_EXE = CONF.edl_exe
 QDLRS_EXE = CONF.qdlrs_exe
 MAGISKBOOT_EXE = CONF.magiskboot_exe
 OTATOOLS_DIR = CONF.otatools_dir

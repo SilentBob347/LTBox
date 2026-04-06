@@ -177,8 +177,6 @@ def resolve_process_conflicts(
         "adb.exe",
         "fastboot.exe",
         "Software Fix.exe",
-        "fh_loader.exe",
-        "QSaharaServer.exe",
         "qdl-rs.exe",
     ]
     running = get_running_processes(process_names)
