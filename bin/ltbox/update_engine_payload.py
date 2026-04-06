@@ -16,6 +16,8 @@ class PayloadPartitionInfo:
     name: str
     new_size: int
     new_hash: bytes
+    old_size: int = 0
+    old_hash: bytes = b""
 
 
 def _ensure_update_engine_scripts() -> None:
@@ -57,15 +59,25 @@ def get_partition_infos(payload_path: Path) -> List[PayloadPartitionInfo]:
     except Exception as e:
         raise ToolError(f"Failed to parse payload metadata: {e}") from e
 
-    return [
-        PayloadPartitionInfo(
-            name=partition.partition_name,
-            new_size=int(partition.new_partition_info.size),
-            new_hash=partition.new_partition_info.hash,
+    infos: List[PayloadPartitionInfo] = []
+    for partition in payload.manifest.partitions:
+        if not partition.partition_name:
+            continue
+        old_size = 0
+        old_hash = b""
+        if partition.HasField("old_partition_info"):
+            old_size = int(partition.old_partition_info.size)
+            old_hash = partition.old_partition_info.hash
+        infos.append(
+            PayloadPartitionInfo(
+                name=partition.partition_name,
+                new_size=int(partition.new_partition_info.size),
+                new_hash=partition.new_partition_info.hash,
+                old_size=old_size,
+                old_hash=old_hash,
+            )
         )
-        for partition in payload.manifest.partitions
-        if partition.partition_name
-    ]
+    return infos
 
 
 def get_partition_names(payload_path: Path) -> List[str]:
@@ -78,6 +90,14 @@ def get_partition_sizes(payload_path: Path) -> dict[str, int]:
 
 def get_partition_hashes(payload_path: Path) -> dict[str, bytes]:
     return {info.name: info.new_hash for info in get_partition_infos(payload_path)}
+
+
+def get_old_partition_hashes(payload_path: Path) -> dict[str, bytes]:
+    return {
+        info.name: info.old_hash
+        for info in get_partition_infos(payload_path)
+        if info.old_hash
+    }
 
 
 def partition_names_from_infos(

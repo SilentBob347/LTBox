@@ -276,7 +276,31 @@ def _run_differential_patch(
     new_sizes: dict[str, int],
     new_hashes: dict[str, bytes],
     output_filenames: dict[str, str],
+    old_hashes: Optional[dict[str, bytes]] = None,
 ) -> None:
+    if old_hashes:
+        utils.ui.echo(get_string("ota_verifying_source_hashes"))
+        for name in partitions:
+            expected_hash = old_hashes.get(name)
+            if not expected_hash:
+                continue
+            source_path = file_map.get(name)
+            if not source_path:
+                continue
+            sha256_hash = hashlib.sha256()
+            with open(source_path, "rb") as f:
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    sha256_hash.update(block)
+            actual_hash = sha256_hash.digest()
+            if actual_hash != expected_hash:
+                raise ToolError(
+                    get_string("ota_err_source_hash_mismatch").format(
+                        name=name,
+                        expected=expected_hash.hex(),
+                        actual=actual_hash.hex(),
+                    )
+                )
+
     utils.recreate_dir(output_dir)
 
     images_arg = ",".join(partitions)
@@ -925,6 +949,9 @@ def apply_incremental_ota() -> None:
         )
 
         partition_hashes = update_engine_payload.get_partition_hashes(payload_bin)
+        old_partition_hashes = update_engine_payload.get_old_partition_hashes(
+            payload_bin
+        )
 
         # Run differential patch
         _run_differential_patch(
@@ -935,6 +962,7 @@ def apply_incremental_ota() -> None:
             partition_sizes,
             partition_hashes,
             output_filenames,
+            old_hashes=old_partition_hashes,
         )
         _copy_flash_xmls(const.IMAGE_NEW_DIR, rawprogram_paths, xml_filename_updates)
         ota_resign_targets = _resolve_ota_resign_targets(

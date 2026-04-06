@@ -302,6 +302,10 @@ def test_apply_incremental_ota_uses_all_payload_partitions(tmp_path):
             return_value={"system": b"123", "boot": b"abc"},
         ),
         patch(
+            "ltbox.actions.ota.update_engine_payload.get_old_partition_hashes",
+            return_value={},
+        ),
+        patch(
             "ltbox.actions.ota._get_payload_partition_infos",
             return_value=partition_infos,
         ),
@@ -1037,6 +1041,10 @@ def test_apply_incremental_ota_prompts_for_resign_before_super_rebuild(tmp_path)
             return_value={"system": b"123", "boot": b"abc"},
         ),
         patch(
+            "ltbox.actions.ota.update_engine_payload.get_old_partition_hashes",
+            return_value={},
+        ),
+        patch(
             "ltbox.actions.ota._get_payload_partition_infos",
             return_value=[
                 ota.update_engine_payload.PayloadPartitionInfo(
@@ -1101,6 +1109,10 @@ def test_apply_incremental_ota_promotes_outputs_to_image_dir(tmp_path):
             return_value={"system": b"123", "boot": b"abc"},
         ),
         patch(
+            "ltbox.actions.ota.update_engine_payload.get_old_partition_hashes",
+            return_value={},
+        ),
+        patch(
             "ltbox.actions.ota._get_payload_partition_infos",
             return_value=[
                 ota.update_engine_payload.PayloadPartitionInfo(
@@ -1158,6 +1170,10 @@ def test_apply_incremental_ota_preserves_abl_when_resign_was_requested(tmp_path)
         patch(
             "ltbox.actions.ota.update_engine_payload.get_partition_hashes",
             return_value={"system": b"123", "boot": b"abc"},
+        ),
+        patch(
+            "ltbox.actions.ota.update_engine_payload.get_old_partition_hashes",
+            return_value={},
         ),
         patch(
             "ltbox.actions.ota._get_payload_partition_infos",
