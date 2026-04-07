@@ -807,6 +807,7 @@
   "utils_driver_install_success": "Qualcomm USB Kernel Drivers installed successfully.",
   "utils_driver_installing": "Installing driver: {name}...",
   "utils_driver_missing_warn": "Qualcomm USB Kernel Drivers not found. Attempting automatic installation...",
+  "utils_driver_reboot_recommended": "A PC reboot is recommended before proceeding.",
   "utils_err_missing_android_usb_driver": "You must install the Android USB driver to run.",
   "utils_err_missing_qdloader_driver": "Qualcomm USB Kernel Drivers are not installed.",
   "utils_err_non_release_download": "It looks like you downloaded source code instead of the release package. Download the correct one.",

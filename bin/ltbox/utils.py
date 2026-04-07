@@ -323,10 +323,19 @@ def _auto_install_qualcomm_drivers() -> None:
                     )
 
             ui.echo(get_string("utils_driver_install_success"))
+            ui.warn(get_string("utils_driver_reboot_recommended"))
+            ui.echo(get_string("press_enter_to_exit"))
+            try:
+                input()
+            except EOFError:
+                pass
+            raise SystemExit(0)
 
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    except SystemExit:
+        raise
     except Exception as e:
         msg = get_string("utils_driver_install_failed").format(e=e)
         ui.error(msg)

@@ -807,6 +807,7 @@
   "utils_driver_install_success": "Qualcomm USB Kernel Drivers가 성공적으로 설치되었습니다.",
   "utils_driver_installing": "드라이버 설치 중: {name}...",
   "utils_driver_missing_warn": "Qualcomm USB Kernel Drivers가 없습니다. 자동 설치를 시도합니다...",
+  "utils_driver_reboot_recommended": "PC 재부팅 후 진행을 권장합니다.",
   "utils_err_missing_android_usb_driver": "실행하려면 Android USB 드라이버를 설치해야 합니다.",
   "utils_err_missing_qdloader_driver": "Qualcomm USB Kernel Drivers가 설치되어 있지 않습니다.",
   "utils_err_non_release_download": "소스 코드를 다운로드한 것으로 보입니다. 올바른 릴리즈 패키지를 다운로드하세요.",
