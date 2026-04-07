@@ -75,32 +75,27 @@ def bundle_platform_tools(url: str) -> None:
     temp_zip.unlink()
 
 
-def bundle_avb_tools(url: str) -> None:
-    avbtool = TOOLS_DIR / "avbtool.py"
-    key1 = TOOLS_DIR / "testkey_rsa4096.pem"
-    key2 = TOOLS_DIR / "testkey_rsa2048.pem"
+def bundle_avb_tools() -> None:
+    """Copy AVB tools from vendor/avb submodule into bin/tools/ for packaging."""
+    avb_dir = REPO_ROOT / "vendor" / "avb"
+    copy_map = {
+        avb_dir / "avbtool.py": TOOLS_DIR / "avbtool.py",
+        avb_dir / "test" / "data" / "testkey_rsa4096.pem": TOOLS_DIR / "testkey_rsa4096.pem",
+        avb_dir / "test" / "data" / "testkey_rsa2048.pem": TOOLS_DIR / "testkey_rsa2048.pem",
+    }
 
-    if avbtool.exists() and key1.exists() and key2.exists():
+    if all(dst.exists() for dst in copy_map.values()):
         print("[bundle-tools] AVB tools already present, skipping.")
         return
 
-    extract_map = {
-        "avbtool.py": avbtool,
-        "test/data/testkey_rsa4096.pem": key1,
-        "test/data/testkey_rsa2048.pem": key2,
-    }
-
-    temp_tar = TOOLS_DIR / "avb.tar.gz"
-    try:
-        _download(url, temp_tar, "AVB archive")
-        _extract_archive(temp_tar, extract_map)
-    finally:
-        if temp_tar.exists():
-            temp_tar.unlink()
-
-    missing = [p.name for p in extract_map.values() if not p.exists()]
-    if missing:
-        raise RuntimeError(f"AVB extraction incomplete, missing: {missing}")
+    for src, dst in copy_map.items():
+        if not src.exists():
+            raise RuntimeError(
+                f"vendor/avb submodule missing {src.relative_to(REPO_ROOT)}. "
+                f"Run: git submodule update --init vendor/avb"
+            )
+        shutil.copy2(src, dst)
+        print(f"[bundle-tools] Copied {src.name} -> {dst.relative_to(REPO_ROOT)}")
 
 
 def _resolve_otatools_metadata(
@@ -409,7 +404,7 @@ def main() -> None:
 
     tools = config["tools"]
     bundle_platform_tools(tools["platform_tools_url"])
-    bundle_avb_tools(tools["avb_archive_url"])
+    bundle_avb_tools()
     bundle_update_engine_scripts(config["update_engine"]["archive_url"])
     otatools = config["otatools"]
     bundle_otatools(

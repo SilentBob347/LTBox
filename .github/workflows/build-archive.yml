@@ -17,6 +17,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
