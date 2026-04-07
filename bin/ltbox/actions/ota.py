@@ -541,7 +541,9 @@ def _confirm_ota_output_resign(candidate_paths: dict[str, Path]) -> bool:
 
 
 def _resolve_ota_testkey_path(key_name: str) -> Path:
-    key_path = const.TOOLS_DIR / key_name
+    key_path = const.AVB_TESTKEYS_DIR / key_name
+    if not key_path.exists():
+        key_path = const.TOOLS_DIR / key_name
     if not key_path.exists():
         raise MissingFileError(
             get_string("ota_err_missing_resign_key").format(path=key_path)

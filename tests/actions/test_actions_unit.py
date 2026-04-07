@@ -605,7 +605,12 @@ def test_resolve_ota_resign_policy_uses_default_4096_key(tmp_path):
     key_4096 = tools_dir / "testkey_rsa4096.pem"
     key_4096.write_text("4096", encoding="utf-8")
 
-    with patch("ltbox.actions.ota.const.TOOLS_DIR", tools_dir):
+    empty_avb_dir = tmp_path / "avb_testkeys"
+    empty_avb_dir.mkdir()
+    with (
+        patch("ltbox.actions.ota.const.TOOLS_DIR", tools_dir),
+        patch("ltbox.actions.ota.const.AVB_TESTKEYS_DIR", empty_avb_dir),
+    ):
         key_path, algorithm = ota._resolve_ota_resign_policy(
             "vbmeta_system",
             "SHA256_RSA2048",

@@ -30,7 +30,7 @@ class _ParsedAvbImage:
 def _resolve_avbtool_source_path() -> Path:
     candidates = [
         const.AVBTOOL_PY,
-        const.BASE_DIR.parent / "avb" / "avbtool.py",
+        const.TOOLS_DIR / "avbtool.py",
     ]
     for candidate in candidates:
         if candidate.exists():

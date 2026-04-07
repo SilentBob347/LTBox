@@ -4,3 +4,4 @@
 [submodule "vendor/avb"]
 	path = vendor/avb
 	url = https://android.googlesource.com/platform/external/avb
+	branch = refs/heads/main-kernel

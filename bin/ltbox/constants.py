@@ -62,13 +62,18 @@ class LTBoxConfig:
 
         self.fn_vendor_boot_prc = "vendor_boot_prc.img"
 
+        # --- Vendor Paths ---
+        self.vendor_dir = self.base_dir / "vendor"
+        self.avb_dir = self.vendor_dir / "avb"
+        self.avb_testkeys_dir = self.avb_dir / "test" / "data"
+
         # --- Executables ---
         self.python_exe = self.python_dir / "python.exe"
         if not self.python_exe.exists():
             self.python_exe = Path(sys.executable)
         self.adb_exe = self.tools_dir / "adb.exe"
         self.fastboot_exe = self.tools_dir / "fastboot.exe"
-        self.avbtool_py = self.tools_dir / "avbtool.py"
+        self.avbtool_py = self.avb_dir / "avbtool.py"
         self.qdlrs_exe = self.tools_dir / "qdl-rs.exe"
         self.magiskboot_exe = self.tools_dir / "magiskboot.exe"
         self.otatools_dir = self.tools_dir / "otatools"
@@ -196,7 +201,13 @@ class LTBoxConfig:
         self.load()
         try:
             cfg_map = self._config_data.get("key_map", {})
-            return {key: self.tools_dir / filename for key, filename in cfg_map.items()}
+            result: Dict[str, Path] = {}
+            for key, filename in cfg_map.items():
+                path = self.avb_testkeys_dir / filename
+                if not path.exists():
+                    path = self.tools_dir / filename
+                result[key] = path
+            return result
         except KeyError:
             raise RuntimeError(
                 "[!] Critical Error: Missing configuration section: [key_map]"
@@ -269,6 +280,10 @@ FN_INIT_BOOT_ROOT = CONF.fn_init_boot_root
 FN_VBMETA_ROOT = CONF.fn_vbmeta_root
 FN_TWRP = CONF.fn_twrp
 FN_VENDOR_BOOT_PRC = CONF.fn_vendor_boot_prc
+
+VENDOR_DIR = CONF.vendor_dir
+AVB_DIR = CONF.avb_dir
+AVB_TESTKEYS_DIR = CONF.avb_testkeys_dir
 
 PYTHON_EXE = CONF.python_exe
 ADB_EXE = CONF.adb_exe
