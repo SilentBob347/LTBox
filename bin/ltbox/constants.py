@@ -74,6 +74,8 @@ class LTBoxConfig:
         self.adb_exe = self.tools_dir / "adb.exe"
         self.fastboot_exe = self.tools_dir / "fastboot.exe"
         self.avbtool_py = self.avb_dir / "avbtool.py"
+        if not self.avbtool_py.exists():
+            self.avbtool_py = self.tools_dir / "avbtool.py"
         self.qdlrs_exe = self.tools_dir / "qdl-rs.exe"
         self.magiskboot_exe = self.tools_dir / "magiskboot.exe"
         self.otatools_dir = self.tools_dir / "otatools"
