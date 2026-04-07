@@ -75,10 +75,9 @@ def test_apply_avb_integrity_footer_round_trip(fw_pkg, tmp_path):
 
     key_file = avb._resolve_signing_key(original_info.get("pubkey_sha1"), "boot.img")
 
-    from ltbox.utils import AvbToolWrapper
+    from ltbox.patch.avb import _run_avbtool
 
-    avbtool = AvbToolWrapper()
-    avbtool.run("erase_footer", "--image", str(target))
+    _run_avbtool("erase_footer", "--image", str(target))
 
     avb.apply_avb_integrity_footer(
         image_path=target, image_info=original_info, key_file=key_file

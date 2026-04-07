@@ -1388,17 +1388,21 @@ def test_vbmeta_has_chain_partition_parses_descriptor(tmp_path):
     vbmeta_img = tmp_path / "vbmeta.img"
     vbmeta_img.write_bytes(b"dummy")
 
-    mock_proc = MagicMock()
-    mock_proc.stdout = """Descriptors:
-    Chain Partition descriptor:
-      Partition Name:          recovery
-    Chain Partition descriptor:
-      Partition Name:          boot
-"""
+    mock_chain_boot = MagicMock()
+    mock_chain_boot.partition_name = "boot"
+    mock_chain_recovery = MagicMock()
+    mock_chain_recovery.partition_name = "recovery"
 
-    with patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool:
-        mock_avbtool.return_value.run.return_value = mock_proc
+    mock_parsed = MagicMock()
+    mock_parsed.descriptors = [mock_chain_boot, mock_chain_recovery]
 
+    mock_avb_module = MagicMock()
+    mock_avb_module.AvbChainPartitionDescriptor = type(mock_chain_boot)
+
+    with (
+        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
+        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
+    ):
         assert vbmeta_has_chain_partition(vbmeta_img, "boot") is True
         assert vbmeta_has_chain_partition(vbmeta_img, "init_boot") is False
 
@@ -1419,13 +1423,13 @@ def test_patch_vbmeta_image_rollback_resigns_copied_image(tmp_path):
     with (
         patch("ltbox.patch.avb.extract_image_avb_info", return_value=info),
         patch("ltbox.patch.avb.const.KEY_MAP", {"known-key": key_file}),
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         patch_vbmeta_image_rollback("vbmeta_system.img", 11, source, patched)
 
     assert patched.exists()
     assert patched.read_bytes() == source.read_bytes()
-    mock_avbtool.return_value.run.assert_called_once_with(
+    mock_run.assert_called_once_with(
         "resign_image",
         "--image",
         patched,
@@ -1457,13 +1461,13 @@ def test_patch_chained_image_rollback_resigns_signed_image(tmp_path):
     with (
         patch("ltbox.patch.avb.extract_image_avb_info", return_value=info),
         patch("ltbox.patch.avb.const.KEY_MAP", {"boot-key": key_file}),
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         patch_chained_image_rollback("boot.img", 21, source, patched)
 
     assert patched.exists()
     assert patched.read_bytes() == source.read_bytes()
-    mock_avbtool.return_value.run.assert_called_once_with(
+    mock_run.assert_called_once_with(
         "resign_image",
         "--image",
         patched,
@@ -1498,7 +1502,7 @@ def test_process_boot_image_avb_skips_direct_erase_footer_call(tmp_path):
         patch("ltbox.patch.avb.extract_image_avb_info", return_value=boot_info),
         patch("ltbox.patch.avb.const.KEY_MAP", {"boot-key": key_file}),
         patch("ltbox.patch.avb.apply_avb_integrity_footer") as apply_footer,
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import process_boot_image_avb
 
@@ -1507,7 +1511,7 @@ def test_process_boot_image_avb_skips_direct_erase_footer_call(tmp_path):
     apply_footer.assert_called_once_with(
         image_path=target, image_info=boot_info, key_file=key_file
     )
-    mock_avbtool.assert_not_called()
+    mock_run.assert_not_called()
 
 
 def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
@@ -1540,7 +1544,7 @@ def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
         patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
         patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
         patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
 
@@ -1548,7 +1552,7 @@ def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
             output_path, original_vbmeta, [partition_image]
         )
 
-    mock_avbtool.return_value.run.assert_called_once_with(
+    mock_run.assert_called_once_with(
         "update_partition_descriptor",
         "--image",
         original_vbmeta,
@@ -1598,13 +1602,13 @@ def test_rebuild_vbmeta_with_multiple_images_falls_back_to_make_vbmeta(tmp_path)
         patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
         patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
         patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
 
         rebuild_vbmeta_with_chained_images(output_path, original_vbmeta, [img1, img2])
 
-    mock_avbtool.return_value.run.assert_called_once_with(
+    mock_run.assert_called_once_with(
         "make_vbmeta_image",
         "--output",
         output_path,
@@ -1650,7 +1654,7 @@ def test_rebuild_vbmeta_with_override_key_skips_pubkey_validation(tmp_path):
     with (
         patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
         patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
-        patch("ltbox.patch.avb.utils.AvbToolWrapper") as mock_avbtool,
+        patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
 
@@ -1662,7 +1666,7 @@ def test_rebuild_vbmeta_with_override_key_skips_pubkey_validation(tmp_path):
             algorithm="SHA256_RSA4096",
         )
 
-    mock_avbtool.return_value.run.assert_called_once_with(
+    mock_run.assert_called_once_with(
         "update_partition_descriptor",
         "--image",
         original_vbmeta,

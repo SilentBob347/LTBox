@@ -499,11 +499,6 @@ class ExternalTool:
         )
 
 
-class AvbToolWrapper(ExternalTool):
-    def __init__(self):
-        super().__init__([const.PYTHON_EXE, const.AVBTOOL_PY])
-
-
 class MagiskBootWrapper(ExternalTool):
     def __init__(self, exe_path: Union[str, Path]):
         super().__init__([exe_path])

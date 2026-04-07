@@ -1,8 +1,8 @@
 import hashlib
 import importlib.util
-import re
+import io
 import shutil
-import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
@@ -76,6 +76,21 @@ def _get_avbtool_module() -> ModuleType:
         if mldsa_cls is not None:
             mldsa_cls._IS_SUPPORTED = None
     return module
+
+
+def _run_avbtool(*args: Any) -> str:
+    """Run an avbtool subcommand in-process and return captured stdout."""
+    avb_module = _get_avbtool_module()
+    tool = avb_module.AvbTool()
+    str_args = [str(a) for a in args]
+    capture = io.StringIO()
+    original_stdout = sys.stdout
+    try:
+        sys.stdout = capture
+        tool.run(["avbtool"] + str_args)
+    finally:
+        sys.stdout = original_stdout
+    return capture.getvalue()
 
 
 def _resolve_signing_key(pubkey_sha1: Optional[str], image_name: str) -> Optional[Path]:
@@ -381,81 +396,61 @@ def require_info_keys(
 
 
 def extract_image_avb_info(image_path: Path) -> Dict[str, Any]:
-    avbtool = utils.AvbToolWrapper()
-    info_proc = avbtool.run("info_image", "--image", image_path, capture=True)
+    avb_module = _get_avbtool_module()
+    parsed = _parse_avb_image(image_path)
+    header = parsed.header
 
-    output = info_proc.stdout.strip()
-    info: Dict[str, Any] = {}
-    props_args: List[str] = []
-
-    partition_size_match = re.search(
-        r"^Image size:\s*(\d+)\s*bytes", output, re.MULTILINE
-    )
-    if partition_size_match:
-        info["partition_size"] = partition_size_match.group(1)
-
-    data_size_match = re.search(r"Original image size:\s*(\d+)\s*bytes", output)
-    if data_size_match:
-        info["data_size"] = data_size_match.group(1)
-    else:
-        desc_size_match = re.search(
-            r"^\s*Image Size:\s*(\d+)\s*bytes", output, re.MULTILINE
-        )
-        if desc_size_match:
-            info["data_size"] = desc_size_match.group(1)
-
-    patterns = {
-        "name": r"Partition Name:\s*(\S+)",
-        "salt": r"Salt:\s*([0-9a-fA-F]+)",
-        "algorithm": r"Algorithm:\s*(\S+)",
-        "pubkey_sha1": r"Public key \(sha1\):\s*([0-9a-fA-F]+)",
+    alg_name, _ = avb_module.lookup_algorithm_by_type(header.algorithm_type)
+    info: Dict[str, Any] = {
+        "partition_size": str(parsed.image_size),
+        "algorithm": alg_name,
+        "rollback": str(header.rollback_index),
+        "flags": str(header.flags),
     }
 
-    header_section = output.split("Descriptors:")[0]
-    rollback_match = re.search(r"Rollback Index:\s*(\d+)", header_section)
-    if rollback_match:
-        info["rollback"] = rollback_match.group(1)
+    if parsed.footer is not None:
+        info["data_size"] = str(parsed.footer.original_image_size)
 
-    flags_match = re.search(r"Flags:\s*(\d+)", header_section)
-    if flags_match:
-        info["flags"] = flags_match.group(1)
-        if output:
-            utils.ui.info(get_string("img_info_flags").format(flags=info["flags"]))
+    pubkey_sha1 = (
+        hashlib.sha1(parsed.public_key).hexdigest() if parsed.public_key else None
+    )
+    if pubkey_sha1:
+        info["pubkey_sha1"] = pubkey_sha1
 
-    for key, pattern in patterns.items():
-        if key not in info:
-            match = re.search(pattern, output)
-            if match:
-                info[key] = match.group(1)
+    if info["flags"] != "0":
+        utils.ui.info(get_string("img_info_flags").format(flags=info["flags"]))
 
-    for line in output.split("\n"):
-        if line.strip().startswith("Prop:"):
-            parts = line.split("->")
-            if len(parts) < 2:
-                continue
-            key = parts[0].split(":")[-1].strip()
-            val = parts[1].strip()[1:-1]
-            info[key] = val
-            props_args.extend(["--prop", f"{key}:{val}"])
+    props_args: List[str] = []
+    for descriptor in parsed.descriptors:
+        if isinstance(descriptor, avb_module.AvbPropertyDescriptor):
+            info[descriptor.key] = descriptor.value
+            props_args.extend(["--prop", f"{descriptor.key}:{descriptor.value}"])
+        elif isinstance(
+            descriptor,
+            (avb_module.AvbHashDescriptor, avb_module.AvbHashtreeDescriptor),
+        ):
+            if "name" not in info:
+                info["name"] = descriptor.partition_name
+                info["salt"] = descriptor.salt.hex()
+                if "data_size" not in info:
+                    info["data_size"] = str(descriptor.image_size)
 
     info["props_args"] = props_args
-    if props_args and output:
+    if props_args:
         utils.ui.info(get_string("img_info_props").format(count=len(props_args) // 2))
 
     return info
 
 
 def vbmeta_has_chain_partition(vbmeta_path: Path, partition_name: str) -> bool:
-    avbtool = utils.AvbToolWrapper()
-    info_proc = avbtool.run("info_image", "--image", vbmeta_path, capture=True)
-    output = info_proc.stdout
-
-    pattern = re.compile(
-        r"Chain Partition descriptor:\s*\n\s*Partition Name:\s*(\S+)",
-        re.MULTILINE,
-    )
-    descriptors = {m.group(1) for m in pattern.finditer(output)}
-    return partition_name in descriptors
+    avb_module = _get_avbtool_module()
+    parsed = _parse_avb_image(vbmeta_path)
+    chain_names = {
+        descriptor.partition_name
+        for descriptor in parsed.descriptors
+        if isinstance(descriptor, avb_module.AvbChainPartitionDescriptor)
+    }
+    return partition_name in chain_names
 
 
 def apply_avb_integrity_footer(
@@ -475,8 +470,7 @@ def apply_avb_integrity_footer(
         )
     )
 
-    avbtool = utils.AvbToolWrapper()
-    apply_footer_cmd = [
+    cmd: List[Any] = [
         "add_hash_footer",
         "--image",
         image_path,
@@ -494,17 +488,17 @@ def apply_avb_integrity_footer(
     ]
 
     if key_file:
-        apply_footer_cmd.extend(["--key", key_file])
+        cmd.extend(["--key", key_file])
 
     if "flags" in image_info:
-        apply_footer_cmd.extend(["--flags", image_info.get("flags", "0")])
+        cmd.extend(["--flags", image_info.get("flags", "0")])
         utils.ui.info(
             get_string("img_footer_restore_flags").format(
                 flags=image_info.get("flags", "0")
             )
         )
 
-    avbtool.run(*apply_footer_cmd)
+    _run_avbtool(*cmd)
     utils.ui.info(get_string("img_footer_success").format(name=image_path.name))
 
 
@@ -515,7 +509,6 @@ def resign_avb_image(
     rollback_index: Optional[int] = None,
     auto_resize: bool = False,
 ) -> None:
-    avbtool = utils.AvbToolWrapper()
     cmd: List[Any] = [
         "resign_image",
         "--image",
@@ -529,7 +522,7 @@ def resign_avb_image(
         cmd.append("--auto_resize")
     if rollback_index is not None:
         cmd.extend(["--rollback_index", rollback_index])
-    avbtool.run(*cmd)
+    _run_avbtool(*cmd)
 
 
 def _update_vbmeta_partition_descriptor(
@@ -541,8 +534,7 @@ def _update_vbmeta_partition_descriptor(
     rollback_index: str,
     flags: str,
 ) -> None:
-    avbtool = utils.AvbToolWrapper()
-    avbtool.run(
+    _run_avbtool(
         "update_partition_descriptor",
         "--image",
         original_vbmeta_path,
@@ -597,7 +589,7 @@ def patch_chained_image_rollback(
                 new_rollback_index=str(current_rb_index),
             )
 
-    except (KeyError, subprocess.CalledProcessError, FileNotFoundError) as e:
+    except (KeyError, FileNotFoundError) as e:
         utils.ui.error(get_string("img_err_processing").format(name=image_name, e=e))
         raise
 
@@ -631,7 +623,7 @@ def patch_vbmeta_image_rollback(
         )
         utils.ui.info(get_string("img_patch_success").format(name=image_name))
 
-    except (KeyError, subprocess.CalledProcessError, FileNotFoundError) as e:
+    except (KeyError, FileNotFoundError) as e:
         utils.ui.error(get_string("img_err_processing").format(name=image_name, e=e))
         raise
 
@@ -804,15 +796,14 @@ def rebuild_vbmeta_with_chained_images(
                 flags=flags_str,
             )
             return
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             utils.ui.warn(
                 f"update_partition_descriptor failed for "
                 f"{chained_images[0].name}, falling back to "
                 f"make_vbmeta_image: {e}"
             )
 
-    avbtool = utils.AvbToolWrapper()
-    cmd = [
+    cmd: List[Any] = [
         "make_vbmeta_image",
         "--output",
         output_path,
@@ -833,4 +824,4 @@ def rebuild_vbmeta_with_chained_images(
     for img in chained_images:
         cmd.extend(["--include_descriptors_from_image", img])
 
-    avbtool.run(*cmd)
+    _run_avbtool(*cmd)
