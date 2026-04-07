@@ -291,7 +291,12 @@ def _build_steps(ctx: TaskContext) -> list[WorkflowStep]:
             lambda: _wait_for_input_images(ctx),
             after_label_key="wf_step3_found",
         ),
-        WorkflowStep("wf_step4_convert", lambda: _convert_region_images(ctx)),
+        WorkflowStep(
+            "wf_step4_convert_row"
+            if ctx.target_region == "ROW"
+            else "wf_step4_convert",
+            lambda: _convert_region_images(ctx),
+        ),
         WorkflowStep("wf_step5_modify_xml", lambda: _decrypt_and_modify_xml(ctx)),
         WorkflowStep(None, lambda: _detect_anti_rollback(ctx)),
         WorkflowStep(None, lambda: _check_backup_critical(ctx)),

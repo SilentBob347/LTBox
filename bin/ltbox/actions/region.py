@@ -196,7 +196,7 @@ def convert_region_images(
     on_log(get_string("act_verify_conv"))
     if not vendor_boot_patched.exists():
         raise FileNotFoundError(get_string("act_err_vb_prc_not_created"))
-    on_log(get_string("act_conv_success"))
+    on_log(get_string("act_conv_success").format(region=target_region))
 
     on_log(get_string("act_extract_info"))
     vendor_boot_info = extract_image_avb_info(vendor_boot_bak)
