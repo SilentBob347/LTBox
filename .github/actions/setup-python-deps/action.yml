@@ -23,4 +23,4 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: uv pip install --system -r bin/requirements-dev.txt
+      run: uv pip install --system --link-mode=copy -r bin/requirements-dev.txt
