@@ -272,15 +272,21 @@ def get_gki_kernel(kernel_version: str, work_dir: Path) -> Path:
         tag = "latest"
     repo_ref = f"{owner}/{repo}"
 
-    asset_pattern = f"{re.escape(kernel_version)}.*Normal.*AnyKernel3\\.zip"
+    asset_pattern = f"{re.escape(kernel_version)}.*AnyKernel3\\.zip"
+    asset_pattern_legacy = f"{re.escape(kernel_version)}.*Normal.*AnyKernel3\\.zip"
 
     try:
         anykernel_zip = work_dir / const.ANYKERNEL_ZIP_FILENAME
 
         with utils.ui.status(get_string("dl_gki_downloading")):
-            result = _download_and_move_github_asset(
-                repo_ref, tag, asset_pattern, anykernel_zip
-            )
+            try:
+                result = _download_and_move_github_asset(
+                    repo_ref, tag, asset_pattern_legacy, anykernel_zip
+                )
+            except (ToolError, OSError):
+                result = _download_and_move_github_asset(
+                    repo_ref, tag, asset_pattern, anykernel_zip
+                )
 
         utils.ui.echo(
             get_string("dl_download_success").format(filename=result.original_name)
