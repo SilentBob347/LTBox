@@ -4,7 +4,6 @@ import json
 import re
 import shutil
 import sys
-import tarfile
 import time
 import zipfile
 from pathlib import Path
@@ -234,109 +233,41 @@ def bundle_otatools(branch: str, target: str, artifact_name: str) -> None:
     print("[bundle-tools] otatools ready.")
 
 
-def bundle_update_engine_scripts(url: str) -> None:
+def bundle_update_engine_scripts() -> None:
+    """Copy update_engine scripts from vendor/update_engine submodule."""
+    vendor_ue = REPO_ROOT / "vendor" / "update_engine"
+    scripts_dir = vendor_ue / "scripts"
+
+    copy_files = [
+        "scripts/update_metadata_pb2.py",
+        "scripts/update_payload/__init__.py",
+        "scripts/update_payload/checker.py",
+        "scripts/update_payload/common.py",
+        "scripts/update_payload/error.py",
+        "scripts/update_payload/format_utils.py",
+        "scripts/update_payload/histogram.py",
+        "scripts/update_payload/payload.py",
+    ]
+
     package_init = UPDATE_ENGINE_DIR / "scripts" / "update_payload" / "__init__.py"
     update_metadata_pb2 = UPDATE_ENGINE_DIR / "scripts" / "update_metadata_pb2.py"
     if package_init.exists() and update_metadata_pb2.exists():
         print("[bundle-tools] update_engine scripts already present, skipping.")
         return
 
-    extract_map = {
-        "scripts/update_metadata_pb2.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_metadata_pb2.py",
-        "scripts/update_payload/__init__.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "__init__.py",
-        "scripts/update_payload/checker.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "checker.py",
-        "scripts/update_payload/common.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "common.py",
-        "scripts/update_payload/error.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "error.py",
-        "scripts/update_payload/format_utils.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "format_utils.py",
-        "scripts/update_payload/histogram.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "histogram.py",
-        "scripts/update_payload/payload.py": UPDATE_ENGINE_DIR
-        / "scripts"
-        / "update_payload"
-        / "payload.py",
-    }
+    for rel_path in copy_files:
+        src = vendor_ue / rel_path
+        dst = UPDATE_ENGINE_DIR / rel_path
+        if not src.exists():
+            raise RuntimeError(
+                f"vendor/update_engine submodule missing {src.relative_to(REPO_ROOT)}. "
+                f"Run: git submodule update --init vendor/update_engine"
+            )
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        print(f"[bundle-tools] Copied {rel_path} -> {dst.relative_to(REPO_ROOT)}")
 
-    temp_tar = TOOLS_DIR / "update_engine.tar.gz"
-    try:
-        _download(url, temp_tar, "update_engine scripts archive")
-        _extract_archive(temp_tar, extract_map)
-    finally:
-        if temp_tar.exists():
-            temp_tar.unlink()
-
-    missing = [
-        path.relative_to(UPDATE_ENGINE_DIR).as_posix()
-        for path in extract_map.values()
-        if not path.exists()
-    ]
-    if missing:
-        raise RuntimeError(f"update_engine extraction incomplete, missing: {missing}")
-
-    metadata = {
-        "archive_url": url,
-        "extracted_files": [
-            path.relative_to(UPDATE_ENGINE_DIR).as_posix()
-            for path in extract_map.values()
-        ],
-    }
-    metadata_path = UPDATE_ENGINE_DIR / "update-engine-metadata.json"
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print("[bundle-tools] update_engine scripts ready.")
-
-
-def _extract_archive(archive_path: Path, extract_map: dict[str, Path]) -> None:
-    is_tar = archive_path.suffix == ".gz" or archive_path.suffix == ".tar"
-
-    if is_tar:
-        with tarfile.open(archive_path, "r:*") as tf:
-            for member in tf:
-                target = _resolve_target(member.name, extract_map)
-                if target:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    f = tf.extractfile(member)
-                    if f:
-                        with open(target, "wb") as dst:
-                            shutil.copyfileobj(f, dst)
-                        print(f"[bundle-tools] Extracted {target.name}")
-    else:
-        with zipfile.ZipFile(archive_path, "r") as zf:
-                for zip_member in zf.infolist():
-                    target = _resolve_target(zip_member.filename, extract_map)
-                    if target:
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(zip_member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                    print(f"[bundle-tools] Extracted {target.name}")
-
-
-def _resolve_target(member_name: str, extract_map: dict[str, Path]) -> Path | None:
-    normalized = member_name.lstrip("./")
-    if normalized in extract_map:
-        return extract_map[normalized]
-    for rel_path, target_path in extract_map.items():
-        if normalized.endswith(f"/{rel_path}"):
-            return target_path
-    return None
 
 
 def bundle_kptools(repo: str, asset_name: str) -> None:
@@ -405,7 +336,7 @@ def main() -> None:
     tools = config["tools"]
     bundle_platform_tools(tools["platform_tools_url"])
     bundle_avb_tools()
-    bundle_update_engine_scripts(config["update_engine"]["archive_url"])
+    bundle_update_engine_scripts()
     otatools = config["otatools"]
     bundle_otatools(
         otatools["branch"],

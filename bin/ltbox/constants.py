@@ -38,8 +38,6 @@ class LTBoxConfig:
 
         self.ota_dir = self.base_dir / "ota"
         self.ota_working_dir = self.ota_dir / "ota_working"
-        self.update_engine_dir = self.tools_dir / "update_engine"
-        self.update_engine_scripts_dir = self.update_engine_dir / "scripts"
 
         # --- File Name Constants ---
         self.fn_boot = "boot.img"
@@ -66,6 +64,12 @@ class LTBoxConfig:
         self.vendor_dir = self.base_dir / "vendor"
         self.avb_dir = self.vendor_dir / "avb"
         self.avb_testkeys_dir = self.avb_dir / "test" / "data"
+        self.update_engine_dir = self.vendor_dir / "update_engine"
+        if not (
+            self.update_engine_dir / "scripts" / "update_payload" / "__init__.py"
+        ).exists():
+            self.update_engine_dir = self.tools_dir / "update_engine"
+        self.update_engine_scripts_dir = self.update_engine_dir / "scripts"
 
         # --- Executables ---
         self.python_exe = self.python_dir / "python.exe"

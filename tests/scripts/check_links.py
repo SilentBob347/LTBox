@@ -105,9 +105,6 @@ def main() -> None:
     print("--- Static Tools ---")
     if not check_url(tools.get("platform_tools_url"), "Platform Tools"):
         has_error = True
-    update_engine = ci_tools.get("update_engine", {})
-    if not check_url(update_engine.get("archive_url"), "update_engine Archive"):
-        has_error = True
 
     # 2. KernelSU-Next (GitHub Release)
     print("\n--- KernelSU-Next ---")
