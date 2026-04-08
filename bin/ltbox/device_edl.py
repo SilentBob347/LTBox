@@ -52,8 +52,9 @@ class EdlManager(BaseDeviceManager):
 
     def wait_for_device(self) -> str:
         self._usb_port_hint()
-        port_name = self.check_device()
+        port_name = self.check_device(silent=True)
         if port_name:
+            ui.info(get_string("device_edl_connected").format(port=port_name))
             return port_name
 
         try:
