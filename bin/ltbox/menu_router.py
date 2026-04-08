@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +22,14 @@ from .utils import ui
 from . import update_service
 from .task_runner import run_task
 from .registry import CommandRegistry
+
+
+_PAREN_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _short_label(text: str) -> str:
+    """Strip trailing parenthetical from a label for use in breadcrumbs."""
+    return _PAREN_SUFFIX.sub("", text)
 
 
 class LoopAction(str, Enum):
@@ -261,7 +270,9 @@ def _root_action_menu(
         ui.clear()
 
     source_label = getattr(strategy, "source_label", "")
-    action_bc = f"{breadcrumbs} > {source_label}" if source_label else breadcrumbs
+    action_bc = (
+        f"{breadcrumbs} > {_short_label(source_label)}" if source_label else breadcrumbs
+    )
 
     def _handler(action: str) -> None:
         extras: Dict[str, Any] = {"root_type": root_type, "strategy": strategy}
@@ -311,7 +322,7 @@ def _handle_root_mode(
         mode_option = mode_options.get(mode_action)
         if mode_option is None:
             return None
-        mode_label = get_string(mode_option.label_key)
+        mode_label = _short_label(get_string(mode_option.label_key))
         mode_bc = f"{type_breadcrumbs} > {mode_label}"
 
         custom_kernel = False
@@ -320,7 +331,7 @@ def _handle_root_mode(
             if source is None:
                 return None
             custom_kernel = source.custom
-            source_label = get_string(source.label_key)
+            source_label = _short_label(get_string(source.label_key))
             mode_bc = f"{mode_bc} > {source_label}"
 
         return _root_action_menu(
