@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -495,10 +496,13 @@ def root_device(
     _flash_root_image(dev, session.strategy, partition_map, session.gki)
 
     width = utils.ui.get_term_width()
+    banner = "!" * width
+    msg = get_string("act_root_warn_brick")
     utils.ui.echo("")
-    utils.ui.error("!" * width)
-    utils.ui.error(get_string("act_root_warn_brick"))
-    utils.ui.error("!" * width)
+    utils.ui.error(banner)
+    for line in textwrap.wrap(msg, width):
+        utils.ui.error(line)
+    utils.ui.error(banner)
     utils.ui.echo("")
     utils.ui.echo(get_string("act_root_finish"))
 
