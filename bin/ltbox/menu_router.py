@@ -294,19 +294,11 @@ def _select_gki_kernel_source(
     breadcrumbs: str,
 ) -> Optional[GkiKernelSource]:
     source_map = {src.key: src for src in sources}
+    items = menu_data.get_gki_kernel_source_menu_data(list(sources))
+    action = select_menu_action(items, "gki_source_title", breadcrumbs=breadcrumbs)
 
-    def _handler(action: str) -> MenuReturn:
-        return action  # type: ignore[return-value]
-
-    res = _loop_menu(
-        lambda: menu_data.get_gki_kernel_source_menu_data(list(sources)),
-        "gki_source_title",
-        lambda: breadcrumbs,
-        _handler,
-    )
-
-    if isinstance(res, str) and res in source_map:
-        return source_map[res]
+    if action in source_map:
+        return source_map[action]
     return None
 
 
