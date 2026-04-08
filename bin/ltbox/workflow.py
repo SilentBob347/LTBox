@@ -349,7 +349,6 @@ def _build_success_result(ctx: TaskContext) -> TaskResult:
     if ctx.modify_rollback_index == "OFF":
         success_msg += f"\n\n{get_string('wf_arb_off_notice')}"
 
-    success_msg += f"\n\n{get_string('wf_notice_widevine')}"
     return TaskResult.from_message(success_msg)
 
 
