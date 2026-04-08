@@ -72,7 +72,11 @@ class EdlPartitionService:
             start_sector=params["start_sector"],
             partition_name=target_name,
         )
-        ui.echo(get_string("device_flash_success").format(filename=image_path.name))
+        ui.echo(
+            get_string("act_flash_img").format(
+                filename=image_path.name, part=target_name
+            )
+        )
         return params
 
     def dump_partition(

@@ -437,21 +437,10 @@ def _flash_root_image(
             final_boot_path = strategy.output_dir / strategy.image_name
             edl.flash_partition_target(dev, port, main_partition, final_boot_path)
 
-            utils.ui.echo(
-                get_string("act_flash_img").format(
-                    filename=strategy.image_name, part=main_partition
-                )
-            )
-
             final_vbmeta_path = strategy.output_dir / const.FN_VBMETA
             if final_vbmeta_path.exists() and partition_map.get("vbmeta"):
                 vbmeta_part = partition_map["vbmeta"]
                 edl.flash_partition_target(dev, port, vbmeta_part, final_vbmeta_path)
-                utils.ui.echo(
-                    get_string("act_flash_img").format(
-                        filename=const.FN_VBMETA, part=vbmeta_part
-                    )
-                )
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             utils.ui.error(get_string("act_err_edl_write").format(e=e))
             raise
@@ -584,11 +573,6 @@ def unroot_device(dev: device.DeviceController) -> None:
                 for role, backup_path in selected_strategy.unroot_files.items():
                     target_part = partition_map[role]
                     edl.flash_partition_target(dev, port, target_part, backup_path)
-                    utils.ui.echo(
-                        get_string("act_flash_img").format(
-                            filename=backup_path.name, part=target_part
-                        )
-                    )
             except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
                 utils.ui.error(get_string("act_err_edl_write").format(e=e))
                 raise
@@ -687,12 +671,6 @@ def sign_and_flash_recovery(dev: device.DeviceController) -> None:
 
         with dev.edl_session(auto_reset=True, reset_msg_key="act_reset_sys") as port:
             edl.flash_partition_target(dev, port, target_partition, final_twrp)
-
-            utils.ui.echo(
-                get_string("act_flash_img").format(
-                    filename=twrp_name, part=target_partition
-                )
-            )
 
     utils.ui.echo(get_string("act_success"))
 
