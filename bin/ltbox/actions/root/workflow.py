@@ -484,15 +484,17 @@ def root_device(
 
     _flash_root_image(dev, session.strategy, partition_map, session.gki)
 
-    width = utils.ui.get_term_width()
+    from ...logger import console as _console
+
+    width = min(_console.width, 78)
     banner = "!" * width
     msg = get_string("act_root_warn_brick")
-    utils.ui.echo("")
-    utils.ui.error(banner)
+    _console.print()
+    _console.print(banner, style="red", highlight=False, soft_wrap=True)
     for line in textwrap.wrap(msg, width):
-        utils.ui.error(line)
-    utils.ui.error(banner)
-    utils.ui.echo("")
+        _console.print(line, style="red", highlight=False, soft_wrap=True)
+    _console.print(banner, style="red", highlight=False, soft_wrap=True)
+    _console.print()
     utils.ui.echo(get_string("act_root_finish"))
 
     if not apk_installed:
