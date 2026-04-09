@@ -10,6 +10,7 @@ import pytest
 
 from ltbox.downloader import (
     _resolve_extract_target,
+    extract_kernel_from_anykernel3_zip,
     extract_archive_files,
 )
 from ltbox.errors import ToolError
@@ -157,3 +158,46 @@ class TestExtractArchiveFiles:
 
         assert target in result
         assert target.read_bytes() == content
+
+
+class TestExtractKernelFromZip:
+    def test_prefers_image_file(self, tmp_path):
+        zip_path = tmp_path / "kernel.zip"
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("Image", b"image-bytes")
+            zf.writestr("kernel", b"kernel-bytes")
+
+        with patch("ltbox.utils.ui"):
+            result = extract_kernel_from_anykernel3_zip(zip_path, work_dir)
+
+        assert result.name == "Image"
+        assert result.read_bytes() == b"image-bytes"
+
+    def test_falls_back_to_kernel_file(self, tmp_path):
+        zip_path = tmp_path / "kernel.zip"
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("kernel", b"kernel-bytes")
+
+        with patch("ltbox.utils.ui"):
+            result = extract_kernel_from_anykernel3_zip(zip_path, work_dir)
+
+        assert result.name == "kernel"
+        assert result.read_bytes() == b"kernel-bytes"
+
+    def test_raises_when_image_and_kernel_missing(self, tmp_path):
+        zip_path = tmp_path / "kernel.zip"
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("README.txt", b"no kernel here")
+
+        with patch("ltbox.utils.ui"):
+            with pytest.raises(ToolError):
+                extract_kernel_from_anykernel3_zip(zip_path, work_dir)

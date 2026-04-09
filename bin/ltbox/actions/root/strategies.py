@@ -560,7 +560,7 @@ class LkmRootStrategy(InitBootRootStrategy):
 
 
 def _prompt_custom_kernel_zip() -> Optional[Path]:
-    """Prompt the user to place an AnyKernel3 zip in the kernel folder and select one."""
+    """Prompt the user to place a kernel zip in the kernel folder and select one."""
     kernel_dir = const.KERNEL_DIR
     kernel_dir.mkdir(parents=True, exist_ok=True)
 
@@ -614,7 +614,7 @@ def _prompt_custom_kernel_zip() -> Optional[Path]:
 
 
 def _extract_manager_apk_from_zip(zip_path: Path) -> None:
-    """Extract .apk from AnyKernel3 zip to TOOLS_DIR/manager.apk if present."""
+    """Extract .apk from kernel zip to TOOLS_DIR/manager.apk if present."""
     import zipfile
 
     try:

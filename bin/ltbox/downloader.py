@@ -258,7 +258,7 @@ def get_latest_successful_workflow_run(
 
 
 def extract_kernel_from_anykernel3_zip(zip_path: Path, work_dir: Path) -> Path:
-    """Extract the kernel Image from a user-provided AnyKernel3 zip."""
+    """Extract a kernel binary from a user-provided zip."""
     utils.ui.echo(get_string("gki_custom_extracting").format(filename=zip_path.name))
 
     extracted_kernel_dir = work_dir / "extracted_kernel"
@@ -273,13 +273,33 @@ def extract_kernel_from_anykernel3_zip(zip_path: Path, work_dir: Path) -> Path:
             get_string("gki_custom_bad_zip").format(filename=zip_path.name)
         ) from e
 
-    kernel_image = extracted_kernel_dir / "Image"
-    if not kernel_image.exists():
+    kernel_image = _find_kernel_binary(extracted_kernel_dir)
+    if kernel_image is None:
         utils.ui.echo(get_string("dl_gki_image_missing"))
         raise ToolError(get_string("dl_gki_image_missing"))
 
     utils.ui.echo(get_string("dl_gki_extract_ok"))
     return kernel_image
+
+
+def _find_kernel_binary(extracted_kernel_dir: Path) -> Optional[Path]:
+    for candidate_name in ("Image", "kernel"):
+        exact_match = extracted_kernel_dir / candidate_name
+        if exact_match.exists():
+            return exact_match
+
+        matches = sorted(
+            (
+                path
+                for path in extracted_kernel_dir.rglob(candidate_name)
+                if path.is_file()
+            ),
+            key=lambda path: (len(path.parts), str(path).lower()),
+        )
+        if matches:
+            return matches[0]
+
+    return None
 
 
 def _download_manager_artifact(
