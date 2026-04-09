@@ -107,3 +107,19 @@ def test_get_available_languages_invalidates_cache_after_language_change(tmp_pat
 
     assert first == [("en", "English")]
     assert second == [("en", "English (Updated)")]
+
+
+@pytest.mark.parametrize(
+    ("lang_file", "expected"),
+    [
+        ("en.json", "GKI Mode"),
+        ("ko.json", "GKI 모드"),
+        ("cn.json", "GKI 模式"),
+        ("ru.json", "Режим GKI"),
+    ],
+)
+def test_gki_menu_label_is_localized(lang_file, expected):
+    with open(LANG / lang_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    assert data["menu_root_type_gki"] == expected

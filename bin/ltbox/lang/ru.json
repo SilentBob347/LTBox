@@ -649,7 +649,7 @@
   "menu_root_subtype_release": "Стабильная (GitHub Releases)",
   "menu_root_subtype_title": "Версия {name}",
   "menu_root_title": "Меню Root",
-  "menu_root_type_gki": "GKI Mode",
+  "menu_root_type_gki": "Режим GKI",
   "menu_root_type_ksu": "KernelSU",
   "menu_root_type_ksun": "KernelSU Next",
   "menu_root_type_resukisu": "ReSukiSU",

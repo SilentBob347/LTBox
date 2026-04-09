@@ -649,7 +649,7 @@
   "menu_root_subtype_release": "안정 (GitHub Releases)",
   "menu_root_subtype_title": "{name} 버전",
   "menu_root_title": "루팅 메뉴",
-  "menu_root_type_gki": "GKI Mode",
+  "menu_root_type_gki": "GKI 모드",
   "menu_root_type_ksu": "KernelSU",
   "menu_root_type_ksun": "KernelSU Next",
   "menu_root_type_resukisu": "ReSukiSU",
