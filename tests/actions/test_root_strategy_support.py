@@ -6,6 +6,7 @@ from ltbox.actions.root.strategies import (
     APatchStrategy,
     GkiRootStrategy,
     LkmRootStrategy,
+    _prompt_custom_kernel_zip,
 )
 
 
@@ -133,3 +134,38 @@ def test_gki_strategy_download_resources_requires_selected_zip():
         assert strategy.download_resources() is False
 
     warn.assert_called_once()
+
+
+def test_prompt_custom_kernel_zip_skips_wait_when_single_zip_exists(tmp_path):
+    zip_path = tmp_path / "kernel" / "existing.zip"
+    zip_path.parent.mkdir()
+    zip_path.write_bytes(b"zip")
+
+    with (
+        patch("ltbox.actions.root.strategies.const.KERNEL_DIR", zip_path.parent),
+        patch("builtins.input", side_effect=AssertionError("input should not run")),
+        patch("ltbox.actions.root.strategies.utils.ui.echo"),
+    ):
+        selected = _prompt_custom_kernel_zip()
+
+    assert selected == zip_path
+
+
+def test_prompt_custom_kernel_zip_skips_wait_when_multiple_zips_exist(tmp_path):
+    kernel_dir = tmp_path / "kernel"
+    kernel_dir.mkdir()
+    first_zip = kernel_dir / "alpha.zip"
+    second_zip = kernel_dir / "beta.zip"
+    first_zip.write_bytes(b"zip1")
+    second_zip.write_bytes(b"zip2")
+
+    with (
+        patch("ltbox.menu.TerminalMenu") as terminal_menu,
+        patch("ltbox.actions.root.strategies.const.KERNEL_DIR", kernel_dir),
+        patch("builtins.input", side_effect=AssertionError("input should not run")),
+        patch("ltbox.actions.root.strategies.utils.ui.echo"),
+    ):
+        terminal_menu.return_value.ask.return_value = "2"
+        selected = _prompt_custom_kernel_zip()
+
+    assert selected == second_zip

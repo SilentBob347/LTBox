@@ -564,6 +564,10 @@ def _prompt_custom_kernel_zip() -> Optional[Path]:
     kernel_dir = const.KERNEL_DIR
     kernel_dir.mkdir(parents=True, exist_ok=True)
 
+    existing_selection = _select_kernel_zip(sorted(kernel_dir.glob("*.zip")))
+    if existing_selection is not None:
+        return existing_selection
+
     utils.ui.echo("")
     utils.ui.echo(get_string("gki_custom_place_zip").format(path=kernel_dir))
 
@@ -579,38 +583,45 @@ def _prompt_custom_kernel_zip() -> Optional[Path]:
             utils.ui.warn(get_string("gki_custom_no_zip").format(path=kernel_dir))
             continue
 
-        if len(zips) == 1:
-            utils.ui.echo(
-                get_string("gki_custom_selected").format(filename=zips[0].name)
-            )
-            return zips[0]
-
-        # Multiple zips — let the user choose
-        from ...menu import TerminalMenu
-
-        menu = TerminalMenu(get_string("gki_custom_select_title"))
-        zip_map: Dict[str, Path] = {}
-        for i, zf in enumerate(zips, 1):
-            key = str(i)
-            zip_map[key] = zf
-            menu.add_option(key, zf.name)
-        menu.add_option("c", get_string("cancel"))
-
-        choice = menu.ask(
-            get_string("prompt_select"),
-            get_string("err_invalid_selection"),
-        )
-
-        if choice == "c" or choice is None:
-            utils.ui.warn(get_string("gki_custom_cancelled"))
-            return None
-
-        selected = zip_map.get(choice)
-        if selected:
-            utils.ui.echo(
-                get_string("gki_custom_selected").format(filename=selected.name)
-            )
+        selected = _select_kernel_zip(zips)
+        if selected is not None:
             return selected
+
+
+def _select_kernel_zip(zips: List[Path]) -> Optional[Path]:
+    if not zips:
+        return None
+
+    if len(zips) == 1:
+        utils.ui.echo(get_string("gki_custom_selected").format(filename=zips[0].name))
+        return zips[0]
+
+    # Multiple zips — let the user choose
+    from ...menu import TerminalMenu
+
+    menu = TerminalMenu(get_string("gki_custom_select_title"))
+    zip_map: Dict[str, Path] = {}
+    for i, zf in enumerate(zips, 1):
+        key = str(i)
+        zip_map[key] = zf
+        menu.add_option(key, zf.name)
+    menu.add_option("c", get_string("cancel"))
+
+    choice = menu.ask(
+        get_string("prompt_select"),
+        get_string("err_invalid_selection"),
+    )
+
+    if choice == "c" or choice is None:
+        utils.ui.warn(get_string("gki_custom_cancelled"))
+        return None
+
+    selected = zip_map.get(choice)
+    if selected:
+        utils.ui.echo(get_string("gki_custom_selected").format(filename=selected.name))
+        return selected
+
+    return None
 
 
 def _extract_manager_apk_from_zip(zip_path: Path) -> None:
