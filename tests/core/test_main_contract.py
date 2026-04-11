@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 from ltbox import main
-from ltbox import menu_router
 from ltbox.app_state import AppState
+from ltbox.menus import router as menu_router
 
 
 def test_imports():

@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from ..backup_sources import format_dp_folder_label
 from ..i18n import get_string
+from ..part.backups import format_dp_folder_label
 from ..ui import ui
 from .prompt_helpers import prompt_index_selection, prompt_yes_no
 

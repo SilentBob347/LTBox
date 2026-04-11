@@ -4,18 +4,18 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ltbox import partition
 from ltbox.actions import edl
-from ltbox.xml_catalog import XmlCatalog, _parse_xml_records
+from ltbox.part import partition
+from ltbox.part.xml_catalog import XmlCatalog, _parse_xml_records
 
 
 def test_require_partition_params_raises_on_missing():
     with (
         patch(
-            "ltbox.partition.scan_and_decrypt_xmls",
+            "ltbox.part.partition.scan_and_decrypt_xmls",
             return_value=[Path("dummy.xml")],
         ),
-        patch("ltbox.partition.get_partition_params", return_value=None),
+        patch("ltbox.part.partition.get_partition_params", return_value=None),
     ):
         with pytest.raises(ValueError):
             partition.require_partition_params("nonexistent_label")
@@ -55,7 +55,7 @@ def test_xml_catalog_reuses_cached_parse_for_unchanged_file(tmp_path):
 
     _parse_xml_records.cache_clear()
 
-    with patch("ltbox.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
+    with patch("ltbox.part.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
         XmlCatalog.from_paths([xml_path])
         XmlCatalog.from_paths([xml_path])
 
@@ -73,7 +73,7 @@ def test_xml_catalog_invalidates_cache_when_file_changes(tmp_path):
 
     _parse_xml_records.cache_clear()
 
-    with patch("ltbox.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
+    with patch("ltbox.part.xml_catalog.ET.parse", wraps=ET.parse) as mock_parse:
         first_catalog = XmlCatalog.from_paths([xml_path])
         xml_path.write_text(
             """<?xml version='1.0'?><data>

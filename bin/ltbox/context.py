@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
 
 from .device import DeviceController
-from .workflow_prompts import WorkflowPrompts
+from .menus.workflow_prompts import WorkflowPrompts
 
 
 @dataclass

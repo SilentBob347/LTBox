@@ -24,7 +24,7 @@ from .startup_checks import (
 from .utils import ui
 
 if TYPE_CHECKING:
-    from .menu_router import DeviceControllerFactoryProtocol
+    from .menus.router import DeviceControllerFactoryProtocol
 
 try:
     from .errors import LTBoxError, ToolError
@@ -41,7 +41,7 @@ except ImportError:
 def _resolve_language_code(
     is_info_mode: bool, settings_store: SettingsStore = SETTINGS_STORE
 ) -> str:
-    from .menu_router import prompt_for_language
+    from .menus.router import prompt_for_language
 
     return "en" if is_info_mode else prompt_for_language(settings_store=settings_store)
 
@@ -52,7 +52,7 @@ def _initialize_runtime(
     utils.check_dependencies()
 
     from . import constants, device
-    from .menu_router import prompt_for_language
+    from .menus.router import prompt_for_language
     from .registry import REGISTRY
     from .commands import register_all_commands
 
@@ -90,7 +90,7 @@ def _run_entry_mode(
         if settings_store is None:
             settings_store = SETTINGS_STORE
 
-        from .menu_router import main_loop
+        from .menus.router import main_loop
 
         settings = settings_store.load()
         state = AppState(

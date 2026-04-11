@@ -10,17 +10,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import constants as const
 from .. import device, utils
-from ..backup_sources import find_dp_source_folders, format_dp_folder_label
-from ..edl_partition_service import EdlPartitionService
 from ..i18n import get_string
-from ..partition import require_partition_params
-from ..prompt_helpers import (
+from ..menus.prompt_helpers import (
     prompt_choice,
     prompt_index_selection,
     prompt_multi_select_indices,
     prompt_yes_no,
 )
-from ..xml_catalog import PartitionGroup, PartitionRecord, XmlCatalog
+from ..part.backups import find_dp_source_folders, format_dp_folder_label
+from ..part.partition import require_partition_params
+from ..part.service import EdlPartitionService
+from ..part.xml_catalog import PartitionGroup, PartitionRecord, XmlCatalog
 from . import xml
 
 

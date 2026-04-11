@@ -5,12 +5,12 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from ltbox import constants as const
-from ltbox import menu_data
 from ltbox.actions import edl
 from ltbox.actions import ota
 from ltbox.actions import region
 from ltbox.actions import xml as xml_action
 from ltbox.errors import ToolError
+from ltbox.menus import data as menu_data
 from ltbox.patch import avb as avb_patch
 from ltbox.actions.root.strategies import GkiRootStrategy
 from ltbox.patch.avb import (
@@ -18,7 +18,7 @@ from ltbox.patch.avb import (
     patch_vbmeta_image_rollback,
     vbmeta_has_chain_partition,
 )
-from ltbox.xml_catalog import PartitionRecord, XmlCatalog
+from ltbox.part.xml_catalog import PartitionRecord, XmlCatalog
 
 
 def create_xmls(img_dir, names):

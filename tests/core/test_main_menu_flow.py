@@ -1,8 +1,9 @@
 import pytest
 from unittest.mock import MagicMock
 
-from ltbox import menu_data, menu_router
 from ltbox.app_state import AppState
+from ltbox.menus import data as menu_data
+from ltbox.menus import router as menu_router
 
 
 def test_root_menu_ksu_lkm_flow(monkeypatch):

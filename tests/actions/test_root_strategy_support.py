@@ -1,7 +1,6 @@
 import zipfile
 from unittest.mock import patch
 
-from ltbox import menu_router
 from ltbox.actions.root.prompts import StrategySourceSelection
 from ltbox.actions.root.prompts import select_lkm_source
 from ltbox.actions.root.strategies import (
@@ -10,6 +9,7 @@ from ltbox.actions.root.strategies import (
     LkmRootStrategy,
     _prompt_custom_kernel_zip,
 )
+from ltbox.menus import router as menu_router
 
 
 def test_apatch_strategy_configure_source_applies_prompt_selection():
@@ -198,7 +198,7 @@ def test_prompt_custom_kernel_zip_skips_wait_when_multiple_zips_exist(tmp_path):
     second_zip.write_bytes(b"zip2")
 
     with (
-        patch("ltbox.menu.TerminalMenu") as terminal_menu,
+        patch("ltbox.menus.terminal.TerminalMenu") as terminal_menu,
         patch("ltbox.actions.root.strategies.const.KERNEL_DIR", kernel_dir),
         patch("builtins.input", side_effect=AssertionError("input should not run")),
         patch("ltbox.actions.root.strategies.utils.ui.echo"),

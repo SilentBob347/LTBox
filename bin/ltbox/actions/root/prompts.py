@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from ... import constants as const, downloader, utils
 from ...i18n import get_string
-from ...menu import TerminalMenu
-from ...prompt_helpers import prompt_multi_select_indices
+from ...menus.prompt_helpers import prompt_multi_select_indices
+from ...menus.terminal import TerminalMenu
 from ...root_profiles import (
     RootProviderFamily,
     RootProviderProfile,

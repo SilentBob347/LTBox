@@ -1,4 +1,4 @@
-from ltbox.prompt_helpers import (
+from ltbox.menus.prompt_helpers import (
     prompt_index_selection,
     prompt_multi_select_indices,
     prompt_yes_no,

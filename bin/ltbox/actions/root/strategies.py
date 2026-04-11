@@ -322,7 +322,7 @@ class GkiRootStrategy(ConfigurableRootStrategy):
         if self._kernel_zip is None:
             return False
         if self._kernel_zip == "main":  # type: ignore
-            from ...menu_router import RouteResult
+            from ...menus.router import RouteResult
 
             return RouteResult.MAIN
 
@@ -435,7 +435,7 @@ class APatchStrategy(GkiRootStrategy):
         if selection is None:
             return False
         if selection == "main":  # type: ignore
-            from ...menu_router import RouteResult
+            from ...menus.router import RouteResult
 
             return RouteResult.MAIN
         self._apply_source_selection(selection)
@@ -561,7 +561,7 @@ class LkmRootStrategy(InitBootRootStrategy):
         if selection is None:
             return False
         if selection == "main":  # type: ignore
-            from ...menu_router import RouteResult
+            from ...menus.router import RouteResult
 
             return RouteResult.MAIN
         self._apply_source_selection(selection)
@@ -621,7 +621,7 @@ def _select_kernel_zip(zips: List[Path]) -> Optional[Path]:
         return zips[0]
 
     # Multiple zips — let the user choose
-    from ...menu import TerminalMenu
+    from ...menus.terminal import TerminalMenu
 
     menu = TerminalMenu(get_string("gki_custom_select_title"))
     zip_map: Dict[str, Path] = {}

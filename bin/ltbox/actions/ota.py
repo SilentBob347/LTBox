@@ -8,17 +8,20 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from .. import constants as const
-from .. import ota_super, partition, update_engine_payload, utils
+from .. import utils
 from ..errors import MissingFileError, ToolError
 from ..i18n import get_string
+from ..menus.prompt_helpers import prompt_yes_no
+from ..ota import payload as update_engine_payload
+from ..ota import super_image as ota_super
 from ..patch.avb import (
     extract_image_avb_info,
     rebuild_vbmeta_preserving_descriptors,
     resign_avb_image,
 )
+from ..part import partition
+from ..part.xml_catalog import PartitionGroup, XmlCatalog
 from ..process_runner import CommandRunner, RunOptions
-from ..prompt_helpers import prompt_yes_no
-from ..xml_catalog import PartitionGroup, XmlCatalog
 
 _OTA_AVB_RESIGN_TARGETS = (
     "boot",

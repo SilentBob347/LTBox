@@ -7,7 +7,7 @@ from .. import constants as const
 from .. import device, utils
 from ..errors import ToolError
 from ..i18n import get_string
-from ..menu import TerminalMenu
+from ..menus.terminal import TerminalMenu
 from ..patch.avb import (
     apply_avb_integrity_footer,
     require_info_keys,

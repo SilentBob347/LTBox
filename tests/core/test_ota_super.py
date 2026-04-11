@@ -2,7 +2,7 @@ import struct
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ltbox.ota_super import (
+from ltbox.ota.super_image import (
     LP_HEADER_FLAG_VIRTUAL_AB_DEVICE,
     LP_METADATA_GEOMETRY_MAGIC,
     LP_METADATA_HEADER_MAGIC,
@@ -23,7 +23,7 @@ from ltbox.ota_super import (
     split_rebuilt_super,
     write_rebuilt_super_chunks,
 )
-from ltbox.xml_catalog import PartitionRecord
+from ltbox.part.xml_catalog import PartitionRecord
 
 
 def _build_test_super_layout(tmp_path: Path) -> tuple[list[PartitionRecord], Path]:

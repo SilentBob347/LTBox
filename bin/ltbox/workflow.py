@@ -9,7 +9,6 @@ from .actions.arb import (
     check_image_folder_arb,
     compute_device_rollback_index,
 )
-from .backup_sources import find_backup_critical_dirs
 from . import constants as const
 from . import device, utils
 from .context import TaskContext
@@ -27,7 +26,8 @@ from .errors import (
 )
 from .i18n import get_string
 from .logger import logging_context
-from .workflow_prompts import UiWorkflowPrompts, WorkflowPrompts
+from .menus.workflow_prompts import UiWorkflowPrompts, WorkflowPrompts
+from .part.backups import find_backup_critical_dirs
 
 
 def _cleanup_previous_outputs(ctx: TaskContext) -> None:

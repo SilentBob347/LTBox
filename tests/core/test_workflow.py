@@ -9,7 +9,7 @@ from ltbox.actions.arb import ArbResult, ArbStatus
 from ltbox.context import TaskContext
 from ltbox.errors import LTBoxError, UserCancelError
 from ltbox.i18n import get_string
-from ltbox.workflow_prompts import BackupChoice, UiWorkflowPrompts
+from ltbox.menus.workflow_prompts import BackupChoice, UiWorkflowPrompts
 from tests.helpers import make_device_mock
 
 
@@ -260,9 +260,9 @@ def test_ui_backup_prompt_returns_skip_choice(tmp_path):
     backup_dir.mkdir()
 
     with (
-        patch("ltbox.workflow_prompts.ui") as mock_ui,
+        patch("ltbox.menus.workflow_prompts.ui") as mock_ui,
         patch(
-            "ltbox.workflow_prompts.prompt_index_selection", return_value=3
+            "ltbox.menus.workflow_prompts.prompt_index_selection", return_value=3
         ) as prompt,
     ):
         mock_ui.get_term_width.return_value = 80

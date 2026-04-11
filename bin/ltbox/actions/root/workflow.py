@@ -7,11 +7,11 @@ from typing import Dict, List, Optional
 
 from ... import constants as const
 from ... import device, utils
-from ...edl_partition_service import EdlPartitionService
 from ...errors import DeviceCommandError, DeviceConnectionError, ToolError
 from ...i18n import get_string
-from ...menu import TerminalMenu
-from ...partition import require_partition_params
+from ...menus.terminal import TerminalMenu
+from ...part.partition import require_partition_params
+from ...part.service import EdlPartitionService
 from .. import edl
 from .downloads import cleanup_manager_apk
 from .strategies import (
