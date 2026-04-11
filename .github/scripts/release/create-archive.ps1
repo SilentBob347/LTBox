@@ -10,6 +10,16 @@ $ErrorActionPreference = 'Stop'
 Write-Host "[release][archive] Creating archive for tag: $TagName"
 
 $archive = "LTBox-win_amd64-$TagName.zip"
+$archiveArgs = @(
+    'a',
+    '-tzip',
+    '-mm=Deflate',
+    '-mx=9',
+    '-mfb=258',
+    '-mpass=15',
+    $archive,
+    '.'
+)
 $excludes = @(
     '.git',
     '.git\*',
@@ -40,7 +50,7 @@ if (Test-Path $archive) {
 }
 
 $excludeArgs = $excludes | ForEach-Object { "-xr!$_" }
-& 7z a $archive '.' @excludeArgs
+& 7z @archiveArgs @excludeArgs
 
 if (-not (Test-Path $archive)) {
     throw "[release][archive] Archive was not created: $archive"
