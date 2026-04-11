@@ -1,9 +1,9 @@
 import threading
 from typing import Callable, Dict, Optional
 
-from . import constants as const
-from .device_support import DeviceCommandRunner, is_qualcomm_edl_port
-from .i18n import get_string
+from .. import constants as const
+from ..i18n import get_string
+from .support import DeviceCommandRunner, is_qualcomm_edl_port
 
 
 class DeviceStatusMonitor:

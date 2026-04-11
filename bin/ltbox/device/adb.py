@@ -4,12 +4,12 @@ from typing import Any, Callable, Optional
 import adbutils
 from adbutils import AdbError
 
-from . import constants as const
-from . import utils
-from .device_support import BaseDeviceManager, DeviceCommandRunner
-from .errors import DeviceCommandError, DeviceConnectionError
-from .i18n import get_string
-from .ui import ui
+from .. import constants as const
+from .. import utils
+from ..errors import DeviceCommandError, DeviceConnectionError
+from ..i18n import get_string
+from ..ui import ui
+from .support import BaseDeviceManager, DeviceCommandRunner
 
 
 class AdbManager(BaseDeviceManager):

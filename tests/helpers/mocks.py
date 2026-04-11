@@ -2,9 +2,7 @@ from types import MappingProxyType
 from typing import Dict, Optional
 from unittest.mock import MagicMock
 
-from ltbox.device import DeviceController
-from ltbox.device_adb import AdbManager
-from ltbox.device_fastboot import FastbootManager, FastbootVars
+from ltbox.device import AdbManager, DeviceController, FastbootManager, FastbootVars
 
 
 def make_device_mock(

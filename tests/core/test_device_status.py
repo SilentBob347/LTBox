@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from ltbox.device_status import DeviceStatusMonitor
+from ltbox.device.status import DeviceStatusMonitor
 
 
 def test_device_status_prefers_active_transport_probe():

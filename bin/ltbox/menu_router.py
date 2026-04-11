@@ -9,7 +9,8 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 from . import constants as const
 from . import i18n, menu_data
 from .app_state import AppState
-from .device_support import DeviceCommandRunner, find_edl_port, format_serial_port_bare
+from .device.status import DeviceStatusMonitor
+from .device.support import DeviceCommandRunner, find_edl_port, format_serial_port_bare
 from .i18n import get_string
 from .menu import TerminalMenu, select_menu_action
 from .root_profiles import (
@@ -732,8 +733,6 @@ def main_loop(
     registry: CommandRegistry,
     initial_state: AppState,
 ) -> AppState:
-    from .device_status import DeviceStatusMonitor
-
     state = initial_state
     dev = device_controller_class(state.skip_adb)
 

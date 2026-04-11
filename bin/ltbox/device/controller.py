@@ -4,15 +4,15 @@ from typing import Optional
 
 from adbutils import AdbError
 
-from . import constants as const
-from . import utils
-from .device_adb import AdbManager
-from .device_edl import EdlManager
-from .device_fastboot import FastbootManager
-from .device_support import DeviceCommandRunner
-from .errors import DeviceCommandError
-from .i18n import get_string
-from .ui import ui
+from .. import constants as const
+from .. import utils
+from ..errors import DeviceCommandError
+from ..i18n import get_string
+from ..ui import ui
+from .adb import AdbManager
+from .edl import EdlManager
+from .fastboot import FastbootManager
+from .support import DeviceCommandRunner
 
 
 class DeviceController:

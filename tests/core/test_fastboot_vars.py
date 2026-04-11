@@ -1,4 +1,4 @@
-from ltbox.device_fastboot import _parse_getvar_all
+from ltbox.device.fastboot import _parse_getvar_all
 from ltbox.actions.arb import compute_device_rollback_index
 
 

@@ -30,7 +30,7 @@ def test_fastboot_slot_detection_failure():
     manager = FastbootManager()
 
     with patch(
-        "ltbox.device_fastboot.DeviceCommandRunner.run",
+        "ltbox.device.fastboot.DeviceCommandRunner.run",
         side_effect=subprocess.CalledProcessError(1, "cmd"),
     ):
         with pytest.raises(DeviceCommandError):
@@ -74,7 +74,7 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
         path.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
         patch.object(manager, "load_programmer_safe"),
         patch.object(manager, "_run_command") as mock_run,
     ):
@@ -118,7 +118,7 @@ def test_edl_flash_rawprogram_skips_erase_and_reset_when_disabled(tmp_path):
         path.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
         patch.object(manager, "load_programmer_safe"),
         patch.object(manager, "_run_command") as mock_run,
     ):
@@ -147,11 +147,11 @@ def test_edl_write_partition_leaves_success_logging_to_caller(tmp_path):
     qdlrs.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
-        patch("ltbox.device_edl.const.CONF") as mock_conf,
+        patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device.edl.const.CONF") as mock_conf,
         patch.object(manager, "_ensure_edl_port", return_value="COM5"),
         patch.object(manager, "_run_command"),
-        patch("ltbox.device_edl.ui") as mock_ui,
+        patch("ltbox.device.edl.ui") as mock_ui,
     ):
         mock_conf.edl_loader_file = tmp_path / "loader.melf"
         manager.write_partition(
@@ -179,9 +179,9 @@ def test_fastboot_wait_for_device_uses_transient_status():
     with (
         patch.object(manager, "_usb_port_hint"),
         patch.object(manager, "check_device", side_effect=[False, True]),
-        patch("ltbox.device_fastboot.get_string", side_effect=strings.__getitem__),
-        patch("ltbox.device_fastboot.ui") as mock_ui,
-        patch("ltbox.device_fastboot.utils.wait_for_condition") as mock_wait,
+        patch("ltbox.device.fastboot.get_string", side_effect=strings.__getitem__),
+        patch("ltbox.device.fastboot.ui") as mock_ui,
+        patch("ltbox.device.fastboot.utils.wait_for_condition") as mock_wait,
     ):
         mock_ui.status.return_value = status_cm
         mock_wait.side_effect = (
@@ -200,8 +200,8 @@ def test_edl_reset_to_edl_calls_reset_with_edl_mode(tmp_path):
     qdlrs.write_text("x", encoding="utf-8")
 
     with (
-        patch("ltbox.device_edl.const.QDLRS_EXE", qdlrs),
-        patch("ltbox.device_edl.const.CONF") as mock_conf,
+        patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device.edl.const.CONF") as mock_conf,
         patch.object(manager, "_ensure_edl_port", return_value="COM3"),
         patch.object(manager, "_run_command") as mock_run,
     ):

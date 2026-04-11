@@ -5,17 +5,17 @@ from typing import Callable, List, Optional
 
 import serial
 
-from . import constants as const
-from .device_support import (
+from .. import constants as const
+from ..errors import DeviceCommandError
+from ..i18n import get_string
+from ..ui import ui
+from .support import (
     BaseDeviceManager,
     DeviceCommandRunner,
     find_edl_port,
     format_serial_port_bare,
     prevent_sleep_during_flash,
 )
-from .errors import DeviceCommandError
-from .i18n import get_string
-from .ui import ui
 
 _ERASE_LABELS = frozenset({"userdata", "metadata", "frp"})
 
@@ -58,7 +58,7 @@ class EdlManager(BaseDeviceManager):
             return port_name
 
         try:
-            from . import utils
+            from .. import utils
 
             with ui.status(get_string("device_wait_edl_loop")):
                 port_name = utils.wait_for_condition(

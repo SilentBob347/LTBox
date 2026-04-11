@@ -8,10 +8,10 @@ from typing import Any, Callable, Iterator, Optional
 import serial
 import serial.tools.list_ports
 
-from .i18n import get_string
-from .process_runner import CommandResult, CommandRunner, RunOptions
-from .ui import ui
-from .utils import _get_tool_env
+from ..i18n import get_string
+from ..process_runner import CommandResult, CommandRunner, RunOptions
+from ..ui import ui
+from ..utils import _get_tool_env
 
 QUALCOMM_EDL_HWID = "VID:PID=05C6:9008"
 

@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from ltbox.device_support import find_edl_port, format_serial_port, is_qualcomm_edl_port
+from ltbox.device.support import find_edl_port, format_serial_port, is_qualcomm_edl_port
 
 
 def test_is_qualcomm_edl_port_matches_description_or_hwid():

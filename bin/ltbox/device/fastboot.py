@@ -4,13 +4,13 @@ import types
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
-from . import constants as const
-from . import utils
-from .device_support import BaseDeviceManager, DeviceCommandRunner
-from .errors import DeviceCommandError
-from .i18n import get_string
-from .process_runner import CommandResult
-from .ui import ui
+from .. import constants as const
+from .. import utils
+from ..errors import DeviceCommandError
+from ..i18n import get_string
+from ..process_runner import CommandResult
+from ..ui import ui
+from .support import BaseDeviceManager, DeviceCommandRunner
 
 
 @dataclass(frozen=True)
