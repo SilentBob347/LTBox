@@ -649,7 +649,7 @@
   "menu_root_mode_lkm": "LKM Mode",
   "menu_root_subtype_nightly": "Nightly (GitHub Actions)",
   "menu_root_subtype_release": "Stable (GitHub Releases)",
-  "menu_root_subtype_title": "{name} Version",
+  "menu_root_subtype_title": "Version",
   "menu_root_title": "Root Menu",
   "menu_root_type_gki": "GKI Mode",
   "menu_root_type_ksu": "KernelSU",

@@ -649,7 +649,7 @@
   "menu_root_mode_lkm": "LKM 模式",
   "menu_root_subtype_nightly": "开发版 (GitHub Actions)",
   "menu_root_subtype_release": "稳定版 (GitHub Releases)",
-  "menu_root_subtype_title": "{name} 版本",
+  "menu_root_subtype_title": "版本",
   "menu_root_title": "Root 菜单",
   "menu_root_type_gki": "GKI 模式",
   "menu_root_type_ksu": "KernelSU",

@@ -64,7 +64,7 @@ def _resolve_strategy(
     strategy = get_root_strategy(gki, root_type)
     if hasattr(strategy, "configure_source"):
         configured = strategy.configure_source()
-        if configured is False:
+        if configured is not True:
             raise ToolError(get_string("gki_custom_cancelled"))
         utils.ui.clear()
     return strategy

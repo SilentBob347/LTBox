@@ -28,6 +28,9 @@ def test_root_menu_ksu_lkm_flow(monkeypatch):
         def add_option(self, *args):
             pass
 
+        def add_separator(self, *args):
+            pass
+
         def ask(self, *args):
             return "1"
 
@@ -44,10 +47,11 @@ def test_root_menu_ksu_lkm_flow(monkeypatch):
     result = menu_router.root_menu(MagicMock(), MagicMock())
 
     assert result is None  # Loop menu returns MAIN which maps to None in root_menu
+    # Breadcrumbs: Main > Root device > KernelSU variants > KernelSU
     assert received[0] == (
         False,
         "kernelsu",
-        "menu_main_title > menu_main_root > menu_root_variants_ksu > menu_root_mode_lkm > menu_root_type_ksu",
+        "menu_main_title > menu_main_root > menu_root_variants_ksu > menu_root_type_ksu",
     )
 
 
@@ -88,6 +92,44 @@ def test_root_menu_apatch_flow(monkeypatch):
         "folkpatch",
         "menu_main_title > menu_main_root > menu_root_variants_apatch > FolkPatch",
     )
+
+
+def test_loop_menu_propagates_main_result(monkeypatch):
+    monkeypatch.setattr(
+        menu_router,
+        "select_menu_action",
+        lambda *_args, **_kwargs: "go",
+    )
+
+    result = menu_router._loop_menu(
+        lambda: [],
+        "menu_main_root",
+        "main",
+        lambda _action: menu_router.RouteResult.MAIN,
+    )
+
+    assert result is menu_router.RouteResult.MAIN
+
+
+def test_root_action_menu_returns_main_when_source_selection_requests_main(monkeypatch):
+    class FakeStrategy:
+        def configure_source(self, breadcrumbs=None):
+            return menu_router.RouteResult.MAIN
+
+    monkeypatch.setattr(
+        "ltbox.actions.root.strategies.get_root_strategy",
+        lambda *_args, **_kwargs: FakeStrategy(),
+    )
+
+    result = menu_router._root_action_menu(
+        dev=MagicMock(),
+        registry=MagicMock(),
+        gki=False,
+        root_type="kernelsu",
+        breadcrumbs="main > root > KernelSU",
+    )
+
+    assert result is menu_router.RouteResult.MAIN
 
 
 def test_build_task_kwargs_uses_app_state_for_patch_actions():

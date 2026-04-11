@@ -260,7 +260,7 @@ def get_root_ksu_modes_menu_data() -> List[MenuItem]:
             action="gki_mode",
         ),
         MenuSpec("separator"),
-        *_navigation_specs(include_back=True, include_exit=True),
+        *_navigation_specs(include_back=True, include_return=True, include_exit=True),
     ]
     return _build_menu(specs)
 
@@ -280,7 +280,7 @@ def get_root_apatch_variants_menu_data() -> List[MenuItem]:
             action="folkpatch",
         ),
         MenuSpec("separator"),
-        *_navigation_specs(include_back=True, include_exit=True),
+        *_navigation_specs(include_back=True, include_return=True, include_exit=True),
     ]
     return _build_menu(specs)
 
@@ -405,6 +405,7 @@ def get_main_menu_data(
     specs = [
         MenuSpec("option", key="1", text=install_wipe_text, action="patch_all_wipe"),
         MenuSpec("option", key="2", text=install_keep_text, action="patch_all"),
+        MenuSpec("separator"),
         MenuSpec(
             "option",
             key="3",

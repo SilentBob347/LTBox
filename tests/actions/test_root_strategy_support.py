@@ -1,7 +1,9 @@
 import zipfile
 from unittest.mock import patch
 
+from ltbox import menu_router
 from ltbox.actions.root.prompts import StrategySourceSelection
+from ltbox.actions.root.prompts import select_lkm_source
 from ltbox.actions.root.strategies import (
     APatchStrategy,
     GkiRootStrategy,
@@ -101,6 +103,17 @@ def test_lkm_strategy_download_resources_uses_download_helper():
     )
 
 
+def test_lkm_strategy_configure_source_returns_main(monkeypatch):
+    strategy = LkmRootStrategy("kernelsu")
+
+    monkeypatch.setattr(
+        "ltbox.actions.root.strategies.select_lkm_source",
+        lambda *_args, **_kwargs: "main",
+    )
+
+    assert strategy.configure_source("main > root") is menu_router.RouteResult.MAIN
+
+
 def test_gki_strategy_configure_source_extracts_manager_apk(tmp_path):
     zip_path = tmp_path / "AnyKernel3.zip"
     tools_dir = tmp_path / "tools"
@@ -194,3 +207,29 @@ def test_prompt_custom_kernel_zip_skips_wait_when_multiple_zips_exist(tmp_path):
         selected = _prompt_custom_kernel_zip()
 
     assert selected == second_zip
+
+
+def test_select_lkm_source_force_nightly_back_returns_none(monkeypatch):
+    monkeypatch.setattr(
+        "ltbox.actions.root.prompts._load_provider_repo_config",
+        lambda _profile: {"repo": "owner/resukisu", "workflow": "123"},
+    )
+    monkeypatch.setattr(
+        "ltbox.actions.root.prompts.prompt_nightly_workflow",
+        lambda *_args, **_kwargs: "back",
+    )
+
+    assert select_lkm_source("resukisu", breadcrumbs="main > root") is None
+
+
+def test_select_lkm_source_force_nightly_main_returns_main(monkeypatch):
+    monkeypatch.setattr(
+        "ltbox.actions.root.prompts._load_provider_repo_config",
+        lambda _profile: {"repo": "owner/resukisu", "workflow": "123"},
+    )
+    monkeypatch.setattr(
+        "ltbox.actions.root.prompts.prompt_nightly_workflow",
+        lambda *_args, **_kwargs: "main",
+    )
+
+    assert select_lkm_source("resukisu", breadcrumbs="main > root") == "main"

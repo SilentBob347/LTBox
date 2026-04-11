@@ -207,16 +207,19 @@ def _loop_menu(
     action_handler: Callable[[str], MenuReturn],
     status_fn: Optional[Callable[[], str]] = None,
     status_key_fn: Optional[Callable[[], str]] = None,
+    title_literal: Optional[str] = None,
 ) -> MenuReturn:
     while True:
         resolved_bc = breadcrumbs() if callable(breadcrumbs) else breadcrumbs
         menu_items = menu_items_factory()
+
         action = select_menu_action(
             menu_items,
             title_key,
             breadcrumbs=resolved_bc,
             status_fn=status_fn,
             status_key_fn=status_key_fn,
+            title_literal=title_literal,
         )
 
         if action in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
@@ -224,8 +227,9 @@ def _loop_menu(
 
         if action is not None:
             result = action_handler(action)
-            if result in (LoopAction.BACK, LoopAction.RETURN, LoopAction.EXIT):
+            if result in (RouteResult.MAIN, LoopAction.RETURN, LoopAction.EXIT):
                 return result
+            # result BACK is swallowed to stay in current menu loop
 
 
 def advanced_menu(
@@ -265,12 +269,16 @@ def _root_action_menu(
         configured = strategy.configure_source(breadcrumbs=breadcrumbs)
         if configured is False:
             return None
+        if configured in (RouteResult.MAIN, LoopAction.RETURN):
+            return RouteResult.MAIN
         ui.clear()
 
     source_label = getattr(strategy, "source_label", "")
-    action_bc = (
-        f"{breadcrumbs} > {_short_label(source_label)}" if source_label else breadcrumbs
-    )
+
+    title_key = "menu_root_title"
+    title_literal = None
+    if source_label:
+        title_literal = _short_label(source_label)
 
     def _handler(action: str) -> None:
         extras: Dict[str, Any] = {"root_type": root_type, "strategy": strategy}
@@ -278,9 +286,10 @@ def _root_action_menu(
 
     res = _loop_menu(
         lambda: menu_data.get_root_menu_data(gki, root_type=root_type),
-        "menu_root_title",
-        lambda: action_bc,
+        title_key,
+        lambda: breadcrumbs,
         _handler,
+        title_literal=title_literal,
     )
     if res == LoopAction.RETURN:
         return RouteResult.MAIN
@@ -347,7 +356,9 @@ def _root_lkm_variants_menu(
         menu = TerminalMenu(get_string("menu_root_mode_lkm"), breadcrumbs=breadcrumbs)
         for profile in lkm_profiles:
             menu.add_option(profile.menu_key, _resolve_root_type_label(profile))
+        menu.add_separator()
         menu.add_option("b", get_string("menu_back"))
+        menu.add_option("m", get_string("menu_root_m"))
         menu.add_option("x", get_string("menu_main_exit"))
 
         choice = menu.ask(
@@ -355,6 +366,8 @@ def _root_lkm_variants_menu(
         )
         if choice == "b":
             return LoopAction.BACK
+        if choice == "m":
+            return LoopAction.RETURN
         if choice == "x":
             return LoopAction.EXIT
 
@@ -378,12 +391,15 @@ def _root_ksu_variants_menu(
 ) -> MenuReturn:
     from .root_profiles import get_root_provider_profile
 
+    # We append the current menu's title for children breadcrumbs
+    current_breadcrumbs = f"{breadcrumbs} > {get_string('menu_root_variants_ksu')}"
+
     def _handler(action: str) -> MenuReturn:
         if action == "lkm_mode":
             return _root_lkm_variants_menu(
                 dev,
                 registry,
-                f"{breadcrumbs} > {get_string('menu_root_mode_lkm')}",
+                current_breadcrumbs,
             )
         if action == "gki_mode":
             profile = get_root_provider_profile("gki")
@@ -392,7 +408,7 @@ def _root_ksu_variants_menu(
                 registry,
                 gki=True,
                 root_type="gki",
-                breadcrumbs=f"{breadcrumbs} > {_resolve_root_type_label(profile)}",
+                breadcrumbs=f"{current_breadcrumbs} > {_resolve_root_type_label(profile)}",
             )
         return None
 
@@ -411,6 +427,9 @@ def _root_apatch_variants_menu(
 ) -> MenuReturn:
     from .root_profiles import get_root_provider_profile
 
+    # We append the current menu's title for children breadcrumbs
+    current_breadcrumbs = f"{breadcrumbs} > {get_string('menu_root_variants_apatch')}"
+
     def _handler(action: str) -> MenuReturn:
         profile = get_root_provider_profile(action)
         return _root_action_menu(
@@ -418,7 +437,7 @@ def _root_apatch_variants_menu(
             registry,
             gki=True,
             root_type=profile.strategy_root_type,
-            breadcrumbs=f"{breadcrumbs} > {_resolve_root_type_label(profile)}",
+            breadcrumbs=f"{current_breadcrumbs} > {_resolve_root_type_label(profile)}",
         )
 
     return _loop_menu(
@@ -441,13 +460,13 @@ def root_menu(
             return _root_ksu_variants_menu(
                 dev,
                 registry,
-                f"{breadcrumbs} > {get_string('menu_root_variants_ksu')}",
+                breadcrumbs,
             )
         if action == "apatch_variants":
             return _root_apatch_variants_menu(
                 dev,
                 registry,
-                f"{breadcrumbs} > {get_string('menu_root_variants_apatch')}",
+                breadcrumbs,
             )
         return None
 
@@ -457,7 +476,7 @@ def root_menu(
         main_title,
         _handler,
     )
-    if res == RouteResult.MAIN:
+    if res == RouteResult.MAIN or res == LoopAction.RETURN:
         return None
     return res
 
@@ -769,4 +788,5 @@ def main_loop(
     if action == LoopAction.EXIT:
         sys.exit(0)
 
+    # RETURN or BACK from main loop just returns current state to caller (which saves settings)
     return state

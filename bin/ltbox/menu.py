@@ -183,9 +183,11 @@ def select_menu_action(
     breadcrumbs: Optional[str] = None,
     status_fn: Optional[Callable[[], str]] = None,
     status_key_fn: Optional[Callable[[], str]] = None,
+    title_literal: Optional[str] = None,
 ) -> Optional[str]:
+    title = title_literal or get_string(title_key)
     menu = TerminalMenu(
-        get_string(title_key),
+        title,
         breadcrumbs,
         status_fn=status_fn,
         status_key_fn=status_key_fn,

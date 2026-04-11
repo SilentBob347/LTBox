@@ -1,7 +1,10 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ltbox.actions.root import workflow as root_workflow
 from ltbox.actions.root.strategies import GkiRootStrategy, LkmRootStrategy
+from ltbox.errors import ToolError
 
 
 def test_root_workflow_session_uses_active_slot_for_partition_map():
@@ -86,3 +89,14 @@ def test_root_device_skips_cleanup_for_preconfigured_gki_strategy():
         root_workflow.root_device(dev, gki=True, root_type="gki", strategy=strategy)
 
     cleanup.assert_not_called()
+
+
+def test_resolve_strategy_rejects_main_navigation_result():
+    strategy = MagicMock()
+    strategy.configure_source.return_value = "main"
+
+    with (
+        patch("ltbox.actions.root.workflow.get_root_strategy", return_value=strategy),
+        pytest.raises(ToolError),
+    ):
+        root_workflow._resolve_strategy(gki=False, root_type="kernelsu")

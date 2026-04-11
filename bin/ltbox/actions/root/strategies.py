@@ -2,7 +2,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ... import constants as const
 from ... import device, utils
@@ -316,11 +316,15 @@ class GkiRootStrategy(ConfigurableRootStrategy):
     def manager_apk_required(self) -> bool:
         return False
 
-    def configure_source(self, breadcrumbs: Optional[str] = None) -> bool:
+    def configure_source(self, breadcrumbs: Optional[str] = None) -> Union[bool, Any]:
         cleanup_manager_apk()
         self._kernel_zip = _prompt_custom_kernel_zip()
         if self._kernel_zip is None:
             return False
+        if self._kernel_zip == "main":  # type: ignore
+            from ...menu_router import RouteResult
+
+            return RouteResult.MAIN
 
         self.source_label = self._kernel_zip.name
         _extract_manager_apk_from_zip(self._kernel_zip)
@@ -424,10 +428,17 @@ class APatchStrategy(GkiRootStrategy):
         self.is_nightly = selection.is_nightly
         self.workflow_id = selection.workflow_id
 
-    def configure_source(self, breadcrumbs: Optional[str] = None) -> bool:
-        self._apply_source_selection(
-            select_apatch_source(self.provider.provider_id, breadcrumbs=breadcrumbs)
+    def configure_source(self, breadcrumbs: Optional[str] = None) -> Union[bool, Any]:
+        selection = select_apatch_source(
+            self.provider.provider_id, breadcrumbs=breadcrumbs
         )
+        if selection is None:
+            return False
+        if selection == "main":  # type: ignore
+            from ...menu_router import RouteResult
+
+            return RouteResult.MAIN
+        self._apply_source_selection(selection)
         return True
 
     def download_resources(self, kernel_version: Optional[str] = None) -> bool:
@@ -543,10 +554,17 @@ class LkmRootStrategy(InitBootRootStrategy):
         self.workflow_id = selection.workflow_id
         self.is_tagged_build = selection.is_tagged_build
 
-    def configure_source(self, breadcrumbs: Optional[str] = None) -> bool:
-        self._apply_source_selection(
-            select_lkm_source(self.provider.provider_id, breadcrumbs=breadcrumbs)
+    def configure_source(self, breadcrumbs: Optional[str] = None) -> Union[bool, Any]:
+        selection = select_lkm_source(
+            self.provider.provider_id, breadcrumbs=breadcrumbs
         )
+        if selection is None:
+            return False
+        if selection == "main":  # type: ignore
+            from ...menu_router import RouteResult
+
+            return RouteResult.MAIN
+        self._apply_source_selection(selection)
         return True
 
     def download_resources(self, kernel_version: Optional[str] = None) -> bool:
@@ -566,9 +584,13 @@ def _prompt_custom_kernel_zip() -> Optional[Path]:
     kernel_dir = const.KERNEL_DIR
     kernel_dir.mkdir(parents=True, exist_ok=True)
 
-    existing_selection = _select_kernel_zip(sorted(kernel_dir.glob("*.zip")))
-    if existing_selection is not None:
-        return existing_selection
+    zips = sorted(kernel_dir.glob("*.zip"))
+    if zips:
+        selected = _select_kernel_zip(zips)
+        if selected is not None:
+            return selected
+        # User selected 'Cancel' or closed the menu
+        return None
 
     utils.ui.echo("")
     utils.ui.echo(get_string("gki_custom_place_zip").format(path=kernel_dir))
@@ -607,7 +629,10 @@ def _select_kernel_zip(zips: List[Path]) -> Optional[Path]:
         key = str(i)
         zip_map[key] = zf
         menu.add_option(key, zf.name)
+
+    menu.add_separator()
     menu.add_option("c", get_string("cancel"))
+    menu.add_option("m", get_string("menu_root_m"))
 
     choice = menu.ask(
         get_string("prompt_select"),
@@ -617,6 +642,8 @@ def _select_kernel_zip(zips: List[Path]) -> Optional[Path]:
     if choice == "c" or choice is None:
         utils.ui.warn(get_string("gki_custom_cancelled"))
         return None
+    if choice == "m":
+        return "main"  # type: ignore
 
     selected = zip_map.get(choice)
     if selected:

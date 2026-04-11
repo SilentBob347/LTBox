@@ -93,24 +93,27 @@ def _run_entry_mode(
         from .menu_router import main_loop
 
         settings = settings_store.load()
-        final_state = main_loop(
-            device_controller_class,
-            registry,
-            initial_state=AppState(
-                target_region=settings.target_region,
-                modify_region_code=settings.modify_region_code,
-                preset_code=settings.preset_code,
-                modify_rollback_index=settings.modify_rollback_index,
-                language=settings.language,
-            ),
+        state = AppState(
+            target_region=settings.target_region,
+            modify_region_code=settings.modify_region_code,
+            preset_code=settings.preset_code,
+            modify_rollback_index=settings.modify_rollback_index,
+            language=settings.language,
         )
-        settings_store.update(
-            target_region=final_state.target_region,
-            modify_region_code=final_state.modify_region_code,
-            preset_code=final_state.preset_code,
-            modify_rollback_index=final_state.modify_rollback_index,
-            language=final_state.language,
-        )
+
+        while True:
+            state = main_loop(
+                device_controller_class,
+                registry,
+                initial_state=state,
+            )
+            settings_store.update(
+                target_region=state.target_region,
+                modify_region_code=state.modify_region_code,
+                preset_code=state.preset_code,
+                modify_rollback_index=state.modify_rollback_index,
+                language=state.language,
+            )
 
 
 # --- Singleton Check ---

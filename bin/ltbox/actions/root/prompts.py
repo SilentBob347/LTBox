@@ -64,7 +64,7 @@ def prompt_nightly_workflow(
     default_id: str,
     breadcrumbs: Optional[str] = None,
     branch: Optional[str] = None,
-) -> str:
+) -> Optional[str]:
     menu = TerminalMenu(
         get_string("prompt_workflow_source_title"),
         breadcrumbs=breadcrumbs,
@@ -74,7 +74,15 @@ def prompt_nightly_workflow(
         get_string("prompt_workflow_retrieve_latest").format(file=workflow_file),
     )
     menu.add_option("2", get_string("prompt_workflow_manual_input"))
+    menu.add_separator()
+    menu.add_option("b", get_string("menu_back"))
+    menu.add_option("m", get_string("menu_root_m"))
     choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
+
+    if choice == "b" or choice is None:
+        return "back"
+    if choice == "m":
+        return "main"
 
     if choice == "1" and repo and workflow_file:
         utils.ui.clear()
@@ -135,62 +143,85 @@ def _build_source_selection(
 def _select_profile_source(
     profile: RootProviderProfile,
     breadcrumbs: Optional[str] = None,
-) -> StrategySourceSelection:
+) -> Optional[StrategySourceSelection]:
     repo_config = _load_provider_repo_config(profile)
     resolved_breadcrumbs = breadcrumbs or get_string("menu_root_type_title")
     repo = repo_config.get("repo", "")
     default_workflow = str(repo_config.get("workflow", "")).strip()
 
-    if profile.force_nightly:
-        return _build_source_selection(
-            profile=profile,
-            repo_config=repo_config,
-            is_nightly=True,
-            workflow_id=prompt_nightly_workflow(
+    while True:
+        if profile.force_nightly:
+            workflow_id = prompt_nightly_workflow(
                 profile.display_name,
                 repo,
                 profile.workflow_file,
                 default_workflow,
                 resolved_breadcrumbs,
                 branch=profile.nightly_branch,
-            ),
+            )
+            if workflow_id in (None, "back"):
+                return None
+            if workflow_id == "main":
+                return "main"  # type: ignore[return-value]
+
+            return _build_source_selection(
+                profile=profile,
+                repo_config=repo_config,
+                is_nightly=True,
+                workflow_id=workflow_id,
+            )
+
+        menu = TerminalMenu(
+            get_string("menu_root_subtype_title").format(name=profile.display_name),
+            breadcrumbs=resolved_breadcrumbs,
+        )
+        menu.add_option("1", get_string("menu_root_subtype_release"))
+        menu.add_option("2", get_string("menu_root_subtype_nightly"))
+        menu.add_separator()
+        menu.add_option("b", get_string("menu_back"))
+        menu.add_option("m", get_string("menu_root_m"))
+        choice = menu.ask(
+            get_string("prompt_select"), get_string("err_invalid_selection")
         )
 
-    menu = TerminalMenu(
-        get_string("menu_root_subtype_title").format(name=profile.display_name),
-        breadcrumbs=resolved_breadcrumbs,
-    )
-    menu.add_option("1", get_string("menu_root_subtype_release"))
-    menu.add_option("2", get_string("menu_root_subtype_nightly"))
-    choice = menu.ask(get_string("prompt_select"), get_string("err_invalid_selection"))
+        if choice == "b" or choice is None:
+            return None
+        if choice == "m":
+            return "main"  # type: ignore
 
-    if choice == "2":
-        return _build_source_selection(
-            profile=profile,
-            repo_config=repo_config,
-            is_nightly=True,
-            workflow_id=prompt_nightly_workflow(
+        if choice == "2":
+            workflow_id = prompt_nightly_workflow(
                 profile.display_name,
                 repo,
                 profile.workflow_file,
                 default_workflow,
                 resolved_breadcrumbs,
                 branch=profile.nightly_branch,
-            ),
-        )
+            )
+            if workflow_id == "back" or workflow_id is None:
+                continue
+            if workflow_id == "main":
+                return "main"  # type: ignore
 
-    return _build_source_selection(
-        profile=profile,
-        repo_config=repo_config,
-        is_nightly=False,
-        workflow_id=None,
-    )
+            return _build_source_selection(
+                profile=profile,
+                repo_config=repo_config,
+                is_nightly=True,
+                workflow_id=workflow_id,
+            )
+
+        return _build_source_selection(
+            profile=profile,
+            repo_config=repo_config,
+            is_nightly=False,
+            workflow_id=None,
+        )
 
 
 def select_apatch_source(
     root_type: str,
     breadcrumbs: Optional[str] = None,
-) -> StrategySourceSelection:
+) -> Optional[StrategySourceSelection]:
     profile = get_root_provider_profile(root_type)
     if profile.family != RootProviderFamily.APATCH:
         raise ValueError(f"Expected an APatch-family provider, got: {root_type}")
@@ -200,7 +231,7 @@ def select_apatch_source(
 def select_lkm_source(
     root_type: str,
     breadcrumbs: Optional[str] = None,
-) -> StrategySourceSelection:
+) -> Optional[StrategySourceSelection]:
     profile = get_root_provider_profile(root_type)
     if profile.family != RootProviderFamily.LKM:
         raise ValueError(f"Expected an LKM provider, got: {root_type}")
