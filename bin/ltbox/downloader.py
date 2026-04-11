@@ -64,14 +64,16 @@ def _write_stream(
             unit_divisor=1024,
             leave=False,
             ncols=80,
+            mininterval=1.0,
+            maxinterval=5.0,
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
         ) as pbar:
-            for chunk in response.iter_bytes(chunk_size=8192):
+            for chunk in response.iter_bytes(chunk_size=32768):
                 if chunk:
                     file.write(chunk)
                     pbar.update(len(chunk))
     else:
-        for chunk in response.iter_bytes(chunk_size=8192):
+        for chunk in response.iter_bytes(chunk_size=32768):
             if chunk:
                 file.write(chunk)
 
