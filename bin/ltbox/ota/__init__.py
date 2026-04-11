@@ -1,6 +1,13 @@
-import sys
-
-from .ota.super_image import (
+from .payload import (
+    PayloadPartitionInfo,
+    get_old_partition_hashes,
+    get_partition_hashes,
+    get_partition_infos,
+    get_partition_names,
+    get_partition_sizes,
+    partition_names_from_infos,
+)
+from .super_image import (
     LP_HEADER_FLAG_VIRTUAL_AB_DEVICE,
     LP_METADATA_GEOMETRY_MAGIC,
     LP_METADATA_HEADER_MAGIC,
@@ -23,13 +30,13 @@ from .ota.super_image import (
     split_rebuilt_super,
     write_rebuilt_super_chunks,
 )
-from .ota import super_image as _module
 
 __all__ = [
     "LP_HEADER_FLAG_VIRTUAL_AB_DEVICE",
     "LP_METADATA_GEOMETRY_MAGIC",
     "LP_METADATA_HEADER_MAGIC",
     "LP_SECTOR_SIZE",
+    "PayloadPartitionInfo",
     "SuperBlockDevice",
     "SuperExtent",
     "SuperGeometry",
@@ -40,13 +47,17 @@ __all__ = [
     "copy_flash_xmls",
     "create_keep_data_ota_xml",
     "extract_partition_images",
+    "get_old_partition_hashes",
+    "get_partition_hashes",
+    "get_partition_infos",
+    "get_partition_names",
+    "get_partition_sizes",
     "parse_full_super_image",
     "parse_super_layout",
+    "partition_names_from_infos",
     "plan_rebuilt_super_chunks",
     "rewrite_super_xml_entries",
     "rewrite_xml_filenames",
     "split_rebuilt_super",
     "write_rebuilt_super_chunks",
 ]
-
-sys.modules[__name__] = _module
