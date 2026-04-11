@@ -3,7 +3,6 @@ protobuf
 six
 cryptography
 pyserial
-adbutils
 cachetools
 rich
 tqdm

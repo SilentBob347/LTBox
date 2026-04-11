@@ -6,16 +6,17 @@ from ltbox.device import AdbManager, EdlManager, FastbootManager
 
 def test_adb_get_model_retry_success():
     manager = AdbManager(skip_adb=False)
-
     mock_device = MagicMock()
     mock_device.get_state.return_value = "device"
     mock_device.prop.model = "Lenovo TB-Test"
 
     with (
-        patch(
-            "adbutils.adb.device_list",
+        patch.object(
+            manager._client,
+            "device_list",
             side_effect=[[], [], [mock_device], [mock_device]],
         ),
+        patch.object(manager._client, "device", return_value=mock_device),
         patch("ltbox.utils.time.sleep", return_value=None),
     ):
         model = manager.get_model()

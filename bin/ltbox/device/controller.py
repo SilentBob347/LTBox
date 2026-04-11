@@ -2,14 +2,13 @@ import contextlib
 import time
 from typing import Optional
 
-from adbutils import AdbError
-
 from .. import constants as const
 from .. import utils
 from ..errors import DeviceCommandError
 from ..i18n import get_string
 from ..ui import ui
 from .adb import AdbManager
+from .adb_client import AdbError
 from .edl import EdlManager
 from .fastboot import FastbootManager
 from .support import DeviceCommandRunner

@@ -1,14 +1,12 @@
 import re
 from typing import Any, Callable, Optional
 
-import adbutils
-from adbutils import AdbError
-
 from .. import constants as const
 from .. import utils
 from ..errors import DeviceCommandError, DeviceConnectionError
 from ..i18n import get_string
 from ..ui import ui
+from .adb_client import AdbClient, AdbDevice, AdbError
 from .support import BaseDeviceManager, DeviceCommandRunner
 
 
@@ -22,18 +20,17 @@ class AdbManager(BaseDeviceManager):
         super().__init__(usb_port_hint=usb_port_hint, command_runner=command_runner)
         self.skip_adb = skip_adb
         self.connected_once = False
-        if const.ADB_EXE.exists():
-            adbutils.adb_path = str(const.ADB_EXE)
+        self._client = AdbClient(self._command_runner, const.ADB_EXE)
 
-    def _get_device(self) -> Optional[adbutils.AdbDevice]:
+    def _get_device(self) -> Optional[AdbDevice]:
         try:
-            return adbutils.adb.device()
+            return self._client.device()
         except AdbError:
             return None
 
     def _with_device(
         self,
-        action: Callable[[adbutils.AdbDevice], Any],
+        action: Callable[[AdbDevice], Any],
     ) -> Optional[Any]:
         if not self.wait_for_device():
             return None
@@ -70,7 +67,7 @@ class AdbManager(BaseDeviceManager):
             try:
                 return any(
                     device.get_state() == "device"
-                    for device in adbutils.adb.device_list()
+                    for device in self._client.device_list()
                 )
             except (AdbError, OSError):
                 return False
@@ -100,7 +97,7 @@ class AdbManager(BaseDeviceManager):
     def get_slot_suffix(self) -> Optional[str]:
         try:
 
-            def _read_suffix(device: adbutils.AdbDevice) -> Optional[str]:
+            def _read_suffix(device: AdbDevice) -> Optional[str]:
                 suffix = device.getprop("ro.boot.slot_suffix")
                 return suffix if suffix in ["_a", "_b"] else None
 
@@ -120,7 +117,7 @@ class AdbManager(BaseDeviceManager):
 
             print(get_string("dl_lkm_get_kver"))
 
-            def _read_version(device: adbutils.AdbDevice) -> str:
+            def _read_version(device: AdbDevice) -> str:
                 version_string = device.shell("cat /proc/version")
                 match = re.search(r"Linux version (\d+\.\d+)", version_string)
                 if not match:
@@ -149,23 +146,19 @@ class AdbManager(BaseDeviceManager):
                     ui.warn(get_string("device_manual_edl_req"))
                 return
 
-            def _reboot(device: adbutils.AdbDevice) -> None:
+            def _reboot(device: AdbDevice) -> None:
                 if target == "edl":
                     try:
-                        with device.open_transport() as connection:
-                            connection.send_command("reboot:edl")
-                            connection.check_okay()
+                        device.reboot("edl")
                     except (AdbError, OSError):
                         device.shell("reboot edl")
                 elif target == "bootloader":
                     try:
-                        with device.open_transport() as connection:
-                            connection.send_command("reboot:bootloader")
-                            connection.check_okay()
+                        device.reboot("bootloader")
                     except (AdbError, OSError):
                         device.shell("reboot bootloader")
                 else:
-                    device.shell(f"reboot {target}")
+                    device.reboot(target)
 
             self._with_device(_reboot)
         except (DeviceConnectionError, DeviceCommandError, AdbError) as e:
