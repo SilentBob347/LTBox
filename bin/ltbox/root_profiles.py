@@ -125,6 +125,7 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         command_variant=RootCommandVariantId.LKM,
         strategy_root_type="kernelsu",
         direct_gki=False,
+        nightly_branch="main",
     ),
     RootProviderProfile(
         provider_id="kernelsu-next",
@@ -155,6 +156,7 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         strategy_root_type="sukisu",
         direct_gki=False,
         release_uses_tagged_build=True,
+        nightly_branch="main",
     ),
     RootProviderProfile(
         provider_id="resukisu",
@@ -169,6 +171,7 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         strategy_root_type="resukisu",
         direct_gki=False,
         force_nightly=True,
+        nightly_branch="main",
     ),
     RootProviderProfile(
         provider_id="apatch",
@@ -182,19 +185,21 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         command_variant=RootCommandVariantId.APATCH,
         strategy_root_type="apatch",
         direct_gki=True,
+        nightly_branch="main",
     ),
     RootProviderProfile(
         provider_id="folkpatch",
         display_name="FolkPatch",
         family=RootProviderFamily.APATCH,
         settings_key="folkpatch",
-        workflow_file="build-debug.yml",
+        workflow_file="build.yml",
         menu_key="6",
         route_kind=RootRouteKind.DIRECT,
         menu_label_literal="FolkPatch",
         command_variant=RootCommandVariantId.FOLKPATCH,
         strategy_root_type="folkpatch",
         direct_gki=True,
+        nightly_branch="main",
     ),
     RootProviderProfile(
         provider_id="gki",

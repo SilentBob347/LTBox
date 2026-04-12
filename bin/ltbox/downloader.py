@@ -235,6 +235,109 @@ def _get_workflow_run_artifacts(owner_repo: str, run_id: str) -> list[str]:
     return _github_client(owner_repo).workflow_run_artifacts(run_id)
 
 
+def _normalize_workflow_artifact_name(name: str) -> str:
+    normalized = name.strip().lower()
+    for suffix in (".zip", ".apk"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+    return normalized
+
+
+def _artifact_download_name(name: str) -> str:
+    return name if name.lower().endswith(".zip") else f"{name}.zip"
+
+
+def _resolve_workflow_artifact_name(
+    artifact_names: list[str], *candidates: str
+) -> Optional[str]:
+    normalized_artifacts = {
+        _normalize_workflow_artifact_name(name): name for name in artifact_names
+    }
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = normalized_artifacts.get(
+            _normalize_workflow_artifact_name(candidate)
+        )
+        if resolved:
+            return resolved
+    return None
+
+
+def _resolve_ksuinit_artifact_names(
+    artifact_names: list[str],
+    *,
+    ksuinit_variants: Optional[list[str]] = None,
+    download_all_ksuinit: bool = False,
+) -> list[str]:
+    if download_all_ksuinit:
+        candidates = [
+            name
+            for name in artifact_names
+            if _normalize_workflow_artifact_name(name).startswith("ksuinit")
+        ]
+    else:
+        resolved_candidates: list[str] = []
+        for variant in ksuinit_variants or ["ksuinit"]:
+            resolved = _resolve_workflow_artifact_name(artifact_names, variant)
+            if resolved and resolved not in resolved_candidates:
+                resolved_candidates.append(resolved)
+        candidates = resolved_candidates
+
+    preferred = ["ksuinit", "ksuinit-aarch64-linux-android"]
+    preferred_keys = [_normalize_workflow_artifact_name(name) for name in preferred]
+    return sorted(
+        candidates,
+        key=lambda name: (
+            preferred_keys.index(_normalize_workflow_artifact_name(name))
+            if _normalize_workflow_artifact_name(name) in preferred_keys
+            else len(preferred_keys)
+        ),
+    )
+
+
+def _select_apatch_artifact_name(
+    artifact_names: list[str], provider_name: str
+) -> Optional[str]:
+    normalized_prefix = provider_name.strip().lower()
+    matches = [
+        artifact_name
+        for artifact_name in artifact_names
+        if _normalize_workflow_artifact_name(artifact_name).startswith(
+            normalized_prefix
+        )
+    ]
+    if not matches:
+        return None
+
+    def _artifact_rank(artifact_name: str) -> tuple[int, int, int, str]:
+        normalized_name = _normalize_workflow_artifact_name(artifact_name)
+        return (
+            0 if "release" in normalized_name else 1,
+            0 if "signed" in normalized_name else 1,
+            1 if "debug" in normalized_name else 2,
+            normalized_name,
+        )
+
+    return min(matches, key=_artifact_rank)
+
+
+def _get_matching_workflow_artifacts(
+    repo: str,
+    workflow_id: str,
+    *,
+    workflow_file: str,
+    branch: Optional[str] = None,
+) -> list[str]:
+    client = _github_client(repo)
+    if not client.workflow_run_matches(workflow_id, workflow_file, branch=branch):
+        branch_label = branch or "any branch"
+        raise ToolError(
+            f"Workflow {workflow_id} does not match {workflow_file} on {branch_label}."
+        )
+    return client.workflow_run_artifacts(workflow_id)
+
+
 class WorkflowRunInfo(NamedTuple):
     run_id: str
     resolved_tag: str
@@ -309,6 +412,7 @@ def _download_manager_artifact(
     target_dir: Path,
     manager_name: str,
     manager_fallback_names: Optional[list[str]] = None,
+    artifact_names: Optional[list[str]] = None,
 ) -> None:
     manager_zip = target_dir / manager_name
 
@@ -318,9 +422,18 @@ def _download_manager_artifact(
             name for name in manager_fallback_names if name not in candidates
         )
 
-    for candidate in candidates:
-        candidate_url = f"{base_url}/{candidate}"
-        candidate_path = target_dir / candidate
+    resolved_candidates = candidates
+    if artifact_names is not None:
+        resolved_candidates = []
+        for candidate in candidates:
+            resolved = _resolve_workflow_artifact_name(artifact_names, candidate)
+            if resolved and resolved not in resolved_candidates:
+                resolved_candidates.append(resolved)
+
+    for candidate in resolved_candidates:
+        download_name = _artifact_download_name(candidate)
+        candidate_url = f"{base_url}/{download_name}"
+        candidate_path = target_dir / download_name
         try:
             download_resource(candidate_url, candidate_path)
             if candidate_path != manager_zip:
@@ -335,37 +448,38 @@ def _download_manager_artifact(
 
 def _download_ksuinit_artifact(
     base_url: str,
-    repo: str,
-    workflow_id: str,
     target_dir: Path,
     ksuinit_variants: Optional[list[str]] = None,
     download_all_ksuinit: bool = False,
+    artifact_names: Optional[list[str]] = None,
 ) -> None:
     ksuinit_dest = target_dir / "ksuinit"
 
-    artifact_names: list[str] = []
-    if download_all_ksuinit:
-        try:
-            owner_repo = _get_owner_repo(repo)
-            artifact_names = _get_workflow_run_artifacts(owner_repo, workflow_id)
-        except ToolError:
-            artifact_names = []
-
     candidates = (
-        [name for name in artifact_names if name.startswith("ksuinit")]
-        if artifact_names
+        _resolve_ksuinit_artifact_names(
+            artifact_names,
+            ksuinit_variants=ksuinit_variants,
+            download_all_ksuinit=download_all_ksuinit,
+        )
+        if artifact_names is not None
         else (ksuinit_variants or ["ksuinit"])
     )
 
     preferred = ["ksuinit", "ksuinit-aarch64-linux-android"]
+    preferred_keys = [_normalize_workflow_artifact_name(name) for name in preferred]
     candidates.sort(
-        key=lambda name: preferred.index(name) if name in preferred else len(preferred)
+        key=lambda name: (
+            preferred_keys.index(_normalize_workflow_artifact_name(name))
+            if _normalize_workflow_artifact_name(name) in preferred_keys
+            else len(preferred_keys)
+        )
     )
 
     downloaded = False
     for variant in candidates:
-        ksuinit_url = f"{base_url}/{variant}.zip"
-        temp_zip = target_dir / f"temp_{variant}.zip"
+        download_name = _artifact_download_name(variant)
+        ksuinit_url = f"{base_url}/{download_name}"
+        temp_zip = target_dir / f"temp_{download_name}"
         try:
             download_resource(ksuinit_url, temp_zip)
 
@@ -376,7 +490,9 @@ def _download_ksuinit_artifact(
                             shutil.copyfileobj(src, dst)
                         downloaded = True
                         if download_all_ksuinit:
-                            variant_name = variant.replace("/", "_")
+                            variant_name = _normalize_workflow_artifact_name(
+                                variant
+                            ).replace("/", "_")
                             variant_dest = target_dir / f"{variant_name}.ksuinit"
                             shutil.copy2(ksuinit_dest, variant_dest)
                         break
@@ -401,6 +517,8 @@ def download_nightly_artifacts(
     ksuinit_variants: Optional[list[str]] = None,
     download_all_ksuinit: bool = False,
     manager_fallback_names: Optional[list[str]] = None,
+    workflow_file: str = "",
+    branch: Optional[str] = None,
 ):
     base_url = f"https://nightly.link/{repo}/actions/runs/{workflow_id}"
 
@@ -412,18 +530,35 @@ def download_nightly_artifacts(
         get_string("dl_fetching_workflow_artifacts").format(workflow_id=workflow_id)
     ):
         try:
+            artifact_names = _get_matching_workflow_artifacts(
+                repo,
+                workflow_id,
+                workflow_file=workflow_file,
+                branch=branch,
+            )
             _download_manager_artifact(
-                base_url, target_dir, manager_name, manager_fallback_names
+                base_url,
+                target_dir,
+                manager_name,
+                manager_fallback_names,
+                artifact_names=artifact_names,
             )
             _download_ksuinit_artifact(
                 base_url,
-                repo,
-                workflow_id,
                 target_dir,
                 ksuinit_variants,
                 download_all_ksuinit,
+                artifact_names=artifact_names,
             )
-            download_resource(f"{base_url}/{mapped_name}-lkm.zip", lkm_dest)
+            lkm_artifact = _resolve_workflow_artifact_name(
+                artifact_names, f"{mapped_name}-lkm"
+            )
+            if not lkm_artifact:
+                raise ToolError(f"Missing workflow artifact: {mapped_name}-lkm")
+
+            download_resource(
+                f"{base_url}/{_artifact_download_name(lkm_artifact)}", lkm_dest
+            )
 
         except (ToolError, httpx.HTTPError, zipfile.BadZipFile, OSError) as e:
             _cleanup_files(manager_zip, ksuinit_dest, lkm_dest)
@@ -469,11 +604,20 @@ def download_ksuinit_release(target_path: Path, repo: str = "", tag: str = "") -
     resolved_tag = _resolve_release_tag(owner_repo, tag or const.KSU_APK_TAG)
     workflow_id = _get_workflow_run_id_for_tag(owner_repo, resolved_tag)
     base_url = f"https://nightly.link/{owner_repo}/actions/runs/{workflow_id}"
-    temp_zip = target_path.parent / "ksuinit.zip"
+    artifact_names = _get_workflow_run_artifacts(owner_repo, workflow_id)
+    ksuinit_artifacts = _resolve_ksuinit_artifact_names(
+        artifact_names,
+        ksuinit_variants=["ksuinit", "ksuinit-aarch64-linux-android"],
+    )
+    if not ksuinit_artifacts:
+        raise ToolError(get_string("dl_err_ksuinit_not_found"))
+
+    download_name = _artifact_download_name(ksuinit_artifacts[0])
+    temp_zip = target_path.parent / download_name
 
     with utils.ui.status(get_string("dl_downloading").format(filename="ksuinit.zip")):
         try:
-            download_resource(f"{base_url}/ksuinit.zip", temp_zip)
+            download_resource(f"{base_url}/{download_name}", temp_zip)
             with zipfile.ZipFile(temp_zip, "r") as zf:
                 ksuinit_member = None
                 for member in zf.namelist():
@@ -540,19 +684,22 @@ def download_apatch_release(
 
 
 def download_apatch_nightly(
-    workflow_id: str, target_dir: Path, repo: str = "", name: str = "APatch"
+    workflow_id: str,
+    target_dir: Path,
+    repo: str = "",
+    name: str = "APatch",
+    workflow_file: str = "",
+    branch: Optional[str] = None,
 ):
     repo = repo or const.FOLKPATCH_REPO
-    artifact_names = _get_workflow_run_artifacts(repo, workflow_id)
-
-    target_artifact = next(
-        (
-            artifact_name
-            for artifact_name in artifact_names
-            if artifact_name.lower().startswith("folkpatch")
-        ),
-        None,
+    artifact_names = _get_matching_workflow_artifacts(
+        repo,
+        workflow_id,
+        workflow_file=workflow_file,
+        branch=branch,
     )
+
+    target_artifact = _select_apatch_artifact_name(artifact_names, name)
     if not target_artifact:
         raise ToolError(
             get_string("dl_err_apatch_artifact_missing").format(
@@ -560,10 +707,9 @@ def download_apatch_nightly(
             )
         )
 
-    base_url = (
-        f"https://nightly.link/{repo}/actions/runs/{workflow_id}/{target_artifact}.zip"
-    )
-    temp_zip = target_dir / f"{target_artifact}.zip"
+    download_name = _artifact_download_name(target_artifact)
+    base_url = f"https://nightly.link/{repo}/actions/runs/{workflow_id}/{download_name}"
+    temp_zip = target_dir / download_name
 
     with utils.ui.status(
         get_string("dl_apatch_nightly_downloading").format(

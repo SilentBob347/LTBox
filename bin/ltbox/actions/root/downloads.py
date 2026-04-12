@@ -57,6 +57,8 @@ def download_apatch_resources(
                 staging_dir,
                 repo=repo_config.get("repo", ""),
                 name=profile.display_name,
+                workflow_file=profile.workflow_file,
+                branch=profile.nightly_branch,
             )
         else:
             downloader.download_apatch_release(
@@ -99,6 +101,8 @@ def _download_lkm_nightly_artifacts(
     staging_dir: Path,
     repo_config: Dict[str, Any],
     workflow_id: str,
+    workflow_file: str,
+    branch: Optional[str],
     kernel_version: Optional[str],
     download_all_ksuinit: bool,
 ) -> bool:
@@ -124,6 +128,8 @@ def _download_lkm_nightly_artifacts(
             target_dir=temp_dl_dir,
             download_all_ksuinit=download_all_ksuinit,
             manager_fallback_names=repo_config.get("manager_fallbacks"),
+            workflow_file=workflow_file,
+            branch=branch,
         )
 
         _extract_first_matching_member(
@@ -192,6 +198,8 @@ def download_lkm_resources(
             staging_dir=staging_dir,
             repo_config=repo_config,
             workflow_id=resolved_workflow_id,
+            workflow_file=profile.workflow_file,
+            branch=profile.nightly_branch,
             kernel_version=kernel_version,
             download_all_ksuinit=is_tagged_build,
         )

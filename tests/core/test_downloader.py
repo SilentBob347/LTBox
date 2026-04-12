@@ -1,5 +1,6 @@
 """Tests for ltbox.downloader – archive extraction and helper functions."""
 
+import contextlib
 import io
 import tarfile
 import zipfile
@@ -10,6 +11,9 @@ import pytest
 
 from ltbox.downloader import (
     _resolve_extract_target,
+    download_apatch_nightly,
+    download_ksuinit_release,
+    download_nightly_artifacts,
     extract_kernel_from_anykernel3_zip,
     extract_archive_files,
 )
@@ -201,3 +205,103 @@ class TestExtractKernelFromZip:
         with patch("ltbox.utils.ui"):
             with pytest.raises(ToolError):
                 extract_kernel_from_anykernel3_zip(zip_path, work_dir)
+
+
+def test_download_apatch_nightly_prefers_release_artifact(tmp_path):
+    def fake_download(url: str, dest_path: Path, *args, **kwargs):
+        assert url.endswith("/APatch-Release.zip")
+        with zipfile.ZipFile(dest_path, "w") as archive:
+            archive.writestr("nested/APatch.apk", b"apk-bytes")
+
+    with (
+        patch(
+            "ltbox.downloader._get_matching_workflow_artifacts",
+            return_value=["APatch-Debug", "APatch-Release", "mappings"],
+        ),
+        patch("ltbox.downloader.download_resource", side_effect=fake_download),
+        patch("ltbox.downloader._extract_apatch_kpimg") as extract_kpimg,
+        patch(
+            "ltbox.downloader.utils.ui.status",
+            return_value=contextlib.nullcontext(),
+        ),
+        patch("ltbox.downloader.utils.ui.echo"),
+    ):
+        download_apatch_nightly(
+            "run-123",
+            tmp_path,
+            repo="bmax121/APatch",
+            name="APatch",
+            workflow_file="build.yml",
+            branch="main",
+        )
+
+    extract_kpimg.assert_called_once_with(tmp_path / "FolkPatch.apk", tmp_path)
+
+
+def test_download_apatch_nightly_raises_when_provider_artifact_missing(tmp_path):
+    with patch(
+        "ltbox.downloader._get_matching_workflow_artifacts",
+        return_value=["mappings"],
+    ):
+        with pytest.raises(ToolError, match="No APatch artifact found"):
+            download_apatch_nightly(
+                "run-123",
+                tmp_path,
+                repo="bmax121/APatch",
+                name="APatch",
+                workflow_file="build.yml",
+                branch="main",
+            )
+
+
+def test_download_ksuinit_release_uses_resolved_artifact_name(tmp_path):
+    target_path = tmp_path / "ksuinit"
+
+    def fake_download(url: str, dest_path: Path, *args, **kwargs):
+        assert url.endswith("/ksuinit-aarch64-linux-android.zip")
+        with zipfile.ZipFile(dest_path, "w") as archive:
+            archive.writestr("bin/ksuinit", b"ksuinit-binary")
+
+    with (
+        patch("ltbox.downloader._get_workflow_run_id_for_tag", return_value="run-123"),
+        patch(
+            "ltbox.downloader._get_workflow_run_artifacts",
+            return_value=["ksuinit-aarch64-linux-android"],
+        ),
+        patch("ltbox.downloader.download_resource", side_effect=fake_download),
+        patch(
+            "ltbox.downloader.utils.ui.status",
+            return_value=contextlib.nullcontext(),
+        ),
+        patch("ltbox.downloader.utils.ui.echo"),
+    ):
+        download_ksuinit_release(target_path, repo="owner/repo", tag="v1.2.3")
+
+    assert target_path.read_bytes() == b"ksuinit-binary"
+
+
+def test_download_nightly_artifacts_validates_artifacts_before_download(tmp_path):
+    with (
+        patch(
+            "ltbox.downloader._get_matching_workflow_artifacts",
+            return_value=["mappings"],
+        ),
+        patch(
+            "ltbox.downloader.utils.ui.status",
+            return_value=contextlib.nullcontext(),
+        ),
+        patch("ltbox.downloader.utils.ui.echo"),
+        patch("ltbox.downloader.download_resource") as download_resource,
+    ):
+        with pytest.raises(ToolError, match="Failed to download manager artifact"):
+            download_nightly_artifacts(
+                repo="owner/repo",
+                workflow_id="run-123",
+                manager_name="manager.zip",
+                mapped_name="android14-6.1",
+                target_dir=tmp_path,
+                workflow_file="build.yml",
+                branch="main",
+            )
+
+    download_resource.assert_not_called()

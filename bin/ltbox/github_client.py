@@ -31,6 +31,34 @@ def _select_workflow_run_for_tag(
     return None
 
 
+def _normalize_workflow_path(workflow_file: str) -> str:
+    normalized = workflow_file.strip()
+    if "@" in normalized:
+        normalized = normalized.split("@", 1)[0]
+    if normalized and "/" not in normalized:
+        normalized = f".github/workflows/{normalized}"
+    return normalized.lstrip("/")
+
+
+def _workflow_run_matches(
+    run: GitHubPayload,
+    workflow_file: Optional[str] = None,
+    branch: Optional[str] = None,
+) -> bool:
+    if branch:
+        head_branch = str(run.get("head_branch") or "")
+        if head_branch != branch:
+            return False
+
+    if workflow_file:
+        expected_path = _normalize_workflow_path(workflow_file)
+        run_path = _normalize_workflow_path(str(run.get("path") or ""))
+        if run_path != expected_path:
+            return False
+
+    return True
+
+
 @dataclass(frozen=True)
 class GitHubClient:
     owner_repo: str
@@ -160,16 +188,41 @@ class GitHubClient:
             if isinstance(artifact, dict) and artifact.get("name")
         ]
 
+    def workflow_run_matches(
+        self, run_id: str, workflow_file: str, branch: Optional[str] = None
+    ) -> bool:
+        run = self._request_object(f"actions/runs/{run_id}")
+        return _workflow_run_matches(run, workflow_file=workflow_file, branch=branch)
+
     def latest_successful_workflow_run(
         self, workflow_file: str, branch: Optional[str] = None
     ) -> Optional[str]:
-        params: dict[str, str | int] = {"status": "success", "per_page": 1}
+        params: dict[str, str | int] = {"status": "success", "per_page": 20}
         if branch:
             params["branch"] = branch
         runs = self._request_object(
             f"actions/workflows/{workflow_file}/runs",
             params=params,
         ).get("workflow_runs", [])
-        if isinstance(runs, list) and runs:
-            return str(runs[0]["id"])
+
+        if isinstance(runs, list):
+            for run in runs:
+                if isinstance(run, dict) and _workflow_run_matches(
+                    run, workflow_file=workflow_file, branch=branch
+                ):
+                    return str(run["id"])
+
+        fallback_params = dict(params)
+        fallback_params["per_page"] = 50
+        fallback_runs = self._request_object(
+            "actions/runs",
+            params=fallback_params,
+        ).get("workflow_runs", [])
+        if isinstance(fallback_runs, list):
+            for run in fallback_runs:
+                if isinstance(run, dict) and _workflow_run_matches(
+                    run, workflow_file=workflow_file, branch=branch
+                ):
+                    return str(run["id"])
+
         return None
