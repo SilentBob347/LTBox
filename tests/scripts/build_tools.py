@@ -38,21 +38,14 @@ def build():
     print("[INFO] Building magiskboot and fetching OpenSSL via MSYS2...")
     build_dir = TOOLS_DIR / "magiskboot_src"
     if build_dir.exists():
-        shutil.rmtree(build_dir, ignore_errors=True)
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "rmdir", "/s", "/q", str(build_dir)], check=False
+            )
+        else:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
-    if build_dir.exists():
-        # rmtree failed (Windows file locks) — reuse existing checkout
-        subprocess.run(
-            ["git", "remote", "set-url", "origin", REPO_URL],
-            cwd=str(build_dir),
-            check=True,
-        )
-        subprocess.run(["git", "fetch", "origin"], cwd=str(build_dir), check=True)
-        subprocess.run(
-            ["git", "reset", "--hard", "origin/main"], cwd=str(build_dir), check=True
-        )
-    else:
-        subprocess.run(["git", "clone", REPO_URL, str(build_dir)], check=True)
+    subprocess.run(["git", "clone", REPO_URL, str(build_dir)], check=True)
 
     cpio_cpp_path = build_dir / "src" / "cpio.cpp"
     if cpio_cpp_path.exists():
