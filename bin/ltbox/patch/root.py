@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import sys
@@ -357,15 +358,17 @@ def patch_magisk_boot(
 
     # --- 5. Create config ---
     print(get_string("magisk_creating_config"))
+    keepverity = "true"
+    keepforceencrypt = "true"
     config_lines = [
-        "KEEPVERITY=false",
-        "KEEPFORCEENCRYPT=false",
+        f"KEEPVERITY={keepverity}",
+        f"KEEPFORCEENCRYPT={keepforceencrypt}",
         "RECOVERYMODE=false",
         "VENDORBOOT=false",
     ]
     if sha1:
         config_lines.append(f"SHA1={sha1}")
-    (work_dir / "config").write_text("\n".join(config_lines) + "\n")
+    (work_dir / "config").write_text("\n".join(config_lines) + "\n", newline="\n")
 
     # --- 6. Patch ramdisk ---
     print(get_string("magisk_patching_ramdisk"))
@@ -386,14 +389,25 @@ def patch_magisk_boot(
             "add 000 .backup/.magisk config",
         ]
     )
-    mb.run("cpio", ramdisk, *cpio_cmds, cwd=work_dir)
+    patch_env = {
+        **os.environ,
+        "KEEPVERITY": keepverity,
+        "KEEPFORCEENCRYPT": keepforceencrypt,
+    }
+    mb.run("cpio", ramdisk, *cpio_cmds, cwd=work_dir, env=patch_env)
 
     # --- 7. DTB patches (fstab restrictions) ---
     for dt_name in ["dtb", "kernel_dtb", "extra"]:
         dt_path = work_dir / dt_name
         if dt_path.exists():
             result = mb.run(
-                "dtb", dt_name, "patch", cwd=work_dir, check=False, capture=True
+                "dtb",
+                dt_name,
+                "patch",
+                cwd=work_dir,
+                check=False,
+                capture=True,
+                env=patch_env,
             )
             if result.returncode == 0:
                 print(get_string("magisk_patching_dtb").format(name=dt_name))
