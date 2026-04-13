@@ -597,7 +597,6 @@
   "magisk_extract_missing": "[!] Необходимый бинарник Magisk не найден в APK: {name}",
   "magisk_extracting_apk": "[*] Извлечение бинарников Magisk из APK...",
   "magisk_patch_success": "[*] Патч Magisk завершён успешно",
-  "magisk_patching_dtb": "[*] Патч дерева устройства: {name}",
   "magisk_patching_ramdisk": "[*] Патч ramdisk с помощью Magisk...",
   "magisk_placeholder": "[!] {name} ещё не реализован. Используйте Magisk.",
   "magisk_ramdisk_not_found": "[!] ramdisk.cpio не найден после распаковки",

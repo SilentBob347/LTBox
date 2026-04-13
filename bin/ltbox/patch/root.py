@@ -558,29 +558,13 @@ def patch_magisk_boot(
     }
     mb.run("cpio", ramdisk, *cpio_cmds, cwd=work_dir, env=patch_env)
 
-    # --- 7. DTB patches (fstab restrictions) ---
-    for dt_name in ["dtb", "kernel_dtb", "extra"]:
-        dt_path = work_dir / dt_name
-        if dt_path.exists():
-            result = mb.run(
-                "dtb",
-                dt_name,
-                "patch",
-                cwd=work_dir,
-                check=False,
-                capture=True,
-                env=patch_env,
-            )
-            if result.returncode == 0:
-                print(get_string("magisk_patching_dtb").format(name=dt_name))
-
-    # --- 8. Cleanup temp files ---
+    # --- 7. Cleanup temp files ---
     for f in ["ramdisk.cpio.orig", "config", "magisk.xz", "stub.xz", "init-ld.xz"]:
         p = work_dir / f
         if p.exists():
             p.unlink()
 
-    # --- 9. Repack ---
+    # --- 8. Repack ---
     print(get_string("img_root_step6").format(name="init_boot"))
     mb.run("repack", img_name, cwd=work_dir)
 

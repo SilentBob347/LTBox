@@ -597,7 +597,6 @@
   "magisk_extract_missing": "[!] APK에서 필요한 Magisk 바이너리를 찾을 수 없습니다: {name}",
   "magisk_extracting_apk": "[*] APK에서 Magisk 바이너리 추출 중...",
   "magisk_patch_success": "[*] Magisk 패치 완료",
-  "magisk_patching_dtb": "[*] 디바이스 트리 패치 중: {name}",
   "magisk_patching_ramdisk": "[*] Magisk로 ramdisk 패치 중...",
   "magisk_placeholder": "[!] {name}은(는) 아직 구현되지 않았습니다. Magisk를 사용해 주세요.",
   "magisk_ramdisk_not_found": "[!] 언팩 후 ramdisk.cpio를 찾을 수 없습니다",

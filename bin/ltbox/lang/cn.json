@@ -597,7 +597,6 @@
   "magisk_extract_missing": "[!] APK 中未找到所需的 Magisk 二进制文件：{name}",
   "magisk_extracting_apk": "[*] 正在从 APK 提取 Magisk 二进制文件...",
   "magisk_patch_success": "[*] Magisk 修补完成",
-  "magisk_patching_dtb": "[*] 正在修补设备树：{name}",
   "magisk_patching_ramdisk": "[*] 正在使用 Magisk 修补 ramdisk...",
   "magisk_placeholder": "[!] {name} 尚未实现，请先使用 Magisk。",
   "magisk_ramdisk_not_found": "[!] 解包后未找到 ramdisk.cpio",
