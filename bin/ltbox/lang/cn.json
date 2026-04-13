@@ -594,6 +594,7 @@
   "magisk_compressing_binaries": "[*] 正在压缩 Magisk 二进制文件...",
   "magisk_creating_config": "[*] 正在创建 Magisk 配置...",
   "magisk_download_failed": "[!] 下载 Magisk 失败：{e}",
+  "magisk_err_skip_adb_required": "[!] Magisk 修补需要 ADB 来检测 PREINITDEVICE。请关闭“跳过 ADB”后重试。",
   "magisk_extract_missing": "[!] APK 中未找到所需的 Magisk 二进制文件：{name}",
   "magisk_extracting_apk": "[*] 正在从 APK 提取 Magisk 二进制文件...",
   "magisk_patch_success": "[*] Magisk 修补完成",

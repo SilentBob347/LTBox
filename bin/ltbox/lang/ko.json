@@ -594,6 +594,7 @@
   "magisk_compressing_binaries": "[*] Magisk 바이너리 압축 중...",
   "magisk_creating_config": "[*] Magisk 설정 파일 생성 중...",
   "magisk_download_failed": "[!] Magisk 다운로드 실패: {e}",
+  "magisk_err_skip_adb_required": "[!] Magisk 패치는 PREINITDEVICE 확인을 위해 ADB가 필요합니다. 'ADB 건너뛰기'를 끄고 다시 시도하세요.",
   "magisk_extract_missing": "[!] APK에서 필요한 Magisk 바이너리를 찾을 수 없습니다: {name}",
   "magisk_extracting_apk": "[*] APK에서 Magisk 바이너리 추출 중...",
   "magisk_patch_success": "[*] Magisk 패치 완료",

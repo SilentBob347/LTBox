@@ -453,6 +453,10 @@ def patch_magisk_boot(
         )
         return None
 
+    if dev is not None and dev.skip_adb:
+        print(get_string("magisk_err_skip_adb_required"), file=sys.stderr)
+        return None
+
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
     def reboot_system_and_abort() -> None:

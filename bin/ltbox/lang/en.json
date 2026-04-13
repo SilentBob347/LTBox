@@ -594,6 +594,7 @@
   "magisk_compressing_binaries": "[*] Compressing Magisk binaries...",
   "magisk_creating_config": "[*] Creating Magisk config...",
   "magisk_download_failed": "[!] Failed to download Magisk: {e}",
+  "magisk_err_skip_adb_required": "[!] Magisk patch requires ADB to detect PREINITDEVICE. Turn off 'Skip ADB' and try again.",
   "magisk_extract_missing": "[!] Required Magisk binary not found in APK: {name}",
   "magisk_extracting_apk": "[*] Extracting Magisk binaries from APK...",
   "magisk_patch_success": "[*] Magisk patch completed successfully",

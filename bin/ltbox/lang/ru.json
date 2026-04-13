@@ -594,6 +594,7 @@
   "magisk_compressing_binaries": "[*] Сжатие бинарников Magisk...",
   "magisk_creating_config": "[*] Создание конфигурации Magisk...",
   "magisk_download_failed": "[!] Ошибка загрузки Magisk: {e}",
+  "magisk_err_skip_adb_required": "[!] Для патча Magisk нужен ADB, чтобы определить PREINITDEVICE. Отключите \"Пропуск ADB\" и повторите попытку.",
   "magisk_extract_missing": "[!] Необходимый бинарник Magisk не найден в APK: {name}",
   "magisk_extracting_apk": "[*] Извлечение бинарников Magisk из APK...",
   "magisk_patch_success": "[*] Патч Magisk завершён успешно",
