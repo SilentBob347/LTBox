@@ -464,3 +464,47 @@ def test_settings_menu_direct_toggle_recomputes_preset_code(monkeypatch):
 
     assert next_state.modify_region_code is False
     assert next_state.preset_code == "-"
+
+
+def test_reboot_from_edl_uses_tolerant_reset_path(monkeypatch, tmp_path):
+    loader = tmp_path / "xbl_s_devprg_ns.melf"
+    loader.write_text("loader", encoding="utf-8")
+
+    events = []
+
+    class FakeEdlManager:
+        def load_programmer(self, port, loader_path):
+            events.append(("load", port, loader_path))
+
+        def reset(self, port, mode="system"):
+            events.append(("reset", port, mode))
+
+    strings = {
+        "reboot_edl_start": "start",
+        "reboot_edl_found_port": "found {port}",
+        "reboot_edl_uploading": "uploading",
+        "reboot_edl_resetting": "resetting",
+        "reboot_sent_success": "sent",
+        "press_enter_to_continue": "enter",
+    }
+
+    mock_ui = MagicMock()
+    monkeypatch.setattr(menu_router, "ui", mock_ui)
+    monkeypatch.setattr(menu_router, "find_edl_port", lambda: "COM5")
+    monkeypatch.setattr(menu_router.time, "sleep", lambda *_args: None)
+    monkeypatch.setattr(menu_router.device, "EdlManager", FakeEdlManager)
+    monkeypatch.setattr(menu_router.const, "EDL_LOADER_FILE", loader)
+    monkeypatch.setattr(menu_router.const, "EDL_LOADER_FILENAME", loader.name)
+    monkeypatch.setattr(menu_router.const, "IMAGE_DIR", tmp_path)
+    monkeypatch.setattr(menu_router, "get_string", lambda key: strings[key])
+    monkeypatch.setattr("builtins.input", lambda *_args: "")
+
+    menu_router._reboot_from_edl()
+
+    assert events == [
+        ("load", "COM5", loader),
+        ("reset", "COM5", "system"),
+    ]
+    mock_ui.error.assert_not_called()
+    mock_ui.warn.assert_not_called()
+    mock_ui.info.assert_any_call(strings["reboot_sent_success"])

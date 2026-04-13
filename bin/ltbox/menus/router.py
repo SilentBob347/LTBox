@@ -7,10 +7,11 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 from .. import constants as const
+from .. import device
 from .. import i18n, update_service
 from ..app_state import AppState
 from ..device.status import DeviceStatusMonitor
-from ..device.support import DeviceCommandRunner, find_edl_port, format_serial_port_bare
+from ..device.support import DeviceCommandRunner, find_edl_port
 from ..i18n import get_string
 from ..registry import CommandRegistry
 from ..root_profiles import (
@@ -536,32 +537,21 @@ def _reboot_from_edl() -> None:
         input(get_string("press_enter_to_continue"))
         return
 
+    edl_manager = device.EdlManager()
+
     try:
         ui.info(get_string("reboot_edl_uploading"))
-        base_cmd = [
-            str(const.QDLRS_EXE),
-            "--backend",
-            "serial",
-            "-d",
-            format_serial_port_bare(edl_port),
-            "-l",
-            str(const.EDL_LOADER_FILE),
-            "-s",
-            "ufs",
-        ]
-
-        subprocess.run(base_cmd + ["nop"], check=True, timeout=30)
+        edl_manager.load_programmer(edl_port, const.EDL_LOADER_FILE)
         time.sleep(2)
 
         ui.info(get_string("reboot_edl_resetting"))
-        subprocess.run(
-            base_cmd + ["--reset-mode", "system", "reset", "system"],
-            check=True,
-            timeout=30,
-        )
+        # qdl-rs can return a non-zero exit on reset even when the device
+        # successfully leaves EDL. Match the flashing flow and do not treat
+        # reset return codes as fatal here.
+        edl_manager.reset(edl_port, mode="system")
 
         ui.info(get_string("reboot_sent_success"))
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+    except (device.DeviceCommandError, FileNotFoundError, OSError) as e:
         ui.error(get_string("reboot_edl_failed").format(e=e))
         ui.warn(get_string("reboot_edl_manual_hint"))
 
