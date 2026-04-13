@@ -783,7 +783,7 @@ def download_magisk_release(
         _download_and_move_github_asset(
             f"https://github.com/{repo}",
             tag,
-            r".*\.apk$",
+            r"^(?!.*app-debug).*\.apk$",
             apk_path,
         )
 
