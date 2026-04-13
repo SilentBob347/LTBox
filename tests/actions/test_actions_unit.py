@@ -8,6 +8,7 @@ from ltbox import constants as const
 from ltbox.actions import edl
 from ltbox.actions import region
 from ltbox.actions import xml as xml_action
+from ltbox.actions.root import workflow as root_workflow
 from ltbox.menus import data as menu_data
 from ltbox.patch import avb as avb_patch
 from ltbox.actions.root.strategies import GkiRootStrategy
@@ -731,6 +732,86 @@ def test_main_menu_no_longer_lists_incremental_ota():
     assert options["3"].action == "disable_ota"
     assert options["4"].action == "reenable_ota"
     assert options["5"].action == "rescue_ota"
+
+
+def test_unroot_menu_renumbers_available_strategies_from_one(tmp_path):
+    class FakeStrategy:
+        def __init__(self, menu_key, main_name):
+            self.unroot_menu_msg_key = menu_key
+            self.unroot_detect_msg_key = f"{menu_key}_detected"
+            self.unroot_files = {"main": tmp_path / main_name}
+            self.unroot_files["main"].write_bytes(b"image")
+
+        @property
+        def is_unroot_available(self):
+            return True
+
+        def get_partition_map(self, suffix):
+            return {"main": f"boot{suffix}"}
+
+        def print_unroot_step(self, _partition_map):
+            return None
+
+    class FakeTerminalMenu:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.options = []
+            type(self).instances.append(self)
+
+        def add_option(self, key, text):
+            self.options.append((key, text))
+
+        def add_separator(self):
+            return None
+
+        def ask(self, *_args):
+            return "1"
+
+    lkm = FakeStrategy("act_unroot_menu_2_lkm", "init_boot.img")
+    gki = FakeStrategy("act_unroot_menu_3_gki", "boot.img")
+    dev = MagicMock()
+    dev.edl_session.return_value.__enter__.return_value = "COM4"
+
+    strings = {
+        "act_start_unroot": "start",
+        "act_unroot_menu_title": "Unroot Mode",
+        "menu_main_title": "Main",
+        "act_unroot_menu_2_lkm": "Restore LKM",
+        "act_unroot_menu_3_gki": "Restore APatch/GKI",
+        "menu_root_m": "Main",
+        "prompt_select": "Select",
+        "err_invalid_selection": "Invalid",
+        "act_unroot_step1": "step1",
+        "act_unroot_step3": "step3",
+        "act_reset_sys": "reset",
+        "act_unroot_finish": "finish",
+    }
+
+    with (
+        patch.object(root_workflow, "LkmRootStrategy", return_value=lkm),
+        patch.object(root_workflow, "GkiRootStrategy", return_value=gki),
+        patch.object(root_workflow, "TerminalMenu", FakeTerminalMenu),
+        patch.object(root_workflow.edl, "ensure_edl_requirements"),
+        patch.object(root_workflow, "get_slot_suffix", return_value="_a"),
+        patch.object(root_workflow.edl, "flash_partition_target") as flash_partition,
+        patch.object(root_workflow.utils.ui, "echo"),
+        patch(
+            "ltbox.actions.root.workflow.get_string", side_effect=strings.__getitem__
+        ),
+    ):
+        root_workflow.unroot_device(dev)
+
+    assert FakeTerminalMenu.instances[0].options[:2] == [
+        ("1", "Restore LKM"),
+        ("2", "Restore APatch/GKI"),
+    ]
+    flash_partition.assert_called_once_with(
+        dev,
+        "COM4",
+        "boot_a",
+        lkm.unroot_files["main"],
+    )
 
 
 def test_rebuild_vbmeta_requires_vbmeta_and_one_image(tmp_path):

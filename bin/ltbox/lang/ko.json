@@ -364,7 +364,7 @@
   "device_fatal_causes": "[!] 가능한 원인:",
   "device_fatal_programmer": "\n[!] 치명적인 오류: Firehose 프로그래머 로드 실패",
   "device_flash_success": "[+] '{filename}' 플래싱됨.",
-  "device_flashing_part": "[*] 플래싱 중 {filename} -> LUN:{lun}, 시작:{start}...",
+  "device_flashing_part": "[*] 플래싱 중 {filename} -> LUN=\"{lun}\", start_sector=\"{start_sector}\"...",
   "device_found_edl": "[+] EDL 기기 발견됨: {device}",
   "device_found_fastboot": "[+] Fastboot 기기 발견됨:\n{output}",
   "device_get_slot_fastboot": "[*] Fastboot를 통해 활성 슬롯 확인하는 중...",

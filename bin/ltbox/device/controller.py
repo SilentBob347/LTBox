@@ -184,7 +184,6 @@ class DeviceController:
                 if reset_msg_key:
                     ui.info(get_string(reset_msg_key))
                 try:
-                    ui.info(get_string("device_resetting"))
                     self.edl.reset(port)
                     ui.info(get_string("act_reset_sent"))
                 except (DeviceCommandError, OSError) as e:

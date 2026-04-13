@@ -364,7 +364,7 @@
   "device_fatal_causes": "[!] 可能的原因：",
   "device_fatal_programmer": "\n[!] 致命错误：无法加载 Firehose programmer。",
   "device_flash_success": "[+] 已刷入 '{filename}'。",
-  "device_flashing_part": "[*] 正在刷入 {filename} -> LUN:{lun}, 起始:{start}...",
+  "device_flashing_part": "[*] 正在刷入 {filename} -> LUN=\"{lun}\", start_sector=\"{start_sector}\"...",
   "device_found_edl": "[+] 找到 EDL 设备: {device}",
   "device_found_fastboot": "[+] 找到 Fastboot 设备:\n{output}",
   "device_get_slot_fastboot": "[*] 正在通过 Fastboot 获取槽位后缀...",

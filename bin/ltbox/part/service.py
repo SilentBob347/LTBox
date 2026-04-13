@@ -44,13 +44,11 @@ class EdlPartitionService:
         image_path: Path,
     ) -> PartitionParams:
         params = self.resolve_params(target_name)
-        ui.echo(get_string("act_flashing_target").format(target=target_name))
-
         ui.echo(
             get_string("device_flashing_part").format(
                 filename=image_path.name,
                 lun=params["lun"],
-                start=params["start_sector"],
+                start_sector=params["start_sector"],
             )
         )
         dev.edl.write_partition(

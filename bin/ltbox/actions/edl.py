@@ -194,13 +194,10 @@ def _execute_partition_flash_targets(
 ) -> None:
     for flash_target in flash_targets:
         utils.ui.echo(
-            get_string("act_flashing_target").format(target=flash_target.target_name)
-        )
-        utils.ui.echo(
             get_string("device_flashing_part").format(
                 filename=flash_target.image_path.name,
                 lun=flash_target.lun,
-                start=flash_target.start_sector,
+                start_sector=flash_target.start_sector,
             )
         )
 

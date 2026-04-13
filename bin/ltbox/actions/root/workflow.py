@@ -528,8 +528,12 @@ def unroot_device(dev: device.DeviceController) -> None:
             get_string("act_unroot_menu_title"),
             breadcrumbs=get_string("menu_main_title"),
         )
-        for s in available_strategies:
-            menu.add_option(s.menu_shortcut, get_string(s.unroot_menu_msg_key))
+        strategy_choices = {
+            str(index): strategy
+            for index, strategy in enumerate(available_strategies, start=1)
+        }
+        for key, strategy in strategy_choices.items():
+            menu.add_option(key, get_string(strategy.unroot_menu_msg_key))
 
         menu.add_separator()
         menu.add_option("m", get_string("menu_root_m"))
@@ -542,10 +546,7 @@ def unroot_device(dev: device.DeviceController) -> None:
             utils.ui.echo(get_string("act_op_cancel"))
             return
 
-        for s in available_strategies:
-            if choice == s.menu_shortcut:
-                selected_strategy = s
-                break
+        selected_strategy = strategy_choices.get(choice)
         utils.ui.clear()
 
     elif len(available_strategies) == 1:

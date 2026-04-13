@@ -364,7 +364,7 @@
   "device_fatal_causes": "[!] Возможные причины:",
   "device_fatal_programmer": "\n[!] ОШИБКА: Не удалось загрузить программатор Firehose.",
   "device_flash_success": "[+] Прошито '{filename}'.",
-  "device_flashing_part": "[*] Прошивка {filename} -> LUN:{lun} @ {start}...",
+  "device_flashing_part": "[*] Прошивка {filename} -> LUN=\"{lun}\", start_sector=\"{start_sector}\"...",
   "device_found_edl": "[+] Найдено устройство EDL: {device}",
   "device_found_fastboot": "[+] Найдено устройство Fastboot:\n{output}",
   "device_get_slot_fastboot": "[*] Проверка активного слота через Fastboot...",

@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ltbox.device import AdbManager, EdlManager, FastbootManager
+from ltbox.device import AdbManager, DeviceController, EdlManager, FastbootManager
 
 
 def test_adb_get_model_retry_success():
@@ -214,6 +214,35 @@ def test_edl_reset_to_edl_calls_reset_with_edl_mode(tmp_path):
     assert "--reset-mode" in cmd
     rm_idx = cmd.index("--reset-mode")
     assert cmd[rm_idx + 1] == "edl"
+
+
+def test_edl_session_logs_single_reset_message():
+    controller = DeviceController(
+        adb_manager=MagicMock(skip_adb=False),
+        fastboot_manager=MagicMock(),
+        edl_manager=MagicMock(),
+    )
+
+    messages = {
+        "act_reset_sys": "[*] Rebooting to System...",
+        "act_reset_sent": "[+] Reboot command sent.",
+    }
+
+    with (
+        patch.object(controller, "setup_edl_connection", return_value="COM9"),
+        patch("ltbox.device.controller.get_string", side_effect=messages.__getitem__),
+        patch("ltbox.device.controller.ui") as mock_ui,
+    ):
+        with controller.edl_session(
+            load_programmer=False, reset_msg_key="act_reset_sys"
+        ):
+            pass
+
+    echoed_messages = [call.args[0] for call in mock_ui.info.call_args_list]
+    assert echoed_messages == [
+        messages["act_reset_sys"],
+        messages["act_reset_sent"],
+    ]
 
 
 def test_edl_base_cmd_uses_qdlrs_serial_backend(tmp_path):

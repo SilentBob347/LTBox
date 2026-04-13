@@ -116,8 +116,7 @@ def test_execute_partition_flash_targets_logs_success_once_per_target():
         start_sector="205962",
     )
     messages = {
-        "act_flashing_target": "[*] Flashing {target}",
-        "device_flashing_part": "[*] Writing '{filename}' ({lun}, {start})",
+        "device_flashing_part": '[*] Writing \'{filename}\' -> LUN="{lun}", start_sector="{start_sector}"',
         "device_flash_success": "[+] Flashed '{filename}'.",
     }
 
@@ -128,6 +127,12 @@ def test_execute_partition_flash_targets_logs_success_once_per_target():
         edl._execute_partition_flash_targets(dev, "COM5", [target])
 
     success_message = messages["device_flash_success"].format(filename="init_boot.img")
+    flash_message = messages["device_flashing_part"].format(
+        filename="init_boot.img",
+        lun="4",
+        start_sector="205962",
+    )
     echoed_messages = [call.args[0] for call in mock_ui.echo.call_args_list]
 
+    assert echoed_messages.count(flash_message) == 1
     assert echoed_messages.count(success_message) == 1

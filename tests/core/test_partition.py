@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ltbox.actions import edl
 from ltbox.part import partition
+from ltbox.part.service import EdlPartitionService
 from ltbox.part.xml_catalog import XmlCatalog, _parse_xml_records
 
 
@@ -156,3 +157,38 @@ def test_flash_partition_target_uses_firmware_params(fw_pkg, mock_env):
         start_sector=program.get("start_sector"),
         partition_name=label,
     )
+
+
+def test_edl_partition_service_logs_single_flash_line(tmp_path):
+    service = EdlPartitionService(
+        resolve_params=lambda _label: {
+            "source_xml": "rawprogram0.xml",
+            "lun": "4",
+            "start_sector": "113318",
+            "num_sectors": "1",
+        }
+    )
+    image_path = tmp_path / "boot.img"
+    image_path.write_bytes(b"boot")
+    dev = MagicMock()
+
+    messages = {
+        "device_flashing_part": '[*] Flashing {filename} -> LUN="{lun}", start_sector="{start_sector}"...',
+        "act_flash_img": "[+] Flashed '{filename}' to {part}.",
+    }
+
+    with (
+        patch("ltbox.part.service.get_string", side_effect=messages.__getitem__),
+        patch("ltbox.part.service.ui") as mock_ui,
+    ):
+        service.flash_partition(dev, "COM3", "boot_a", image_path)
+
+    echoed_messages = [call.args[0] for call in mock_ui.echo.call_args_list]
+    assert echoed_messages == [
+        messages["device_flashing_part"].format(
+            filename="boot.img",
+            lun="4",
+            start_sector="113318",
+        ),
+        messages["act_flash_img"].format(filename="boot.img", part="boot_a"),
+    ]
