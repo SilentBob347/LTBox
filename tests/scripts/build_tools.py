@@ -42,6 +42,11 @@ def build():
 
     if build_dir.exists():
         # rmtree failed (Windows file locks) — reuse existing checkout
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", REPO_URL],
+            cwd=str(build_dir),
+            check=True,
+        )
         subprocess.run(["git", "fetch", "origin"], cwd=str(build_dir), check=True)
         subprocess.run(
             ["git", "reset", "--hard", "origin/main"], cwd=str(build_dir), check=True
