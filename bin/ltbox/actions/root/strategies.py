@@ -12,7 +12,7 @@ from ...patch.avb import (
     rebuild_vbmeta_with_chained_images,
     vbmeta_has_chain_partition,
 )
-from ...patch.root import patch_boot_with_root_algo
+from ...patch.root import patch_boot_with_root_algo, patch_magisk_boot
 from ...root_profiles import (
     RootProviderFamily,
     get_root_provider_profile,
@@ -21,6 +21,7 @@ from .downloads import (
     cleanup_manager_apk,
     download_apatch_resources,
     download_lkm_resources,
+    download_magisk_resources,
 )
 from .prompts import (
     StrategySourceSelection,
@@ -29,6 +30,7 @@ from .prompts import (
     prompt_kpm_selection,
     select_apatch_source,
     select_lkm_source,
+    select_magisk_source,
     wait_for_kpm_files,
 )
 
@@ -506,6 +508,99 @@ class APatchStrategy(GkiRootStrategy):
         )
 
 
+class MagiskRootStrategy(InitBootRootStrategy):
+    spec = RootStrategySpec(
+        image_name=const.FN_INIT_BOOT,
+        backup_name=const.FN_INIT_BOOT_BAK,
+        output_dir=const.OUTPUT_ROOT_LKM_DIR,
+        backup_dir=const.BACKUP_INIT_BOOT_DIR,
+        required_files=[const.FN_INIT_BOOT, const.FN_VBMETA],
+        main_partition="init_boot",
+        display_name="Magisk",
+        unroot_detect_msg_key="act_unroot_lkm_detected",
+        unroot_menu_msg_key="act_unroot_menu_2_lkm",
+        menu_shortcut="1",
+        patch_image_name="init_boot.img (Magisk)",
+        requires_kernel_version=False,
+    )
+
+    def __init__(self, root_type: str = "magisk"):
+        self.provider = get_root_provider_profile(root_type)
+        if self.provider.family != RootProviderFamily.MAGISK:
+            raise ValueError(f"Expected a Magisk-family provider, got: {root_type}")
+        self.is_nightly = False
+        self.workflow_id: Optional[str] = None
+        self.repo_config: Dict[str, Any] = {}
+        self._staging_dir = const.TOOLS_DIR / "magisk_staging"
+
+    @property
+    def staging_dir(self) -> Path:
+        return self._staging_dir
+
+    @property
+    def payload_files(self) -> List[str]:
+        return ["magiskinit", "magisk", "init-ld", "stub.apk"]
+
+    @property
+    def root_type(self) -> str:
+        return self.provider.provider_id
+
+    def print_unroot_step(self, partition_map: Dict[str, str]) -> None:
+        utils.ui.echo(get_string("act_unroot_step4_lkm"))
+
+    def _apply_source_selection(self, selection: StrategySourceSelection) -> None:
+        self.repo_config = selection.repo_config
+        self.source_label = selection.source_label
+        self.is_nightly = selection.is_nightly
+        self.workflow_id = selection.workflow_id
+
+    def configure_source(self, breadcrumbs: Optional[str] = None) -> Union[bool, Any]:
+        selection = select_magisk_source(
+            self.provider.provider_id, breadcrumbs=breadcrumbs
+        )
+        if selection is None:
+            return False
+        if selection == "main":  # type: ignore
+            from ...menus.router import RouteResult
+
+            return RouteResult.MAIN
+        self._apply_source_selection(selection)
+        return True
+
+    def download_resources(self, kernel_version: Optional[str] = None) -> bool:
+        return download_magisk_resources(
+            profile=self.provider,
+            staging_dir=self.staging_dir,
+            repo_config=self.repo_config,
+            is_nightly=self.is_nightly,
+            workflow_id=self.workflow_id,
+        )
+
+    def patch(
+        self,
+        work_dir: Path,
+        dev: Optional[device.DeviceController] = None,
+        lkm_kernel_version: Optional[str] = None,
+    ) -> Optional[Path]:
+        magiskboot_exe = const.MAGISKBOOT_EXE
+
+        # Backup
+        init_boot_source = work_dir / self.image_name
+        init_boot_backup = const.BASE_DIR / self.backup_name
+        if init_boot_source.exists() and not init_boot_backup.exists():
+            shutil.copy(init_boot_source, init_boot_backup)
+
+        # Ensure payload files are staged
+        if not all((self.staging_dir / name).exists() for name in self.payload_files):
+            if not self.download_resources():
+                return None
+
+        for name in self.payload_files:
+            shutil.copy(self.staging_dir / name, work_dir / name)
+
+        return patch_magisk_boot(work_dir, magiskboot_exe)
+
+
 class LkmRootStrategy(InitBootRootStrategy):
     spec = RootStrategySpec(
         image_name=const.FN_INIT_BOOT,
@@ -674,6 +769,8 @@ def _extract_manager_apk_from_zip(zip_path: Path) -> None:
 
 def get_root_strategy(gki: bool, root_type: str = "ksu") -> RootStrategy:
     provider = get_root_provider_profile(root_type)
+    if provider.family == RootProviderFamily.MAGISK:
+        return MagiskRootStrategy(provider.provider_id)
     if provider.family == RootProviderFamily.APATCH:
         return APatchStrategy(provider.provider_id)
     if gki:

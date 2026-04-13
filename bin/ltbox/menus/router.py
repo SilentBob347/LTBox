@@ -382,6 +382,41 @@ def _root_lkm_variants_menu(
                 return res
 
 
+def _root_magisk_variants_menu(
+    dev: DeviceControllerProtocol,
+    registry: CommandRegistry,
+    breadcrumbs: str,
+) -> MenuReturn:
+    from ..root_profiles import get_root_provider_profile
+
+    current_breadcrumbs = f"{breadcrumbs} > {get_string('menu_root_variants_magisk')}"
+
+    def _handler(action: str) -> MenuReturn:
+        if action == "magisk":
+            profile = get_root_provider_profile("magisk")
+            return _root_action_menu(
+                dev,
+                registry,
+                gki=False,
+                root_type="magisk",
+                breadcrumbs=f"{current_breadcrumbs} > {profile.display_name}",
+            )
+        if action in ("lygisk", "other_forks"):
+            label = "Lygisk" if action == "lygisk" else "Other forks"
+            ui.clear()
+            ui.echo(get_string("magisk_placeholder").format(name=label))
+            input(get_string("press_enter_to_continue"))
+            return None
+        return None
+
+    return _loop_menu(
+        menu_data.get_root_magisk_variants_menu_data,
+        "menu_root_variants_magisk",
+        breadcrumbs,
+        _handler,
+    )
+
+
 def _root_ksu_variants_menu(
     dev: DeviceControllerProtocol,
     registry: CommandRegistry,
@@ -454,6 +489,12 @@ def root_menu(
     breadcrumbs = f"{main_title} > {get_string('menu_main_root')}"
 
     def _handler(action: str) -> MenuReturn:
+        if action == "magisk_variants":
+            return _root_magisk_variants_menu(
+                dev,
+                registry,
+                breadcrumbs,
+            )
         if action == "ksu_variants":
             return _root_ksu_variants_menu(
                 dev,

@@ -159,6 +159,41 @@ def _download_lkm_nightly_artifacts(
         return False
 
 
+def download_magisk_resources(
+    *,
+    profile: RootProviderProfile,
+    staging_dir: Path,
+    repo_config: Dict[str, Any],
+    is_nightly: bool,
+    workflow_id: Optional[str],
+) -> bool:
+    cleanup_manager_apk(show_message=False)
+    utils.recreate_dir(staging_dir)
+
+    repo = repo_config.get("repo", "")
+
+    try:
+        if is_nightly and workflow_id:
+            downloader.download_magisk_nightly(
+                workflow_id,
+                staging_dir,
+                repo=repo,
+                workflow_file=profile.workflow_file,
+                branch=profile.nightly_branch,
+            )
+        else:
+            tag = repo_config.get("tag", "latest")
+            downloader.download_magisk_release(
+                staging_dir,
+                repo=repo,
+                tag=tag,
+            )
+        return True
+    except (ToolError, OSError, zipfile.BadZipFile) as error:
+        utils.ui.error(get_string("magisk_download_failed").format(e=error))
+        return False
+
+
 def download_lkm_resources(
     *,
     profile: RootProviderProfile,

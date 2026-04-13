@@ -14,11 +14,13 @@ class RootCommandVariantId(str, Enum):
     GKI = "gki"
     APATCH = "apatch"
     FOLKPATCH = "folkpatch"
+    MAGISK = "magisk"
 
 
 class RootProviderFamily(str, Enum):
     LKM = "lkm"
     APATCH = "apatch"
+    MAGISK = "magisk"
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,18 @@ ROOT_COMMAND_VARIANTS: tuple[RootCommandVariant, ...] = (
         gki=True,
         root_type="folkpatch",
         title_suffix="FolkPatch",
+    ),
+    RootCommandVariant(
+        variant_id=RootCommandVariantId.MAGISK,
+        root_device_command="root_device_magisk",
+        patch_command="patch_root_image_file_magisk",
+        patch_flash_command="patch_root_image_file_flash_magisk",
+        root_menu_root_label_key="menu_root_1_lkm",
+        root_menu_patch_label_key="menu_root_2_lkm",
+        task_mode_label="Magisk",
+        gki=False,
+        root_type="magisk",
+        title_suffix="Magisk",
     ),
 )
 
@@ -213,6 +227,20 @@ ROOT_PROFILES: tuple[RootProviderProfile, ...] = (
         command_variant=RootCommandVariantId.GKI,
         strategy_root_type="gki",
         direct_gki=True,
+    ),
+    RootProviderProfile(
+        provider_id="magisk",
+        display_name="Magisk",
+        family=RootProviderFamily.MAGISK,
+        settings_key="magisk",
+        workflow_file="ci.yml",
+        menu_key="8",
+        route_kind=RootRouteKind.DIRECT,
+        menu_label_literal="Magisk",
+        command_variant=RootCommandVariantId.MAGISK,
+        strategy_root_type="magisk",
+        direct_gki=False,
+        nightly_branch="master",
     ),
 )
 

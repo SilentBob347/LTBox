@@ -274,6 +274,161 @@ def patch_boot_with_root_algo(
         return patched_boot_path
 
 
+def patch_magisk_boot(
+    work_dir: Path,
+    magiskboot_exe: Path,
+) -> Optional[Path]:
+    """Patch init_boot.img with Magisk. Replicates boot_patch.sh logic."""
+
+    img_name = const.FN_INIT_BOOT
+    out_img_name = const.FN_INIT_BOOT_ROOT
+    patched_boot_path = const.BASE_DIR / out_img_name
+
+    work_img_path = work_dir / img_name
+    if not work_img_path.exists():
+        print(
+            get_string("img_root_err_img_not_found").format(name=img_name),
+            file=sys.stderr,
+        )
+        return None
+
+    mb = utils.MagiskBootWrapper(magiskboot_exe)
+
+    # --- 1. Unpack ---
+    print(get_string("img_root_step1").format(name="init_boot"))
+    mb.run("unpack", img_name, cwd=work_dir)
+
+    # --- 2. Find ramdisk ---
+    ramdisk = None
+    for path in [
+        "ramdisk.cpio",
+        "vendor_ramdisk/init_boot.cpio",
+        "vendor_ramdisk/ramdisk.cpio",
+    ]:
+        if (work_dir / path).exists():
+            ramdisk = path
+            break
+
+    skip_backup = False
+    if ramdisk is None:
+        ramdisk = "ramdisk.cpio"
+        skip_backup = True
+
+    # --- 3. Check ramdisk status ---
+    sha1 = ""
+    if (work_dir / ramdisk).exists():
+        status_proc = mb.run(
+            "cpio",
+            ramdisk,
+            "test",
+            cwd=work_dir,
+            check=False,
+            capture=True,
+        )
+        status = status_proc.returncode
+
+        if status == 0:
+            # Stock boot image
+            sha1_proc = mb.run(
+                "sha1",
+                img_name,
+                cwd=work_dir,
+                check=False,
+                capture=True,
+            )
+            sha1 = sha1_proc.stdout.strip() if sha1_proc.stdout else ""
+            shutil.copy(work_dir / ramdisk, work_dir / "ramdisk.cpio.orig")
+        elif status == 1:
+            # Already Magisk-patched, restore original
+            mb.run(
+                "cpio",
+                ramdisk,
+                "extract .backup/.magisk config.orig",
+                "restore",
+                cwd=work_dir,
+            )
+            shutil.copy(work_dir / ramdisk, work_dir / "ramdisk.cpio.orig")
+            config_orig = work_dir / "config.orig"
+            if config_orig.exists():
+                for line in config_orig.read_text().splitlines():
+                    if line.startswith("SHA1="):
+                        sha1 = line.split("=", 1)[1]
+                config_orig.unlink()
+        elif status == 2:
+            print(get_string("magisk_unsupported_patcher"), file=sys.stderr)
+            return None
+    else:
+        print(get_string("magisk_ramdisk_not_found"), file=sys.stderr)
+        return None
+
+    # --- 4. Compress binaries ---
+    print(get_string("magisk_compressing_binaries"))
+    mb.run("compress=xz", "magisk", "magisk.xz", cwd=work_dir)
+    mb.run("compress=xz", "stub.apk", "stub.xz", cwd=work_dir)
+    mb.run("compress=xz", "init-ld", "init-ld.xz", cwd=work_dir)
+
+    # --- 5. Create config ---
+    print(get_string("magisk_creating_config"))
+    config_lines = [
+        "KEEPVERITY=false",
+        "KEEPFORCEENCRYPT=false",
+        "RECOVERYMODE=false",
+        "VENDORBOOT=false",
+    ]
+    if sha1:
+        config_lines.append(f"SHA1={sha1}")
+    (work_dir / "config").write_text("\n".join(config_lines) + "\n")
+
+    # --- 6. Patch ramdisk ---
+    print(get_string("magisk_patching_ramdisk"))
+    cpio_cmds = [
+        "add 0750 init magiskinit",
+        "mkdir 0750 overlay.d",
+        "mkdir 0750 overlay.d/sbin",
+        "add 0644 overlay.d/sbin/magisk.xz magisk.xz",
+        "add 0644 overlay.d/sbin/stub.xz stub.xz",
+        "add 0644 overlay.d/sbin/init-ld.xz init-ld.xz",
+        "patch",
+    ]
+    if not skip_backup:
+        cpio_cmds.append("backup ramdisk.cpio.orig")
+    cpio_cmds.extend(
+        [
+            "mkdir 000 .backup",
+            "add 000 .backup/.magisk config",
+        ]
+    )
+    mb.run("cpio", ramdisk, *cpio_cmds, cwd=work_dir)
+
+    # --- 7. DTB patches (fstab restrictions) ---
+    for dt_name in ["dtb", "kernel_dtb", "extra"]:
+        dt_path = work_dir / dt_name
+        if dt_path.exists():
+            result = mb.run(
+                "dtb", dt_name, "patch", cwd=work_dir, check=False, capture=True
+            )
+            if result.returncode == 0:
+                print(get_string("magisk_patching_dtb").format(name=dt_name))
+
+    # --- 8. Cleanup temp files ---
+    for f in ["ramdisk.cpio.orig", "config", "magisk.xz", "stub.xz", "init-ld.xz"]:
+        p = work_dir / f
+        if p.exists():
+            p.unlink()
+
+    # --- 9. Repack ---
+    print(get_string("img_root_step6").format(name="init_boot"))
+    mb.run("repack", img_name, cwd=work_dir)
+
+    if not (work_dir / "new-boot.img").exists():
+        print(get_string("img_root_repack_fail"))
+        return None
+    shutil.move(work_dir / "new-boot.img", patched_boot_path)
+    print(get_string("magisk_patch_success"))
+
+    return patched_boot_path
+
+
 def get_kernel_version(file_path: Union[str, Path]) -> Optional[str]:
     kernel_file = Path(file_path)
     if not kernel_file.exists():
