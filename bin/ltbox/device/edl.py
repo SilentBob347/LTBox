@@ -145,7 +145,6 @@ class EdlManager(BaseDeviceManager):
     def load_programmer_safe(self, port: str, loader_path: Path) -> None:
         ui.info(get_string("device_upload_programmer").format(port=port))
         self.load_programmer(port, loader_path)
-        time.sleep(2)
 
     def read_partition(
         self,

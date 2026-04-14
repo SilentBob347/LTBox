@@ -519,7 +519,6 @@ def test_reboot_from_edl_uses_tolerant_reset_path(monkeypatch, tmp_path):
     mock_ui = MagicMock()
     monkeypatch.setattr(menu_router, "ui", mock_ui)
     monkeypatch.setattr(menu_router, "find_edl_port", lambda: "COM5")
-    monkeypatch.setattr(menu_router.time, "sleep", lambda *_args: None)
     monkeypatch.setattr(menu_router.device, "EdlManager", FakeEdlManager)
     monkeypatch.setattr(menu_router.const, "EDL_LOADER_FILE", loader)
     monkeypatch.setattr(menu_router.const, "EDL_LOADER_FILENAME", loader.name)

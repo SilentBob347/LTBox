@@ -1,7 +1,6 @@
 import re
 import subprocess
 import sys
-import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Union
@@ -577,7 +576,6 @@ def _reboot_from_edl() -> None:
     try:
         ui.info(get_string("reboot_edl_uploading"))
         edl_manager.load_programmer(edl_port, const.EDL_LOADER_FILE)
-        time.sleep(2)
 
         ui.info(get_string("reboot_edl_resetting"))
         # qdl-rs can return a non-zero exit on reset even when the device

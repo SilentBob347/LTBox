@@ -98,8 +98,6 @@ class DeviceController:
         if in_fastboot:
             ui.info(get_string("device_edl_via_fastboot"))
             if self.fastboot.oem_edl():
-                ui.info(get_string("device_wait_10s_edl"))
-                time.sleep(10)
                 return
 
             ui.warn(get_string("device_oem_edl_failed"))
@@ -107,12 +105,9 @@ class DeviceController:
             if not self.skip_adb:
                 ui.info(get_string("device_edl_via_fastboot_fallback"))
                 self.fastboot.continue_boot()
-                time.sleep(10)
                 self.adb.wait_for_device()
                 ui.info(get_string("device_edl_setup_title"))
                 self.adb.reboot("edl")
-                ui.info(get_string("device_wait_10s_edl"))
-                time.sleep(10)
             else:
                 width = ui.get_term_width()
                 ui.echo("\n" + "=" * width)
@@ -122,8 +117,6 @@ class DeviceController:
             self.adb.wait_for_device()
             ui.info(get_string("device_edl_setup_title"))
             self.adb.reboot("edl")
-            ui.info(get_string("device_wait_10s_edl"))
-            time.sleep(10)
         else:
             width = ui.get_term_width()
             ui.echo("\n" + "=" * width)
