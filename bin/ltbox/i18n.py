@@ -43,7 +43,7 @@ def _load_available_languages(cache_key: LanguageCacheKey) -> Tuple[LanguageEntr
                 temp_lang = json.load(handle)
                 lang_name = temp_lang.get("_lang", lang_code)
                 languages.append((lang_code, lang_name))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             languages.append((lang_code, lang_code))
 
     languages.sort(key=lambda item: (0 if item[0] == "en" else 1, item[1].lower()))
@@ -62,7 +62,7 @@ def load_lang(lang_code: str = "en"):
         try:
             with open(fallback_file, "r", encoding="utf-8") as f:
                 _fallback_data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
             print(f"[!] Failed to load fallback language en.json: {e}", file=sys.stderr)
             _fallback_data = {}
 
@@ -73,7 +73,7 @@ def load_lang(lang_code: str = "en"):
         try:
             with open(lang_file, "r", encoding="utf-8") as f:
                 _lang_data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
             print(
                 f"[!] Failed to load language {lang_code}, using fallback: {e}",
                 file=sys.stderr,
