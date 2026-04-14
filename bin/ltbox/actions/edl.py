@@ -1,7 +1,6 @@
 import itertools
 import shutil
 import subprocess
-import time
 import traceback
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -387,9 +386,6 @@ def dump_partitions(
                 utils.ui.error(get_string("act_err_dump").format(target=target, e=e))
                 if target in critical_targets:
                     failed_targets.append(target)
-
-            utils.ui.echo(get_string("act_wait_stability"))
-            time.sleep(5)
 
     if failed_targets:
         failed_targets = sorted(set(failed_targets))
