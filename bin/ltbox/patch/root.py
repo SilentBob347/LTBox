@@ -171,6 +171,16 @@ def _resolve_magisk_preinit_device(
     )
 
 
+def _reboot_system_and_abort(dev: Optional[device.DeviceController]) -> None:
+    if dev is None or dev.skip_adb:
+        return
+    print(get_string("magisk_rebooting_system"))
+    try:
+        dev.adb.reboot("system")
+    except DeviceCommandError as error:
+        print(get_string("device_err_reboot").format(e=error), file=sys.stderr)
+
+
 def patch_boot_with_root_algo(
     work_dir: Path,
     magiskboot_exe: Path,
@@ -248,6 +258,11 @@ def patch_boot_with_root_algo(
         res_check = subprocess.run(
             cmd_check, cwd=work_dir, capture_output=True, text=True
         )
+
+        if "kpimg" in res_check.stdout.lower():
+            utils.ui.error(get_string("apatch_already_patched_image"))
+            _reboot_system_and_abort(dev)
+            return None
 
         if "CONFIG_KALLSYMS=y" not in res_check.stdout:
             utils.ui.error(
@@ -369,6 +384,20 @@ def patch_boot_with_root_algo(
             return None
         print(get_string("img_root_unpack_ok"))
 
+        # Check if already KSU-patched (init.real means init was renamed)
+        init_real_proc = mb.run(
+            "cpio",
+            "ramdisk.cpio",
+            "exists init.real",
+            cwd=work_dir,
+            check=False,
+            capture=True,
+        )
+        if init_real_proc.returncode == 0:
+            print(get_string("img_root_lkm_already_patched"), file=sys.stderr)
+            _reboot_system_and_abort(dev)
+            return None
+
         if not skip_lkm_download:
             try:
                 print(get_string("img_root_lkm_download"))
@@ -455,15 +484,6 @@ def patch_magisk_boot(
 
     mb = utils.MagiskBootWrapper(magiskboot_exe)
 
-    def reboot_system_and_abort() -> None:
-        if dev is None or dev.skip_adb:
-            return
-        print(get_string("magisk_rebooting_system"))
-        try:
-            dev.adb.reboot("system")
-        except DeviceCommandError as error:
-            print(get_string("device_err_reboot").format(e=error), file=sys.stderr)
-
     # --- 1. Unpack ---
     print(get_string("img_root_step1").format(name="init_boot"))
     mb.run("unpack", img_name, cwd=work_dir)
@@ -500,7 +520,7 @@ def patch_magisk_boot(
             shutil.copy(work_dir / ramdisk, work_dir / "ramdisk.cpio.orig")
         elif status == 1:
             print(get_string("magisk_already_patched_image"), file=sys.stderr)
-            reboot_system_and_abort()
+            _reboot_system_and_abort(dev)
             return None
         elif status == 2:
             print(get_string("magisk_unsupported_patcher"), file=sys.stderr)

@@ -190,6 +190,102 @@ class TestPatchBootCommandBuild:
             assert patch_cmd[idx + 2] == "-T"
             assert patch_cmd[idx + 3] == "kpm"
 
+    def test_lkm_already_patched_aborts_and_reboots(self, tmp_path):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        (work_dir / "init_boot.img").write_bytes(b"\x00" * 64)
+        (work_dir / "ramdisk.cpio").write_bytes(b"\x00" * 64)
+
+        class FakeWrapper:
+            def __init__(self, exe_path):
+                self.exe_path = exe_path
+
+            def run(self, *args, **kwargs):
+                result = MagicMock()
+                result.stdout = ""
+                result.stderr = ""
+                if args[:2] == ("unpack", "init_boot.img"):
+                    result.returncode = 0
+                    return result
+                if args[:3] == ("cpio", "ramdisk.cpio", "exists init.real"):
+                    result.returncode = 0  # init.real found → already patched
+                    return result
+                result.returncode = 0
+                return result
+
+        dev = MagicMock()
+        dev.skip_adb = False
+
+        with (
+            patch("ltbox.patch.root.const.BASE_DIR", tmp_path),
+            patch("ltbox.patch.root.const.FN_INIT_BOOT", "init_boot.img"),
+            patch("ltbox.patch.root.const.FN_INIT_BOOT_ROOT", "init_boot_root.img"),
+            patch("ltbox.patch.root.utils.MagiskBootWrapper", FakeWrapper),
+            patch(
+                "ltbox.patch.root.get_root_provider_profile",
+                return_value=MagicMock(
+                    family=MagicMock(__eq__=lambda self, other: False),
+                ),
+            ),
+        ):
+            result = patch_boot_with_root_algo(
+                work_dir=work_dir,
+                magiskboot_exe=tmp_path / "magiskboot.exe",
+                gki=False,
+                skip_lkm_download=True,
+                dev=dev,
+            )
+
+        assert result is None
+        dev.adb.reboot.assert_called_once_with("system")
+
+    def test_apatch_already_patched_aborts_and_reboots(self, tmp_path):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        (work_dir / "boot.img").write_bytes(b"\x00" * 64)
+        (work_dir / "kpimg").write_bytes(b"\x00" * 64)
+
+        from ltbox.root_profiles import RootProviderFamily
+
+        def fake_run(cmd, **kwargs):
+            if "unpack" in cmd:
+                (work_dir / "kernel").write_bytes(b"\x00" * 64)
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = "CONFIG_KALLSYMS=y\nkpimg offset: 0x1234"
+            r.stderr = ""
+            return r
+
+        dev = MagicMock()
+        dev.skip_adb = False
+
+        with (
+            patch("ltbox.patch.root.const.BASE_DIR", tmp_path),
+            patch("ltbox.patch.root.const.FN_BOOT", "boot.img"),
+            patch("ltbox.patch.root.const.FN_BOOT_ROOT", "boot_root.img"),
+            patch("ltbox.patch.root.const.TOOLS_DIR", tmp_path),
+            patch(
+                "ltbox.patch.root.get_root_provider_profile",
+                return_value=MagicMock(
+                    family=RootProviderFamily.APATCH,
+                    display_name="APatch",
+                ),
+            ),
+            patch("ltbox.patch.root.subprocess.run", side_effect=fake_run),
+            patch("ltbox.utils.ui"),
+        ):
+            result = patch_boot_with_root_algo(
+                work_dir=work_dir,
+                magiskboot_exe=tmp_path / "magiskboot.exe",
+                gki=True,
+                root_type="apatch",
+                superkey="mysuperkey",
+                dev=dev,
+            )
+
+        assert result is None
+        dev.adb.reboot.assert_called_once_with("system")
+
 
 class TestPatchMagiskBoot:
     def test_find_magisk_preinit_device_matches_official_metadata_selection(self):
