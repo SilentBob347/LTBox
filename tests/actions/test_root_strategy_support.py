@@ -183,9 +183,10 @@ def test_magisk_strategy_configure_source_uses_custom_apk_prompt_for_other_forks
 
 
 def test_prompt_custom_magisk_apk_uses_root_apk_when_present(tmp_path):
-    apk_path = tmp_path / "MagiskAlpha.apk"
-    apk_path.write_bytes(b"apk")
     magisk_dir = tmp_path / "magisk"
+    magisk_dir.mkdir()
+    apk_path = magisk_dir / "MagiskAlpha.apk"
+    apk_path.write_bytes(b"apk")
 
     with (
         patch("ltbox.actions.root.strategies.const.BASE_DIR", tmp_path),
@@ -202,7 +203,7 @@ def test_prompt_custom_magisk_apk_allows_selection_when_multiple_exist(tmp_path)
     magisk_dir = tmp_path / "magisk"
     magisk_dir.mkdir()
     first_apk = magisk_dir / "alpha.apk"
-    second_apk = tmp_path / "MagiskAlpha.apk"
+    second_apk = magisk_dir / "beta.apk"
     first_apk.write_bytes(b"apk1")
     second_apk.write_bytes(b"apk2")
 

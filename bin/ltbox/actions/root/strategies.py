@@ -814,12 +814,7 @@ def _extract_manager_apk_from_zip(zip_path: Path) -> None:
 
 
 def _custom_magisk_apk_dirs() -> List[Path]:
-    dirs = [const.MAGISK_DIR, const.BASE_DIR]
-    unique: List[Path] = []
-    for path in dirs:
-        if path not in unique:
-            unique.append(path)
-    return unique
+    return [const.MAGISK_DIR]
 
 
 def _list_custom_magisk_apks() -> List[Path]:
