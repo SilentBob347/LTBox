@@ -251,7 +251,8 @@ def test_dump_partitions_does_not_abort_when_devinfo_persist_are_not_targets(tmp
             "ltbox.actions.edl.require_partition_params",
             side_effect=ValueError("missing"),
         ),
-        patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),    ):
+        patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),
+    ):
         edl.dump_partitions(
             mock_dev,
             default_targets=False,
@@ -278,8 +279,9 @@ def test_dump_partitions_aborts_when_devinfo_dump_fails(tmp_path):
                     "num_sectors": "1",
                 },
             ],
-            ),
-            patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),    ):
+        ),
+        patch("ltbox.actions.edl.const.BACKUP_DIR", tmp_path),
+    ):
         with pytest.raises(RuntimeError, match="devinfo"):
             edl.dump_partitions(mock_dev, default_targets=True, skip_reset=True)
 
