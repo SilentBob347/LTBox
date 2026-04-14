@@ -56,25 +56,22 @@ def bundle_platform_tools(url: str) -> None:
 
 
 def bundle_avb_tools() -> None:
-    """Copy AVB tools from vendor/avb submodule into bin/tools/ for packaging."""
-    avb_dir = REPO_ROOT / "vendor" / "avb"
+    """Copy AVB test keys from vendor/avbtool-rs into bin/tools/ for packaging."""
+    keys_dir = REPO_ROOT / "vendor" / "avbtool-rs" / "src" / "keys"
     copy_map = {
-        avb_dir / "avbtool.py": TOOLS_DIR / "avbtool.py",
-        avb_dir / "test" / "data" / "testkey_rsa4096.pem": TOOLS_DIR
-        / "testkey_rsa4096.pem",
-        avb_dir / "test" / "data" / "testkey_rsa2048.pem": TOOLS_DIR
-        / "testkey_rsa2048.pem",
+        keys_dir / "testkey_rsa4096.pem": TOOLS_DIR / "testkey_rsa4096.pem",
+        keys_dir / "testkey_rsa2048.pem": TOOLS_DIR / "testkey_rsa2048.pem",
     }
 
     if all(dst.exists() for dst in copy_map.values()):
-        print("[bundle-tools] AVB tools already present, skipping.")
+        print("[bundle-tools] AVB test keys already present, skipping.")
         return
 
     for src, dst in copy_map.items():
         if not src.exists():
             raise RuntimeError(
-                f"vendor/avb submodule missing {src.relative_to(REPO_ROOT)}. "
-                f"Run: git submodule update --init vendor/avb"
+                f"vendor/avbtool-rs submodule missing {src.relative_to(REPO_ROOT)}. "
+                f"Run: git submodule update --init vendor/avbtool-rs"
             )
         shutil.copy2(src, dst)
         print(f"[bundle-tools] Copied {src.name} -> {dst.relative_to(REPO_ROOT)}")

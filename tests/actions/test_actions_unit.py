@@ -1,5 +1,4 @@
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +9,6 @@ from ltbox.actions import region
 from ltbox.actions import xml as xml_action
 from ltbox.actions.root import workflow as root_workflow
 from ltbox.menus import data as menu_data
-from ltbox.patch import avb as avb_patch
 from ltbox.actions.root.strategies import GkiRootStrategy
 from ltbox.patch.avb import (
     patch_chained_image_rollback,
@@ -67,99 +65,6 @@ def test_xml_select_prefers_ota_keep_data_xml(mock_env):
 
     assert "rawprogram_save_persist_ota_unsparse0.xml" in r_names
     assert "rawprogram_save_persist_unsparse0.xml" not in r_names
-
-
-def test_replace_vbmeta_descriptors_keeps_root_chain_descriptors_intact():
-    class FakeChainDescriptor:
-        def __init__(
-            self,
-            partition_name="",
-            rollback_index_location=0,
-            public_key=b"",
-            flags=0,
-        ):
-            self.partition_name = partition_name
-            self.rollback_index_location = rollback_index_location
-            self.public_key = public_key
-            self.flags = flags
-
-    class FakeHashDescriptor:
-        def __init__(self, partition_name=""):
-            self.partition_name = partition_name
-
-    class FakeHashtreeDescriptor:
-        def __init__(self, partition_name=""):
-            self.partition_name = partition_name
-
-    class FakeModule:
-        AvbChainPartitionDescriptor = FakeChainDescriptor
-        AvbHashDescriptor = FakeHashDescriptor
-        AvbHashtreeDescriptor = FakeHashtreeDescriptor
-
-    original_descriptors = [
-        FakeChainDescriptor("boot", 3, b"boot-old", 0),
-        FakeChainDescriptor("recovery", 1, b"recovery-old", 0),
-        FakeChainDescriptor("vbmeta_system", 2, b"vbmeta-system-old", 0),
-        FakeHashDescriptor("dtbo"),
-        FakeHashtreeDescriptor("vendor"),
-    ]
-
-    replacement_images = [
-        avb_patch._ParsedAvbImage(
-            path=Path("boot.img"),
-            partition_name="boot",
-            footer=None,
-            header=MagicMock(required_libavb_version_minor=0),
-            descriptors=[FakeHashDescriptor("boot")],
-            image_size=0,
-            public_key=b"boot-new",
-            public_key_metadata=b"",
-        ),
-        avb_patch._ParsedAvbImage(
-            path=Path("vbmeta_system.img"),
-            partition_name="vbmeta_system",
-            footer=None,
-            header=MagicMock(required_libavb_version_minor=0),
-            descriptors=[
-                FakeHashDescriptor("pvmfw"),
-                FakeHashtreeDescriptor("product"),
-                FakeHashtreeDescriptor("system"),
-                FakeHashtreeDescriptor("system_ext"),
-            ],
-            image_size=0,
-            public_key=b"vbmeta-system-new",
-            public_key_metadata=b"",
-        ),
-    ]
-
-    required_minor = avb_patch._replace_vbmeta_descriptors(
-        FakeModule,
-        original_descriptors,
-        replacement_images,
-    )
-
-    assert required_minor == 0
-    assert len(original_descriptors) == 5
-    assert isinstance(original_descriptors[0], FakeChainDescriptor)
-    assert original_descriptors[0].public_key == b"boot-new"
-    assert isinstance(original_descriptors[2], FakeChainDescriptor)
-    assert original_descriptors[2].public_key == b"vbmeta-system-new"
-    assert not any(
-        getattr(descriptor, "partition_name", None)
-        in {"pvmfw", "product", "system", "system_ext"}
-        for descriptor in original_descriptors
-    )
-
-
-def test_resolve_avbtool_openssl_binary_prefers_local_tool(tmp_path):
-    tool_dir = tmp_path / "tools"
-    tool_dir.mkdir()
-    source_path = tool_dir / "avbtool.py"
-    source_path.write_text("# stub", encoding="utf-8")
-    openssl_path = tool_dir / "openssl.exe"
-    openssl_path.write_text("stub", encoding="utf-8")
-
-    assert avb_patch._resolve_avbtool_openssl_binary(source_path) == str(openssl_path)
 
 
 def test_flash_args(mock_env):
@@ -331,21 +236,24 @@ def test_vbmeta_has_chain_partition_parses_descriptor(tmp_path):
     vbmeta_img = tmp_path / "vbmeta.img"
     vbmeta_img.write_bytes(b"dummy")
 
-    mock_chain_boot = MagicMock()
-    mock_chain_boot.partition_name = "boot"
-    mock_chain_recovery = MagicMock()
-    mock_chain_recovery.partition_name = "recovery"
+    mock_avb_info = {
+        "descriptors": [
+            {
+                "ChainPartition": {
+                    "partition_name": "boot",
+                    "rollback_index_location": 3,
+                }
+            },
+            {
+                "ChainPartition": {
+                    "partition_name": "recovery",
+                    "rollback_index_location": 1,
+                }
+            },
+        ],
+    }
 
-    mock_parsed = MagicMock()
-    mock_parsed.descriptors = [mock_chain_boot, mock_chain_recovery]
-
-    mock_avb_module = MagicMock()
-    mock_avb_module.AvbChainPartitionDescriptor = type(mock_chain_boot)
-
-    with (
-        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
-        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
-    ):
+    with patch("ltbox.patch.avb._get_avb_info", return_value=mock_avb_info):
         assert vbmeta_has_chain_partition(vbmeta_img, "boot") is True
         assert vbmeta_has_chain_partition(vbmeta_img, "init_boot") is False
 
@@ -466,27 +374,16 @@ def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
     key_file = tmp_path / "vbmeta.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    # sha1 of b"fake-public-key"
-    import hashlib
-
-    fake_pubkey = b"fake-public-key"
-    pubkey_sha1 = hashlib.sha1(fake_pubkey).hexdigest()
-
-    mock_header = MagicMock()
-    mock_header.algorithm_type = 5
-    mock_header.rollback_index = 0
-    mock_header.flags = 0
-    mock_parsed = MagicMock()
-    mock_parsed.public_key = fake_pubkey
-    mock_parsed.header = mock_header
-
-    mock_avb_module = MagicMock()
-    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA4096", None)
+    mock_avb_info = {
+        "header": {"rollback_index": 0, "flags": 0},
+        "algorithm_name": "SHA256_RSA4096",
+        "public_key_sha1": "fake-pubkey-sha1",
+        "descriptors": [],
+    }
 
     with (
-        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
-        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
-        patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
+        patch("ltbox.patch.avb._get_avb_info", return_value=mock_avb_info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"fake-pubkey-sha1": key_file}),
         patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
@@ -525,26 +422,16 @@ def test_rebuild_vbmeta_with_multiple_images_falls_back_to_make_vbmeta(tmp_path)
     key_file = tmp_path / "vbmeta.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    import hashlib
-
-    fake_pubkey = b"fake-public-key"
-    pubkey_sha1 = hashlib.sha1(fake_pubkey).hexdigest()
-
-    mock_header = MagicMock()
-    mock_header.algorithm_type = 5
-    mock_header.rollback_index = 0
-    mock_header.flags = 0
-    mock_parsed = MagicMock()
-    mock_parsed.public_key = fake_pubkey
-    mock_parsed.header = mock_header
-
-    mock_avb_module = MagicMock()
-    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA4096", None)
+    mock_avb_info = {
+        "header": {"rollback_index": 0, "flags": 0},
+        "algorithm_name": "SHA256_RSA4096",
+        "public_key_sha1": "fake-pubkey-sha1",
+        "descriptors": [],
+    }
 
     with (
-        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
-        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
-        patch("ltbox.patch.avb.const.KEY_MAP", {pubkey_sha1: key_file}),
+        patch("ltbox.patch.avb._get_avb_info", return_value=mock_avb_info),
+        patch("ltbox.patch.avb.const.KEY_MAP", {"fake-pubkey-sha1": key_file}),
         patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images
@@ -583,20 +470,15 @@ def test_rebuild_vbmeta_with_override_key_skips_pubkey_validation(tmp_path):
     key_file = tmp_path / "testkey_rsa4096.pem"
     key_file.write_text("key", encoding="utf-8")
 
-    mock_header = MagicMock()
-    mock_header.algorithm_type = 3
-    mock_header.rollback_index = 7
-    mock_header.flags = 0
-    mock_parsed = MagicMock()
-    mock_parsed.public_key = b"unknown-key"
-    mock_parsed.header = mock_header
-
-    mock_avb_module = MagicMock()
-    mock_avb_module.lookup_algorithm_by_type.return_value = ("SHA256_RSA2048", None)
+    mock_avb_info = {
+        "header": {"rollback_index": 7, "flags": 0},
+        "algorithm_name": "SHA256_RSA2048",
+        "public_key_sha1": "unknown-key-sha1",
+        "descriptors": [],
+    }
 
     with (
-        patch("ltbox.patch.avb._parse_avb_image", return_value=mock_parsed),
-        patch("ltbox.patch.avb._get_avbtool_module", return_value=mock_avb_module),
+        patch("ltbox.patch.avb._get_avb_info", return_value=mock_avb_info),
         patch("ltbox.patch.avb._run_avbtool") as mock_run,
     ):
         from ltbox.patch.avb import rebuild_vbmeta_with_chained_images

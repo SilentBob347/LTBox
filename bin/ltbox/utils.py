@@ -210,7 +210,7 @@ def check_dependencies() -> None:
         "Python Environment": const.PYTHON_EXE,
         "ADB": const.ADB_EXE,
         "Fastboot": const.FASTBOOT_EXE,
-        "avbtool": const.AVBTOOL_PY,
+        "avbtool-rs": const.AVBTOOL_RS,
     }
 
     if not is_git_checkout:

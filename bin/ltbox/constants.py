@@ -61,8 +61,8 @@ class LTBoxConfig:
 
         # --- Vendor Paths ---
         self.vendor_dir = self.base_dir / "vendor"
-        self.avb_dir = self.vendor_dir / "avb"
-        self.avb_testkeys_dir = self.avb_dir / "test" / "data"
+        self.avbtool_rs_dir = self.vendor_dir / "avbtool-rs"
+        self.avb_testkeys_dir = self.avbtool_rs_dir / "src" / "keys"
 
         # --- Executables ---
         self.python_exe = self.python_dir / "python.exe"
@@ -70,9 +70,11 @@ class LTBoxConfig:
             self.python_exe = Path(sys.executable)
         self.adb_exe = self.tools_dir / "adb.exe"
         self.fastboot_exe = self.tools_dir / "fastboot.exe"
-        self.avbtool_py = self.avb_dir / "avbtool.py"
-        if not self.avbtool_py.exists():
-            self.avbtool_py = self.tools_dir / "avbtool.py"
+        self.avbtool_rs = self.tools_dir / "avbtool-rs.exe"
+        if not self.avbtool_rs.exists():
+            self.avbtool_rs = (
+                self.avbtool_rs_dir / "target" / "release" / "avbtool-rs.exe"
+            )
         self.qdlrs_exe = self.tools_dir / "qdl-rs.exe"
         self.magiskboot_exe = self.tools_dir / "magiskboot.exe"
 
@@ -248,13 +250,13 @@ FN_TWRP = CONF.fn_twrp
 FN_VENDOR_BOOT_PRC = CONF.fn_vendor_boot_prc
 
 VENDOR_DIR = CONF.vendor_dir
-AVB_DIR = CONF.avb_dir
+AVBTOOL_RS_DIR = CONF.avbtool_rs_dir
 AVB_TESTKEYS_DIR = CONF.avb_testkeys_dir
 
 PYTHON_EXE = CONF.python_exe
 ADB_EXE = CONF.adb_exe
 FASTBOOT_EXE = CONF.fastboot_exe
-AVBTOOL_PY = CONF.avbtool_py
+AVBTOOL_RS = CONF.avbtool_rs
 QDLRS_EXE = CONF.qdlrs_exe
 MAGISKBOOT_EXE = CONF.magiskboot_exe
 

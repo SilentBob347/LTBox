@@ -21,7 +21,6 @@ class TestIntegrationToolBootstrap:
         tools_dir = tmp_path / "bin" / "tools"
         tools_dir.mkdir(parents=True)
         (tools_dir / "magiskboot.exe").write_text("stub", encoding="utf-8")
-        (tools_dir / "openssl.exe").write_text("stub", encoding="utf-8")
 
         with patch.object(conftest, "ROOT", tmp_path):
             assert conftest._integration_tools_ready() is False

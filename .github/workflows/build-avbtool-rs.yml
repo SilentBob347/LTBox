@@ -1,0 +1,47 @@
+name: Build avbtool-rs
+
+on:
+  push:
+    paths:
+      - 'vendor/avbtool-rs/**'
+      - '.github/workflows/build-avbtool-rs.yml'
+  pull_request:
+    paths:
+      - 'vendor/avbtool-rs/**'
+      - '.github/workflows/build-avbtool-rs.yml'
+  workflow_call:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vendor/avbtool-rs
+          cache-on-failure: true
+
+      - name: Build avbtool-rs
+        working-directory: vendor/avbtool-rs
+        run: cargo build --release
+
+      - name: Smoke test
+        run: vendor/avbtool-rs/target/release/avbtool-rs.exe version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: avbtool-rs-windows
+          path: vendor/avbtool-rs/target/release/avbtool-rs.exe
+          if-no-files-found: error

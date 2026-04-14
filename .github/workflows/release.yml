@@ -20,6 +20,9 @@ jobs:
   build-qdlrs:
     uses: ./.github/workflows/build-qdlrs.yml
 
+  build-avbtool-rs:
+    uses: ./.github/workflows/build-avbtool-rs.yml
+
   preflight:
     needs: test
     runs-on: windows-latest
@@ -47,7 +50,7 @@ jobs:
           "- Config version matches tag ?" >> $env:GITHUB_STEP_SUMMARY
 
   build:
-    needs: [preflight, build-qdlrs]
+    needs: [preflight, build-qdlrs, build-avbtool-rs]
     uses: ./.github/workflows/build-archive.yml
     with:
       tag-name: ${{ needs.preflight.outputs.tag_name }}
