@@ -1,4 +1,3 @@
-import os
 import re
 import shutil
 import sys
@@ -554,7 +553,7 @@ def patch_magisk_boot(
         ]
     )
     patch_env = {
-        **os.environ,
+        **utils._get_tool_env(),
         "KEEPVERITY": keepverity,
         "KEEPFORCEENCRYPT": keepforceencrypt,
     }

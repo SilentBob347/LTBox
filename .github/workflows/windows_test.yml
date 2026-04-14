@@ -58,6 +58,7 @@ jobs:
           name: tools-exe
           path: |
             bin/tools/magiskboot.exe
+            bin/tools/magiskboot_xz_helper.exe
             bin/tools/openssl.exe
             bin/tools/*.dll
 

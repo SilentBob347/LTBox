@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "bin" / "tools"
 SUBMODULE_DIR = REPO_ROOT / "vendor" / "MagiskbootAlone"
 MAGISKBOOT_EXE = TOOLS_DIR / "magiskboot.exe"
+MAGISKBOOT_XZ_HELPER_EXE = TOOLS_DIR / "magiskboot_xz_helper.exe"
 OPENSSL_EXE = TOOLS_DIR / "openssl.exe"
 VERSION_FILE = TOOLS_DIR / "magiskboot.version"
 
@@ -22,6 +23,19 @@ def _get_submodule_sha() -> str:
     return result.stdout.strip()
 
 
+def _find_cargo_exe() -> str | None:
+    candidates = [
+        shutil.which("cargo.exe"),
+        shutil.which("cargo"),
+        str(Path.home() / ".cargo" / "bin" / "cargo.exe"),
+        str(Path.home() / ".cargo" / "bin" / "cargo"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
 def build():
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -33,7 +47,13 @@ def build():
     current_sha = _get_submodule_sha()
 
     openssl_ready = OPENSSL_EXE.exists() if os.name == "nt" else True
-    if MAGISKBOOT_EXE.exists() and VERSION_FILE.exists() and openssl_ready:
+    helper_ready = MAGISKBOOT_XZ_HELPER_EXE.exists() if os.name == "nt" else True
+    if (
+        MAGISKBOOT_EXE.exists()
+        and VERSION_FILE.exists()
+        and openssl_ready
+        and helper_ready
+    ):
         cached_sha = VERSION_FILE.read_text(encoding="utf-8").strip()
         if cached_sha == current_sha:
             print("[INFO] Tools are up-to-date. Skipping build.")
@@ -78,7 +98,7 @@ def build():
             [
                 str(bash_exe),
                 "-lc",
-                "pacman -S --noconfirm --needed gcc cmake make zlib-devel openssl",
+                "pacman -S --noconfirm --overwrite '*' --needed gcc cmake make zlib-devel openssl",
             ],
             check=True,
         )
@@ -95,9 +115,37 @@ def build():
         )
         subprocess.run([str(bash_exe), "-lc", build_cmd], check=True)
 
+        cargo_exe = _find_cargo_exe()
+        if cargo_exe is None:
+            raise RuntimeError(
+                "cargo not found; required to build magiskboot_xz_helper.exe"
+            )
+        helper_manifest = build_dir / "rust" / "magiskboot_xz_helper" / "Cargo.toml"
+        subprocess.run(
+            [
+                cargo_exe,
+                "build",
+                "--manifest-path",
+                str(helper_manifest),
+                "--release",
+            ],
+            check=True,
+        )
+
         compiled_exe = build_dir / "build" / "magiskboot.exe"
+        compiled_helper = (
+            build_dir
+            / "rust"
+            / "magiskboot_xz_helper"
+            / "target"
+            / "release"
+            / "magiskboot_xz_helper.exe"
+        )
         if compiled_exe.exists():
             shutil.copy(compiled_exe, MAGISKBOOT_EXE)
+            if not compiled_helper.exists():
+                raise RuntimeError("magiskboot_xz_helper.exe was not produced")
+            shutil.copy(compiled_helper, MAGISKBOOT_XZ_HELPER_EXE)
 
             msys_openssl = msys_root / "usr/bin/openssl.exe"
             if msys_openssl.exists():
