@@ -279,11 +279,14 @@ class EdlManager(BaseDeviceManager):
             with prevent_sleep_during_flash():
                 if pre_erase:
                     for label in sorted(_ERASE_LABELS):
+                        port = self._ensure_edl_port(port)
                         self._run_command(
                             self._base_cmd(port, loader_path) + ["erase", label]
                         )
 
                 ui.info(get_string("device_step2_flash"))
+                port = self._ensure_edl_port(port)
+
                 cmd = self._base_cmd(port, loader_path)
                 if reset_after:
                     cmd.extend(["--reset-mode", "system"])
