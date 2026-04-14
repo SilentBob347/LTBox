@@ -187,14 +187,15 @@ class EdlManager(BaseDeviceManager):
             raise DeviceCommandError(get_string("device_err_edl_read").format(e=e), e)
 
         # qdl-rs saves with the partition name; rename to the expected filename
-        if not dest_file.exists() and name != dest_file.stem:
+        if not dest_file.exists():
             for candidate in dest_dir.glob(f"{name}.*"):
-                candidate.rename(dest_file)
-                break
+                if candidate.is_file() and candidate != dest_file:
+                    candidate.rename(dest_file)
+                    break
             else:
                 # No extension variant — check bare name
                 bare = dest_dir / name
-                if bare.exists():
+                if bare.exists() and bare.is_file() and bare != dest_file:
                     bare.rename(dest_file)
 
     def write_partition(
