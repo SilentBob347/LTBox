@@ -256,6 +256,7 @@ def _flash_images(ctx: TaskContext) -> None:
         skip_reset_edl=skip_reset_edl,
         skip_dp=skip_dp,
         wipe=bool(ctx.wipe),
+        skip_confirm=True,
     )
 
 

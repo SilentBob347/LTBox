@@ -757,8 +757,10 @@ def _validate_image_dir_for_flash() -> None:
     )
 
 
-def _confirm_full_flash_overwrite(skip_reset_edl: bool) -> bool:
-    if skip_reset_edl:
+def _confirm_full_flash_overwrite(
+    skip_reset_edl: bool, skip_confirm: bool = False
+) -> bool:
+    if skip_reset_edl or skip_confirm:
         return True
 
     width = utils.ui.get_term_width()
@@ -826,6 +828,7 @@ def flash_full_firmware(
     skip_reset_edl: bool = False,
     skip_dp: bool = False,
     wipe: Optional[bool] = None,
+    skip_confirm: bool = False,
 ) -> None:
     utils.ui.echo(get_string("act_start_flash"))
 
@@ -837,7 +840,7 @@ def flash_full_firmware(
         utils.ui.echo(get_string("act_op_cancel"))
         return
 
-    if not _confirm_full_flash_overwrite(skip_reset_edl):
+    if not _confirm_full_flash_overwrite(skip_reset_edl, skip_confirm):
         utils.ui.echo(get_string("act_op_cancel"))
         return
 
