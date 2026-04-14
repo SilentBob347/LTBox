@@ -173,7 +173,8 @@ def test_edl_partition_service_logs_single_flash_line(tmp_path):
     dev = MagicMock()
 
     messages = {
-        "device_flashing_part": '[*] Flashing {filename} -> LUN="{lun}", start_sector="{start_sector}"...',
+        "act_flashing_img_start": "[*] Flashing {filename}...",
+        "device_flashing_part": '[*] LUN="{lun}", start_sector="{start_sector}", label="{label}"',
         "act_flash_img": "[+] Flashed '{filename}' to {part}.",
     }
 
@@ -185,10 +186,11 @@ def test_edl_partition_service_logs_single_flash_line(tmp_path):
 
     echoed_messages = [call.args[0] for call in mock_ui.echo.call_args_list]
     assert echoed_messages == [
+        messages["act_flashing_img_start"].format(filename="boot.img"),
         messages["device_flashing_part"].format(
-            filename="boot.img",
             lun="4",
             start_sector="113318",
+            label="boot_a",
         ),
         messages["act_flash_img"].format(filename="boot.img", part="boot_a"),
     ]

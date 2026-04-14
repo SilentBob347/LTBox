@@ -194,10 +194,15 @@ def _execute_partition_flash_targets(
 ) -> None:
     for flash_target in flash_targets:
         utils.ui.echo(
+            get_string("act_flashing_img_start").format(
+                filename=flash_target.image_path.name
+            )
+        )
+        utils.ui.echo(
             get_string("device_flashing_part").format(
-                filename=flash_target.image_path.name,
                 lun=flash_target.lun,
                 start_sector=flash_target.start_sector,
+                label=flash_target.target_name,
             )
         )
 
@@ -366,13 +371,6 @@ def dump_partitions(
             try:
                 service = _partition_service()
                 params = service.get_params(target)
-                utils.ui.echo(
-                    get_string("device_dumping_part").format(
-                        lun=params["lun"],
-                        start=params["start_sector"],
-                        num=params["num_sectors"],
-                    )
-                )
                 service.dump_partition(dev, port, target, out_file, params=params)
 
                 utils.ui.echo(

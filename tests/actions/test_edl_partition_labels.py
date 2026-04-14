@@ -69,6 +69,8 @@ def test_flash_selected_partitions_writes_selected_entries(mock_env):
         patch("ltbox.actions.edl.xml.ensure_xml_files"),
         patch("ltbox.actions.edl._prompt_partition_selection", return_value=["super"]),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
+        patch("ltbox.actions.edl.get_string", side_effect=lambda k: f"[{k}]"),
+        patch("ltbox.actions.edl.utils.ui"),
     ):
         edl.flash_selected_partitions(dev, skip_reset=True)
 
@@ -95,6 +97,8 @@ def test_flash_selected_partitions_ab_slot_selection(mock_env):
         patch("ltbox.actions.edl._prompt_partition_selection", return_value=["boot"]),
         patch("ltbox.utils.ui.prompt", return_value="2"),
         patch("ltbox.actions.edl.ensure_edl_requirements"),
+        patch("ltbox.actions.edl.get_string", side_effect=lambda k: f"[{k}]"),
+        patch("ltbox.actions.edl.utils.ui.echo"),
     ):
         edl.flash_selected_partitions(dev, skip_reset=True)
 
@@ -116,7 +120,8 @@ def test_execute_partition_flash_targets_logs_success_once_per_target():
         start_sector="205962",
     )
     messages = {
-        "device_flashing_part": '[*] Writing \'{filename}\' -> LUN="{lun}", start_sector="{start_sector}"',
+        "act_flashing_img_start": "[*] Flashing {filename}...",
+        "device_flashing_part": '[*] LUN="{lun}", start_sector="{start_sector}", label="{label}"',
         "device_flash_success": "[+] Flashed '{filename}'.",
     }
 
@@ -126,13 +131,15 @@ def test_execute_partition_flash_targets_logs_success_once_per_target():
     ):
         edl._execute_partition_flash_targets(dev, "COM5", [target])
 
+    header_message = messages["act_flashing_img_start"].format(filename="init_boot.img")
     success_message = messages["device_flash_success"].format(filename="init_boot.img")
     flash_message = messages["device_flashing_part"].format(
-        filename="init_boot.img",
         lun="4",
         start_sector="205962",
+        label="init_boot_a",
     )
     echoed_messages = [call.args[0] for call in mock_ui.echo.call_args_list]
 
+    assert echoed_messages.count(header_message) == 1
     assert echoed_messages.count(flash_message) == 1
     assert echoed_messages.count(success_message) == 1
