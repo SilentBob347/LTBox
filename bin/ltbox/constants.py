@@ -37,6 +37,7 @@ class LTBoxConfig:
         self.image_new_dir = self.base_dir / "image_new"
         self.working_dir = self.base_dir / "working"
         self.output_xml_dir = self.base_dir / "output_xml"
+        self.temp_xml_dir = self.base_dir / "temp_xml"
 
         # --- File Name Constants ---
         self.fn_boot = "boot.img"
@@ -227,6 +228,7 @@ MAGISK_DIR = CONF.magisk_dir
 IMAGE_NEW_DIR = CONF.image_new_dir
 WORKING_DIR = CONF.working_dir
 OUTPUT_XML_DIR = CONF.output_xml_dir
+TEMP_XML_DIR = CONF.temp_xml_dir
 
 FN_BOOT = CONF.fn_boot
 FN_INIT_BOOT = CONF.fn_init_boot

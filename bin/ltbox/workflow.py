@@ -86,8 +86,29 @@ def _convert_region_images(ctx: TaskContext) -> None:
 
 
 def _decrypt_and_modify_xml(ctx: TaskContext) -> None:
+    _backup_original_xmls(ctx)
     actions.decrypt_x_files()
     actions.modify_xml(wipe=ctx.wipe)
+
+
+def _backup_original_xmls(ctx: TaskContext) -> None:
+    if const.TEMP_XML_DIR.exists():
+        shutil.rmtree(const.TEMP_XML_DIR)
+    const.TEMP_XML_DIR.mkdir(parents=True, exist_ok=True)
+
+    patterns = ["*.xml", "*.x"]
+    for pattern in patterns:
+        for f in const.IMAGE_DIR.glob(pattern):
+            shutil.copy2(f, const.TEMP_XML_DIR / f.name)
+
+
+def _restore_original_xmls(ctx: TaskContext) -> None:
+    if not const.TEMP_XML_DIR.exists():
+        return
+
+    for f in const.TEMP_XML_DIR.glob("*"):
+        if f.is_file():
+            shutil.copy2(f, const.IMAGE_DIR / f.name)
 
 
 def _detect_anti_rollback(ctx: TaskContext) -> None:
@@ -398,18 +419,28 @@ def patch_all(
     try:
         if manage_execution:
             with logging_context(log_file):
-                return _run_patch_all(ctx)
-        return _run_patch_all(ctx)
+                result = _run_patch_all(ctx)
+        else:
+            result = _run_patch_all(ctx)
+        return result
 
     except KeyboardInterrupt as e:
+        _restore_original_xmls(ctx)
         _log_workflow_halt()
         raise UserCancelError(get_string("act_op_cancel")) from e
     except SystemExit as e:
+        _restore_original_xmls(ctx)
         _log_workflow_halt()
         raise LTBoxError(get_string("wf_err_halted_script").format(e=e), e) from e
     except Exception:
+        _restore_original_xmls(ctx)
         _log_workflow_halt()
         raise
     finally:
+        if const.TEMP_XML_DIR.exists():
+            try:
+                shutil.rmtree(const.TEMP_XML_DIR)
+            except OSError:
+                pass
         if manage_execution:
             announce_logging_finished(log_file=log_file, info=utils.ui.info)
