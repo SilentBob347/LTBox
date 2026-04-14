@@ -232,6 +232,7 @@
   "act_start_write": "[*] Starting Write (EDL)...",
   "act_start_xml_mod": "[*] Starting XML Modification...",
   "act_success": "SUCCESS!",
+  "act_target_region": "[*] Target Region: {region}",
   "act_temp_backup_avb": "[*] Creating temp AVB backup...",
   "act_unhandled_success_result": "Result: {res}",
   "act_unroot_finish": "\n[*] Unroot Finished",

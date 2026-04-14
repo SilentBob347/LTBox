@@ -232,6 +232,7 @@
   "act_start_write": "[*] Начало прошивки (Fastboot)...",
   "act_start_xml_mod": "[*] Начало модификации XML...",
   "act_success": "УСПЕШНО!",
+  "act_target_region": "[*] Целевой регион: {region}",
   "act_temp_backup_avb": "[*] Создание временной копии AVB...",
   "act_unhandled_success_result": "Результат: {res}",
   "act_unroot_finish": "\n[*] Удаление root прав завершено",

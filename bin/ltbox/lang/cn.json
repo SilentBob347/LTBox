@@ -232,6 +232,7 @@
   "act_start_write": "[*] 正在开始写入 (EDL)...",
   "act_start_xml_mod": "[*] 正在开始 XML 修改...",
   "act_success": "成功！",
+  "act_target_region": "[*] 目标区域: {region}",
   "act_temp_backup_avb": "[*] 正在创建临时 AVB 备份...",
   "act_unhandled_success_result": "结果: {res}",
   "act_unroot_finish": "\n[*] Unroot 完成",

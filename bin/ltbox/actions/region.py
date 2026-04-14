@@ -147,7 +147,7 @@ def convert_region_images(
 ) -> None:
 
     on_log(get_string("act_conv_start"))
-    on_log(f"[*] Target Region: {target_region}")
+    on_log(get_string("act_target_region").format(region=target_region))
 
     on_log(get_string("act_clean_old"))
     if const.OUTPUT_DIR.exists():

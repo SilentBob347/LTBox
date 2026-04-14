@@ -232,6 +232,7 @@
   "act_start_write": "[*] 플래싱 시작 (EDL)...",
   "act_start_xml_mod": "[*] XML 수정 시작...",
   "act_success": "성공!",
+  "act_target_region": "[*] 대상 지역: {region}",
   "act_temp_backup_avb": "[*] 임시 AVB 백업 생성 중...",
   "act_unhandled_success_result": "결과: {res}",
   "act_unroot_finish": "\n[*] 언루팅 완료",
