@@ -19,6 +19,7 @@ class RichConsoleHandler(logging.Handler):
         "[+]": "green",
         "[*]": "cyan",
         "[-]": "yellow",
+        "[X]": "red",
         "[Log]": "dim",
     }
     _BRACKET_TOKEN_PATTERN = re.compile(r"^\[([^\]]+)\]")
@@ -67,6 +68,8 @@ class RichConsoleHandler(logging.Handler):
                 return "cyan"
         if record.levelno >= logging.ERROR:
             return "red"
+        if record.levelno >= logging.WARNING:
+            return "yellow"
         return None
 
 

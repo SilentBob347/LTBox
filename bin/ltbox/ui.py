@@ -37,10 +37,13 @@ class ConsoleUI:
         self.echo(message)
 
     def warn(self, message: str) -> None:
-        self.echo(f"\033[93m{message}\033[0m", err=True)
+        logger.warning(_normalize_message(message))
 
     def error(self, message: str) -> None:
-        self.echo(f"\033[91m{message}\033[0m", err=True)
+        message = _normalize_message(message)
+        if message.lstrip().startswith("[!]"):
+            message = message.replace("[!]", "[X]", 1)
+        logger.error(message)
 
     def box_output(self, lines: List[str], err: bool = False) -> None:
         self.echo("", err=err)
