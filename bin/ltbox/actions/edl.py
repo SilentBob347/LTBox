@@ -402,7 +402,6 @@ def dump_partitions(
             get_string("act_dump_failed").format(targets=", ".join(failed_targets))
         )
 
-    utils.ui.echo(get_string("act_dump_ignore_warn"))
     utils.ui.echo(get_string("act_dump_finish"))
     utils.ui.echo(get_string("act_dump_saved").format(dir=const.BACKUP_DIR.name))
 

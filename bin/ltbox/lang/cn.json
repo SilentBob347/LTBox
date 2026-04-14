@@ -54,7 +54,6 @@
   "act_dp_ready": "修改后的镜像已在 '{dir}' 就绪。",
   "act_dump_failed": "\n[!] 导出失败: {targets}",
   "act_dump_finish": "\n[*] 导出完成",
-  "act_dump_ignore_warn": "注意：您可以忽略过程中显示的任何“警告”。",
   "act_dump_recovery": "[*] 正在导出 {part}...",
   "act_dump_reset": "\n[*] 导出完成。正在重启进入系统...",
   "act_dump_saved": "[*] 文件保存至: {dir}",
