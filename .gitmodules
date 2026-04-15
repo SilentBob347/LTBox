@@ -1,6 +1,10 @@
 [submodule "vendor/qdlrs"]
 	path = vendor/qdlrs
-	url = https://github.com/qualcomm/qdlrs.git
+	url = https://github.com/miner7222/qdlrs.git
+[submodule "vendor/avb"]
+	path = vendor/avb
+	url = https://android.googlesource.com/platform/external/avb
+	branch = refs/heads/main-kernel
 [submodule "vendor/MagiskbootAlone"]
 	path = vendor/MagiskbootAlone
 	url = https://github.com/miner7222/MagiskbootAlone.git
