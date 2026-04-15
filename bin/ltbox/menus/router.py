@@ -632,7 +632,9 @@ def settings_menu(
     registry: CommandRegistry,
     state: AppState,
 ) -> tuple[AppState, MenuReturn]:
-    next_state = state
+    # Sync skip_adb from device controller — it may have been toggled by
+    # Ctrl+C during an ADB wait without updating AppState.
+    next_state = replace(state, skip_adb=dev.skip_adb)
     action_specs = _build_settings_action_specs(registry)
 
     def _handler(act: str) -> None:
