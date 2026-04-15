@@ -39,10 +39,17 @@ def extract_image_avb_info(image_path: Path) -> Dict[str, Any]:
     header = avb["header"]
     footer = avb.get("footer")
 
+    # For footer images, partition_size = actual file size (matches avbtool.py
+    # _parse_image behavior which returns ImageHandler.image_size = file size).
+    # For vbmeta-only images, partition_size = vbmeta blob size.
+    if footer is not None:
+        file_size = image_path.stat().st_size
+        partition_size_str = str(file_size)
+    else:
+        partition_size_str = str(avb["vbmeta_size"])
+
     info: Dict[str, Any] = {
-        "partition_size": str(avb["vbmeta_offset"] + avb["vbmeta_size"])
-        if footer
-        else str(avb["vbmeta_size"]),
+        "partition_size": partition_size_str,
         "algorithm": avb["algorithm_name"],
         "rollback": str(header["rollback_index"]),
         "flags": str(header["flags"]),
@@ -50,9 +57,6 @@ def extract_image_avb_info(image_path: Path) -> Dict[str, Any]:
 
     if footer is not None:
         info["data_size"] = str(footer["original_image_size"])
-        info["partition_size"] = str(
-            footer["original_image_size"] + footer["vbmeta_size"]
-        )
 
     pubkey_sha1 = avb.get("public_key_sha1")
     if pubkey_sha1:
@@ -115,28 +119,14 @@ def apply_avb_integrity_footer(
         )
     )
 
-    image_size = image_path.stat().st_size
-    partition_size = int(image_info["partition_size"])
-    # AOSP avbtool requires partition_size to be block-aligned and reserves
-    # MAX_VBMETA_SIZE (64 KiB) + MAX_FOOTER_SIZE (4 KiB) = 69632 bytes.
-    # Fall back to --dynamic_partition_size when these constraints are not met.
-    _BLOCK_SIZE = 4096
-    _MAX_METADATA = 65536 + 4096
-    use_dynamic = (
-        partition_size % _BLOCK_SIZE != 0 or image_size + _MAX_METADATA > partition_size
-    )
-
     cmd: List[Any] = [
         "add_hash_footer",
         "--image",
         image_path,
         "--algorithm",
         image_info["algorithm"],
-        *(
-            ["--dynamic_partition_size"]
-            if use_dynamic
-            else ["--partition_size", partition_size]
-        ),
+        "--partition_size",
+        image_info["partition_size"],
         "--partition_name",
         image_info["name"],
         "--rollback_index",
