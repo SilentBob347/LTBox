@@ -24,8 +24,7 @@ def collect_info_scan_files(paths: List[str]) -> List[Path]:
 
 def build_info_scan_command(image_path: Path, constants: Any) -> List[str]:
     return [
-        str(constants.PYTHON_EXE),
-        str(constants.AVBTOOL_PY),
+        str(constants.AVBTOOL_RS),
         "info_image",
         "--image",
         str(image_path),

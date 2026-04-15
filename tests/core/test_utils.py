@@ -217,10 +217,10 @@ class TestUtils:
         python_exe = tmp_path / "python.exe"
         adb_exe = tmp_path / "adb.exe"
         fastboot_exe = tmp_path / "fastboot.exe"
-        avbtool_py = tmp_path / "avbtool.py"
+        avbtool_rs = tmp_path / "avbtool-rs.exe"
         qdlrs_exe = tmp_path / "qdl-rs.exe"
 
-        for path in (python_exe, adb_exe, fastboot_exe, avbtool_py):
+        for path in (python_exe, adb_exe, fastboot_exe, avbtool_rs):
             path.write_text("ok", encoding="utf-8")
 
         with (
@@ -228,7 +228,7 @@ class TestUtils:
             patch("ltbox.utils.const.PYTHON_EXE", python_exe),
             patch("ltbox.utils.const.ADB_EXE", adb_exe),
             patch("ltbox.utils.const.FASTBOOT_EXE", fastboot_exe),
-            patch("ltbox.utils.const.AVBTOOL_PY", avbtool_py),
+            patch("ltbox.utils.const.AVBTOOL_RS", avbtool_rs),
             patch("ltbox.utils.const.QDLRS_EXE", qdlrs_exe),
             patch("ltbox.utils.const.KEY_MAP", {}),
             patch("ltbox.utils._check_required_windows_drivers"),
@@ -297,10 +297,10 @@ class TestUtils:
         python_exe = tmp_path / "python.exe"
         adb_exe = tmp_path / "adb.exe"
         fastboot_exe = tmp_path / "fastboot.exe"
-        avbtool_py = tmp_path / "avbtool.py"
+        avbtool_rs = tmp_path / "avbtool-rs.exe"
         qdlrs_exe = tmp_path / "qdl-rs.exe"
 
-        for path in (python_exe, adb_exe, fastboot_exe, avbtool_py, qdlrs_exe):
+        for path in (python_exe, adb_exe, fastboot_exe, avbtool_rs, qdlrs_exe):
             path.write_text("ok", encoding="utf-8")
 
         with (
@@ -308,7 +308,7 @@ class TestUtils:
             patch("ltbox.utils.const.PYTHON_EXE", python_exe),
             patch("ltbox.utils.const.ADB_EXE", adb_exe),
             patch("ltbox.utils.const.FASTBOOT_EXE", fastboot_exe),
-            patch("ltbox.utils.const.AVBTOOL_PY", avbtool_py),
+            patch("ltbox.utils.const.AVBTOOL_RS", avbtool_rs),
             patch("ltbox.utils.const.QDLRS_EXE", qdlrs_exe),
             patch("ltbox.utils.const.KEY_MAP", {}),
             patch("ltbox.utils._check_required_windows_drivers"),

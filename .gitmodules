@@ -8,3 +8,6 @@
 [submodule "vendor/MagiskbootAlone"]
 	path = vendor/MagiskbootAlone
 	url = https://github.com/miner7222/MagiskbootAlone.git
+[submodule "vendor/avbtool-rs"]
+	path = vendor/avbtool-rs
+	url = https://github.com/miner7222/avbtool-rs

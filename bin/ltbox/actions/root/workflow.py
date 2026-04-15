@@ -625,8 +625,7 @@ def _sign_recovery_image(
 
     subprocess.run(
         [
-            str(const.PYTHON_EXE),
-            str(const.AVBTOOL_PY),
+            str(const.AVBTOOL_RS),
             "erase_footer",
             "--image",
             str(final_twrp),

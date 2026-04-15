@@ -20,13 +20,11 @@ def test_collect_info_scan_files_filters_img_only(tmp_path):
 
 
 def test_build_info_scan_command_uses_constants_paths():
-    constants = SimpleNamespace(
-        PYTHON_EXE=Path("python"), AVBTOOL_PY=Path("avbtool.py")
-    )
+    constants = SimpleNamespace(AVBTOOL_RS=Path("avbtool-rs.exe"))
 
     command = scan_api.build_info_scan_command(Path("boot.img"), constants)
 
-    assert command == ["python", "avbtool.py", "info_image", "--image", "boot.img"]
+    assert command == ["avbtool-rs.exe", "info_image", "--image", "boot.img"]
 
 
 def test_run_info_scan_creates_log(tmp_path):
@@ -48,8 +46,7 @@ def test_run_info_scan_creates_log(tmp_path):
 
     constants = SimpleNamespace(
         BASE_DIR=tmp_path / "bin",
-        PYTHON_EXE=Path("python"),
-        AVBTOOL_PY=Path("avbtool.py"),
+        AVBTOOL_RS=Path("avbtool-rs.exe"),
     )
     scan_api.run_info_scan(
         [str(image_dir), str(extra_img)],

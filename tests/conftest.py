@@ -12,7 +12,6 @@ BIN_PATH = ROOT / "bin"
 INTEGRATION_TOOL_FILES = (
     "magiskboot.exe",
     "magiskboot_xz_helper.exe",
-    "openssl.exe",
 )
 
 if str(BIN_PATH) not in sys.path:

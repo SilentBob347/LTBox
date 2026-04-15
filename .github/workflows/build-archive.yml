@@ -45,6 +45,12 @@ jobs:
           name: qdl-rs-windows
           path: bin/tools/
 
+      - name: Download avbtool-rs artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: avbtool-rs-windows
+          path: bin/tools/
+
       - name: Bundle base tools
         run: python .github/scripts/release/bundle-tools.py
 
@@ -59,7 +65,7 @@ jobs:
             'bin/tools/magiskboot_xz_helper.exe',
             'bin/tools/adb.exe',
             'bin/tools/fastboot.exe',
-            'bin/tools/avbtool.py',
+            'bin/tools/avbtool-rs.exe',
             'bin/tools/kptools.exe',
             'bin/tools/testkey_rsa4096.pem',
             'bin/tools/testkey_rsa2048.pem',

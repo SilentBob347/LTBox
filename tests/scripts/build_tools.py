@@ -8,7 +8,6 @@ TOOLS_DIR = REPO_ROOT / "bin" / "tools"
 SUBMODULE_DIR = REPO_ROOT / "vendor" / "MagiskbootAlone"
 MAGISKBOOT_EXE = TOOLS_DIR / "magiskboot.exe"
 MAGISKBOOT_XZ_HELPER_EXE = TOOLS_DIR / "magiskboot_xz_helper.exe"
-OPENSSL_EXE = TOOLS_DIR / "openssl.exe"
 VERSION_FILE = TOOLS_DIR / "magiskboot.version"
 
 
@@ -46,14 +45,8 @@ def build():
 
     current_sha = _get_submodule_sha()
 
-    openssl_ready = OPENSSL_EXE.exists() if os.name == "nt" else True
     helper_ready = MAGISKBOOT_XZ_HELPER_EXE.exists() if os.name == "nt" else True
-    if (
-        MAGISKBOOT_EXE.exists()
-        and VERSION_FILE.exists()
-        and openssl_ready
-        and helper_ready
-    ):
+    if MAGISKBOOT_EXE.exists() and VERSION_FILE.exists() and helper_ready:
         cached_sha = VERSION_FILE.read_text(encoding="utf-8").strip()
         if cached_sha == current_sha:
             print("[INFO] Tools are up-to-date. Skipping build.")
@@ -91,14 +84,12 @@ def build():
             )
             return
 
-        print(
-            "[INFO] Installing MSYS2 dependencies (gcc, cmake, make, zlib-devel, openssl)..."
-        )
+        print("[INFO] Installing MSYS2 dependencies (gcc, cmake, make, zlib-devel)...")
         subprocess.run(
             [
                 str(bash_exe),
                 "-lc",
-                "pacman -S --noconfirm --overwrite '*' --needed gcc cmake make zlib-devel openssl",
+                "pacman -S --noconfirm --overwrite '*' --needed gcc cmake make zlib-devel",
             ],
             check=True,
         )
@@ -147,18 +138,8 @@ def build():
                 raise RuntimeError("magiskboot_xz_helper.exe was not produced")
             shutil.copy(compiled_helper, MAGISKBOOT_XZ_HELPER_EXE)
 
-            msys_openssl = msys_root / "usr/bin/openssl.exe"
-            if msys_openssl.exists():
-                shutil.copy(msys_openssl, OPENSSL_EXE)
-                print("[INFO] Copied openssl.exe from MSYS2.")
-
             dlls_to_copy = ["msys-2.0.dll", "msys-z.dll"]
             usr_bin = msys_root / "usr/bin"
-
-            for dll_file in usr_bin.glob("msys-crypto-*.dll"):
-                dlls_to_copy.append(dll_file.name)
-            for dll_file in usr_bin.glob("msys-ssl-*.dll"):
-                dlls_to_copy.append(dll_file.name)
 
             for dll in list(set(dlls_to_copy)):
                 src_dll = usr_bin / dll
