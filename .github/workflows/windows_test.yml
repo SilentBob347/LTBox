@@ -18,6 +18,9 @@ jobs:
     with:
       task: architecture
 
+  build-avbtool-rs:
+    uses: ./.github/workflows/build-avbtool-rs.yml
+
   build-tools:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -62,7 +65,7 @@ jobs:
             bin/tools/*.dll
 
   integration-test:
-    needs: [unit-test, build-tools]
+    needs: [unit-test, build-tools, build-avbtool-rs]
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -93,6 +96,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: tools-exe
+          path: bin/tools
+
+      - name: Download avbtool-rs artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: avbtool-rs-windows
           path: bin/tools
 
       - name: Run Integration Tests
