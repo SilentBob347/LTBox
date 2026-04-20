@@ -5,34 +5,34 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-added-large-files
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
       - id: pretty-format-json
         args: ["--autofix", "--no-ensure-ascii"]
-        files: ^bin/ltbox/lang/.*\.json$
-
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.10
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-        files: ^(bin|tests)/
-      - id: ruff-format
-        files: ^(bin|tests)/
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.1
-    hooks:
-      - id: mypy
-        args: ["--ignore-missing-imports"]
-        files: ^(bin|tests)/.*\.py$
-        pass_filenames: true
-        additional_dependencies: [types-cachetools]
+        files: ^crates/ltbox-gui/lang/.*\.json$
 
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
         language: system
-        entry: python
-        args: ["-m", "pytest", "-q", "tests/", "-m", "not integration"]
+        types: [rust]
         pass_filenames: false
-        files: ^(bin|tests)/.*\.py$
+
+      - id: cargo-clippy
+        name: cargo clippy -D warnings
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-test
+        name: cargo test --workspace
+        entry: cargo test --workspace --quiet
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]

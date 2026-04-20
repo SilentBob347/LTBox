@@ -1,0 +1,98 @@
+[workspace]
+members = [
+    "crates/ltbox-core",
+    "crates/ltbox-device",
+    "crates/ltbox-patch",
+    "crates/ltbox-gui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "3.0.0-alpha.1"
+edition = "2024"
+license = "CC-BY-NC-SA-4.0"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+anyhow = "1"
+# fs-err: drop-in wrapper around std::fs that embeds the path in
+# io::Error Display, so `.map_err(|e| format!("X {path}: {e}"))`
+# boilerplate collapses to a plain `?`.
+fs-err = "3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto — RustCrypto 2026 bundle.
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+sha1 = "0.11"
+sha2 = "0.11"
+digest = "0.11"
+
+# HTTP — ureq 3, pure-blocking rustls client. One-shot + small call
+# sites (GitHub JSON, nightly.link zip, Qualcomm driver zip).
+ureq = { version = "3", features = ["rustls", "json"] }
+
+# Zip (Qualcomm driver archive extraction)
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# UTF-8-guaranteed paths. `camino::Utf8PathBuf` is a drop-in `PathBuf`
+# replacement that rejects non-UTF-8 byte sequences at construction time,
+# which means `.to_string_lossy()` / `.display()` noise disappears at
+# the boundaries where we serialize paths into JSON settings or surface
+# them in the log/UI. Introduced at low-blast-radius sites first; a full
+# sweep would touch ~100 call sites for a modest win so we keep `PathBuf`
+# everywhere else for now.
+camino = { version = "1", features = ["serde1"] }
+
+# XML
+roxmltree = "0.21"
+
+# In-memory TTL cache for GitHub API responses. A single root-provisioning
+# run builds up to seven `GitHubClient`s (one per root solution) — without
+# a cache the same `/releases/latest` endpoint is hit twice per run for
+# every client that resolves an asset on the latest tag. moka keys on
+# (owner_repo, endpoint) with a 5-minute TTL so the pipeline converges
+# to one request per endpoint per run without coordinating the clients.
+moka = { version = "0.12", features = ["sync"] }
+
+# Logging — tracing for structured `info!` macros, tracing-subscriber
+# for the global dispatcher, tracing-appender for daily-rotated log files
+# under the user's config dir. `non_blocking` writes move the fs I/O off
+# the main thread so `info!` calls in hot paths (flash / dump loops)
+# don't hiccup on slow antivirus scans.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# ADB
+adb_client = { version = "3", features = ["usb"] }
+
+# USB (for Fastboot).
+nusb = "0.2"
+pollster = "0.4"
+
+# Serial (for EDL port detection)
+serialport = "4"
+
+# GUI
+iced = { version = "0.14", features = ["tokio", "svg", "image"] }
+iced_aw = { version = "0.13", default-features = false, features = ["badge", "card", "menu", "selection_list", "drop_down"] }
+rfd = "0.17"
+dirs = "6"
+fs2 = "0.4"
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Registry"] }
+noto-fonts-dl = { version = "0.1", features = ["ko", "zh"] }
+winresource = "0.1"
+tokio = { version = "1", features = ["rt", "macros"] }
+gptman = "3"
+os_pipe = "1"
+
+# External tool crates (git dependencies)
+avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", branch = "main" }
+magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
+kptools = { git = "https://github.com/miner7222/kptools-rs", branch = "master" }
+qdl = { git = "https://github.com/miner7222/qdlrs", branch = "main", features = ["serial"] }

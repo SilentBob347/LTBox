@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 320" fill="none">
+  <!-- Tablet body -->
+  <rect x="10" y="10" width="200" height="300" rx="18" fill="#2A2A30" stroke="#4A4A52" stroke-width="2"/>
+  <!-- Screen bezel -->
+  <rect x="20" y="26" width="180" height="268" rx="6" fill="#0B0B0E"/>
+  <!-- Screen-off subtle reflection -->
+  <rect x="24" y="30" width="172" height="12" rx="3" fill="#151519" opacity="0.9"/>
+  <!-- Front camera dot -->
+  <circle cx="110" cy="18" r="2" fill="#555"/>
+  <!-- Rear outline hint -->
+  <rect x="10" y="10" width="200" height="300" rx="18" fill="none" stroke="#000" stroke-width="0.75" opacity="0.35"/>
+</svg>

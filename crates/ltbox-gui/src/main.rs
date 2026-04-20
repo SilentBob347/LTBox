@@ -1,0 +1,9490 @@
+#![windows_subsystem = "windows"]
+//! LTBox GUI — iced desktop shell for the v3.0.0 Rust rewrite.
+//!
+//! Orchestrates `ltbox-core`, `ltbox-device`, `ltbox-patch` through a
+//! sidebar + wizard UX. [`main`] handles startup (single-instance lock,
+//! AppUserModelID, window + font bundle); [`App`] owns every wizard
+//! state machine, the device poll subscription, persisted settings,
+//! and the active palette.
+//!
+//! Wizards: Flash · SystemUpdate · Root · Unroot · Reboot · Advanced.
+//! Sub-modules: [`theme`] M3 tokens · [`settings_store`] `settings.json`
+//! in the user config dir · [`stdout_tap`] native-crate log capture.
+
+mod settings_store;
+mod stdout_tap;
+mod theme;
+mod theme_detect;
+
+/// `println!` the line so the stdout tap forwards to the live log.
+/// The `$log` arg is kept for call-site compatibility but ignored —
+/// pushing here would double up with the tap's emit.
+macro_rules! live {
+    ($log:expr, $($arg:tt)*) => {{
+        let _ = &$log;
+        println!($($arg)*);
+    }};
+}
+
+use std::collections::HashMap;
+
+use iced::widget::{self, Space, button, column, container, row, scrollable, text};
+use iced::{Element, Length, Subscription, Task, Theme};
+
+use theme::{Palette, palette, with_alpha};
+
+/// Palette lookup from `iced` style closures that only have `&Theme`.
+fn pal_of(t: &Theme) -> &'static Palette {
+    palette(is_dark(t))
+}
+
+// Shims for contexts without a `&Theme` (plain `.color(...)` calls).
+// Dark-mode-critical surfaces already route through `pal_of` / `self.pal()`.
+const ACCENT: iced::Color = theme::LIGHT.primary;
+const LABEL: iced::Color = theme::LIGHT.outline;
+const GREEN: iced::Color = theme::LIGHT.success;
+
+/// Upper bound on `App.log_lines` — keeps memory flat over long sessions.
+const LOG_MAX_LINES: usize = 500;
+
+/// 32×32 RGBA image handle for the title-bar brand icon. Built once,
+/// cheap to clone (ref-counted).
+static TITLE_BAR_ICON_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        let bytes: &'static [u8] = include_bytes!("../assets/icon_32.bin");
+        iced::widget::image::Handle::from_rgba(32, 32, bytes.to_vec())
+    });
+
+/// "History" glyph next to the "Recents" label on browse-step pickers.
+static HISTORY_ICON_HANDLE: std::sync::LazyLock<iced::widget::svg::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::svg::Handle::from_memory(
+            include_bytes!("../assets/icons/history.svg").to_vec(),
+        )
+    });
+
+/// `on_surface_variant` — secondary labels / descriptions.
+fn muted_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).on_surface_variant),
+    }
+}
+
+/// `outline` — captions and sidebar section headers.
+fn label_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).outline),
+    }
+}
+
+/// `on_surface` — primary foreground on surface containers.
+fn on_surface_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).on_surface),
+    }
+}
+
+/// `primary` — accent emphasis (active labels, live-op markers).
+fn accent_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).primary),
+    }
+}
+
+/// `success` — completion markers and "ok" status.
+#[allow(dead_code)]
+fn success_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).success),
+    }
+}
+
+fn main() -> iced::Result {
+    // Single-instance lock via fs2 advisory lock in the system temp
+    // dir. Kernel drops the lock on dirty shutdown. Version-agnostic
+    // filename so a running v3.0.0 blocks a v3.0.1 during in-place update.
+    let _instance_guard: Option<std::fs::File> = {
+        use fs2::FileExt;
+        let lock_path = std::env::temp_dir().join("ltbox-gui-singleton.lock");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(f) => match f.try_lock_exclusive() {
+                Ok(()) => Some(f),
+                // Held by another LTBox — bail quietly.
+                Err(_) => return Ok(()),
+            },
+            // Can't create lockfile (sandboxed FS) — launch without a guard.
+            Err(_) => None,
+        }
+    };
+
+    // Override AppUserModelID so taskbar / jump-list show "LTBox"
+    // instead of the Cargo crate name. Must run before window creation.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+        let id: Vec<u16> = "LTBox.App\0".encode_utf16().collect();
+        unsafe {
+            SetCurrentProcessExplicitAppUserModelID(id.as_ptr());
+        }
+    }
+
+    // Must run before any stdout write — the pipe has to be live
+    // before the first `println!` resolves.
+    stdout_tap::install();
+
+    // `_log_guard` MUST live for the whole process — dropping it
+    // flushes the non-blocking writer; losing it loses the last
+    // minute of events on a crash.
+    let _log_guard = init_tracing();
+
+    let win_icon =
+        iced::window::icon::from_rgba(include_bytes!("../assets/icon_32.bin").to_vec(), 32, 32)
+            .ok();
+    let window_settings = iced::window::Settings {
+        size: iced::Size::new(920.0, 620.0),
+        icon: win_icon,
+        decorations: false,
+        ..Default::default()
+    };
+    // Bundle Noto Sans CJK at compile time so cosmic-text can fall
+    // back for Hangul / Hanzi glyphs. Noto's Latin + Cyrillic + Greek
+    // cover English and Russian UI through the same family.
+    let mut app = iced::application(App::new, App::update, App::view)
+        .title("LTBox")
+        .theme(App::theme)
+        .subscription(App::subscription)
+        .window(window_settings)
+        .default_font(iced::Font::with_name("Noto Sans CJK KR"));
+    for (_, bytes) in noto_fonts_dl::load_fonts() {
+        app = app.font(bytes.clone());
+    }
+    app.run()
+}
+
+fn is_dark(t: &Theme) -> bool {
+    t.palette().background.r < 0.5
+}
+
+/// Global tracing subscriber writing daily-rotated files under
+/// `%APPDATA%\ltbox\logs\`. Caller must hold the returned `WorkerGuard`
+/// for the process lifetime — dropping it flushes queued entries.
+/// Filter: `RUST_LOG` env var, falling back to `info`.
+fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use camino::Utf8PathBuf;
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    // Fall back to `%TEMP%\ltbox-logs` on non-UTF-8 APPDATA paths.
+    let log_dir: Utf8PathBuf = dirs::config_dir()
+        .and_then(|d| Utf8PathBuf::from_path_buf(d.join("ltbox").join("logs")).ok())
+        .unwrap_or_else(|| {
+            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("ltbox-logs"))
+                .unwrap_or_else(|_| Utf8PathBuf::from("ltbox-logs"))
+        });
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return None;
+    }
+
+    let file_appender = tracing_appender::rolling::daily(log_dir.as_std_path(), "ltbox.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let subscriber = fmt()
+        .with_env_filter(filter)
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_target(true)
+        .finish();
+
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    Some(guard)
+}
+
+// =========================================================================
+// Navigation
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum View {
+    #[default]
+    Dashboard,
+    Flash,
+    SystemUpdate,
+    Root,
+    Unroot,
+    Reboot,
+    Advanced,
+    Settings,
+}
+
+impl View {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Dashboard => "nav_dashboard",
+            Self::Flash => "nav_flash",
+            Self::SystemUpdate => "nav_sysupdate",
+            Self::Root => "nav_root",
+            Self::Unroot => "nav_unroot",
+            Self::Reboot => "nav_reboot",
+            Self::Advanced => "nav_advanced",
+            Self::Settings => "nav_settings",
+        }
+    }
+
+    fn icon_bytes(&self) -> &'static [u8] {
+        match self {
+            Self::Dashboard => include_bytes!("../assets/icons/nav/dashboard.svg"),
+            Self::Flash => include_bytes!("../assets/icons/nav/flash.svg"),
+            Self::SystemUpdate => include_bytes!("../assets/icons/nav/system_update.svg"),
+            Self::Root => include_bytes!("../assets/icons/nav/root.svg"),
+            Self::Unroot => include_bytes!("../assets/icons/nav/unroot.svg"),
+            Self::Reboot => include_bytes!("../assets/icons/nav/reboot.svg"),
+            Self::Advanced => include_bytes!("../assets/icons/nav/advanced.svg"),
+            Self::Settings => include_bytes!("../assets/icons/nav/settings.svg"),
+        }
+    }
+}
+
+const NAV_MAIN: &[View] = &[
+    View::Dashboard,
+    View::Flash,
+    View::SystemUpdate,
+    View::Root,
+    View::Unroot,
+    View::Reboot,
+];
+const NAV_TOOLS: &[View] = &[View::Advanced, View::Settings];
+
+/// One-shot reboot target for the Reboot panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RebootTarget {
+    System,
+    Recovery,
+    Bootloader,
+    Edl,
+}
+impl RebootTarget {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::System => "reboot_system",
+            Self::Recovery => "reboot_recovery",
+            Self::Bootloader => "reboot_bootloader",
+            Self::Edl => "reboot_edl",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::System => "reboot_system_desc",
+            Self::Recovery => "reboot_recovery_desc",
+            Self::Bootloader => "reboot_bootloader_desc",
+            Self::Edl => "reboot_edl_desc",
+        }
+    }
+    /// Short-name key used inside the confirm popup so "Reboot to
+    /// {Reboot to System}?" doesn't double-phrase.
+    fn short_name_key(&self) -> &'static str {
+        match self {
+            Self::System => "reboot_target_system",
+            Self::Recovery => "reboot_target_recovery",
+            Self::Bootloader => "reboot_target_bootloader",
+            Self::Edl => "reboot_target_edl",
+        }
+    }
+    /// Reachable from `conn`. Impossible combos (Fastboot → Recovery,
+    /// EDL → Recovery/Bootloader — Firehose only resets system/edl)
+    /// stay disabled.
+    fn available_from(&self, conn: ConnectionStatus) -> bool {
+        match (conn, self) {
+            (ConnectionStatus::None, _) => false,
+            (ConnectionStatus::AdbUnauthorized, _) => false,
+            (ConnectionStatus::Adb, _) => true,
+            (ConnectionStatus::AdbRecovery, _) => true,
+            (ConnectionStatus::Fastboot, Self::Recovery) => false,
+            (ConnectionStatus::Fastboot, _) => true,
+            (ConnectionStatus::Edl, Self::System | Self::Edl) => true,
+            (ConnectionStatus::Edl, _) => false,
+        }
+    }
+    fn all() -> &'static [RebootTarget] {
+        &[Self::System, Self::Recovery, Self::Bootloader, Self::Edl]
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        let bytes: &'static [u8] = match self {
+            Self::System => include_bytes!("../assets/icons/reboot_system.svg"),
+            Self::Recovery => include_bytes!("../assets/icons/reboot_recovery.svg"),
+            Self::Bootloader => include_bytes!("../assets/icons/reboot_bootloader.svg"),
+            Self::Edl => include_bytes!("../assets/icons/reboot_edl.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(64)
+            .height(64)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AdvAction {
+    RegionConvert,
+    DumpDevinfo,
+    PatchDevinfo,
+    WriteDevinfo,
+    DetectArb,
+    PatchArb,
+    WriteArb,
+    ConvertXml,
+    FlashFirmware,
+    FlashPartitions,
+    RebuildVbmeta,
+    SignRecovery,
+}
+impl AdvAction {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::RegionConvert => "adv_region_convert",
+            Self::DumpDevinfo => "adv_dump_devinfo",
+            Self::PatchDevinfo => "adv_patch_devinfo",
+            Self::WriteDevinfo => "adv_write_devinfo",
+            Self::DetectArb => "adv_detect_arb",
+            Self::PatchArb => "adv_patch_arb",
+            Self::WriteArb => "adv_write_arb",
+            Self::ConvertXml => "adv_convert_xml",
+            Self::FlashFirmware => "adv_flash_firmware",
+            Self::FlashPartitions => "adv_flash_partitions",
+            Self::RebuildVbmeta => "adv_rebuild_vbmeta",
+            Self::SignRecovery => "adv_sign_recovery",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::RegionConvert => "adv_region_convert_desc",
+            Self::DumpDevinfo => "adv_dump_devinfo_desc",
+            Self::PatchDevinfo => "adv_patch_devinfo_desc",
+            Self::WriteDevinfo => "adv_write_devinfo_desc",
+            Self::DetectArb => "adv_detect_arb_desc",
+            Self::PatchArb => "adv_patch_arb_desc",
+            Self::WriteArb => "adv_write_arb_desc",
+            Self::ConvertXml => "adv_convert_xml_desc",
+            Self::FlashFirmware => "adv_flash_firmware_desc",
+            Self::FlashPartitions => "adv_flash_partitions_desc",
+            Self::RebuildVbmeta => "adv_rebuild_vbmeta_desc",
+            Self::SignRecovery => "adv_sign_recovery_desc",
+        }
+    }
+    /// Browse-tile sub-description: *what* to pick, not the action's
+    /// high-level description.
+    fn source_desc_key(&self) -> &'static str {
+        match self {
+            Self::RegionConvert => "adv_src_region_convert",
+            Self::DumpDevinfo => "adv_src_dump_devinfo",
+            Self::PatchDevinfo => "adv_src_patch_devinfo",
+            Self::WriteDevinfo => "adv_src_write_devinfo",
+            Self::DetectArb => "adv_src_detect_arb",
+            Self::PatchArb => "adv_src_patch_arb",
+            Self::WriteArb => "adv_src_write_arb",
+            Self::ConvertXml => "adv_src_convert_xml",
+            Self::FlashFirmware => "adv_src_flash_firmware",
+            Self::FlashPartitions => "adv_src_flash_partitions",
+            Self::RebuildVbmeta => "adv_src_rebuild_vbmeta",
+            Self::SignRecovery => "adv_src_sign_recovery",
+        }
+    }
+    /// snake_case slug for `{exe_dir}/output_{slug}/` — Advanced ops
+    /// drop artefacts here instead of asking the user for a location.
+    fn output_slug(&self) -> &'static str {
+        match self {
+            Self::RegionConvert => "region_convert",
+            Self::DumpDevinfo => "dump_devinfo",
+            Self::PatchDevinfo => "patch_devinfo",
+            Self::WriteDevinfo => "write_devinfo",
+            Self::DetectArb => "detect_arb",
+            Self::PatchArb => "patch_arb",
+            Self::WriteArb => "write_arb",
+            Self::ConvertXml => "convert_xml",
+            Self::FlashFirmware => "flash_firmware",
+            Self::FlashPartitions => "flash_partitions",
+            Self::RebuildVbmeta => "rebuild_vbmeta",
+            Self::SignRecovery => "sign_recovery",
+        }
+    }
+    /// True iff the action writes into the output folder — gates the
+    /// "Open Folder" pill on the Done card.
+    fn produces_output(&self) -> bool {
+        matches!(
+            self,
+            Self::RegionConvert
+                | Self::DumpDevinfo
+                | Self::PatchDevinfo
+                | Self::PatchArb
+                | Self::ConvertXml
+                | Self::RebuildVbmeta
+                | Self::SignRecovery
+        )
+    }
+}
+
+/// Auto-output directory next to `ltbox.exe`. Caller `create_dir_all`s
+/// before writing.
+fn adv_output_dir(action: AdvAction) -> std::path::PathBuf {
+    let base = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join(format!("output_{}", action.output_slug()))
+}
+
+/// Launch the platform file manager on `path`. Best-effort.
+fn open_in_file_manager(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        // `CREATE_NO_WINDOW` hides the transient cmd flash.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("explorer")
+            .arg(path)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+}
+struct AdvSection {
+    title_key: &'static str,
+    items: &'static [AdvAction],
+}
+
+const ADV_SECTIONS: &[AdvSection] = &[
+    AdvSection {
+        title_key: "adv_section_region_patch",
+        items: &[AdvAction::RegionConvert],
+    },
+    AdvSection {
+        title_key: "adv_section_country_code",
+        items: &[
+            AdvAction::DumpDevinfo,
+            AdvAction::PatchDevinfo,
+            AdvAction::WriteDevinfo,
+        ],
+    },
+    AdvSection {
+        title_key: "adv_section_rollback",
+        items: &[
+            AdvAction::DetectArb,
+            AdvAction::PatchArb,
+            AdvAction::WriteArb,
+        ],
+    },
+    AdvSection {
+        title_key: "adv_section_firmware_flashing",
+        items: &[
+            AdvAction::ConvertXml,
+            AdvAction::FlashFirmware,
+            AdvAction::FlashPartitions,
+            AdvAction::RebuildVbmeta,
+            AdvAction::SignRecovery,
+        ],
+    },
+];
+
+// =========================================================================
+// Root wizard types
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Magisk,
+    KernelSU,
+    APatch,
+}
+impl Family {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Magisk => "family_magisk",
+            Self::KernelSU => "family_ksu",
+            Self::APatch => "family_apatch",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::Magisk => "family_magisk_desc",
+            Self::KernelSU => "family_ksu_desc",
+            Self::APatch => "family_apatch_desc",
+        }
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        let bytes: &'static [u8] = match self {
+            Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
+            Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
+            Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(72)
+            .height(72)
+    }
+    fn has_modes(&self) -> bool {
+        matches!(self, Self::KernelSU)
+    }
+    fn providers(&self) -> &'static [Provider] {
+        match self {
+            Self::Magisk => &[Provider::Magisk, Provider::MagiskForks],
+            Self::KernelSU => &[
+                Provider::KernelSU,
+                Provider::KernelSUNext,
+                Provider::SukiSU,
+                Provider::ReSukiSU,
+            ],
+            Self::APatch => &[Provider::APatch, Provider::FolkPatch],
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Magisk,
+    MagiskForks,
+    KernelSU,
+    KernelSUNext,
+    SukiSU,
+    ReSukiSU,
+    APatch,
+    FolkPatch,
+}
+impl Provider {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Magisk => "provider_magisk",
+            Self::MagiskForks => "provider_magisk_forks",
+            Self::KernelSU => "provider_ksu",
+            Self::KernelSUNext => "provider_ksu_next",
+            Self::SukiSU => "provider_sukisu",
+            Self::ReSukiSU => "provider_resukisu",
+            Self::APatch => "provider_apatch",
+            Self::FolkPatch => "provider_folkpatch",
+        }
+    }
+    fn desc_key(&self) -> Option<&'static str> {
+        match self {
+            Self::Magisk => Some("provider_magisk_desc"),
+            Self::MagiskForks => Some("provider_magisk_forks_desc"),
+            Self::KernelSU => Some("provider_ksu_desc"),
+            Self::KernelSUNext => Some("provider_ksu_next_desc"),
+            Self::SukiSU => Some("provider_sukisu_desc"),
+            Self::ReSukiSU => Some("provider_resukisu_desc"),
+            Self::APatch => Some("provider_apatch_desc"),
+            Self::FolkPatch => Some("provider_folkpatch_desc"),
+        }
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        let bytes: &'static [u8] = match self {
+            Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
+            Self::MagiskForks => include_bytes!("../assets/icons/magisk_forks.svg"),
+            Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
+            Self::KernelSUNext => include_bytes!("../assets/icons/kernelsu_next.svg"),
+            Self::SukiSU => include_bytes!("../assets/icons/sukisu.svg"),
+            Self::ReSukiSU => include_bytes!("../assets/icons/resukisu.svg"),
+            Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
+            Self::FolkPatch => include_bytes!("../assets/icons/folkpatch.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(72)
+            .height(72)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootMode {
+    Lkm,
+    Gki,
+}
+impl RootMode {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Lkm => "rootmode_lkm",
+            Self::Gki => "rootmode_gki",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::Lkm => "rootmode_lkm_desc",
+            Self::Gki => "rootmode_gki_desc",
+        }
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        // Root-specific glyphs: chip (LKM) vs stacked slab (GKI). Unroot
+        // keeps its "revert to stock" curving-arrow motif.
+        let bytes: &'static [u8] = match self {
+            Self::Lkm => include_bytes!("../assets/icons/root_lkm.svg"),
+            Self::Gki => include_bytes!("../assets/icons/root_gki.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(72)
+            .height(72)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerChoice {
+    Stable,
+    Nightly,
+}
+impl VerChoice {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Stable => "verchoice_stable",
+            Self::Nightly => "verchoice_nightly",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::Stable => "verchoice_stable_desc",
+            Self::Nightly => "verchoice_nightly_desc",
+        }
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        let bytes: &'static [u8] = match self {
+            Self::Stable => include_bytes!("../assets/icons/stable.svg"),
+            Self::Nightly => include_bytes!("../assets/icons/nightly.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(72)
+            .height(72)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NightlySource {
+    AutoDetect,
+    ManualInput,
+}
+impl NightlySource {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::AutoDetect => "nightly_auto",
+            Self::ManualInput => "nightly_manual",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::AutoDetect => "nightly_auto_desc",
+            Self::ManualInput => "nightly_manual_desc",
+        }
+    }
+    fn icon(self) -> iced::widget::Svg<'static> {
+        let bytes: &'static [u8] = match self {
+            Self::AutoDetect => include_bytes!("../assets/icons/nightly_auto.svg"),
+            Self::ManualInput => include_bytes!("../assets/icons/nightly_manual.svg"),
+        };
+        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+            .width(72)
+            .height(72)
+    }
+}
+
+// Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
+// 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
+// Mode auto-skips for non-KSU. GKI: steps 3/4 collapse into a kernel
+// zip picker at 2. MagiskForks: skip Version, APK picker at 3. Nightly
+// inserts 4 between Version and Folder.
+#[derive(Default)]
+struct RootWizard {
+    step: usize,
+    family: Option<Family>,
+    mode: Option<RootMode>,
+    provider: Option<Provider>,
+    version: Option<VerChoice>,
+    nightly_source: Option<NightlySource>,
+    file_path: Option<String>, // GKI zip, MagiskForks APK, or manual nightly
+    folder_path: Option<String>, // Firmware folder (loader + optional testkey)
+    /// APatch: `.kpm` modules to embed. Multi-select + per-entry remove.
+    kpm_paths: Vec<String>,
+    /// APatch superkey. Secret — never echoed in confirm or any log.
+    superkey: Option<String>,
+    superkey_popup_open: bool,
+    /// Buffer while the superkey popup is open; moved into `superkey`
+    /// on confirm.
+    superkey_buffer: String,
+    /// Nightly ManualInput: committed workflow run ID (1..=12 digits).
+    /// Only meaningful when `nightly_source == Some(ManualInput)`.
+    run_id: Option<String>,
+    run_id_popup_open: bool,
+    run_id_buffer: String,
+}
+
+const ROOT_STEPS: &[&str] = &[
+    "root_step_type",
+    "root_step_mode",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_NIGHTLY: &[&str] = &[
+    "root_step_type",
+    "root_step_mode",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_source",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_GKI: &[&str] = &[
+    "root_step_type",
+    "root_step_mode",
+    "root_step_kernel",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_NOMODE: &[&str] = &[
+    "root_step_type",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_NOMODE_NIGHTLY: &[&str] = &[
+    "root_step_type",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_source",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_FORKS: &[&str] = &[
+    "root_step_type",
+    "root_step_provider",
+    "root_step_apk",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_APATCH: &[&str] = &[
+    "root_step_type",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_kpm",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+const ROOT_STEPS_APATCH_NIGHTLY: &[&str] = &[
+    "root_step_type",
+    "root_step_provider",
+    "root_step_version",
+    "root_step_source",
+    "root_step_kpm",
+    "root_step_folder",
+    "root_step_confirm",
+    "root_step_flash",
+];
+
+impl RootWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// True on the final (flash/exec) step. Used to skip wizard reset
+    /// when the user sidebar-bounces mid-operation.
+    fn is_in_exec(&self) -> bool {
+        self.step == 7
+    }
+
+    fn is_gki(&self) -> bool {
+        self.mode == Some(RootMode::Gki)
+    }
+    fn is_forks(&self) -> bool {
+        self.provider == Some(Provider::MagiskForks)
+    }
+    fn is_nightly(&self) -> bool {
+        self.version == Some(VerChoice::Nightly)
+    }
+    fn is_apatch(&self) -> bool {
+        self.family == Some(Family::APatch)
+    }
+
+    fn active_steps(&self) -> &'static [&'static str] {
+        if self.is_gki() {
+            return ROOT_STEPS_GKI;
+        }
+        let has_modes = self.family.map(|f| f.has_modes()).unwrap_or(false);
+        if self.is_forks() {
+            return ROOT_STEPS_FORKS;
+        }
+        if self.is_apatch() {
+            // APatch route: Version → KPM → Folder. Superkey popup
+            // lives on the KPM→Folder edge, not as its own step.
+            return if self.is_nightly() {
+                ROOT_STEPS_APATCH_NIGHTLY
+            } else {
+                ROOT_STEPS_APATCH
+            };
+        }
+        match (has_modes, self.is_nightly()) {
+            (true, true) => ROOT_STEPS_NIGHTLY,
+            (true, false) => ROOT_STEPS,
+            (false, true) => ROOT_STEPS_NOMODE_NIGHTLY,
+            (false, false) => ROOT_STEPS_NOMODE,
+        }
+    }
+
+    fn display_step(&self) -> usize {
+        // Map internal step index into the position within the active
+        // route's label array. Comments at each branch show the mapping.
+        let has_modes = self.family.map(|f| f.has_modes()).unwrap_or(false);
+        if self.is_gki() {
+            // 0,1,2,5,6,7 → 0..5
+            return match self.step {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                5 => 3,
+                6 => 4,
+                7 => 5,
+                _ => self.step,
+            };
+        }
+        if self.is_forks() {
+            // 0,2,3,5,6,7 → 0..5
+            return match self.step {
+                0 => 0,
+                2 => 1,
+                3 => 2,
+                5 => 3,
+                6 => 4,
+                7 => 5,
+                _ => self.step,
+            };
+        }
+        if self.is_apatch() {
+            // Stable: 0,2,3,8,5,6,7 → 0..6. Nightly: add 4 → 0..7.
+            if self.is_nightly() {
+                return match self.step {
+                    0 => 0,
+                    2 => 1,
+                    3 => 2,
+                    4 => 3,
+                    8 => 4,
+                    5 => 5,
+                    6 => 6,
+                    7 => 7,
+                    _ => self.step,
+                };
+            }
+            return match self.step {
+                0 => 0,
+                2 => 1,
+                3 => 2,
+                8 => 3,
+                5 => 4,
+                6 => 5,
+                7 => 6,
+                _ => self.step,
+            };
+        }
+        if !has_modes {
+            if self.is_nightly() {
+                // 0,2,3,4,5,6,7 → 0..6
+                return match self.step {
+                    0 => 0,
+                    2 => 1,
+                    3 => 2,
+                    4 => 3,
+                    5 => 4,
+                    6 => 5,
+                    7 => 6,
+                    _ => self.step,
+                };
+            }
+            // 0,2,3,5,6,7 → 0..5
+            return match self.step {
+                0 => 0,
+                2 => 1,
+                3 => 2,
+                5 => 3,
+                6 => 4,
+                7 => 5,
+                _ => self.step,
+            };
+        }
+        if self.is_nightly() {
+            self.step
+        } else {
+            // 0,1,2,3,5,6,7 → 0..6
+            match self.step {
+                5 => 4,
+                6 => 5,
+                7 => 6,
+                s => s,
+            }
+        }
+    }
+
+    fn next(&mut self) {
+        match self.step {
+            0 => {
+                if let Some(f) = self.family
+                    && !f.has_modes()
+                {
+                    self.mode = None;
+                    self.step = 2;
+                    return;
+                }
+                self.step = 1;
+            }
+            1 => self.step = 2,
+            2 => {
+                if self.is_gki() {
+                    self.step = 5;
+                    return;
+                }
+                self.step = 3;
+            }
+            3 => {
+                if self.is_forks() {
+                    self.step = 5;
+                    return;
+                }
+                if self.is_nightly() {
+                    self.step = 4;
+                    return;
+                }
+                if self.is_apatch() {
+                    self.step = 8;
+                    return;
+                }
+                self.step = 5;
+            }
+            4 => {
+                if self.is_apatch() {
+                    self.step = 8;
+                    return;
+                }
+                self.step = 5;
+            }
+            // Exit gated by superkey popup — caller sets step = 5 on confirm.
+            8 => self.step = 5,
+            5 => self.step = 6,
+            6 => self.step = 7,
+            _ => {}
+        }
+    }
+
+    fn back(&mut self) {
+        match self.step {
+            1 => self.step = 0,
+            2 => {
+                if let Some(f) = self.family
+                    && !f.has_modes()
+                {
+                    self.step = 0;
+                    return;
+                }
+                self.step = 1;
+            }
+            3 => self.step = 2,
+            4 => self.step = 3,
+            5 => {
+                // Folder → whichever sub-step populated the source.
+                if self.is_gki() {
+                    self.step = 2;
+                    return;
+                }
+                if self.is_forks() {
+                    self.step = 3;
+                    return;
+                }
+                if self.is_apatch() {
+                    self.step = 8;
+                    return;
+                }
+                if self.is_nightly() {
+                    self.step = 4;
+                    return;
+                }
+                self.step = 3;
+            }
+            6 => self.step = 5,
+            7 => self.step = 6,
+            8 => {
+                self.step = if self.is_nightly() { 4 } else { 3 };
+            }
+            _ => {}
+        }
+    }
+
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.family.is_some(),
+            1 => self.mode.is_some(),
+            2 => {
+                if self.is_gki() {
+                    self.file_path.is_some()
+                } else {
+                    self.provider.is_some()
+                }
+            }
+            3 => {
+                if self.is_forks() {
+                    self.file_path.is_some()
+                } else {
+                    self.version.is_some()
+                }
+            }
+            4 => match self.nightly_source {
+                // ManualInput also needs the popup's run ID committed.
+                Some(NightlySource::AutoDetect) => true,
+                Some(NightlySource::ManualInput) => {
+                    self.run_id.as_deref().is_some_and(|s| !s.is_empty())
+                }
+                None => false,
+            },
+            5 => self.folder_path.is_some(),
+            6 => true,
+            // KPM embedding is optional — the actual gate is the
+            // superkey popup on Next.
+            8 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// Messages
+// =========================================================================
+
+// =========================================================================
+// Settings state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Language {
+    En,
+    Ko,
+    Zh,
+    Ru,
+}
+impl Language {
+    /// Name in its own script — locale-neutral.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Ko => "한국어",
+            Self::Zh => "中文",
+            Self::Ru => "Русский",
+        }
+    }
+    fn code(&self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Ko => "ko",
+            Self::Zh => "zh",
+            Self::Ru => "ru",
+        }
+    }
+    fn from_code(c: &str) -> Option<Self> {
+        match c {
+            "en" => Some(Self::En),
+            "ko" => Some(Self::Ko),
+            "zh" => Some(Self::Zh),
+            "ru" => Some(Self::Ru),
+            _ => None,
+        }
+    }
+}
+const LANGUAGES: &[Language] = &[Language::En, Language::Ko, Language::Zh, Language::Ru];
+
+/// Theme preference. `System` reads the OS setting via
+/// `theme_detect::system_prefers_dark`; Light/Dark override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+impl ThemeChoice {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::System => "theme_system",
+            Self::Light => "theme_light",
+            Self::Dark => "theme_dark",
+        }
+    }
+    fn code(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+    fn from_code(c: &str) -> Option<Self> {
+        match c {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
+// =========================================================================
+// Operation progress steps
+// =========================================================================
+
+/// One phase of a long-running op. The GUI advances through
+/// `Vec<OpStep>` by matching `"[{op}] Phase N/M"` markers in the log
+/// stream — no separate event channel.
+#[derive(Debug, Clone)]
+struct OpStep {
+    /// Pre-translated label for the single-step card. Derived at op
+    /// start so language changes only re-run `derive_*_op_steps`.
+    label: String,
+}
+
+/// Parse `"Phase N/M"` out of a log line. Returns `N` (1-indexed).
+/// Shape is stable across Root / Unroot / Flash / SysUpdate.
+fn parse_phase_marker(line: &str) -> Option<usize> {
+    let idx = line.find("] Phase ")?;
+    let rest = &line[idx + "] Phase ".len()..];
+    let slash = rest.find('/')?;
+    rest[..slash].trim().parse::<usize>().ok()
+}
+
+// Icon bytes for the current-step card (running / done / failed).
+const OP_ICON_RUNNING: &[u8] = include_bytes!("../assets/icons/op_running.svg");
+const OP_ICON_DONE: &[u8] = include_bytes!("../assets/icons/op_done.svg");
+const OP_ICON_FAILED: &[u8] = include_bytes!("../assets/icons/op_failed.svg");
+
+// =========================================================================
+// Translations
+// =========================================================================
+
+const EN_JSON: &str = include_str!("../lang/en.json");
+const KO_JSON: &str = include_str!("../lang/ko.json");
+const ZH_JSON: &str = include_str!("../lang/zh.json");
+const RU_JSON: &str = include_str!("../lang/ru.json");
+
+// Parsed once on first access; `Translations::load` then swaps two
+// `&'static` refs — no reparse on language switch.
+static EN_TABLE: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(EN_JSON).expect("en.json must parse"));
+static KO_TABLE: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(KO_JSON).expect("ko.json must parse"));
+static ZH_TABLE: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(ZH_JSON).expect("zh.json must parse"));
+static RU_TABLE: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(RU_JSON).expect("ru.json must parse"));
+
+/// Active translation table + English fallback. Two `&'static` refs
+/// into the process-wide `LazyLock` tables, so reload is free.
+#[derive(Debug, Clone, Copy)]
+struct Translations {
+    primary: &'static HashMap<String, String>,
+    fallback: &'static HashMap<String, String>,
+}
+
+impl Translations {
+    fn load(lang: Language) -> Self {
+        let fallback: &'static HashMap<String, String> = &EN_TABLE;
+        let primary: &'static HashMap<String, String> = match lang {
+            Language::En => &EN_TABLE,
+            Language::Ko => &KO_TABLE,
+            Language::Zh => &ZH_TABLE,
+            Language::Ru => &RU_TABLE,
+        };
+        Self { primary, fallback }
+    }
+
+    fn t<'a>(&'a self, key: &'a str) -> &'a str {
+        self.primary
+            .get(key)
+            .or_else(|| self.fallback.get(key))
+            .map(String::as_str)
+            .unwrap_or(key)
+    }
+}
+
+impl Default for Translations {
+    fn default() -> Self {
+        Self::load(Language::En)
+    }
+}
+
+/// Wire the language tables into `ltbox_core::i18n` so backend crates
+/// still produce localized log output.
+fn install_core_translator(lang: Language) {
+    let tr = Translations::load(lang);
+    ltbox_core::i18n::set_translator(move |key| tr.t(key).to_string());
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum RollbackSetting {
+    On,
+    Auto,
+    #[default]
+    Off,
+}
+impl RollbackSetting {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::On => "rollback_on",
+            Self::Auto => "rollback_auto",
+            Self::Off => "rollback_off",
+        }
+    }
+    /// Map the wizard tri-state to `rollback::RollbackMode`.
+    fn to_mode(self) -> ltbox_patch::rollback::RollbackMode {
+        match self {
+            Self::On => ltbox_patch::rollback::RollbackMode::On,
+            Self::Auto => ltbox_patch::rollback::RollbackMode::Auto,
+            Self::Off => ltbox_patch::rollback::RollbackMode::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SettingsState {
+    language: Language,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            language: Language::En,
+        }
+    }
+}
+
+/// Derived from wizard selections; reset after the op finishes.
+#[derive(Debug, Clone, Default)]
+struct WorkflowConfig {
+    modify_region: bool,
+    modify_rollback: RollbackSetting,
+    wipe: bool,
+    country_code: Option<String>,
+}
+
+struct CountryEntry {
+    code: &'static str,
+    name: &'static str,
+}
+
+const COUNTRY_CODES: &[CountryEntry] = &[
+    CountryEntry {
+        code: "AE",
+        name: "United Arab Emirates",
+    },
+    CountryEntry {
+        code: "AM",
+        name: "Armenia",
+    },
+    CountryEntry {
+        code: "AR",
+        name: "Argentina",
+    },
+    CountryEntry {
+        code: "AT",
+        name: "Austria",
+    },
+    CountryEntry {
+        code: "AU",
+        name: "Australia",
+    },
+    CountryEntry {
+        code: "AZ",
+        name: "Azerbaijan",
+    },
+    CountryEntry {
+        code: "BE",
+        name: "Belgium",
+    },
+    CountryEntry {
+        code: "BG",
+        name: "Bulgaria",
+    },
+    CountryEntry {
+        code: "BH",
+        name: "Bahrain",
+    },
+    CountryEntry {
+        code: "BR",
+        name: "Brazil",
+    },
+    CountryEntry {
+        code: "CA",
+        name: "Canada",
+    },
+    CountryEntry {
+        code: "CH",
+        name: "Switzerland",
+    },
+    CountryEntry {
+        code: "CL",
+        name: "Chile",
+    },
+    CountryEntry {
+        code: "CN",
+        name: "China",
+    },
+    CountryEntry {
+        code: "CO",
+        name: "Colombia",
+    },
+    CountryEntry {
+        code: "CR",
+        name: "Costa Rica",
+    },
+    CountryEntry {
+        code: "CY",
+        name: "Cyprus",
+    },
+    CountryEntry {
+        code: "CZ",
+        name: "Czech Republic",
+    },
+    CountryEntry {
+        code: "DE",
+        name: "Germany",
+    },
+    CountryEntry {
+        code: "DK",
+        name: "Denmark",
+    },
+    CountryEntry {
+        code: "EC",
+        name: "Ecuador",
+    },
+    CountryEntry {
+        code: "EE",
+        name: "Estonia",
+    },
+    CountryEntry {
+        code: "EG",
+        name: "Egypt",
+    },
+    CountryEntry {
+        code: "ES",
+        name: "Spain",
+    },
+    CountryEntry {
+        code: "FI",
+        name: "Finland",
+    },
+    CountryEntry {
+        code: "FR",
+        name: "France",
+    },
+    CountryEntry {
+        code: "GB",
+        name: "United Kingdom",
+    },
+    CountryEntry {
+        code: "GE",
+        name: "Georgia",
+    },
+    CountryEntry {
+        code: "GH",
+        name: "Ghana",
+    },
+    CountryEntry {
+        code: "GR",
+        name: "Greece",
+    },
+    CountryEntry {
+        code: "GT",
+        name: "Guatemala",
+    },
+    CountryEntry {
+        code: "HK",
+        name: "Hong Kong",
+    },
+    CountryEntry {
+        code: "HR",
+        name: "Croatia",
+    },
+    CountryEntry {
+        code: "HU",
+        name: "Hungary",
+    },
+    CountryEntry {
+        code: "ID",
+        name: "Indonesia",
+    },
+    CountryEntry {
+        code: "IL",
+        name: "Israel",
+    },
+    CountryEntry {
+        code: "IN",
+        name: "India",
+    },
+    CountryEntry {
+        code: "IS",
+        name: "Iceland",
+    },
+    CountryEntry {
+        code: "IT",
+        name: "Italy",
+    },
+    CountryEntry {
+        code: "JO",
+        name: "Jordan",
+    },
+    CountryEntry {
+        code: "JP",
+        name: "Japan",
+    },
+    CountryEntry {
+        code: "KE",
+        name: "Kenya",
+    },
+    CountryEntry {
+        code: "KG",
+        name: "Kyrgyzstan",
+    },
+    CountryEntry {
+        code: "KR",
+        name: "Korea",
+    },
+    CountryEntry {
+        code: "KW",
+        name: "Kuwait",
+    },
+    CountryEntry {
+        code: "KZ",
+        name: "Kazakhstan",
+    },
+    CountryEntry {
+        code: "LB",
+        name: "Lebanon",
+    },
+    CountryEntry {
+        code: "LT",
+        name: "Lithuania",
+    },
+    CountryEntry {
+        code: "LV",
+        name: "Latvia",
+    },
+    CountryEntry {
+        code: "MA",
+        name: "Morocco",
+    },
+    CountryEntry {
+        code: "MD",
+        name: "Moldova",
+    },
+    CountryEntry {
+        code: "MX",
+        name: "Mexico",
+    },
+    CountryEntry {
+        code: "MY",
+        name: "Malaysia",
+    },
+    CountryEntry {
+        code: "MZ",
+        name: "Mozambique",
+    },
+    CountryEntry {
+        code: "NG",
+        name: "Nigeria",
+    },
+    CountryEntry {
+        code: "NL",
+        name: "Netherlands",
+    },
+    CountryEntry {
+        code: "NO",
+        name: "Norway",
+    },
+    CountryEntry {
+        code: "NZ",
+        name: "New Zealand",
+    },
+    CountryEntry {
+        code: "OM",
+        name: "Oman",
+    },
+    CountryEntry {
+        code: "PA",
+        name: "Panama",
+    },
+    CountryEntry {
+        code: "PE",
+        name: "Peru",
+    },
+    CountryEntry {
+        code: "PH",
+        name: "Philippines",
+    },
+    CountryEntry {
+        code: "PK",
+        name: "Pakistan",
+    },
+    CountryEntry {
+        code: "PL",
+        name: "Poland",
+    },
+    CountryEntry {
+        code: "PT",
+        name: "Portugal",
+    },
+    CountryEntry {
+        code: "QA",
+        name: "Qatar",
+    },
+    CountryEntry {
+        code: "RO",
+        name: "Romania",
+    },
+    CountryEntry {
+        code: "RS",
+        name: "Serbia",
+    },
+    CountryEntry {
+        code: "RU",
+        name: "Russia",
+    },
+    CountryEntry {
+        code: "SA",
+        name: "Saudi Arabia",
+    },
+    CountryEntry {
+        code: "SE",
+        name: "Sweden",
+    },
+    CountryEntry {
+        code: "SG",
+        name: "Singapore",
+    },
+    CountryEntry {
+        code: "SI",
+        name: "Slovenia",
+    },
+    CountryEntry {
+        code: "SK",
+        name: "Slovakia",
+    },
+    CountryEntry {
+        code: "SV",
+        name: "El Salvador",
+    },
+    CountryEntry {
+        code: "TH",
+        name: "Thailand",
+    },
+    CountryEntry {
+        code: "TJ",
+        name: "Tajikistan",
+    },
+    CountryEntry {
+        code: "TN",
+        name: "Tunisia",
+    },
+    CountryEntry {
+        code: "TR",
+        name: "Turkey",
+    },
+    CountryEntry {
+        code: "TW",
+        name: "Taiwan",
+    },
+    CountryEntry {
+        code: "TZ",
+        name: "Tanzania",
+    },
+    CountryEntry {
+        code: "UA",
+        name: "Ukraine",
+    },
+    CountryEntry {
+        code: "UG",
+        name: "Uganda",
+    },
+    CountryEntry {
+        code: "US",
+        name: "United States",
+    },
+    CountryEntry {
+        code: "UY",
+        name: "Uruguay",
+    },
+    CountryEntry {
+        code: "UZ",
+        name: "Uzbekistan",
+    },
+    CountryEntry {
+        code: "VE",
+        name: "Venezuela",
+    },
+    CountryEntry {
+        code: "VN",
+        name: "Vietnam",
+    },
+    CountryEntry {
+        code: "ZA",
+        name: "South Africa",
+    },
+];
+
+// =========================================================================
+// Unroot wizard state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnrootType {
+    MagiskLkm,
+    APatchGki,
+}
+impl UnrootType {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm",
+            Self::APatchGki => "unroottype_apatch_gki",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm_desc",
+            Self::APatchGki => "unroottype_apatch_gki_desc",
+        }
+    }
+    fn folder_desc_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm_folderdesc",
+            Self::APatchGki => "unroottype_apatch_gki_folderdesc",
+        }
+    }
+}
+
+#[derive(Default)]
+struct UnrootWizard {
+    step: usize,
+    unroot_type: Option<UnrootType>,
+    folder_path: Option<String>,
+}
+
+const UNROOT_STEPS: &[&str] = &[
+    "unroot_step_method",
+    "unroot_step_folder",
+    "unroot_step_confirm",
+    "unroot_step_restore",
+];
+
+impl UnrootWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn is_in_exec(&self) -> bool {
+        self.step == UNROOT_STEPS.len() - 1
+    }
+    fn next(&mut self) {
+        if self.step < UNROOT_STEPS.len() - 1 {
+            self.step += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.unroot_type.is_some(),
+            1 => self.folder_path.is_some(),
+            2 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// Flash wizard state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceRegion {
+    Prc,
+    Row,
+}
+impl DeviceRegion {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Prc => "deviceregion_prc",
+            Self::Row => "deviceregion_row",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlashTarget {
+    OtherRegion,
+    SameRegion,
+}
+impl FlashTarget {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::OtherRegion => "flashtarget_other",
+            Self::SameRegion => "flashtarget_same",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataMode {
+    Keep,
+    Wipe,
+}
+impl DataMode {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Keep => "datamode_keep",
+            Self::Wipe => "datamode_wipe",
+        }
+    }
+}
+
+#[derive(Default)]
+struct FlashWizard {
+    step: usize,
+    device_region: Option<DeviceRegion>,
+    target: Option<FlashTarget>,
+    data_mode: Option<DataMode>,
+    firmware_folder: Option<String>,
+}
+
+const FLASH_STEPS: &[&str] = &[
+    "flash_step_region",
+    "flash_step_target",
+    "flash_step_data",
+    "flash_step_folder",
+    "flash_step_confirm",
+    "flash_step_flash",
+];
+
+impl FlashWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn is_in_exec(&self) -> bool {
+        self.step == FLASH_STEPS.len() - 1
+    }
+    fn next(&mut self) {
+        if self.step < FLASH_STEPS.len() - 1 {
+            self.step += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.device_region.is_some(),
+            1 => self.target.is_some(),
+            2 => self.data_mode.is_some(),
+            3 => self.firmware_folder.is_some(),
+            4 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// System Update wizard state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SysUpdateAction {
+    Disable,
+    Enable,
+    Rescue,
+}
+impl SysUpdateAction {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Disable => "sysupdate_disable",
+            Self::Enable => "sysupdate_enable",
+            Self::Rescue => "sysupdate_rescue",
+        }
+    }
+    fn desc_key(&self) -> &'static str {
+        match self {
+            Self::Disable => "sysupdate_disable_desc",
+            Self::Enable => "sysupdate_enable_desc",
+            Self::Rescue => "sysupdate_rescue_desc",
+        }
+    }
+}
+
+#[derive(Default)]
+struct SysUpdateWizard {
+    step: usize,
+    action: Option<SysUpdateAction>,
+}
+
+const SYSUPDATE_STEPS: &[&str] = &[
+    "sysupdate_step_action",
+    "sysupdate_step_confirm",
+    "sysupdate_step_execute",
+];
+
+impl SysUpdateWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn is_in_exec(&self) -> bool {
+        self.step == SYSUPDATE_STEPS.len() - 1
+    }
+    fn next(&mut self) {
+        if self.step < SYSUPDATE_STEPS.len() - 1 {
+            self.step += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.action.is_some(),
+            1 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// Flash Partitions wizard state (Advanced → Flash Partitions)
+// =========================================================================
+
+#[derive(Debug, Clone)]
+struct FlashPartRow {
+    label: String,
+    filename: String,
+    lun: String,
+    start_sector: String,
+    size_kb: String,
+    selected: bool,
+}
+
+#[derive(Default)]
+struct FlashPartsWizard {
+    step: usize, // 0=Folder, 1=Select, 2=Confirm, 3=Exec
+    folder_path: Option<String>,
+    rows: Vec<FlashPartRow>,
+    /// Set only when XML parsing fails.
+    parse_error: Option<String>,
+}
+
+const FLASH_PARTS_STEPS: &[&str] = &[
+    "flash_step_folder",
+    "flash_parts_step_select",
+    "flash_step_confirm",
+    "flash_step_flash",
+];
+
+impl FlashPartsWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn next(&mut self) {
+        if self.step < FLASH_PARTS_STEPS.len() - 1 {
+            self.step += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.folder_path.is_some() && self.parse_error.is_none() && !self.rows.is_empty(),
+            1 => self.rows.iter().any(|r| r.selected),
+            2 => true,
+            _ => false,
+        }
+    }
+    fn selected_rows(&self) -> Vec<FlashPartRow> {
+        self.rows.iter().filter(|r| r.selected).cloned().collect()
+    }
+}
+
+/// Wizard for every non-FlashPartitions Advanced action. Steps are
+/// [source, confirm, exec], plus a country step between source and
+/// confirm for `PatchDevinfo`. Country picker routes into the shared
+/// country popup and writes onto `self.country`.
+#[derive(Default, Debug, Clone)]
+struct AdvWizard {
+    action: Option<AdvAction>,
+    step: usize,
+    file_path: Option<String>,
+    country: Option<String>,
+    /// `{exe_dir}/output_<action>/` — populated on Confirm → Exec.
+    /// Read by the Done card's "Open Folder" pill.
+    output_dir: Option<std::path::PathBuf>,
+}
+
+impl AdvWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn open(&mut self, a: AdvAction) {
+        *self = Self::default();
+        self.action = Some(a);
+    }
+    fn needs_country(&self) -> bool {
+        matches!(self.action, Some(AdvAction::PatchDevinfo))
+    }
+    fn steps(&self) -> &'static [&'static str] {
+        if self.needs_country() {
+            &[
+                "adv_step_source",
+                "adv_step_country",
+                "flash_step_confirm",
+                "flash_step_flash",
+            ]
+        } else {
+            &["adv_step_source", "flash_step_confirm", "flash_step_flash"]
+        }
+    }
+    fn exec_step(&self) -> usize {
+        self.steps().len() - 1
+    }
+    fn next(&mut self) {
+        if self.step < self.exec_step() {
+            self.step += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn is_confirm_step(&self) -> bool {
+        self.step + 1 == self.exec_step()
+    }
+    fn can_next(&self) -> bool {
+        if self.step == 0 {
+            return self.file_path.is_some();
+        }
+        if self.needs_country() && self.step == 1 {
+            return self.country.is_some();
+        }
+        true
+    }
+    /// Folder-vs-file dispatch for Browse on step 0.
+    fn is_folder_op(&self) -> bool {
+        matches!(
+            self.action,
+            Some(AdvAction::DumpDevinfo)
+                | Some(AdvAction::WriteDevinfo)
+                | Some(AdvAction::WriteArb)
+                | Some(AdvAction::FlashFirmware)
+                // v2 parity: PatchDevinfo folder carries both devinfo.img
+                // + persist.img — country code lives in both partitions.
+                | Some(AdvAction::PatchDevinfo)
+        )
+    }
+    /// Extension whitelist for `rfd::AsyncFileDialog::add_filter`.
+    /// Empty slice = no constraint.
+    fn accepted_exts(&self) -> (&'static str, &'static [&'static str]) {
+        match self.action {
+            Some(AdvAction::ConvertXml) => ("Encrypted rawprogram (*.x)", &["x"]),
+            Some(AdvAction::RegionConvert)
+            | Some(AdvAction::DetectArb)
+            | Some(AdvAction::PatchArb)
+            | Some(AdvAction::RebuildVbmeta)
+            | Some(AdvAction::SignRecovery) => ("Android partition image (*.img)", &["img"]),
+            _ => ("", &[]),
+        }
+    }
+}
+
+// =========================================================================
+// Messages
+// =========================================================================
+
+#[derive(Debug, Clone, Default)]
+struct DevicePollResult {
+    status: ConnectionStatus,
+    model: String,
+    slot: String,
+    firmware: String,
+    arb: String,
+    ram: String,
+    storage: String,
+    market_name: String,
+    platform_supported: Option<bool>, // None = unknown, Some(true) = qcom, Some(false) = unsupported
+}
+
+/// Parse hwboardid: `"SM8750P_16+512_13"` → `("16 GB", "512 GB")`.
+fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
+    let parts: Vec<&str> = hwboardid.split('_').collect();
+    for part in &parts {
+        if let Some((ram, storage)) = part.split_once('+')
+            && ram.chars().all(|c| c.is_ascii_digit())
+            && storage.chars().all(|c| c.is_ascii_digit())
+        {
+            return (format!("{ram} GB"), format!("{storage} GB"));
+        }
+    }
+    (String::new(), String::new())
+}
+
+/// Pre-translated live-log strings for spawn_blocking closures that
+/// can't carry `self` across thread boundaries.
+#[derive(Debug, Clone)]
+struct LiveLabels {
+    op_root_phase: [String; 6],
+    op_unroot_phase: [String; 3],
+    op_flash_phase: [String; 4],
+    reboot_to_edl: String,
+    reboot_to_edl_sent: String, // "{n}" placeholder
+    wait_edl_port: String,
+    edl_ready: String,
+    edl_already: String,
+    closing_dump: String,
+    flash_completed: String,
+    root_completed: String,
+    unroot_completed: String,
+    adb_no_kver: String,
+    adb_no_device_slot: String,
+    adb_active_slot: String, // "{slot}" placeholder
+    adb_default_slot_a: String,
+    backup_saved_prefix: String,
+    root_resolved_prefix: String,
+    root_backup_copy_prefix: String,
+}
+
+/// Classify a model → ARB bucket i18n key (`arb_yes`/`arb_no`/`arb_unknown`).
+fn arb_from_model(model: &str) -> &'static str {
+    let m = model.to_uppercase();
+    match m.as_str() {
+        "TB320FC" | "TB321FU" | "TB520FU" | "TB710FU" => "arb_yes",
+        "TB322FC" => "arb_no",
+        _ => "arb_unknown",
+    }
+}
+
+/// Trim Lenovo build-display to the ROM + version tail. Example:
+/// `TB322FC_..._ZUXOS_1.5.10.183_ST_...` → `ZUXOS_1.5.10.183_ST_...`.
+/// ROW firmware uses `_ZUI_`. No marker → passthrough.
+fn trim_build_display(s: &str) -> String {
+    if let Some(i) = s.find("_ZUXOS_") {
+        return s[i + 1..].to_string();
+    }
+    if let Some(i) = s.find("_ZUI_") {
+        return s[i + 1..].to_string();
+    }
+    s.to_string()
+}
+
+/// True if the ADB product name is a TWRP recovery build. Lenovo stock
+/// never uses this prefix, so it's reliable without `ro.bootmode`.
+fn is_twrp_product(product: &str) -> bool {
+    product.to_ascii_lowercase().starts_with("twrp_")
+}
+
+/// Strip a leading `twrp_` (any case) from a product name.
+fn strip_twrp_prefix(product: &str) -> String {
+    if is_twrp_product(product) {
+        product[5..].to_string()
+    } else {
+        product.to_string()
+    }
+}
+
+/// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.
+///
+/// Already-EDL: no-op. Fastboot live: `oem edl` + 3s wait. ADB live:
+/// `adb reboot edl` + 5s wait. Then block on `wait_for_device`.
+fn transition_to_edl(ll: &LiveLabels, log: &mut Vec<String>) -> std::result::Result<(), String> {
+    if ltbox_device::edl::check_device() {
+        live!(log, "[EDL] {}", ll.edl_already);
+        return Ok(());
+    }
+    if ltbox_device::fastboot::FastbootDevice::check_device() {
+        live!(log, "[Fastboot] {}", ll.reboot_to_edl);
+        if let Ok(mut dev) = ltbox_device::fastboot::FastbootDevice::open() {
+            let _ = dev.oem_edl();
+        }
+        live!(
+            log,
+            "[Fastboot] {}",
+            ll.reboot_to_edl_sent.replace("{n}", "3")
+        );
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    } else {
+        let mut adb = ltbox_device::adb::AdbManager::new();
+        if adb.check_device().unwrap_or(false) {
+            live!(log, "[ADB] {}", ll.reboot_to_edl);
+            let _ = adb.reboot("edl");
+            live!(log, "[ADB] {}", ll.reboot_to_edl_sent.replace("{n}", "5"));
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    }
+    live!(log, "[EDL] {}", ll.wait_edl_port);
+    ltbox_device::edl::wait_for_device().map_err(|e| format!("EDL not found: {e}"))?;
+    live!(log, "[EDL] {}", ll.edl_ready);
+    Ok(())
+}
+
+/// M3 neutral pill — translucent `on_surface` fill, muted text, 4 dp
+/// corners. Small secondary actions (Cancel / Show log / Save log).
+fn neutral_pill_btn_style(t: &Theme, _s: button::Status) -> button::Style {
+    let p = pal_of(t);
+    button::Style {
+        background: Some(with_alpha(p.on_surface, 0.08).into()),
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        text_color: p.on_surface_variant,
+        ..Default::default()
+    }
+}
+
+/// M3 dialog shell — centred card on a dim scrim, 28 dp radius,
+/// `surface_container` fill, elevation-2 shadow. Inner content owns
+/// its own padding + width.
+fn m3_dialog(inner: Element<'_, Message>) -> Element<'_, Message> {
+    let card = container(inner).style(|t: &Theme| {
+        let p = pal_of(t);
+        container::Style {
+            background: Some(p.surface_container.into()),
+            border: iced::Border {
+                color: p.outline_variant,
+                width: 1.0,
+                radius: 28.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: with_alpha(p.shadow, 0.3),
+                offset: iced::Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
+            },
+            ..Default::default()
+        }
+    });
+    let scrim = container(Space::new().width(Length::Fill).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+            ..Default::default()
+        });
+    let centered = container(card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    iced::widget::stack![scrim, centered].into()
+}
+
+/// `Task<Message>` wrapping `rfd::AsyncFileDialog::pick_folder` for
+/// direct `return` from an update handler.
+fn pick_folder_task(on_pick: fn(Option<String>) -> Message) -> Task<Message> {
+    Task::perform(
+        async {
+            rfd::AsyncFileDialog::new()
+                .pick_folder()
+                .await
+                .map(|f| f.path().to_string_lossy().to_string())
+        },
+        on_pick,
+    )
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    // Window controls
+    WindowIdReceived(Option<iced::window::Id>),
+    WindowDrag,
+    WindowMinimize,
+    WindowToggleMaximize,
+    WindowClose,
+    // Navigation
+    Navigate(View),
+    SetTheme(ThemeChoice),
+    /// Show/hide the full-log modal on exec-step views.
+    ToggleLogPopup(bool),
+    // Settings
+    SetLanguage(Language),
+    // Flash wizard
+    FlashRegion(DeviceRegion),
+    FlashTarget(FlashTarget),
+    FlashDataMode(DataMode),
+    FlashNext,
+    FlashBack,
+    FlashSelectFolder,
+    FlashExecStart,
+    FlashExecDone(Vec<String>),
+    // Country code popup
+    SelectCountry(String),
+    DismissCountryPopup,
+    // System Update wizard
+    SysAction(SysUpdateAction),
+    SysNext,
+    SysBack,
+    // Root wizard
+    RootFamily(Family),
+    RootProvider(Provider),
+    RootMode(RootMode),
+    RootVersion(VerChoice),
+    RootNightlySource(NightlySource),
+    RootSelectFile,
+    RootSelectFolder,
+    RootNext,
+    RootBack,
+    /// APatch: open multi-select `.kpm` file dialog.
+    RootSelectKpm,
+    RootKpmSelected(Option<Vec<String>>),
+    RootKpmRemove(String),
+    RootSuperkeyInput(String),
+    /// Commit superkey + advance to Folder.
+    RootSuperkeyConfirm,
+    RootSuperkeyCancel,
+    RootRunIdInput(String),
+    RootRunIdConfirm,
+    /// Cancel the run-ID popup and roll back NightlySource so the
+    /// user can't end up half-confirmed.
+    RootRunIdCancel,
+    RootExecStart,
+    RootExecDone(Vec<String>),
+    // Unroot wizard
+    SetUnrootType(UnrootType),
+    UnrootSelectFolder,
+    UnrootNext,
+    UnrootBack,
+    UnrootExecStart,
+    UnrootExecDone(Vec<String>),
+    // Advanced
+    AdvConfirm(AdvAction),
+    AdvExec(AdvAction),
+    AdvExecDone(Vec<String>),
+    AdvFileSelected(AdvAction, Option<String>),
+    // Advanced wizard: browse → [country] → confirm → exec.
+    AdvWizOpen(AdvAction),
+    AdvWizBack,
+    AdvWizNext,
+    AdvWizBrowse,
+    AdvWizBrowseDone(Option<String>),
+    AdvWizOpenCountry,
+    AdvWizOpenOutputFolder,
+    // System Update execution
+    SysExecStart,
+    SysExecDone(Vec<String>),
+    FileSelected(Option<String>),
+    FolderSelected(Option<String>),
+    /// Recent-chip click — routes like the picker messages, no dialog.
+    RecentFilePicked(PickerTarget, String),
+    RecentFolderPicked(PickerTarget, String),
+    OperationError(String),
+    DismissError,
+    /// Reset the current wizard — fired by the "Start Over" pill.
+    StartOver,
+    // Device polling
+    PollDevice,
+    DevicePolled(DevicePollResult),
+    // Windows driver detection / auto-install
+    DriverCheckDone(ltbox_device::windows_driver::DriverStatus),
+    InstallDrivers,
+    InstallDriversDone(Result<Vec<String>, String>),
+    // Advanced → Flash Partitions wizard
+    FlashPartsSelectFolder,
+    FlashPartsFolderChosen(Option<String>),
+    FlashPartsToggleRow(usize),
+    FlashPartsNext,
+    FlashPartsBack,
+    FlashPartsClose,
+    FlashPartsExecStart,
+    FlashPartsExecDone(Vec<String>),
+    // Reboot: RebootRequest stages a target; popup resolves to
+    // RebootConfirm / RebootDismiss.
+    RebootRequest(RebootTarget),
+    RebootConfirm,
+    RebootDismiss,
+    RebootTo(RebootTarget),
+    /// Result of the EDL loader picker; `Some(path)` triggers the
+    /// EDL reset via `EdlSession::open` + reset / reset_to_edl.
+    RebootEdlWithLoader(RebootTarget, Option<String>),
+    RebootDone(Vec<String>),
+    DrainStdoutTap,
+    LogEditorAction(iced::widget::text_editor::Action),
+    SaveLog,
+    SaveLogPath(Option<std::path::PathBuf>),
+}
+
+// =========================================================================
+// App
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ConnectionStatus {
+    #[default]
+    None,
+    Adb,
+    /// ADB inside a TWRP recovery build (`ro.product.device` starts
+    /// with `twrp_`). Same transition rules as `Adb`; different label.
+    AdbRecovery,
+    /// ADB sees the device but USB-debug auth is unaccepted
+    /// (`unauthorized` / `authorizing`). Shell probes fail; dashboard
+    /// shows an authorize-debug prompt.
+    AdbUnauthorized,
+    Fastboot,
+    Edl,
+}
+impl ConnectionStatus {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::None => "conn_disconnected",
+            Self::Adb => "conn_adb",
+            Self::AdbRecovery => "conn_adb_recovery",
+            Self::AdbUnauthorized => "conn_adb_unauthorized",
+            Self::Fastboot => "conn_fastboot",
+            Self::Edl => "conn_edl",
+        }
+    }
+    fn color(&self, pal: &Palette) -> iced::Color {
+        match self {
+            Self::None => pal.on_surface_variant,
+            Self::Adb | Self::AdbRecovery => pal.success,
+            Self::AdbUnauthorized => pal.warning,
+            Self::Fastboot => pal.warning,
+            Self::Edl => pal.tertiary,
+        }
+    }
+    /// True when exec paths should skip the ADB probe. AdbUnauthorized
+    /// counts as "no usable ADB" — shell would fail.
+    fn skip_adb(self) -> bool {
+        matches!(self, Self::Fastboot | Self::Edl | Self::AdbUnauthorized)
+    }
+}
+
+struct App {
+    window_id: Option<iced::window::Id>,
+    current_view: View,
+    /// Effective dark-mode flag — cached to keep repaint off the OS
+    /// registry. Recomputed on theme-choice change.
+    dark_mode: bool,
+    theme_choice: ThemeChoice,
+    settings: SettingsState,
+    translations: Translations,
+    root: RootWizard,
+    flash: FlashWizard,
+    sysupdate: SysUpdateWizard,
+    unroot: UnrootWizard,
+    adv_confirm: Option<AdvAction>,
+    /// Staged path for the pending advanced action — replayed into the
+    /// exec path on Start so no second dialog fires.
+    adv_confirm_path: Option<String>,
+    /// Advanced wizard state. Mirrors into `adv_confirm*` on exec so
+    /// the legacy handlers stay oblivious.
+    adv_wizard: AdvWizard,
+    wf_config: WorkflowConfig,
+    country_popup_open: bool,
+    /// Routes `SelectCountry` back to the Advanced wizard instead of
+    /// the Flash flow when PatchDevinfo opened the popup.
+    adv_needs_country: bool,
+    /// Staging slot for the Reboot confirm popup.
+    reboot_confirm_target: Option<RebootTarget>,
+    // Device & operation state
+    connection: ConnectionStatus,
+    device_model: String,
+    device_slot: String,
+    device_firmware: String,
+    device_arb: String,
+    device_ram: String,
+    device_storage: String,
+    device_market_name: String,
+    // Device portrait derived at view time via `device_portrait()`.
+    platform_supported: Option<bool>,
+    busy: bool,
+    /// View that owns the current busy op — labels the dashboard
+    /// "in progress" card with the sidebar name.
+    busy_view: Option<View>,
+    /// Persisted recent picks. Rendered as chips under every picker.
+    recent_paths: settings_store::RecentPaths,
+    log_lines: Vec<String>,
+    /// `text_editor::Content` mirror of `log_lines` — supports cursor
+    /// drag + Ctrl+C unlike `scrollable(text(...))`. Rebuilt on the
+    /// drain tick when `log_dirty` (batches cosmic-text reshape away
+    /// from per-push so a long pbr flash doesn't crash wgpu).
+    log_editor: iced::widget::text_editor::Content,
+    log_dirty: bool,
+    error_msg: Option<String>,
+    picker_target: PickerTarget,
+    driver_status: Option<ltbox_device::windows_driver::DriverStatus>,
+    installing_drivers: bool,
+    flash_parts: FlashPartsWizard,
+    flash_parts_open: bool,
+    /// Phases of the running op. Populated at exec start, cleared on
+    /// `end_op`.
+    op_steps: Vec<OpStep>,
+    /// Index advanced by parsing `Phase N/M` markers in `log_push`.
+    current_op_step: usize,
+    log_popup_open: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PickerTarget {
+    #[default]
+    None,
+    RootFile,
+    RootFolder,
+    UnrootFolder,
+    FlashFolder,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        let persisted = settings_store::load();
+        let lang = Language::from_code(&persisted.language).unwrap_or(Language::En);
+        // Upgrade path: prefer `theme`, fall back to legacy `dark_mode`.
+        let theme_choice = ThemeChoice::from_code(&persisted.theme).unwrap_or({
+            if persisted.theme.is_empty() && persisted.dark_mode {
+                ThemeChoice::Dark
+            } else {
+                ThemeChoice::System
+            }
+        });
+        let dark_mode = match theme_choice {
+            ThemeChoice::Light => false,
+            ThemeChoice::Dark => true,
+            ThemeChoice::System => theme_detect::system_prefers_dark(),
+        };
+        install_core_translator(lang);
+        Self {
+            window_id: None,
+            current_view: View::default(),
+            dark_mode,
+            theme_choice,
+            settings: SettingsState { language: lang },
+            translations: Translations::load(lang),
+            root: RootWizard::default(),
+            flash: FlashWizard::default(),
+            sysupdate: SysUpdateWizard::default(),
+            unroot: UnrootWizard::default(),
+            adv_confirm: None,
+            adv_confirm_path: None,
+            adv_wizard: AdvWizard::default(),
+            wf_config: WorkflowConfig::default(),
+            country_popup_open: false,
+            adv_needs_country: false,
+            reboot_confirm_target: None,
+            connection: ConnectionStatus::default(),
+            device_model: String::new(),
+            device_slot: String::new(),
+            device_firmware: String::new(),
+            device_arb: String::new(),
+            device_ram: String::new(),
+            device_storage: String::new(),
+            device_market_name: String::new(),
+            platform_supported: None,
+            busy: false,
+            busy_view: None,
+            recent_paths: persisted.recent_paths.clone(),
+            log_lines: vec!["Ready.".to_string()],
+            log_editor: iced::widget::text_editor::Content::with_text("Ready."),
+            log_dirty: false,
+            error_msg: None,
+            picker_target: PickerTarget::None,
+            driver_status: None,
+            installing_drivers: false,
+            flash_parts: FlashPartsWizard::default(),
+            flash_parts_open: false,
+            op_steps: Vec::new(),
+            current_op_step: 0,
+            log_popup_open: false,
+        }
+    }
+}
+
+impl App {
+    fn new() -> (Self, Task<Message>) {
+        // Window-id + driver check fire in parallel.
+        let win = iced::window::latest().map(Message::WindowIdReceived);
+        let driver_check = Task::perform(
+            async {
+                tokio::task::spawn_blocking(ltbox_device::windows_driver::check_required_drivers)
+                    .await
+                    .unwrap_or(ltbox_device::windows_driver::DriverStatus::NotWindows)
+            },
+            Message::DriverCheckDone,
+        );
+        (Self::default(), Task::batch([win, driver_check]))
+    }
+    fn theme(&self) -> Theme {
+        if self.dark_mode {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }
+    }
+
+    /// Localized string. Falls back to English, then the key itself.
+    fn t<'a>(&'a self, key: &'a str) -> &'a str {
+        self.translations.t(key)
+    }
+
+    fn pal(&self) -> &'static Palette {
+        palette(self.dark_mode)
+    }
+
+    /// Push one line, trim to `LOG_MAX_LINES`. Editor rebuild is
+    /// deferred to the drain tick — per-push reshape was driving
+    /// wgpu into TDR during long pbr flashes.
+    fn log_push<S: Into<String>>(&mut self, line: S) {
+        let s = line.into();
+        self.maybe_advance_op_step(&s);
+        self.log_lines.push(s);
+        self.trim_log();
+        self.log_dirty = true;
+    }
+
+    /// Bulk append; one truncation pass.
+    fn log_extend<I: IntoIterator<Item = String>>(&mut self, lines: I) {
+        let vec: Vec<String> = lines.into_iter().collect();
+        for line in &vec {
+            self.maybe_advance_op_step(line);
+        }
+        self.log_lines.extend(vec);
+        self.trim_log();
+        self.log_dirty = true;
+    }
+
+    /// Advance `current_op_step` on a `Phase N/M` match. Silent no-op
+    /// when no op is in flight or the line has no marker.
+    fn maybe_advance_op_step(&mut self, line: &str) {
+        if self.op_steps.is_empty() {
+            return;
+        }
+        if let Some(n) = parse_phase_marker(line)
+            && n > 0
+        {
+            let cap = self.op_steps.len();
+            self.current_op_step = (n - 1).min(cap.saturating_sub(1));
+        }
+    }
+
+    /// Start a new long-running op. Sets `busy` + `busy_view`; drops
+    /// an `=`-bar into the log so consecutive runs are distinguishable.
+    fn begin_op(&mut self, v: View) {
+        self.busy = true;
+        self.busy_view = Some(v);
+        // The *ExecStart handlers populate op_steps right after this
+        // call — zero here for a clean slate.
+        self.error_msg = None;
+        self.op_steps.clear();
+        self.current_op_step = 0;
+        let label = format!("START {}", self.t(v.label_key()));
+        self.log_separator(Some(&label));
+    }
+
+    /// 6-phase Root flow (Phase 1/6 → 6/6).
+    fn derive_root_op_steps(&self) -> Vec<OpStep> {
+        [
+            "op_root_phase_1",
+            "op_root_phase_2",
+            "op_root_phase_3",
+            "op_root_phase_4",
+            "op_root_phase_5",
+            "op_root_phase_6",
+        ]
+        .iter()
+        .map(|k| OpStep {
+            label: self.t(k).to_string(),
+        })
+        .collect()
+    }
+
+    /// 3-phase Unroot flow.
+    fn derive_unroot_op_steps(&self) -> Vec<OpStep> {
+        [
+            "op_unroot_phase_1",
+            "op_unroot_phase_2",
+            "op_unroot_phase_3",
+        ]
+        .iter()
+        .map(|k| OpStep {
+            label: self.t(k).to_string(),
+        })
+        .collect()
+    }
+
+    /// Snapshot localized log strings for use across thread boundaries.
+    fn live_labels(&self) -> LiveLabels {
+        let t = |k: &str| self.t(k).to_string();
+        LiveLabels {
+            op_root_phase: [
+                t("op_root_phase_1"),
+                t("op_root_phase_2"),
+                t("op_root_phase_3"),
+                t("op_root_phase_4"),
+                t("op_root_phase_5"),
+                t("op_root_phase_6"),
+            ],
+            op_unroot_phase: [
+                t("op_unroot_phase_1"),
+                t("op_unroot_phase_2"),
+                t("op_unroot_phase_3"),
+            ],
+            op_flash_phase: [
+                t("op_flash_phase_1"),
+                t("op_flash_phase_2"),
+                t("op_flash_phase_3"),
+                t("op_flash_phase_4"),
+            ],
+            reboot_to_edl: t("live_reboot_to_edl"),
+            reboot_to_edl_sent: t("live_reboot_to_edl_sent"),
+            wait_edl_port: t("live_wait_edl_port"),
+            edl_ready: t("live_edl_ready"),
+            edl_already: t("live_edl_already"),
+            closing_dump: t("live_closing_dump_session"),
+            flash_completed: t("live_flash_completed"),
+            root_completed: t("live_root_completed"),
+            unroot_completed: t("live_unroot_completed"),
+            adb_no_kver: t("live_adb_no_kver"),
+            adb_no_device_slot: t("live_adb_no_device_slot"),
+            adb_active_slot: t("live_adb_active_slot"),
+            adb_default_slot_a: t("live_adb_default_slot_a"),
+            backup_saved_prefix: t("live_backup_saved_prefix"),
+            root_resolved_prefix: t("live_root_resolved_prefix"),
+            root_backup_copy_prefix: t("live_root_backup_copy_prefix"),
+        }
+    }
+
+    /// 4-phase Flash flow (validate, EDL, partitions, reboot). Grow
+    /// in lockstep if the backend adds a phase.
+    fn derive_flash_op_steps(&self) -> Vec<OpStep> {
+        [
+            "op_flash_phase_1",
+            "op_flash_phase_2",
+            "op_flash_phase_3",
+            "op_flash_phase_4",
+        ]
+        .iter()
+        .map(|k| OpStep {
+            label: self.t(k).to_string(),
+        })
+        .collect()
+    }
+
+    /// Pairs with `begin_op`. Emits a separator even on partial failure.
+    fn end_op(&mut self) {
+        let label = match self.busy_view {
+            Some(v) => format!("END   {}", self.t(v.label_key())),
+            None => "END".to_string(),
+        };
+        self.log_separator(Some(&label));
+        if !self.op_steps.is_empty() {
+            self.current_op_step = self.op_steps.len() - 1;
+        }
+        self.busy = false;
+        self.busy_view = None;
+    }
+
+    /// 80-wide `=` separator with an optional centred label.
+    fn log_separator(&mut self, label: Option<&str>) {
+        const BAR: &str =
+            "================================================================================";
+        let line = match label {
+            Some(s) if !s.is_empty() => {
+                let inner = format!(" {s} ");
+                let bar_len = BAR.len();
+                let inner_len = inner.chars().count();
+                if inner_len >= bar_len {
+                    inner
+                } else {
+                    let side = (bar_len - inner_len) / 2;
+                    let left = &BAR[..side];
+                    let right = &BAR[..bar_len - side - inner_len];
+                    format!("{left}{inner}{right}")
+                }
+            }
+            _ => BAR.to_string(),
+        };
+        self.log_push(line);
+    }
+
+    fn trim_log(&mut self) {
+        if self.log_lines.len() > LOG_MAX_LINES {
+            let drop = self.log_lines.len() - LOG_MAX_LINES;
+            self.log_lines.drain(..drop);
+        }
+    }
+
+    /// Rebuild the editor from `log_lines` and auto-scroll to the
+    /// bottom via `Motion::DocumentEnd`. Selection state resets.
+    fn rebuild_log_editor(&mut self) {
+        let joined = self.log_lines.join("\n");
+        self.log_editor = iced::widget::text_editor::Content::with_text(&joined);
+        use iced::widget::text_editor::{Action, Motion};
+        self.log_editor.perform(Action::Move(Motion::DocumentEnd));
+        self.log_dirty = false;
+    }
+
+    fn persist_settings(&self) {
+        settings_store::save(&settings_store::PersistedSettings {
+            language: self.settings.language.code().to_string(),
+            theme: self.theme_choice.code().to_string(),
+            // Legacy field kept readable by older builds.
+            dark_mode: self.dark_mode,
+            recent_paths: self.recent_paths.clone(),
+        });
+    }
+
+    fn remember_recent_file(&mut self, path: &str) {
+        if self.recent_paths.push_file(path) {
+            self.persist_settings();
+        }
+    }
+
+    fn remember_recent_folder(&mut self, path: &str) {
+        if self.recent_paths.push_folder(path) {
+            self.persist_settings();
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch([
+            iced::time::every(std::time::Duration::from_secs(3)).map(|_| Message::PollDevice),
+            // 500 ms drain — 4 Hz drove some GPU drivers into TDR
+            // during long qdl flashes.
+            iced::time::every(std::time::Duration::from_millis(500))
+                .map(|_| Message::DrainStdoutTap),
+        ])
+    }
+
+    fn update(&mut self, msg: Message) -> Task<Message> {
+        match msg {
+            // Window controls
+            Message::WindowIdReceived(id) => self.window_id = id,
+            Message::WindowDrag => {
+                if let Some(id) = self.window_id {
+                    return iced::window::drag(id);
+                }
+            }
+            Message::WindowMinimize => {
+                if let Some(id) = self.window_id {
+                    return iced::window::minimize(id, true);
+                }
+            }
+            Message::WindowToggleMaximize => {
+                if let Some(id) = self.window_id {
+                    return iced::window::toggle_maximize(id);
+                }
+            }
+            Message::WindowClose => {
+                if let Some(id) = self.window_id {
+                    return iced::window::close(id);
+                }
+            }
+            // Navigation
+            Message::Navigate(v) => {
+                self.current_view = v;
+                // Keep wizard state during a running op or on the
+                // exec/Done screen — sidebar bounce mid-flash must
+                // not kick back to step 0.
+                let busy = self.busy;
+                if v == View::Root && !busy && !self.root.is_in_exec() {
+                    self.root.reset();
+                }
+                if v == View::Flash && !busy && !self.flash.is_in_exec() {
+                    self.flash.reset();
+                }
+                if v == View::SystemUpdate && !busy && !self.sysupdate.is_in_exec() {
+                    self.sysupdate.reset();
+                }
+                if v == View::Unroot && !busy && !self.unroot.is_in_exec() {
+                    self.unroot.reset();
+                }
+            }
+            Message::SetTheme(choice) => {
+                self.theme_choice = choice;
+                self.dark_mode = match choice {
+                    ThemeChoice::Light => false,
+                    ThemeChoice::Dark => true,
+                    ThemeChoice::System => theme_detect::system_prefers_dark(),
+                };
+                self.persist_settings();
+            }
+            Message::ToggleLogPopup(open) => {
+                self.log_popup_open = open;
+            }
+            // Settings
+            Message::SetLanguage(l) => {
+                self.settings.language = l;
+                self.translations = Translations::load(l);
+                install_core_translator(l);
+                self.persist_settings();
+            }
+            // Flash wizard
+            Message::FlashRegion(r) => self.flash.device_region = Some(r),
+            Message::FlashTarget(t) => self.flash.target = Some(t),
+            Message::FlashDataMode(m) => self.flash.data_mode = Some(m),
+            Message::FlashNext => {
+                // Data step → build WorkflowConfig; wipe opens country popup.
+                if self.flash.step == 2 {
+                    self.wf_config = WorkflowConfig {
+                        modify_region: self.flash.target == Some(FlashTarget::OtherRegion),
+                        modify_rollback: if self.flash.target == Some(FlashTarget::OtherRegion) {
+                            RollbackSetting::On
+                        } else {
+                            RollbackSetting::Auto
+                        },
+                        wipe: self.flash.data_mode == Some(DataMode::Wipe),
+                        country_code: None,
+                    };
+                    if self.wf_config.wipe {
+                        self.flash.next();
+                        self.country_popup_open = true;
+                        return Task::none();
+                    }
+                }
+                if self.flash.step == 4 {
+                    self.flash.next();
+                    return self.update(Message::FlashExecStart);
+                }
+                self.flash.next();
+            }
+            Message::FlashBack => {
+                if self.flash.step == 4 {
+                    self.wf_config.country_code = None;
+                }
+                self.flash.back();
+            }
+            Message::FlashSelectFolder => {
+                self.picker_target = PickerTarget::FlashFolder;
+                return pick_folder_task(Message::FolderSelected);
+            }
+            Message::FlashExecStart => {
+                self.begin_op(View::Flash);
+                self.op_steps = self.derive_flash_op_steps();
+                self.error_msg = None;
+                let cfg = self.wf_config.clone();
+                let conn = self.connection;
+                let fw_folder = self.flash.firmware_folder.clone().unwrap_or_default();
+                let rollback_label = self.t(cfg.modify_rollback.label_key()).to_string();
+                self.log_push(format!(
+                    "[Flash] Starting: modify_region={} rollback={} wipe={}",
+                    cfg.modify_region, rollback_label, cfg.wipe
+                ));
+                let rb_label_for_log = rollback_label.clone();
+                // Snapshot rollback index before EDL — `stored_rollback_index`
+                // vanishes past Fastboot. Two `None` flavours matter:
+                // vars-returned-no-index (no ARB committed, skip) vs
+                // vars-unreachable (unsafe for ON mode, caller aborts).
+                let (device_rollback_index, fastboot_reachable): (Option<u64>, bool) =
+                    match ltbox_device::fastboot::FastbootDevice::open() {
+                        Ok(mut dev) => match dev.get_all_vars() {
+                            Ok(v) => (
+                                ltbox_patch::rollback::compute_device_rollback_index(
+                                    &v.rollback_indices,
+                                ),
+                                true,
+                            ),
+                            Err(_) => (None, false),
+                        },
+                        Err(_) => (None, false),
+                    };
+                let rb_mode = cfg.modify_rollback.to_mode();
+                let ll = self.live_labels();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                            let mut log = Vec::new();
+                            let fw_dir = std::path::Path::new(&fw_folder);
+
+                            // 1. Validate firmware folder
+                            live!(log, "[Flash] Phase 1/4 — {}", ll.op_flash_phase[0]);
+                            if !fw_dir.exists() {
+                                return Err(format!("Firmware folder not found: {fw_folder}"));
+                            }
+                            live!(log, "[Flash] Firmware folder: {fw_folder}");
+
+                            // Rollback=ON + no fastboot vars → can't target
+                            // a safe index. Bail before risking a brick.
+                            if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
+                                && !fastboot_reachable
+                            {
+                                live!(
+                                    log,
+                                    "[ARB] Rollback mode = ON but fastboot vars unreachable — cannot target a safe rollback index. Aborting and rebooting to system."
+                                );
+                                // Best-effort reboot — any failure stays
+                                // in the log; wizard still gets the Err.
+                                let mut adb = ltbox_device::adb::AdbManager::new();
+                                if adb.check_device().unwrap_or(false) {
+                                    if let Err(e) = adb.shell("reboot") {
+                                        log.push(format!(
+                                            "[ADB] reboot attempt failed: {e}"
+                                        ));
+                                    } else {
+                                        log.push("[ADB] reboot sent".to_string());
+                                    }
+                                } else {
+                                    log.push(
+                                        "[ADB] No ADB device to route reboot through — user must reboot manually".into(),
+                                    );
+                                }
+                                return Err("Rollback=ON requires fastboot var access. Device not in fastboot or getvar failed — aborted without flashing.".to_string());
+                            }
+
+                            // 2. Device detection
+                            let skip_adb = conn.skip_adb();
+                            if skip_adb {
+                                log.push("[Flash] Device in Fastboot/EDL — skipping ADB step".to_string());
+                            } else {
+                                log.push("[ADB] Checking device...".to_string());
+                                let mut adb = ltbox_device::adb::AdbManager::new();
+                                if adb.check_device().unwrap_or(false) {
+                                    log.push("[ADB] Device connected".to_string());
+                                    let slot = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
+                                    log.push(format!("[ADB] Active slot: {slot}"));
+                                } else {
+                                    log.push("[ADB] No device — proceeding without ADB info".to_string());
+                                }
+                            }
+
+                            // 3. Scan firmware folder
+                            let vendor_boot = fw_dir.join("vendor_boot.img");
+                            let vbmeta = fw_dir.join("vbmeta.img");
+                            let boot = fw_dir.join("boot.img");
+                            let has_vendor_boot = vendor_boot.exists();
+                            let has_vbmeta = vbmeta.exists();
+                            let has_boot = boot.exists();
+                            log.push(format!("[Flash] vendor_boot.img: {}", if has_vendor_boot { "found" } else { "not found" }));
+                            log.push(format!("[Flash] vbmeta.img: {}", if has_vbmeta { "found" } else { "not found" }));
+                            log.push(format!("[Flash] boot.img: {}", if has_boot { "found" } else { "not found" }));
+
+                            // Count .x and .xml files
+                            let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
+                                e.as_ref().ok().map(|e| e.path().extension().map(|ext| ext == "x").unwrap_or(false)).unwrap_or(false)
+                            }).count()).unwrap_or(0);
+                            let xml_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
+                                e.as_ref().ok().map(|e| {
+                                    let p = e.path();
+                                    p.extension().map(|ext| ext == "xml").unwrap_or(false)
+                                        && p.file_name().map(|n| n.to_string_lossy().starts_with("rawprogram")).unwrap_or(false)
+                                }).unwrap_or(false)
+                            }).count()).unwrap_or(0);
+                            log.push(format!("[Flash] .x files: {x_count}, rawprogram XML: {xml_count}"));
+
+                            // 4. Region conversion
+                            if cfg.modify_region {
+                                if has_vendor_boot && has_vbmeta {
+                                    log.push("[Region] Region modification: ON".to_string());
+                                    log.push("[Region] vendor_boot + vbmeta patching ready".to_string());
+                                } else {
+                                    log.push("[Region] WARNING: vendor_boot.img or vbmeta.img missing — region patch skipped".to_string());
+                                }
+                            } else {
+                                log.push("[Region] Region modification: OFF".to_string());
+                            }
+
+                            // 5. ARB detection
+                            log.push(format!("[ARB] Modify Rollback Index: {}", rb_label_for_log));
+                            log.push(format!(
+                                "[ARB] Device rollback index: {}",
+                                device_rollback_index
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "(none / no ARB committed)".to_string())
+                            ));
+                            if has_boot {
+                                log.push("[ARB] $ analyze_rollback boot.img".to_string());
+                                match ltbox_patch::rollback::analyze_rollback_with_mode(
+                                    &boot,
+                                    device_rollback_index,
+                                    rb_mode,
+                                ) {
+                                    Ok(info) => log.push(format!(
+                                        "[ARB] boot.img rollback index: {}, needs_patch: {} (mode={:?})",
+                                        info.image_index, info.needs_patch, rb_mode
+                                    )),
+                                    Err(e) => log.push(format!("[ARB] boot.img analysis failed: {e}")),
+                                }
+                            }
+                            // v2 parity: `check_image_folder_arb` —
+                            // diagnostic only, no mutation of flash plan.
+
+                            // 6. XML
+                            if x_count > 0 {
+                                log.push(format!("[XML] {x_count} encrypted .x file(s) — decryption will be performed"));
+                            }
+                            if !cfg.wipe && xml_count > 0 {
+                                log.push("[XML] Keep data mode — userdata/metadata will be excluded".to_string());
+                            }
+
+                            // 7. Country code
+                            if cfg.wipe {
+                                log.push("[Flash] Data mode: WIPE".to_string());
+                                if let Some(cc) = &cfg.country_code {
+                                    log.push(format!("[Flash] Country code: {cc} — devinfo/persist will be patched"));
+                                }
+                            } else {
+                                log.push("[Flash] Data mode: KEEP".to_string());
+                            }
+
+                            // 8. EDL flash
+                            let loader = find_edl_loader(fw_dir)
+                                .or_else(|| fw_dir.parent().and_then(find_edl_loader));
+                            let loader = match loader {
+                                Some(l) => l,
+                                None => {
+                                    log.push("[EDL] xbl_s_devprg_ns.melf not found in firmware folder".to_string());
+                                    return Ok(log);
+                                }
+                            };
+
+                            live!(log, "[Flash] Phase 2/4 — {}", ll.op_flash_phase[1]);
+                            transition_to_edl(&ll, &mut log)?;
+
+                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                .map_err(|e| format!("EDL session: {e}"))?;
+
+                            // v2 parity: `flash_rawprogram` — drive off
+                            // `rawprogram*.xml` + `patch*.xml` so start
+                            // sector / num_sectors / LUN come from the
+                            // catalog (no slot guessing).
+                            let (raw_xmls, patch_xmls) =
+                                ltbox_device::edl::collect_firmware_xmls(fw_dir);
+                            if raw_xmls.is_empty() {
+                                return Err(format!(
+                                    "No flashable rawprogram*.xml found in {fw_folder}"
+                                ));
+                            }
+                            // v2 parity: `patch_anti_rollback`. Patched
+                            // copies written to `arb_work_dir`, flashed
+                            // *after* rawprogram — avoids mutating the
+                            // user's firmware folder on disk.
+                            let mut arb_patched: Vec<(
+                                String,
+                                u8,
+                                String,
+                                std::path::PathBuf,
+                            )> = Vec::new();
+                            if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
+                                let xml_paths: Vec<&std::path::Path> =
+                                    raw_xmls.iter().map(|p| p.as_path()).collect();
+                                let catalog = match ltbox_core::xml_catalog::XmlCatalog::from_paths(
+                                    &xml_paths,
+                                ) {
+                                    Ok(c) => Some(c),
+                                    Err(e) => {
+                                        log.push(format!(
+                                            "[ARB] rawprogram parse for ARB prep failed: {e}"
+                                        ));
+                                        None
+                                    }
+                                };
+                                if let Some(catalog) = catalog {
+                                    // Per-run scratch dir; cleaned on entry.
+                                    let arb_work_dir = dirs::data_dir()
+                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                        .join("ltbox")
+                                        .join("flash_arb");
+                                    let _ = std::fs::remove_dir_all(&arb_work_dir);
+                                    std::fs::create_dir_all(&arb_work_dir)
+                                        .map_err(|e| format!("arb work dir: {e}"))?;
+
+                                    // v2 partition map — boot + vbmeta_system
+                                    // processed as a pair; slot fallback
+                                    // `_a` → `_b` → unsuffixed.
+                                    let label_pairs: &[(&str, &[&str])] = &[
+                                        ("boot", &["boot_a", "boot_b", "boot"]),
+                                        (
+                                            "vbmeta_system",
+                                            &["vbmeta_system_a", "vbmeta_system_b", "vbmeta_system"],
+                                        ),
+                                    ];
+                                    for (log_name, fallbacks) in label_pairs {
+                                        let Ok(rec) = catalog.require(fallbacks[0], &fallbacks[1..]) else {
+                                            log.push(format!(
+                                                "[ARB] {log_name}: not in rawprogram — skipping"
+                                            ));
+                                            continue;
+                                        };
+                                        let filename = rec.filename.clone();
+                                        if filename.is_empty() {
+                                            log.push(format!(
+                                                "[ARB] {log_name}: empty filename in rawprogram — skipping"
+                                            ));
+                                            continue;
+                                        }
+                                        let source = fw_dir.join(&filename);
+                                        if !source.exists() {
+                                            log.push(format!(
+                                                "[ARB] {log_name}: {} not found — skipping",
+                                                source.display()
+                                            ));
+                                            continue;
+                                        }
+
+                                        // `Off` is already bypassed; On or Auto here.
+                                        let analysis = match ltbox_patch::rollback::analyze_rollback_with_mode(
+                                            &source,
+                                            device_rollback_index,
+                                            rb_mode,
+                                        ) {
+                                            Ok(a) => a,
+                                            Err(e) => {
+                                                log.push(format!(
+                                                    "[ARB] analyze {log_name} failed: {e}"
+                                                ));
+                                                continue;
+                                            }
+                                        };
+                                        log.push(format!(
+                                            "[ARB] {log_name}: image={}, needs_patch={} (mode={:?})",
+                                            analysis.image_index, analysis.needs_patch, rb_mode
+                                        ));
+                                        if !analysis.needs_patch {
+                                            continue;
+                                        }
+                                        let Some(target) = device_rollback_index else {
+                                            log.push(format!(
+                                                "[ARB] {log_name}: needs_patch but device index unknown — skipping"
+                                            ));
+                                            continue;
+                                        };
+
+                                        // Signing-key resolution: bundled KEY_MAP
+                                        // via pubkey_sha1 → filesystem fallback.
+                                        // NONE algorithm routes through
+                                        // `patch_chained_image`'s `add_hash_footer`.
+                                        let key_from_map = ltbox_patch::key_map::key_spec_for_pubkey(
+                                            analysis.image_info.public_key_sha1.as_deref(),
+                                        );
+                                        let fallback_key = find_edl_loader(fw_dir)
+                                            .as_deref()
+                                            .and_then(|_| find_testkey(fw_dir));
+
+                                        let patched = arb_work_dir.join(format!("{log_name}.arb.img"));
+                                        let is_vbmeta = log_name.starts_with("vbmeta");
+                                        let patch_result = if is_vbmeta {
+                                            // vbmeta always resigns (no add_hash_footer).
+                                            let key_spec = key_from_map
+                                                .map(std::string::ToString::to_string)
+                                                .or_else(|| {
+                                                    fallback_key
+                                                        .as_deref()
+                                                        .map(|p| p.display().to_string())
+                                                });
+                                            match key_spec {
+                                                Some(spec) => {
+                                                    std::fs::copy(&source, &patched)
+                                                        .map_err(|e| format!("copy vbmeta: {e}"))?;
+                                                    ltbox_patch::avb::resign_image(
+                                                        &patched,
+                                                        &spec,
+                                                        &analysis.image_info.algorithm,
+                                                        Some(target),
+                                                    )
+                                                    .map_err(|e| format!("resign {log_name}: {e}"))
+                                                }
+                                                None => {
+                                                    log.push(format!(
+                                                        "[ARB] {log_name}: no signing key (pubkey {:?} unknown + no testkey) — skipping",
+                                                        analysis.image_info.public_key_sha1
+                                                    ));
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            // Chained: testkey path for
+                                            // `patch_chained_image`; bundled
+                                            // pubkey routes through
+                                            // `avb::resign_image` (can't
+                                            // express the embedded PEM as a
+                                            // path without materialising it).
+                                            if analysis.image_info.algorithm == "NONE" {
+                                                ltbox_patch::rollback::patch_chained_image(
+                                                    &source,
+                                                    &patched,
+                                                    target,
+                                                    fallback_key.as_deref(),
+                                                )
+                                                .map_err(|e| format!("patch {log_name}: {e}"))
+                                            } else if let Some(spec) = key_from_map {
+                                                std::fs::copy(&source, &patched)
+                                                    .map_err(|e| format!("copy chained: {e}"))?;
+                                                ltbox_patch::avb::resign_image(
+                                                    &patched,
+                                                    spec,
+                                                    &analysis.image_info.algorithm,
+                                                    Some(target),
+                                                )
+                                                .map_err(|e| format!("resign {log_name}: {e}"))
+                                            } else if fallback_key.is_some() {
+                                                ltbox_patch::rollback::patch_chained_image(
+                                                    &source,
+                                                    &patched,
+                                                    target,
+                                                    fallback_key.as_deref(),
+                                                )
+                                                .map_err(|e| format!("patch {log_name}: {e}"))
+                                            } else {
+                                                log.push(format!(
+                                                    "[ARB] {log_name}: no signing key (pubkey {:?} unknown + no testkey) — skipping",
+                                                    analysis.image_info.public_key_sha1
+                                                ));
+                                                continue;
+                                            }
+                                        };
+                                        if let Err(e) = patch_result {
+                                            log.push(format!("[ARB] {log_name} patch failed: {e}"));
+                                            continue;
+                                        }
+
+                                        let lun: u8 = rec
+                                            .lun
+                                            .as_deref()
+                                            .unwrap_or("0")
+                                            .parse()
+                                            .unwrap_or(0);
+                                        let start = rec.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                                        live!(
+                                            log,
+                                            "[ARB] prepared {log_name} → {} (target={target})",
+                                            patched.display()
+                                        );
+                                        arb_patched.push((
+                                            rec.label.clone(),
+                                            lun,
+                                            start,
+                                            patched,
+                                        ));
+                                    }
+                                }
+                            }
+
+                            live!(
+                                log,
+                                "[Flash] Phase 3/4 — {} ({} rawprogram + {} patch XML)",
+                                ll.op_flash_phase[2],
+                                raw_xmls.len(),
+                                patch_xmls.len()
+                            );
+                            session
+                                .flash_rawprogram_with_wipe(
+                                    &raw_xmls,
+                                    &patch_xmls,
+                                    cfg.wipe,
+                                    &mut log,
+                                )
+                                .map_err(|e| format!("Firmware flash failed: {e}"))?;
+
+                            // Overwrite rawprogram's stock boot + vbmeta_system
+                            // with the ARB-patched copies.
+                            for (label, lun, start, patched) in &arb_patched {
+                                live!(log, "[ARB] flash patched {label}");
+                                if let Err(e) = session.flash_partition_at(
+                                    label,
+                                    patched,
+                                    *lun,
+                                    start,
+                                    &mut log,
+                                ) {
+                                    return Err(format!("ARB flash {label}: {e}"));
+                                }
+                            }
+
+                            // v2 parity: `_patch_devinfo` +
+                            // `patch_country_codes`. v2 rewrote
+                            // `filename=` in the XML; v3 post-patches
+                            // instead so the user's firmware folder
+                            // stays untouched on disk.
+                            if cfg.wipe
+                                && let Some(target_code) = cfg.country_code.as_deref() {
+                                    live!(log, "[Flash] Country code patch: target={target_code}");
+                                    let work_dir = dirs::data_dir()
+                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                        .join("ltbox")
+                                        .join("flash_country");
+                                    let _ = std::fs::remove_dir_all(&work_dir);
+                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+                                        return Err(format!("country work dir: {e}"));
+                                    }
+                                    // v2 parity: `backup_critical_<ts>/`,
+                                    // dropped next to `ltbox.exe` so the
+                                    // user can restore the original region
+                                    // via Advanced → WriteDevinfo.
+                                    let ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    let exe_dir = std::env::current_exe()
+                                        .ok()
+                                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                                    let critical_backup = exe_dir.join(format!("backup_critical_{ts}"));
+                                    let _ = std::fs::create_dir_all(&critical_backup);
+                                    let xml_paths: Vec<&std::path::Path> =
+                                        raw_xmls.iter().map(|p| p.as_path()).collect();
+                                    let catalog =
+                                        ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                            .map_err(|e| format!("rawprogram parse: {e}"))?;
+                                    const KNOWN_CODES: &[&str] = &[
+                                        "CN","KR","JP","US","GB","DE","FR","IT","ES","NL",
+                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","GR",
+                                        "HU","IE","LV","LT","LU","MT","PL","PT","RO","SK",
+                                        "SI","SE","AU","CA","IN","RU","BR","MX","SA","AE",
+                                        "WW",
+                                    ];
+                                    const EU_CODES: &[&str] = &[
+                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR",
+                                        "DE","GR","HU","IE","IT","LV","LT","LU","MT","NL",
+                                        "PL","PT","RO","SK","SI","ES","SE",
+                                    ];
+                                    for label in ["devinfo", "persist"] {
+                                        let Ok(rec) = catalog.require(label, &[]) else {
+                                            log.push(format!(
+                                                "[Country] Partition {label} not in rawprogram — skipping"
+                                            ));
+                                            continue;
+                                        };
+                                        let lun: u8 = rec
+                                            .lun
+                                            .as_deref()
+                                            .unwrap_or("0")
+                                            .parse()
+                                            .unwrap_or(0);
+                                        let start = rec
+                                            .start_sector
+                                            .as_deref()
+                                            .unwrap_or("0")
+                                            .parse::<u32>()
+                                            .unwrap_or(0);
+                                        let n: usize = rec
+                                            .num_sectors
+                                            .as_deref()
+                                            .unwrap_or("0")
+                                            .parse()
+                                            .unwrap_or(0);
+                                        if n == 0 {
+                                            log.push(format!("[Country] {label} num_sectors=0 — skipping"));
+                                            continue;
+                                        }
+                                        let dump_path = work_dir.join(format!("{label}.img"));
+                                        live!(log, "[Country] dump {label} (LUN {lun}, start {start}, {n} sectors)");
+                                        if let Err(e) = session.dump_partition_at(
+                                            label, &dump_path, lun, start, n, &mut log,
+                                        ) {
+                                            log.push(format!("[Country] dump {label} failed: {e} — skipping"));
+                                            continue;
+                                        }
+                                        // Preserve the original partition
+                                        // *before* any patch touches it.
+                                        let _ = std::fs::copy(
+                                            &dump_path,
+                                            critical_backup.join(format!("{label}.img")),
+                                        );
+                                        let detected = match ltbox_patch::region::detect_country_code(
+                                            &dump_path,
+                                            KNOWN_CODES,
+                                        ) {
+                                            Ok(c) => c,
+                                            Err(e) => {
+                                                log.push(format!("[Country] detect {label} failed: {e}"));
+                                                None
+                                            }
+                                        };
+                                        let Some(old_code) = detected else {
+                                            log.push(format!(
+                                                "[Country] {label}: no known code detected — skipping"
+                                            ));
+                                            continue;
+                                        };
+                                        live!(log, "[Country] {label}: {old_code} → {target_code}");
+                                        let patched_path =
+                                            work_dir.join(format!("{label}.patched.img"));
+                                        match ltbox_patch::region::patch_country_code(
+                                            &dump_path,
+                                            &patched_path,
+                                            &old_code,
+                                            target_code,
+                                            EU_CODES,
+                                        ) {
+                                            Ok(true) => {
+                                                if let Err(e) = session.flash_partition_at(
+                                                    label,
+                                                    &patched_path,
+                                                    lun,
+                                                    rec.start_sector.as_deref().unwrap_or("0"),
+                                                    &mut log,
+                                                ) {
+                                                    log.push(format!(
+                                                        "[Country] flash {label} failed: {e}"
+                                                    ));
+                                                } else {
+                                                    live!(log, "[Country] {label} patched + flashed");
+                                                }
+                                            }
+                                            Ok(false) => log
+                                                .push(format!("[Country] {label}: no replacements")),
+                                            Err(e) => log
+                                                .push(format!("[Country] patch {label} failed: {e}")),
+                                        }
+                                    }
+                                    // Surface the backup location once
+                                    // per run. Empty dir = every label
+                                    // was skipped.
+                                    if std::fs::read_dir(&critical_backup)
+                                        .map(|mut it| it.next().is_some())
+                                        .unwrap_or(false)
+                                    {
+                                        live!(
+                                            log,
+                                            "[Country] {} {}",
+                                            ll.backup_saved_prefix,
+                                            critical_backup.display()
+                                        );
+                                    }
+                                }
+
+                            live!(log, "[Flash] Phase 4/4 — {}", ll.op_flash_phase[3]);
+                            session.reset(&mut log).map_err(|e| format!("Reset: {e}"))?;
+                            live!(log, "[Flash] {}", ll.flash_completed);
+                            Ok(log)
+                            }).and_then(|r| r)
+                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::FlashExecDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::FlashExecDone(lines) => {
+                // Extend *before* end_op so the END separator sits
+                // below the backend's detail lines, not above them.
+                self.log_extend(lines);
+                self.end_op();
+                self.wf_config = WorkflowConfig::default();
+            }
+            // Country code popup
+            Message::SelectCountry(code) => {
+                self.country_popup_open = false;
+                if self.adv_needs_country {
+                    // Advanced wizard stores on `adv_wizard.country`.
+                    self.adv_wizard.country = Some(code);
+                    self.adv_needs_country = false;
+                } else {
+                    // Flash wizard: `wf_config` is source of truth.
+                    self.wf_config.country_code = Some(code);
+                }
+            }
+            Message::DismissCountryPopup => {
+                self.country_popup_open = false;
+                if self.adv_needs_country {
+                    self.adv_needs_country = false;
+                } else if self.wf_config.country_code.is_none() {
+                    // Flash wizard — back to Data so user can switch wipe off.
+                    self.flash.back();
+                }
+            }
+            // System Update wizard
+            Message::SysAction(a) => self.sysupdate.action = Some(a),
+            Message::SysNext => {
+                if self.sysupdate.step == 1 {
+                    self.sysupdate.next();
+                    return self.update(Message::SysExecStart);
+                }
+                self.sysupdate.next();
+            }
+            Message::SysBack => self.sysupdate.back(),
+            Message::SysExecStart => {
+                let Some(action) = self.sysupdate.action else {
+                    return Task::none();
+                };
+                self.begin_op(View::SystemUpdate);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[SysUpdate] Starting: {}",
+                    self.t(action.label_key())
+                ));
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let mut log = Vec::new();
+                            let mut adb = ltbox_device::adb::AdbManager::new();
+                            log.push("[ADB] Checking device...".to_string());
+                            if !adb.check_device().unwrap_or(false) {
+                                return Err("No ADB device connected".to_string());
+                            }
+                            log.push("[ADB] Device connected".to_string());
+                            let packages = [
+                                "com.lenovo.ota",
+                                "com.tblenovo.lenovowhatsnew",
+                                "com.lenovo.tbengine",
+                            ];
+                            match action {
+                                SysUpdateAction::Disable => {
+                                    let cmd = "settings put global ota_disable_automatic_update 1";
+                                    log.push(format!("[ADB] $ {cmd}"));
+                                    adb.shell(cmd).map_err(|e| e.to_string())?;
+
+                                    let cmd = "settings put secure lenovo_ota_new_version_found 0";
+                                    log.push(format!("[ADB] $ {cmd}"));
+                                    adb.shell(cmd).map_err(|e| e.to_string())?;
+
+                                    for pkg in &packages {
+                                        let cmd = format!("pm clear {pkg}");
+                                        log.push(format!("[ADB] $ {cmd}"));
+                                        let _ = adb.shell(&cmd);
+
+                                        let cmd = format!("pm uninstall -k --user 0 {pkg}");
+                                        log.push(format!("[ADB] $ {cmd}"));
+                                        match adb.shell(&cmd) {
+                                            Ok(out) if out.contains("Success") => log.push(format!("[ADB] Uninstalled {pkg}")),
+                                            Ok(out) => log.push(format!("[ADB] {pkg}: {out}")),
+                                            Err(e) => log.push(format!("[ADB] {pkg}: {e}")),
+                                        }
+                                    }
+                                    log.push("[SysUpdate] System updates disabled".to_string());
+                                    Ok(log)
+                                }
+                                SysUpdateAction::Enable => {
+                                    let cmd = "settings put global ota_disable_automatic_update 0";
+                                    log.push(format!("[ADB] $ {cmd}"));
+                                    adb.shell(cmd).map_err(|e| e.to_string())?;
+
+                                    for pkg in &packages {
+                                        let cmd = format!("cmd package install-existing {pkg}");
+                                        log.push(format!("[ADB] $ {cmd}"));
+                                        match adb.shell(&cmd) {
+                                            Ok(out) if out.to_lowercase().contains("installed") => log.push(format!("[ADB] Reinstalled {pkg}")),
+                                            Ok(out) => log.push(format!("[ADB] {pkg}: {out}")),
+                                            Err(e) => log.push(format!("[ADB] {pkg}: {e}")),
+                                        }
+                                    }
+                                    log.push("[SysUpdate] System updates re-enabled".to_string());
+                                    Ok(log)
+                                }
+                                SysUpdateAction::Rescue => {
+                                    log.push("[Rescue] Rescue boot after OTA — requires EDL".to_string());
+                                    log.push("[Rescue] Transitioning to EDL...".to_string());
+                                    let _ = adb.reboot("edl");
+                                    std::thread::sleep(std::time::Duration::from_secs(5));
+                                    log.push("[EDL] Waiting for device...".to_string());
+                                    ltbox_device::edl::wait_for_device()
+                                        .map_err(|e| format!("EDL not found: {e}"))?;
+                                    log.push("[Rescue] EDL device found — rescue requires firmware folder with loader".to_string());
+                                    log.push("[Rescue] Use Flash Firmware wizard with same-region + keep-data for full rescue".to_string());
+                                    Ok(log)
+                                }
+                            }
+                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::SysExecDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::SysExecDone(lines) => {
+                self.log_extend(lines);
+                self.end_op();
+            }
+            // Root wizard
+            Message::RootFamily(f) => {
+                self.root.family = Some(f);
+                self.root.provider = None;
+                self.root.mode = None;
+                self.root.file_path = None;
+            }
+            Message::RootProvider(p) => {
+                self.root.provider = Some(p);
+                self.root.file_path = None;
+            }
+            Message::RootMode(m) => {
+                self.root.mode = Some(m);
+                self.root.file_path = None;
+            }
+            Message::RootVersion(v) => {
+                self.root.version = Some(v);
+                self.root.nightly_source = None;
+                self.root.run_id = None;
+                self.root.run_id_buffer.clear();
+            }
+            Message::RootNightlySource(s) => {
+                self.root.nightly_source = Some(s);
+                match s {
+                    NightlySource::AutoDetect => {
+                        // Leaving ManualInput — drop the committed run ID.
+                        self.root.run_id = None;
+                        self.root.run_id_buffer.clear();
+                    }
+                    NightlySource::ManualInput => {
+                        // Prefill from any previous commit so re-entry is painless.
+                        self.root.run_id_buffer = self.root.run_id.clone().unwrap_or_default();
+                        self.root.run_id_popup_open = true;
+                    }
+                }
+            }
+            Message::RootSelectFile => {
+                self.picker_target = PickerTarget::RootFile;
+                let is_gki = self.root.is_gki();
+                return Task::perform(
+                    async move {
+                        let mut dialog = rfd::AsyncFileDialog::new();
+                        if is_gki {
+                            dialog = dialog.add_filter("ZIP", &["zip"]);
+                        } else {
+                            dialog = dialog.add_filter("APK", &["apk"]);
+                        }
+                        dialog
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_string_lossy().to_string())
+                    },
+                    Message::FileSelected,
+                );
+            }
+            Message::RootSelectFolder => {
+                self.picker_target = PickerTarget::RootFolder;
+                return pick_folder_task(Message::FolderSelected);
+            }
+            Message::RootNext => {
+                if self.root.step == 6 {
+                    self.root.next();
+                    return self.update(Message::RootExecStart);
+                }
+                // APatch KPM step: open superkey popup — advance is
+                // gated on a valid commit, not this press.
+                if self.root.step == 8 {
+                    self.root.superkey_buffer = self.root.superkey.clone().unwrap_or_default();
+                    self.root.superkey_popup_open = true;
+                    return Task::none();
+                }
+                self.root.next();
+            }
+            Message::RootBack => self.root.back(),
+            Message::RootSelectKpm => {
+                // Multi-select; paths merge-dedup into the list so
+                // the user can Browse multiple times.
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("KPM modules", &["kpm"])
+                            .pick_files()
+                            .await
+                            .map(|files| {
+                                files
+                                    .into_iter()
+                                    .map(|f| f.path().to_string_lossy().to_string())
+                                    .collect::<Vec<_>>()
+                            })
+                    },
+                    Message::RootKpmSelected,
+                );
+            }
+            Message::RootKpmSelected(paths) => {
+                if let Some(paths) = paths {
+                    for p in paths {
+                        if !self.root.kpm_paths.iter().any(|existing| existing == &p) {
+                            self.root.kpm_paths.push(p);
+                        }
+                    }
+                }
+            }
+            Message::RootKpmRemove(path) => {
+                self.root.kpm_paths.retain(|p| p != &path);
+            }
+            Message::RootSuperkeyInput(text) => {
+                self.root.superkey_buffer = text;
+            }
+            Message::RootSuperkeyConfirm => {
+                let key = self.root.superkey_buffer.trim().to_string();
+                // Upstream rule: 8–63 alphanumeric.
+                let valid =
+                    (8..=63).contains(&key.len()) && key.chars().all(|c| c.is_ascii_alphanumeric());
+                if !valid {
+                    self.error_msg = Some(self.t("apatch_superkey_invalid").to_string());
+                    return Task::none();
+                }
+                self.root.superkey = Some(key);
+                self.root.superkey_buffer.clear();
+                self.root.superkey_popup_open = false;
+                self.root.next();
+            }
+            Message::RootSuperkeyCancel => {
+                self.root.superkey_buffer.clear();
+                self.root.superkey_popup_open = false;
+            }
+            Message::RootRunIdInput(text) => {
+                // GH Actions run IDs are 10 digits; cap at 12 for headroom.
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .take(12)
+                    .collect();
+                self.root.run_id_buffer = filtered;
+            }
+            Message::RootRunIdConfirm => {
+                let id = self.root.run_id_buffer.trim().to_string();
+                if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+                    self.error_msg = Some(self.t("nightly_manual_invalid").to_string());
+                    return Task::none();
+                }
+                self.root.run_id = Some(id);
+                self.root.run_id_popup_open = false;
+                self.error_msg = None;
+            }
+            Message::RootRunIdCancel => {
+                self.root.run_id_buffer.clear();
+                self.root.run_id_popup_open = false;
+                // Roll back NightlySource so the step gate forces a re-pick.
+                if self.root.run_id.is_none() {
+                    self.root.nightly_source = None;
+                }
+            }
+            Message::RootExecStart => {
+                self.begin_op(View::Root);
+                self.op_steps = self.derive_root_op_steps();
+                self.error_msg = None;
+                let family = self.root.family;
+                let mode = self.root.mode;
+                let provider = self.root.provider;
+                let version = self.root.version;
+                let file_path = self.root.file_path.clone();
+                let conn = self.connection;
+                // Folder must contain `xbl_s_devprg_ns.melf`; optional
+                // `keys/testkey_rsa{2048,4096}.pem` as KEY_MAP fallback.
+                let fw_folder = self.root.folder_path.clone();
+                // APatch-only; empty / default elsewhere.
+                let kpm_paths: Vec<std::path::PathBuf> = self
+                    .root
+                    .kpm_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let superkey = self.root.superkey.clone().unwrap_or_default();
+                let nightly_run_id: Option<u64> =
+                    if self.root.nightly_source == Some(NightlySource::ManualInput) {
+                        self.root.run_id.as_deref().and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+
+                let fam_label = family
+                    .map(|f| self.t(f.label_key()).to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                self.log_push(format!("[Root] Starting: {fam_label}"));
+                // Resolve Magisk preinit device while ADB still exists
+                // — it vanishes past EDL. v2 parity: walk /proc/self/mountinfo.
+                let preinit_device: String = if matches!(family, Some(Family::Magisk))
+                    && matches!(
+                        self.connection,
+                        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
+                    ) {
+                    let mut adb = ltbox_device::adb::AdbManager::new();
+                    let mountinfo = if adb.check_device().unwrap_or(false) {
+                        adb.shell("cat /proc/self/mountinfo").unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    if mountinfo.is_empty() {
+                        self.log_push("[Magisk] Preinit device: (ADB unavailable — falling back to runtime detection)".to_string());
+                        String::new()
+                    } else {
+                        match ltbox_patch::magisk::resolve_preinit_device(&mountinfo) {
+                            Some(name) => {
+                                self.log_push(format!("[Magisk] Preinit device: {name} (resolved from /proc/self/mountinfo)"));
+                                name
+                            }
+                            None => {
+                                self.log_push("[Magisk] Preinit device: (none detected — Magisk will fall back at runtime)".to_string());
+                                String::new()
+                            }
+                        }
+                    }
+                } else {
+                    String::new()
+                };
+                let ll = self.live_labels();
+
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                            let mut log = Vec::new();
+                            let skip_adb = conn.skip_adb();
+
+                            // GKI route: AnyKernel3 zip is the full input —
+                            // no provider / version / GitHub fetch.
+                            let is_gki_route = mode == Some(RootMode::Gki);
+                            let family = family.ok_or_else(|| "No root family selected".to_string())?;
+                            let (provider, version) = if is_gki_route {
+                                // `Magisk` stand-in — picks magiskboot as
+                                // the backend for unpack/repack.
+                                (Provider::Magisk, VerChoice::Stable)
+                            } else {
+                                let prov = provider.ok_or_else(|| "No provider selected".to_string())?;
+                                let ver = version.ok_or_else(|| "No version selected".to_string())?;
+                                (prov, ver)
+                            };
+
+                            use ltbox_patch::root_pipeline::{
+                                RootFamily, RootPipelineConfig, RootProvider, RootVersion,
+                                build_patched_artifacts,
+                            };
+
+                            let pipe_family = match family {
+                                Family::Magisk => RootFamily::Magisk,
+                                Family::KernelSU => RootFamily::KernelSU,
+                                Family::APatch => RootFamily::APatch,
+                            };
+                            let pipe_provider = match provider {
+                                Provider::Magisk => RootProvider::Magisk,
+                                Provider::MagiskForks => RootProvider::MagiskFork,
+                                Provider::KernelSU => RootProvider::KernelSU,
+                                Provider::KernelSUNext => RootProvider::KernelSUNext,
+                                Provider::SukiSU => RootProvider::SukiSU,
+                                Provider::ReSukiSU => RootProvider::ReSukiSU,
+                                Provider::APatch => RootProvider::APatch,
+                                Provider::FolkPatch => RootProvider::FolkPatch,
+                            };
+                            let pipe_version = match version {
+                                VerChoice::Stable => RootVersion::Stable,
+                                VerChoice::Nightly => RootVersion::Nightly,
+                            };
+
+                            let fw_folder = fw_folder.ok_or_else(|| {
+                                "No firmware folder selected. Open the Flash wizard first, pick the folder \
+that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
+                                    .to_string()
+                            })?;
+                            let fw_dir = std::path::Path::new(&fw_folder);
+                            let loader = find_edl_loader(fw_dir)
+                                .or_else(|| fw_dir.parent().and_then(find_edl_loader))
+                                .ok_or_else(|| {
+                                    format!(
+                                        "xbl_s_devprg_ns.melf not found under {}",
+                                        fw_dir.display()
+                                    )
+                                })?;
+                            // Signing key: pipeline resolves via KEY_MAP
+                            // + `public_key_sha1`; PEM is `include_str!`'d
+                            // in avbtool-rs. No on-disk key consulted here.
+                            log.push(format!("[Root] Loader: {}", loader.display()));
+
+                            let base = dirs::data_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                .join("ltbox")
+                                .join("root");
+                            let work_dir = base.join("work");
+                            let output_dir = base.join("out");
+                            let _ = std::fs::remove_dir_all(&work_dir);
+                            std::fs::create_dir_all(&work_dir)
+                                .map_err(|e| format!("work dir: {e}"))?;
+                            std::fs::create_dir_all(&output_dir)
+                                .map_err(|e| format!("out dir: {e}"))?;
+
+                            // Must run before EDL — ADB vanishes past 9008.
+                            // KernelSU stable picks `.ko` by kernel MAJOR.MINOR.PATCH.
+                            let mut slot_suffix = String::new();
+                            let mut kernel_version: Option<String> = None;
+                            if !skip_adb {
+                                let mut adb = ltbox_device::adb::AdbManager::new();
+                                if adb.check_device().unwrap_or(false) {
+                                    slot_suffix = adb
+                                        .get_slot_suffix()
+                                        .ok()
+                                        .flatten()
+                                        .unwrap_or_default();
+                                    live!(log, "[ADB] {}",
+                                        ll.adb_active_slot.replace(
+                                            "{slot}",
+                                            if slot_suffix.is_empty() { "(none)" } else { &slot_suffix },
+                                        ));
+                                    if mode == Some(RootMode::Lkm) {
+                                        if let Ok(Some(kv)) = adb.get_kernel_version() {
+                                            live!(log, "[ADB] Kernel version: {kv}");
+                                            kernel_version = Some(kv);
+                                        } else {
+                                            live!(log, "[ADB] {}", ll.adb_no_kver);
+                                        }
+                                    }
+                                } else {
+                                    live!(log, "[ADB] {}", ll.adb_no_device_slot);
+                                }
+                            }
+
+                            live!(log, "[Root] Phase 1/6 — {}", ll.op_root_phase[0]);
+                            transition_to_edl(&ll, &mut log)?;
+
+                            // v2 parity: drive `EdlSession::dump_partition`
+                            // off rawprogram attrs — Lenovo places boot
+                            // on non-zero LUNs and GPT-by-name can't see
+                            // those.
+                            let (raw_xmls, _patch_xmls) = ltbox_device::edl::collect_firmware_xmls(fw_dir);
+                            if raw_xmls.is_empty() {
+                                return Err(format!(
+                                    "No flashable rawprogram*.xml found in {}",
+                                    fw_dir.display()
+                                ));
+                            }
+                            let xml_paths: Vec<&std::path::Path> = raw_xmls.iter().map(|p| p.as_path()).collect();
+                            let catalog = ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                .map_err(|e| format!("rawprogram parse failed: {e}"))?;
+                            // Target: `init_boot<slot>` (LKM) or `boot<slot>`
+                            // (GKI). Fall back across slot variants —
+                            // some rawprograms describe only `_a`.
+                            let is_gki_mode = mode == Some(RootMode::Gki);
+                            let base_name = ltbox_patch::root_pipeline::boot_partition_base(pipe_family, is_gki_mode);
+                            let slot_for_dump = if slot_suffix.is_empty() { "_a" } else { &slot_suffix };
+                            let boot_primary = format!("{base_name}{slot_for_dump}");
+                            let vbmeta_primary = format!("vbmeta{slot_for_dump}");
+                            let boot_record = catalog.require(
+                                &boot_primary,
+                                &[
+                                    &format!("{base_name}_a"),
+                                    &format!("{base_name}_b"),
+                                    base_name,
+                                ],
+                            )
+                            .map_err(|e| format!("Resolve {boot_primary}: {e}"))?;
+                            let vbmeta_record = catalog.require(
+                                &vbmeta_primary,
+                                &["vbmeta_a", "vbmeta_b", "vbmeta"],
+                            )
+                            .map_err(|e| format!("Resolve {vbmeta_primary}: {e}"))?;
+                            let parse_u32 = |s: &str, label: &str| -> std::result::Result<u32, String> {
+                                s.parse::<u32>().map_err(|e| format!("{label} sector '{s}' parse: {e}"))
+                            };
+                            let parse_usize = |s: &str, label: &str| -> std::result::Result<usize, String> {
+                                s.parse::<usize>().map_err(|e| format!("{label} sectors '{s}' parse: {e}"))
+                            };
+                            let boot_lun: u8 = boot_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                            let boot_start = parse_u32(boot_record.start_sector.as_deref().unwrap_or("0"), &boot_record.label)?;
+                            let boot_n = parse_usize(boot_record.num_sectors.as_deref().unwrap_or("0"), &boot_record.label)?;
+                            let vbm_lun: u8 = vbmeta_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                            let vbm_start = parse_u32(vbmeta_record.start_sector.as_deref().unwrap_or("0"), &vbmeta_record.label)?;
+                            let vbm_n = parse_usize(vbmeta_record.num_sectors.as_deref().unwrap_or("0"), &vbmeta_record.label)?;
+                            let boot_resolved_label = boot_record.label.clone();
+                            let vbmeta_resolved_label = vbmeta_record.label.clone();
+                            live!(log,
+                                "[Root] {} {} → {} (LUN {boot_lun}) / {} → {} (LUN {vbm_lun})",
+                                ll.root_resolved_prefix,
+                                boot_primary, boot_resolved_label, vbmeta_primary, vbmeta_resolved_label,
+                            );
+
+                            live!(log, "[Root] Phase 2/6 — {}", ll.op_root_phase[1]);
+                            // Hoisted so Phase 6 can echo the path.
+                            let exe_dir = std::env::current_exe()
+                                .ok()
+                                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                                .unwrap_or_else(|| std::path::PathBuf::from("."));
+                            let backup_dir = exe_dir.join(format!("backup_{base_name}"));
+                            {
+                                let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
+                                    .map_err(|e| format!("EDL session: {e}"))?;
+                                // Patch pipeline hardcodes `init_boot.img` /
+                                // `vbmeta.img` regardless of device label.
+                                let boot_out = if base_name == "boot" { "boot.img" } else { "init_boot.img" };
+                                let dumped_boot = work_dir.join(boot_out);
+                                let dumped_vbmeta = work_dir.join("vbmeta.img");
+                                session.dump_partition_at(&boot_resolved_label, &dumped_boot, boot_lun, boot_start, boot_n, &mut log)
+                                    .map_err(|e| format!("Dump {boot_resolved_label}: {e}"))?;
+                                session.dump_partition_at(&vbmeta_resolved_label, &dumped_vbmeta, vbm_lun, vbm_start, vbm_n, &mut log)
+                                    .map_err(|e| format!("Dump {vbmeta_resolved_label}: {e}"))?;
+                                // v2 parity: `BACKUP_BOOT_DIR`. Dropped next
+                                // to `ltbox.exe` for the v3 Unroot flow.
+                                let _ = std::fs::create_dir_all(&backup_dir);
+                                let _ = std::fs::copy(&dumped_boot, backup_dir.join(boot_out));
+                                let _ = std::fs::copy(&dumped_vbmeta, backup_dir.join("vbmeta.img"));
+                                live!(
+                                    log,
+                                    "[Root] {} {} + vbmeta.img → {}",
+                                    ll.root_backup_copy_prefix,
+                                    boot_out,
+                                    backup_dir.display()
+                                );
+                                // Bounce to Sahara — otherwise the second
+                                // session's sahara_run times out because
+                                // the device is still in Firehose.
+                                session.reset_to_edl(&mut log)
+                                    .map_err(|e| format!("reset_to_edl: {e}"))?;
+                                // Terminate any dangling pbr `\r`-only
+                                // line so the next message gets a fresh row.
+                                println!();
+                                live!(log, "[EDL] {}", ll.closing_dump);
+                                // Drop session — serial port closes so
+                                // the post-patch open gets a fresh handle.
+                            }
+
+                            live!(log, "[Root] Phase 3/6 — {}", ll.op_root_phase[2]);
+
+                            // `file_path` feeds either the GKI kernel zip
+                            // or the MagiskFork APK (never both).
+                            let file_path_buf: Option<std::path::PathBuf> =
+                                file_path.as_ref().map(std::path::PathBuf::from);
+                            let cfg = RootPipelineConfig {
+                                family: pipe_family,
+                                provider: pipe_provider,
+                                version: pipe_version,
+                                work_dir: work_dir.clone(),
+                                output_dir: output_dir.clone(),
+                                loader: loader.clone(),
+                                slot_suffix: slot_suffix.clone(),
+                                preinit_device: preinit_device.clone(),
+                                kernel_version: kernel_version.clone(),
+                                gki_kernel_zip: if is_gki_route { file_path_buf.clone() } else { None },
+                                gki_mode: is_gki_route,
+                                kpm_paths: kpm_paths.clone(),
+                                superkey: superkey.clone(),
+                                magisk_forks_apk: if matches!(pipe_provider, RootProvider::MagiskFork) {
+                                    file_path_buf.clone()
+                                } else {
+                                    None
+                                },
+                                nightly_run_id,
+                            };
+                            let artifacts = build_patched_artifacts(&cfg, &mut log)
+                                .map_err(|e| format!("Root patch: {e}"))?;
+                            live!(log, "[Root] Phase 4/6 — {}", ll.op_root_phase[3]);
+
+                            live!(log, "[Root] Phase 5/6 — {}", ll.op_root_phase[4]);
+                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                .map_err(|e| format!("EDL session (flash): {e}"))?;
+                            let boot_start_str = boot_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                            let vbm_start_str = vbmeta_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                            session
+                                .flash_partition_at(&boot_resolved_label, &artifacts.patched_boot, boot_lun, &boot_start_str, &mut log)
+                                .map_err(|e| format!("Flash {boot_resolved_label}: {e}"))?;
+                            if let Some(vbpath) = &artifacts.patched_vbmeta {
+                                session
+                                    .flash_partition_at(&vbmeta_resolved_label, vbpath, vbm_lun, &vbm_start_str, &mut log)
+                                    .map_err(|e| format!("Flash {vbmeta_resolved_label}: {e}"))?;
+                            }
+                            println!();
+                            live!(log, "[Root] Phase 6/6 — {}", ll.op_root_phase[5]);
+                            // Surface the backup folder before the reset
+                            // so the user doesn't have to scroll.
+                            if backup_dir.exists() {
+                                live!(
+                                    log,
+                                    "[Root] {} {}",
+                                    ll.backup_saved_prefix,
+                                    backup_dir.display()
+                                );
+                            }
+                            session.reset(&mut log).map_err(|e| format!("Reset: {e}"))?;
+                            live!(log, "[Root] {}", ll.root_completed);
+                            Ok(log)
+                            }).and_then(|r| r)
+                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::RootExecDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::RootExecDone(lines) => {
+                self.log_extend(lines);
+                self.end_op();
+            }
+            // Unroot wizard
+            Message::SetUnrootType(t) => self.unroot.unroot_type = Some(t),
+            Message::UnrootSelectFolder => {
+                self.picker_target = PickerTarget::UnrootFolder;
+                return pick_folder_task(Message::FolderSelected);
+            }
+            Message::UnrootNext => {
+                if self.unroot.step == 2 {
+                    self.unroot.next();
+                    return self.update(Message::UnrootExecStart);
+                }
+                self.unroot.next();
+            }
+            Message::UnrootBack => self.unroot.back(),
+            Message::UnrootExecStart => {
+                let Some(unroot_type) = self.unroot.unroot_type else {
+                    return Task::none();
+                };
+                let Some(folder) = self.unroot.folder_path.clone() else {
+                    return Task::none();
+                };
+                self.begin_op(View::Unroot);
+                self.op_steps = self.derive_unroot_op_steps();
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Unroot] Starting: {}",
+                    self.t(unroot_type.label_key())
+                ));
+                let ll = self.live_labels();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                            let mut log = Vec::new();
+                            let dir = std::path::Path::new(&folder);
+
+                            let (boot_name, base_part) = match unroot_type {
+                                UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
+                                UnrootType::APatchGki => ("boot.img", "boot"),
+                            };
+                            let boot_path = dir.join(boot_name);
+                            let vbmeta_path = dir.join("vbmeta.img");
+                            if !boot_path.exists() {
+                                return Err(format!("{boot_name} not found in selected folder"));
+                            }
+                            if !vbmeta_path.exists() {
+                                return Err("vbmeta.img not found in selected folder".to_string());
+                            }
+                            live!(log, "[Unroot] Backup: {} + vbmeta.img", boot_name);
+
+                            let mut adb = ltbox_device::adb::AdbManager::new();
+                            let slot = if adb.check_device().unwrap_or(false) {
+                                let s = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
+                                live!(log, "[ADB] {}",
+                                    ll.adb_active_slot.replace(
+                                        "{slot}",
+                                        if s.is_empty() { "(none)" } else { &s },
+                                    ));
+                                s
+                            } else {
+                                live!(log, "[ADB] {}", ll.adb_default_slot_a);
+                                String::new()
+                            };
+
+                            let loader = find_edl_loader(dir)
+                                .or_else(|| dir.parent().and_then(find_edl_loader))
+                                .ok_or_else(|| format!(
+                                    "xbl_s_devprg_ns.melf not found under {}",
+                                    dir.display()
+                                ))?;
+                            live!(log, "[Unroot] Loader: {}", loader.display());
+
+                            // Lenovo places boot on LUN 4 — GPT-by-name
+                            // reads LUN 0 so it misses. Use rawprogram catalog.
+                            let fw_dir = loader.parent().unwrap_or(dir);
+                            let (raw_xmls, _patch_xmls) = ltbox_device::edl::collect_firmware_xmls(fw_dir);
+                            if raw_xmls.is_empty() {
+                                return Err(format!(
+                                    "No flashable rawprogram*.xml found in {}",
+                                    fw_dir.display()
+                                ));
+                            }
+                            let xml_paths: Vec<&std::path::Path> =
+                                raw_xmls.iter().map(|p| p.as_path()).collect();
+                            let catalog = ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                .map_err(|e| format!("rawprogram parse failed: {e}"))?;
+                            let slot_for_flash = if slot.is_empty() { "_a" } else { &slot };
+                            let boot_primary = format!("{base_part}{slot_for_flash}");
+                            let vbmeta_primary = format!("vbmeta{slot_for_flash}");
+                            let boot_record = catalog.require(
+                                &boot_primary,
+                                &[
+                                    &format!("{base_part}_a"),
+                                    &format!("{base_part}_b"),
+                                    base_part,
+                                ],
+                            )
+                            .map_err(|e| format!("Resolve {boot_primary}: {e}"))?;
+                            let vbmeta_record = catalog.require(
+                                &vbmeta_primary,
+                                &["vbmeta_a", "vbmeta_b", "vbmeta"],
+                            )
+                            .map_err(|e| format!("Resolve {vbmeta_primary}: {e}"))?;
+                            let boot_lun: u8 = boot_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                            let vbm_lun: u8 = vbmeta_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                            let boot_start = boot_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                            let vbm_start = vbmeta_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                            let boot_label = boot_record.label.clone();
+                            let vbm_label = vbmeta_record.label.clone();
+                            live!(log,
+                                "[Unroot] Resolved {} → {} (LUN {boot_lun}) / {} → {} (LUN {vbm_lun}) from rawprogram",
+                                boot_primary, boot_label, vbmeta_primary, vbm_label,
+                            );
+
+                            live!(log, "[Unroot] Phase 1/3 — {}", ll.op_unroot_phase[0]);
+                            transition_to_edl(&ll, &mut log)?;
+
+                            live!(log, "[Unroot] Phase 2/3 — {} ({} + vbmeta.img)", ll.op_unroot_phase[1], boot_name);
+                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                .map_err(|e| format!("EDL session error: {e}"))?;
+                            session
+                                .flash_partition_at(&boot_label, &boot_path, boot_lun, &boot_start, &mut log)
+                                .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
+                            session
+                                .flash_partition_at(&vbm_label, &vbmeta_path, vbm_lun, &vbm_start, &mut log)
+                                .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
+
+                            println!();
+                            live!(log, "[Unroot] Phase 3/3 — {}", ll.op_unroot_phase[2]);
+                            session.reset(&mut log)
+                                .map_err(|e| format!("Reset failed: {e}"))?;
+                            live!(log, "[Unroot] {}", ll.unroot_completed);
+                            Ok(log)
+                            }).and_then(|r| r)
+                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::UnrootExecDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::UnrootExecDone(lines) => {
+                self.log_extend(lines);
+                self.end_op();
+            }
+            // Advanced
+            Message::AdvConfirm(a) => {
+                // FlashPartitions preempts the grid with its own wizard.
+                if matches!(a, AdvAction::FlashPartitions) {
+                    self.flash_parts.reset();
+                    self.flash_parts_open = true;
+                } else {
+                    return self.update(Message::AdvWizOpen(a));
+                }
+            }
+            Message::AdvWizOpen(a) => {
+                self.adv_wizard.open(a);
+                // Mirror into legacy fields so AdvFileSelected /
+                // AdvExecDone keep working unchanged.
+                self.adv_confirm = Some(a);
+                self.adv_confirm_path = None;
+            }
+            Message::AdvWizBack => {
+                if self.adv_wizard.step == 0 {
+                    // Back on step 0 closes the wizard.
+                    self.adv_wizard.reset();
+                    self.adv_confirm = None;
+                    self.adv_confirm_path = None;
+                } else {
+                    self.adv_wizard.back();
+                }
+            }
+            Message::AdvWizNext => {
+                if self.adv_wizard.is_confirm_step() {
+                    let Some(action) = self.adv_wizard.action else {
+                        return Task::none();
+                    };
+                    self.adv_confirm_path = self.adv_wizard.file_path.clone();
+                    if let Some(code) = self.adv_wizard.country.clone() {
+                        self.wf_config.country_code = Some(code);
+                    }
+                    // Pre-create output folder so the Done card's
+                    // "Open Folder" pill always points somewhere real.
+                    if action.produces_output() {
+                        let dir = adv_output_dir(action);
+                        let _ = std::fs::create_dir_all(&dir);
+                        self.adv_wizard.output_dir = Some(dir);
+                    } else {
+                        self.adv_wizard.output_dir = None;
+                    }
+                    self.adv_wizard.next();
+                    return self.update(Message::AdvExec(action));
+                }
+                self.adv_wizard.next();
+            }
+            Message::AdvWizBrowse => {
+                let is_folder = self.adv_wizard.is_folder_op();
+                let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
+                let filter_label = filter_label.to_string();
+                let filter_exts: Vec<String> = filter_exts.iter().map(|s| s.to_string()).collect();
+                return Task::perform(
+                    async move {
+                        if is_folder {
+                            rfd::AsyncFileDialog::new()
+                                .pick_folder()
+                                .await
+                                .map(|f| f.path().to_string_lossy().to_string())
+                        } else {
+                            let mut dialog = rfd::AsyncFileDialog::new();
+                            if !filter_exts.is_empty() {
+                                let exts: Vec<&str> =
+                                    filter_exts.iter().map(|s| s.as_str()).collect();
+                                dialog = dialog.add_filter(&filter_label, &exts);
+                            }
+                            dialog
+                                .pick_file()
+                                .await
+                                .map(|f| f.path().to_string_lossy().to_string())
+                        }
+                    },
+                    Message::AdvWizBrowseDone,
+                );
+            }
+            Message::AdvWizBrowseDone(path) => {
+                if let Some(p) = path {
+                    if std::path::Path::new(&p).exists() {
+                        if std::path::Path::new(&p).is_dir() {
+                            self.remember_recent_folder(&p);
+                        } else {
+                            self.remember_recent_file(&p);
+                        }
+                    }
+                    self.adv_wizard.file_path = Some(p);
+                }
+            }
+            Message::AdvWizOpenCountry => {
+                self.adv_needs_country = true;
+                self.country_popup_open = true;
+            }
+            Message::AdvWizOpenOutputFolder => {
+                if let Some(dir) = self.adv_wizard.output_dir.clone() {
+                    open_in_file_manager(&dir);
+                }
+            }
+            Message::AdvExec(action) => {
+                // Picker ran in AdvConfirm; replay the saved path.
+                let Some(path) = self.adv_confirm_path.clone() else {
+                    self.adv_confirm = None;
+                    return Task::none();
+                };
+                return self.update(Message::AdvFileSelected(action, Some(path)));
+            }
+            Message::AdvFileSelected(action, path) => {
+                if let Some(input_path) = path {
+                    if std::path::Path::new(&input_path).is_dir() {
+                        self.remember_recent_folder(&input_path);
+                    } else {
+                        self.remember_recent_file(&input_path);
+                    }
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let action_label = self.t(action.label_key()).to_string();
+                    self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
+                    let _conn = self.connection;
+                    // PatchDevinfo only — unused otherwise.
+                    let adv_country: Option<String> = self.wf_config.country_code.clone();
+                    let output_dir: std::path::PathBuf = self
+                        .adv_wizard
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| adv_output_dir(action));
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                                let mut log = Vec::new();
+                                let input = std::path::Path::new(&input_path);
+                                let parent = input.parent().unwrap_or(std::path::Path::new("."));
+                                // Created eagerly so a no-op exec still
+                                // leaves a folder for the user to find.
+                                if action.produces_output() {
+                                    let _ = std::fs::create_dir_all(&output_dir);
+                                    log.push(format!(
+                                        "[Advanced] Output folder: {}",
+                                        output_dir.display()
+                                    ));
+                                }
+                                match action {
+                                    AdvAction::ConvertXml => {
+                                        let stem = input.file_stem().unwrap_or_default();
+                                        let output = output_dir.join(stem).with_extension("xml");
+                                        log.push(format!("[Crypto] $ decrypt_file {} → {}", input.display(), output.display()));
+                                        match ltbox_core::crypto::decrypt_file(input, &output) {
+                                            Ok(size) => log.push(format!("[Crypto] Decrypted {size} bytes")),
+                                            Err(e) => return Err(format!("Decryption failed: {e}")),
+                                        }
+                                    }
+                                    AdvAction::DetectArb => {
+                                        // v2 parity: `compute_device_rollback_index`.
+                                        // Hardcoded 0 misreports every already-flashed
+                                        // ARB device as "needs patch".
+                                        let device_index: Option<u64> =
+                                            match ltbox_device::fastboot::FastbootDevice::open() {
+                                                Ok(mut dev) => dev
+                                                    .get_all_vars()
+                                                    .ok()
+                                                    .map(|v| {
+                                                        ltbox_patch::rollback::compute_device_rollback_index(
+                                                            &v.rollback_indices,
+                                                        )
+                                                    })
+                                                    .unwrap_or(None),
+                                                Err(_) => None,
+                                            };
+                                        log.push(format!(
+                                            "[AVB] Device rollback index: {}",
+                                            device_index
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| "(none / fastboot unavailable)".to_string())
+                                        ));
+                                        log.push(format!("[AVB] $ analyze_rollback {}", input.display()));
+                                        match ltbox_patch::rollback::analyze_rollback_with_mode(
+                                            input,
+                                            device_index,
+                                            ltbox_patch::rollback::RollbackMode::Auto,
+                                        ) {
+                                            Ok(info) => {
+                                                log.push(format!("[AVB] Image rollback index: {}", info.image_index));
+                                                log.push(format!(
+                                                    "[AVB] Needs patch (AUTO mode): {}",
+                                                    info.needs_patch
+                                                ));
+                                            }
+                                            Err(e) => return Err(format!("ARB analysis failed: {e}")),
+                                        }
+                                    }
+                                    AdvAction::DumpDevinfo => {
+                                        // Dump via EDL. `input` is the firmware folder.
+                                        // Rawprogram-driven LUN/sector — hardcoded
+                                        // LUN 0 would dump the wrong partition on
+                                        // recent Lenovo models.
+                                        let loader = find_edl_loader(input).or_else(|| input.parent().and_then(find_edl_loader));
+                                        let loader = match loader {
+                                            Some(l) => l,
+                                            None => { log.push("[EDL] xbl_s_devprg_ns.melf not found".to_string()); return Ok(log); }
+                                        };
+                                        if !ltbox_device::edl::check_device() {
+                                            return Err("Device not in EDL mode — reboot to EDL first".to_string());
+                                        }
+                                        let (raw_xmls, _) = ltbox_device::edl::collect_firmware_xmls(input);
+                                        if raw_xmls.is_empty() {
+                                            return Err(format!(
+                                                "No rawprogram*.xml under {} — cannot resolve LUN / sector",
+                                                input.display()
+                                            ));
+                                        }
+                                        let xml_paths: Vec<&std::path::Path> =
+                                            raw_xmls.iter().map(|p| p.as_path()).collect();
+                                        let catalog = ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                            .map_err(|e| format!("rawprogram parse: {e}"))?;
+                                        let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
+                                            .map_err(|e| format!("EDL: {e}"))?;
+                                        for label in ["devinfo", "persist"] {
+                                            let Ok(rec) = catalog.require(label, &[]) else {
+                                                log.push(format!(
+                                                    "[EDL] {label}: not in rawprogram — skipping"
+                                                ));
+                                                continue;
+                                            };
+                                            let lun: u8 = rec.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                                            let start = rec.start_sector.as_deref().unwrap_or("0")
+                                                .parse::<u32>().unwrap_or(0);
+                                            let n: usize = rec.num_sectors.as_deref().unwrap_or("0")
+                                                .parse().unwrap_or(0);
+                                            if n == 0 {
+                                                log.push(format!("[EDL] {label}: num_sectors=0 — skipping"));
+                                                continue;
+                                            }
+                                            // Output into `output_dump_devinfo/`
+                                            // — don't pollute the user's firmware folder.
+                                            let out_path = output_dir.join(format!("{label}.img"));
+                                            if let Err(e) = session.dump_partition_at(
+                                                label, &out_path, lun, start, n, &mut log,
+                                            ) {
+                                                log.push(format!("[EDL] dump {label} failed: {e}"));
+                                            }
+                                        }
+                                    }
+                                    AdvAction::WriteDevinfo | AdvAction::WriteArb => {
+                                        // Flash each `<label>.img` with
+                                        // rawprogram-resolved coords. Images
+                                        // with no XML entry get skipped —
+                                        // v2 silently flashed them to whatever
+                                        // GPT said, producing hard-to-debug bricks.
+                                        let loader = find_edl_loader(input).or_else(|| input.parent().and_then(find_edl_loader));
+                                        let loader = match loader {
+                                            Some(l) => l,
+                                            None => { log.push("[EDL] xbl_s_devprg_ns.melf not found".to_string()); return Ok(log); }
+                                        };
+                                        if !ltbox_device::edl::check_device() {
+                                            return Err("Device not in EDL mode — reboot to EDL first".to_string());
+                                        }
+                                        let (raw_xmls, _) = ltbox_device::edl::collect_firmware_xmls(input);
+                                        if raw_xmls.is_empty() {
+                                            return Err(format!(
+                                                "No rawprogram*.xml under {} — cannot resolve LUN / sector",
+                                                input.display()
+                                            ));
+                                        }
+                                        let xml_paths: Vec<&std::path::Path> =
+                                            raw_xmls.iter().map(|p| p.as_path()).collect();
+                                        let catalog = ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                            .map_err(|e| format!("rawprogram parse: {e}"))?;
+                                        // Detect slot so a bare `boot.img`
+                                        // resolves to the active `_a`/`_b`.
+                                        let slot_suffix: String = {
+                                            let mut adb = ltbox_device::adb::AdbManager::new();
+                                            if adb.check_device().unwrap_or(false) {
+                                                adb.get_slot_suffix().ok().flatten().unwrap_or_default()
+                                            } else {
+                                                String::new()
+                                            }
+                                        };
+                                        let slot = if slot_suffix.is_empty() { "_a" } else { slot_suffix.as_str() };
+                                        let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                            .map_err(|e| format!("EDL: {e}"))?;
+                                        if let Ok(entries) = std::fs::read_dir(input) {
+                                            for entry in entries.flatten() {
+                                                let path = entry.path();
+                                                if !path.extension().map(|e| e == "img").unwrap_or(false) {
+                                                    continue;
+                                                }
+                                                let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                                                // Fallback: user name → +slot → _a → _b.
+                                                let primary = stem.clone();
+                                                let with_slot = format!("{stem}{slot}");
+                                                let rec = catalog.require(
+                                                    &primary,
+                                                    &[
+                                                        &with_slot,
+                                                        &format!("{stem}_a"),
+                                                        &format!("{stem}_b"),
+                                                    ],
+                                                );
+                                                let Ok(rec) = rec else {
+                                                    log.push(format!(
+                                                        "[EDL] {stem}: no rawprogram entry — skipping"
+                                                    ));
+                                                    continue;
+                                                };
+                                                let lun: u8 = rec.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                                                let start = rec.start_sector.clone().unwrap_or_else(|| "0".to_string());
+                                                if let Err(e) = session.flash_partition_at(
+                                                    &rec.label, &path, lun, &start, &mut log,
+                                                ) {
+                                                    log.push(format!("[EDL] flash {}: {e}", rec.label));
+                                                }
+                                            }
+                                        }
+                                        session.reset(&mut log).ok();
+                                    }
+                                    AdvAction::FlashFirmware | AdvAction::FlashPartitions => {
+                                        log.push("[Advanced] Use Flash Firmware wizard for full firmware flash".to_string());
+                                    }
+                                    AdvAction::RegionConvert => {
+                                        // Auto-detect source region (PRC/ROW) and
+                                        // flip to the opposite.
+                                        let data = match std::fs::read(input) {
+                                            Ok(b) => b,
+                                            Err(e) => return Err(format!("Read vendor_boot failed: {e}")),
+                                        };
+                                        let prc_dot = vec![0x2E, 0x50, 0x52, 0x43]; // ".PRC"
+                                        let prc_i = vec![0x49, 0x50, 0x52, 0x43];   // "IPRC"
+                                        let row_dot = vec![0x2E, 0x52, 0x4F, 0x57]; // ".ROW"
+                                        let row_i = vec![0x49, 0x52, 0x4F, 0x57];   // "IROW"
+                                        let has_row = data.windows(4).any(|w| w == row_i.as_slice());
+                                        let target = if has_row {
+                                            log.push("[Region] Source detected: ROW — flipping to PRC".to_string());
+                                            ltbox_patch::region::RegionTarget::Prc
+                                        } else {
+                                            log.push("[Region] Source detected: PRC — flipping to ROW".to_string());
+                                            ltbox_patch::region::RegionTarget::Row
+                                        };
+                                        let prc_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                            (prc_dot.clone(), row_dot.clone()),
+                                            (prc_i.clone(), row_i.clone()),
+                                        ];
+                                        let row_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                            (row_dot, prc_dot),
+                                            (row_i, prc_i),
+                                        ];
+                                        let stem = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                        let output = output_dir.join(format!("{stem}.patched.img"));
+                                        match ltbox_patch::region::patch_vendor_boot(input, &output, target, &prc_patterns, &row_patterns) {
+                                            Ok(n) => log.push(format!("[Region] Patched {n} occurrences → {}", output.display())),
+                                            Err(e) => return Err(format!("Region patch failed: {e}")),
+                                        }
+                                    }
+                                    AdvAction::PatchDevinfo => {
+                                        // v2 parity: country code lives in BOTH
+                                        // devinfo.img + persist.img. Picker is
+                                        // a folder (at least one must exist).
+                                        const KNOWN: &[&str] = &[
+                                            "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL",
+                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "GR",
+                                            "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT", "RO", "SK",
+                                            "SI", "SE", "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE",
+                                            "WW",
+                                        ];
+                                        const EU: &[&str] = &[
+                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+                                            "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+                                            "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+                                        ];
+                                        let Some(new_code) = adv_country.as_deref() else {
+                                            return Err(
+                                                "No target country code selected — pick one in the popup before starting"
+                                                    .into(),
+                                            );
+                                        };
+                                        if !input.is_dir() {
+                                            return Err(format!(
+                                                "PatchDevinfo expects a folder containing devinfo.img + persist.img, got {}",
+                                                input.display()
+                                            ));
+                                        }
+                                        let mut any_written = false;
+                                        let mut any_found = false;
+                                        for name in ["devinfo.img", "persist.img"] {
+                                            let src = input.join(name);
+                                            if !src.exists() {
+                                                log.push(format!(
+                                                    "[Country] {name} not present in folder — skipping"
+                                                ));
+                                                continue;
+                                            }
+                                            any_found = true;
+                                            log.push(format!("[Country] Processing {}", src.display()));
+                                            let detected = ltbox_patch::region::detect_country_code(&src, KNOWN)
+                                                .map_err(|e| format!("Country detect failed on {name}: {e}"))?;
+                                            let Some(old_code) = detected else {
+                                                log.push(format!(
+                                                    "[Country] {name}: no known code detected — skipping"
+                                                ));
+                                                continue;
+                                            };
+                                            log.push(format!("[Country] {name} detected: {old_code}"));
+                                            let stem = std::path::Path::new(name)
+                                                .file_stem()
+                                                .map(|s| s.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| name.to_string());
+                                            // v2 naming: `<stem>_modified.img`.
+                                            let output = output_dir.join(format!("{stem}_modified.img"));
+                                            match ltbox_patch::region::patch_country_code(&src, &output, &old_code, new_code, EU) {
+                                                Ok(true) => {
+                                                    log.push(format!(
+                                                        "[Country] {name}: {old_code} → {new_code} written to {}",
+                                                        output.display()
+                                                    ));
+                                                    any_written = true;
+                                                }
+                                                Ok(false) => log.push(format!(
+                                                    "[Country] {name}: no replacements made"
+                                                )),
+                                                Err(e) => return Err(format!(
+                                                    "Country patch failed on {name}: {e}"
+                                                )),
+                                            }
+                                        }
+                                        if !any_found {
+                                            return Err(format!(
+                                                "Neither devinfo.img nor persist.img found in {}",
+                                                input.display()
+                                            ));
+                                        }
+                                        if !any_written {
+                                            log.push("[Country] No files modified — country code already matches or not detected".to_string());
+                                        }
+                                    }
+                                    AdvAction::PatchArb => {
+                                        // v2 parity: `patch_anti_rollback`.
+                                        // vbmeta* → `patch_vbmeta_rollback`
+                                        // (key required). Else →
+                                        // `patch_chained_image` (NONE →
+                                        // `add_hash_footer` fallback).
+                                        // Auto-pairs the sibling.
+                                        let device_index: Option<u64> =
+                                            match ltbox_device::fastboot::FastbootDevice::open() {
+                                                Ok(mut dev) => dev
+                                                    .get_all_vars()
+                                                    .ok()
+                                                    .map(|v| {
+                                                        ltbox_patch::rollback::compute_device_rollback_index(
+                                                            &v.rollback_indices,
+                                                        )
+                                                    })
+                                                    .unwrap_or(None),
+                                                Err(_) => None,
+                                            };
+                                        let target = device_index.unwrap_or(0);
+                                        log.push(format!(
+                                            "[ARB] Device rollback index: {} (target = {target})",
+                                            device_index
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| "(none / fastboot unavailable, defaulting to 0)".to_string())
+                                        ));
+
+                                        // Patch one file; vbmeta vs chained by filename.
+                                        let output_dir_ref = output_dir.clone();
+                                        let patch_one = move |
+                                            path: &std::path::Path,
+                                            log: &mut Vec<String>,
+                                        | -> std::result::Result<(), String> {
+                                            let key = find_testkey(path);
+                                            let stem = path
+                                                .file_stem()
+                                                .map(|s| s.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            let output = output_dir_ref.join(format!("{stem}.arb{target}.img"));
+                                            let lower = stem.to_ascii_lowercase();
+                                            let is_vbmeta = lower.starts_with("vbmeta");
+                                            log.push(format!(
+                                                "[ARB] $ {} {} → {}",
+                                                if is_vbmeta { "patch_vbmeta_rollback" } else { "patch_chained_image" },
+                                                path.display(),
+                                                output.display()
+                                            ));
+                                            if is_vbmeta {
+                                                let Some(k) = key.as_deref() else {
+                                                    return Err(format!(
+                                                        "vbmeta patch needs a testkey next to {} or in ./keys/",
+                                                        path.display()
+                                                    ));
+                                                };
+                                                log.push(format!("[ARB] Using key: {}", k.display()));
+                                                ltbox_patch::rollback::patch_vbmeta_rollback(path, &output, target, k)
+                                                    .map_err(|e| format!("vbmeta ARB patch failed: {e}"))
+                                            } else {
+                                                if let Some(k) = &key {
+                                                    log.push(format!("[ARB] Using key: {}", k.display()));
+                                                } else {
+                                                    log.push("[ARB] No testkey — add_hash_footer fallback".to_string());
+                                                }
+                                                ltbox_patch::rollback::patch_chained_image(path, &output, target, key.as_deref())
+                                                    .map_err(|e| format!("chained ARB patch failed: {e}"))
+                                            }
+                                        };
+
+                                        // Primary + sibling auto-pair.
+                                        patch_one(input, &mut log)?;
+                                        let lower_stem = input
+                                            .file_stem()
+                                            .and_then(|s| s.to_str())
+                                            .map(|s| s.to_ascii_lowercase())
+                                            .unwrap_or_default();
+                                        let sibling_candidates: &[&str] = if lower_stem.starts_with("boot") {
+                                            &["vbmeta_system", "vbmeta_system_a", "vbmeta_system_b"]
+                                        } else if lower_stem.starts_with("vbmeta_system") {
+                                            &["boot", "boot_a", "boot_b"]
+                                        } else {
+                                            &[]
+                                        };
+                                        for cand in sibling_candidates {
+                                            let sibling = parent.join(format!("{cand}.img"));
+                                            if sibling.exists() {
+                                                log.push(format!(
+                                                    "[ARB] Auto-pairing sibling {}",
+                                                    sibling.display()
+                                                ));
+                                                if let Err(e) = patch_one(&sibling, &mut log) {
+                                                    log.push(format!("[ARB] sibling skipped: {e}"));
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    AdvAction::RebuildVbmeta => {
+                                        // v2 parity: `rebuild_vbmeta_with_chained_images`.
+                                        // `resign_image` alone is wrong — chain
+                                        // hashes go stale once dtbo / init_boot /
+                                        // vendor_boot move.
+                                        let key = find_testkey(input).ok_or_else(|| {
+                                            "Rebuild vbmeta: no testkey_rsa4096.pem / testkey_rsa2048.pem found next to the image (checked folder + ./keys/)".to_string()
+                                        })?;
+                                        let info = ltbox_patch::avb::extract_image_avb_info(input)
+                                            .map_err(|e| format!("VBMeta inspect failed: {e}"))?;
+                                        let alg: Option<&str> = if info.algorithm == "NONE" {
+                                            // NONE → pick by key filename.
+                                            Some(if key.to_string_lossy().contains("2048") {
+                                                "SHA256_RSA2048"
+                                            } else {
+                                                "SHA256_RSA4096"
+                                            })
+                                        } else {
+                                            Some(info.algorithm.as_str())
+                                        };
+
+                                        // Advanced is file-only — user supplies
+                                        // the chained images (v2 dumps them).
+                                        let candidates: &[&str] = &[
+                                            "dtbo.img", "dtbo_a.img", "dtbo_b.img",
+                                            "init_boot.img", "init_boot_a.img", "init_boot_b.img",
+                                            "vendor_boot.img", "vendor_boot_a.img", "vendor_boot_b.img",
+                                            "boot.img", "boot_a.img", "boot_b.img",
+                                        ];
+                                        let mut chained: Vec<std::path::PathBuf> = Vec::new();
+                                        for name in candidates {
+                                            let p = parent.join(name);
+                                            if p.exists() {
+                                                chained.push(p);
+                                            }
+                                        }
+                                        if chained.is_empty() {
+                                            log.push(
+                                                "[AVB] No chained images (dtbo/init_boot/vendor_boot/boot) found next to vbmeta — falling back to simple re-sign".into(),
+                                            );
+                                            let key_spec = key.display().to_string();
+                                            if let Err(e) = ltbox_patch::avb::resign_image(
+                                                input,
+                                                &key_spec,
+                                                alg.unwrap_or("SHA256_RSA4096"),
+                                                Some(info.rollback_index),
+                                            ) {
+                                                return Err(format!("Rebuild vbmeta fallback resign failed: {e}"));
+                                            }
+                                        } else {
+                                            let output = output_dir.join("vbmeta.rebuilt.img");
+                                            let chained_refs: Vec<&std::path::Path> =
+                                                chained.iter().map(|p| p.as_path()).collect();
+                                            log.push(format!(
+                                                "[AVB] $ rebuild_vbmeta with {} chained image(s): {}",
+                                                chained.len(),
+                                                chained
+                                                    .iter()
+                                                    .map(|p| p.file_name().and_then(|s| s.to_str()).unwrap_or(""))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            ));
+                                            log.push(format!(
+                                                "[AVB] key={} algorithm={}",
+                                                key.display(),
+                                                alg.unwrap_or("(from original vbmeta)"),
+                                            ));
+                                            let key_spec = key.display().to_string();
+                                            if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                                                &output,
+                                                input,
+                                                &chained_refs,
+                                                &key_spec,
+                                                alg,
+                                            ) {
+                                                return Err(format!("Rebuild vbmeta failed: {e}"));
+                                            }
+                                            log.push(format!(
+                                                "[AVB] Rebuilt vbmeta written to {}",
+                                                output.display()
+                                            ));
+                                        }
+                                    }
+                                    AdvAction::SignRecovery => {
+                                        // Preserves the original rollback index.
+                                        // `avb::resign_image` rewrites in place —
+                                        // copy to output first so the user's
+                                        // original stays untouched.
+                                        let key = find_testkey(input).ok_or_else(|| {
+                                            "Sign recovery: no testkey_rsa4096.pem / testkey_rsa2048.pem found next to the image (checked folder + ./keys/)".to_string()
+                                        })?;
+                                        let stem = input
+                                            .file_stem()
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_default();
+                                        let output = output_dir.join(format!("{stem}.signed.img"));
+                                        std::fs::copy(input, &output).map_err(|e| {
+                                            format!("Copy {} → {}: {e}", input.display(), output.display())
+                                        })?;
+                                        log.push(format!(
+                                            "[AVB] $ resign_image {} with {} (writing to {})",
+                                            input.display(),
+                                            key.display(),
+                                            output.display()
+                                        ));
+                                        let info = ltbox_patch::avb::extract_image_avb_info(&output)
+                                            .map_err(|e| format!("Image inspect failed: {e}"))?;
+                                        let alg = if info.algorithm == "NONE" {
+                                            if key.to_string_lossy().contains("2048") { "SHA256_RSA2048" } else { "SHA256_RSA4096" }
+                                        } else {
+                                            info.algorithm.as_str()
+                                        };
+                                        let key_spec = key.display().to_string();
+                                        if let Err(e) = ltbox_patch::avb::resign_image(&output, &key_spec, alg, Some(info.rollback_index)) {
+                                            return Err(format!("Sign recovery failed: {e}"));
+                                        }
+                                    }
+                                }
+                                log.push(format!("[Advanced] {} completed", action_label));
+                                Ok(log)
+                                }).and_then(|r| r)
+                            }).await.unwrap_or(Err("Task failed".to_string()))
+                        },
+                        |result| match result {
+                            Ok(lines) => Message::AdvExecDone(lines),
+                            Err(e) => Message::OperationError(e),
+                        },
+                    );
+                }
+                self.adv_confirm = None;
+            }
+            Message::AdvExecDone(lines) => {
+                self.log_extend(lines);
+                // Leave adv_wizard / adv_confirm* intact so the exec
+                // screen stays visible with Done/Failed until StartOver.
+                self.end_op();
+            }
+            // Async results
+            Message::FileSelected(path) => {
+                if let Some(p) = path {
+                    self.remember_recent_file(&p);
+                    if self.picker_target == PickerTarget::RootFile {
+                        self.root.file_path = Some(p)
+                    }
+                }
+                self.picker_target = PickerTarget::None;
+            }
+            Message::FolderSelected(path) => {
+                if let Some(p) = path {
+                    self.remember_recent_folder(&p);
+                    match self.picker_target {
+                        PickerTarget::UnrootFolder => self.unroot.folder_path = Some(p),
+                        PickerTarget::FlashFolder => self.flash.firmware_folder = Some(p),
+                        PickerTarget::RootFolder => self.root.folder_path = Some(p),
+                        _ => {}
+                    }
+                }
+                self.picker_target = PickerTarget::None;
+            }
+            Message::RecentFilePicked(target, path) => {
+                // Stale entries self-heal on the next real pick.
+                if !std::path::Path::new(&path).is_file() {
+                    return Task::none();
+                }
+                self.remember_recent_file(&path);
+                if target == PickerTarget::RootFile {
+                    self.root.file_path = Some(path)
+                }
+            }
+            Message::RecentFolderPicked(target, path) => {
+                if !std::path::Path::new(&path).is_dir() {
+                    return Task::none();
+                }
+                self.remember_recent_folder(&path);
+                match target {
+                    PickerTarget::UnrootFolder => self.unroot.folder_path = Some(path),
+                    PickerTarget::FlashFolder => self.flash.firmware_folder = Some(path),
+                    PickerTarget::RootFolder => self.root.folder_path = Some(path),
+                    _ => {}
+                }
+            }
+            Message::OperationError(e) => {
+                self.end_op();
+                self.error_msg = Some(e.clone());
+                self.log_push(format!("ERROR: {e}"));
+            }
+            Message::DismissError => self.error_msg = None,
+            Message::StartOver => {
+                match self.current_view {
+                    View::Root => self.root.reset(),
+                    View::Flash => self.flash.reset(),
+                    View::SystemUpdate => self.sysupdate.reset(),
+                    View::Unroot => self.unroot.reset(),
+                    View::Advanced => {
+                        self.adv_wizard.reset();
+                        self.adv_confirm = None;
+                        self.adv_confirm_path = None;
+                    }
+                    _ => {}
+                }
+                self.error_msg = None;
+            }
+            Message::DrainStdoutTap => {
+                let lines = stdout_tap::drain();
+                if !lines.is_empty() {
+                    self.log_extend(lines);
+                }
+                // Batched rebuild — at most one cosmic-text reshape per tick.
+                if self.log_dirty {
+                    self.rebuild_log_editor();
+                }
+            }
+            Message::LogEditorAction(action) => {
+                // Read-only: swallow `Edit(_)`, forward selection /
+                // scroll / caret motion so drag-select + Ctrl+C work.
+                // Ctrl+C goes through the widget's key binding directly.
+                use iced::widget::text_editor::Action;
+                if !matches!(action, Action::Edit(_)) {
+                    self.log_editor.perform(action);
+                }
+            }
+            Message::SaveLog => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_file_name("ltbox.log")
+                            .add_filter("Log", &["log", "txt"])
+                            .save_file()
+                            .await
+                            .map(|h| h.path().to_path_buf())
+                    },
+                    Message::SaveLogPath,
+                );
+            }
+            Message::SaveLogPath(path) => {
+                if let Some(path) = path {
+                    let joined = self.log_lines.join("\n");
+                    match std::fs::write(&path, joined) {
+                        Ok(()) => self.log_push(format!("[Log] Saved to {}", path.display())),
+                        Err(e) => {
+                            self.error_msg = Some(format!("Log save failed: {e}"));
+                            self.log_push(format!("[Log] Save failed: {e}"));
+                        }
+                    }
+                }
+            }
+            // Device polling
+            Message::PollDevice => {
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| {
+                            let mut r = DevicePollResult::default();
+                            // ADB first: distinguish unauthorized /
+                            // authorizing from a ready device.
+                            let mut adb = ltbox_device::adb::AdbManager::new();
+                            match adb.check_device_state() {
+                                Ok(Some("unauthorized")) | Ok(Some("authorizing")) => {
+                                    r.status = ConnectionStatus::AdbUnauthorized;
+                                    return r;
+                                }
+                                Ok(Some("device")) | Ok(Some("recovery")) => {
+                                    let raw_model =
+                                        adb.get_model().ok().flatten().unwrap_or_default();
+                                    // Empty model = USB-debug OFF or
+                                    // auth pending (`adbd: error: closed`).
+                                    // Bucket under AdbUnauthorized so
+                                    // the dashboard doesn't falsely claim
+                                    // the platform is unsupported.
+                                    if raw_model.is_empty() {
+                                        r.status = ConnectionStatus::AdbUnauthorized;
+                                        return r;
+                                    }
+                                    // TWRP: `twrp_<model>` via `ro.product.device`.
+                                    r.status = if is_twrp_product(&raw_model) {
+                                        ConnectionStatus::AdbRecovery
+                                    } else {
+                                        ConnectionStatus::Adb
+                                    };
+                                    r.model = strip_twrp_prefix(&raw_model);
+                                    r.slot =
+                                        adb.get_slot_suffix().ok().flatten().unwrap_or_default();
+                                    r.firmware = trim_build_display(
+                                        &adb.shell("getprop ro.config.lgsi.fp.incremental")
+                                            .unwrap_or_default(),
+                                    );
+                                    r.arb = arb_from_model(&r.model).to_string();
+                                    let hwboard =
+                                        adb.shell("getprop ro.boot.hwboardid").unwrap_or_default();
+                                    if !hwboard.is_empty() {
+                                        let (ram, storage) = parse_hwboardid_ram_storage(&hwboard);
+                                        r.ram = ram;
+                                        r.storage = storage;
+                                    }
+                                    let name = adb
+                                        .shell("getprop ro.vendor.config.lgsi.en.market_name")
+                                        .unwrap_or_default();
+                                    r.market_name = if !name.is_empty() {
+                                        name
+                                    } else {
+                                        adb.shell("getprop ro.vendor.config.lgsi.kirby_en")
+                                            .unwrap_or_default()
+                                    };
+                                    let hw =
+                                        adb.shell("getprop ro.boot.hardware").unwrap_or_default();
+                                    r.platform_supported = Some(hw.to_lowercase() == "qcom");
+                                    return r;
+                                }
+                                _ => {
+                                    // Offline / noperm / detached fall through to Fastboot/EDL.
+                                }
+                            }
+                            if ltbox_device::fastboot::FastbootDevice::check_device() {
+                                r.status = ConnectionStatus::Fastboot;
+                                if let Ok(mut dev) = ltbox_device::fastboot::FastbootDevice::open()
+                                {
+                                    let vars = dev.get_all_vars().unwrap_or_default();
+                                    r.model = vars.model.unwrap_or_default();
+                                    r.slot = vars.current_slot.unwrap_or_default();
+                                    r.firmware = trim_build_display(
+                                        &vars.build_display_id.unwrap_or_default(),
+                                    );
+                                    r.ram = vars.ram_gb.unwrap_or_default();
+                                    r.storage = vars.storage_gb.unwrap_or_default();
+                                    r.market_name = vars.product.unwrap_or_default();
+                                    // Numeric → raw string (dashboard falls through
+                                    // when i18n lookup misses).
+                                    let arb_val = vars
+                                        .rollback_indices
+                                        .values()
+                                        .filter(|&&v| v > 1)
+                                        .max()
+                                        .copied();
+                                    r.arb = if let Some(v) = arb_val {
+                                        v.to_string()
+                                    } else {
+                                        // TB320FC has ARB but reports no indices.
+                                        let m = r.model.to_uppercase();
+                                        if m == "TB320FC" {
+                                            "arb_yes".to_string()
+                                        } else {
+                                            arb_from_model(&r.model).to_string()
+                                        }
+                                    };
+                                }
+                                return r;
+                            }
+                            if ltbox_device::edl::check_device() {
+                                r.status = ConnectionStatus::Edl;
+                            }
+                            r
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    Message::DevicePolled,
+                );
+            }
+            Message::DevicePolled(r) => {
+                self.connection = r.status;
+                if !r.model.is_empty() {
+                    self.device_model = r.model;
+                }
+                if !r.slot.is_empty() {
+                    self.device_slot = r.slot;
+                }
+                if !r.firmware.is_empty() {
+                    self.device_firmware = r.firmware;
+                }
+                if !r.arb.is_empty() {
+                    self.device_arb = r.arb;
+                }
+                if !r.ram.is_empty() {
+                    self.device_ram = r.ram;
+                }
+                if !r.storage.is_empty() {
+                    self.device_storage = r.storage;
+                }
+                if !r.market_name.is_empty() {
+                    self.device_market_name = r.market_name;
+                }
+                self.platform_supported = r.platform_supported;
+                if self.connection == ConnectionStatus::None {
+                    self.device_model.clear();
+                    self.device_slot.clear();
+                    self.device_firmware.clear();
+                    self.device_arb.clear();
+                    self.device_ram.clear();
+                    self.device_storage.clear();
+                    self.device_market_name.clear();
+                    self.platform_supported = None;
+                }
+            }
+            Message::DriverCheckDone(status) => {
+                self.driver_status = Some(status);
+            }
+            Message::InstallDrivers => {
+                if self.installing_drivers {
+                    return Task::none();
+                }
+                self.installing_drivers = true;
+                self.log_push("[Driver] Starting Qualcomm USB driver install...".to_string());
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| {
+                            let mut log = Vec::new();
+                            match ltbox_device::windows_driver::download_and_install(&mut log) {
+                                Ok(()) => Ok(log),
+                                Err(e) => {
+                                    log.push(format!("[Driver] Failed: {e}"));
+                                    Err(format!("{e}"))
+                                }
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("Task panicked".to_string()))
+                    },
+                    Message::InstallDriversDone,
+                );
+            }
+            Message::FlashPartsSelectFolder => {
+                return pick_folder_task(Message::FlashPartsFolderChosen);
+            }
+            Message::FlashPartsFolderChosen(path) => {
+                if let Some(folder) = path {
+                    self.flash_parts.folder_path = Some(folder.clone());
+                    self.flash_parts.rows.clear();
+                    self.flash_parts.parse_error = None;
+
+                    let dir = std::path::Path::new(&folder);
+                    // Gather every `rawprogram*.xml` in the folder.
+                    let mut xml_paths: Vec<std::path::PathBuf> = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            let name = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_lowercase())
+                                .unwrap_or_default();
+                            if name.starts_with("rawprogram") && name.ends_with(".xml") {
+                                xml_paths.push(p);
+                            }
+                        }
+                    }
+                    if xml_paths.is_empty() {
+                        self.flash_parts.parse_error =
+                            Some("No rawprogram*.xml found in folder".to_string());
+                    } else {
+                        let refs: Vec<&std::path::Path> =
+                            xml_paths.iter().map(|p| p.as_path()).collect();
+                        match ltbox_core::xml_catalog::XmlCatalog::from_paths(&refs) {
+                            Ok(cat) => {
+                                for r in cat.records() {
+                                    // Skip entries with no filename — those are GPT / erase
+                                    // placeholders, not flashable images.
+                                    if r.filename.is_empty() {
+                                        continue;
+                                    }
+                                    self.flash_parts.rows.push(FlashPartRow {
+                                        label: r.label.clone(),
+                                        filename: r.filename.clone(),
+                                        lun: r.lun.clone().unwrap_or_default(),
+                                        start_sector: r.start_sector.clone().unwrap_or_default(),
+                                        size_kb: r.size_in_kb.clone().unwrap_or_default(),
+                                        selected: false,
+                                    });
+                                }
+                                if self.flash_parts.rows.is_empty() {
+                                    self.flash_parts.parse_error = Some(
+                                        "rawprogram XML contained no flashable partitions"
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                self.flash_parts.parse_error = Some(format!("{e}"));
+                            }
+                        }
+                    }
+                }
+            }
+            Message::FlashPartsToggleRow(idx) => {
+                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                    row.selected = !row.selected;
+                }
+            }
+            Message::FlashPartsNext => {
+                if self.flash_parts.step == 2 {
+                    return self.update(Message::FlashPartsExecStart);
+                }
+                self.flash_parts.next();
+            }
+            Message::FlashPartsBack => self.flash_parts.back(),
+            Message::FlashPartsClose => {
+                self.flash_parts_open = false;
+                self.flash_parts.reset();
+            }
+            Message::FlashPartsExecStart => {
+                self.flash_parts.next(); // advance to Exec screen
+                self.begin_op(View::Flash);
+                self.error_msg = None;
+                let folder = self.flash_parts.folder_path.clone().unwrap_or_default();
+                let rows = self.flash_parts.selected_rows();
+                let conn = self.connection;
+                self.log_lines
+                    .push(format!("[FlashParts] Flashing {} partition(s)", rows.len()));
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || {
+                                flash_parts_execute(conn, folder, rows)
+                            })
+                            .unwrap_or_else(|e| {
+                                vec![format!("[FlashParts] heavy thread error: {e}")]
+                            })
+                        })
+                        .await
+                        .unwrap_or_else(|_| vec!["[FlashParts] task panicked".to_string()])
+                    },
+                    Message::FlashPartsExecDone,
+                );
+            }
+            Message::FlashPartsExecDone(lines) => {
+                self.log_extend(lines);
+                self.end_op();
+            }
+            Message::RebootRequest(target) => {
+                if self.busy {
+                    return Task::none();
+                }
+                if !target.available_from(self.connection) {
+                    self.error_msg = Some(format!(
+                        "{:?} not reachable from {:?}",
+                        target, self.connection
+                    ));
+                    return Task::none();
+                }
+                self.reboot_confirm_target = Some(target);
+            }
+            Message::RebootDismiss => {
+                self.reboot_confirm_target = None;
+            }
+            Message::RebootConfirm => {
+                if let Some(t) = self.reboot_confirm_target.take() {
+                    return self.update(Message::RebootTo(t));
+                }
+            }
+            Message::RebootTo(target) => {
+                if self.busy {
+                    return Task::none();
+                }
+                let conn = self.connection;
+                if !target.available_from(conn) {
+                    self.error_msg = Some(format!("{:?} not reachable from {:?}", target, conn));
+                    return Task::none();
+                }
+                // EDL needs a loader for Firehose before Power(reset).
+                // v2 parity: `_reboot_from_edl` requires `xbl_s_devprg_ns.melf`.
+                if matches!(conn, ConnectionStatus::Edl) {
+                    return Task::perform(
+                        async {
+                            rfd::AsyncFileDialog::new()
+                                .add_filter("EDL loader", &["melf", "mbn", "elf"])
+                                .pick_file()
+                                .await
+                                .map(|f| f.path().to_string_lossy().to_string())
+                        },
+                        move |path| Message::RebootEdlWithLoader(target, path),
+                    );
+                }
+                self.begin_op(View::Reboot);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Reboot] → {} (from {:?})",
+                    self.t(target.label_key()),
+                    conn,
+                ));
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let mut log = Vec::new();
+                            match (conn, target) {
+                                (ConnectionStatus::Adb | ConnectionStatus::AdbRecovery, t) => {
+                                    let mut adb = ltbox_device::adb::AdbManager::new();
+                                    // `AdbManager::reboot` needs the serial
+                                    // from a prior `check_device` call.
+                                    if !adb.check_device().unwrap_or(false) {
+                                        return Err("No ADB device detected — try replugging the cable".into());
+                                    }
+                                    let arg = match t {
+                                        RebootTarget::System => "",
+                                        RebootTarget::Recovery => "recovery",
+                                        RebootTarget::Bootloader => "bootloader",
+                                        RebootTarget::Edl => "edl",
+                                    };
+                                    log.push(format!("[ADB] $ reboot {arg}"));
+                                    if let Err(e) = adb.reboot(arg) {
+                                        return Err(format!("ADB reboot failed: {e}"));
+                                    }
+                                }
+                                (ConnectionStatus::Fastboot, t) => {
+                                    let mut dev = ltbox_device::fastboot::FastbootDevice::open()
+                                        .map_err(|e| format!("Fastboot open: {e}"))?;
+                                    match t {
+                                        RebootTarget::System => {
+                                            log.push("[Fastboot] $ reboot".to_string());
+                                            dev.reboot().map_err(|e| format!("reboot: {e}"))?;
+                                        }
+                                        RebootTarget::Bootloader => {
+                                            log.push("[Fastboot] $ reboot-bootloader".to_string());
+                                            dev.reboot_bootloader().map_err(|e| format!("reboot-bootloader: {e}"))?;
+                                        }
+                                        RebootTarget::Edl => {
+                                            log.push("[Fastboot] $ oem edl".to_string());
+                                            dev.oem_edl().map_err(|e| format!("oem edl: {e}"))?;
+                                        }
+                                        RebootTarget::Recovery => {
+                                            return Err("Fastboot cannot reboot to recovery directly — switch to ADB first".into());
+                                        }
+                                    }
+                                }
+                                (ConnectionStatus::Edl, _) => {
+                                    // RebootTo routes EDL through
+                                    // RebootEdlWithLoader, never here.
+                                    unreachable!("EDL reboot goes through RebootEdlWithLoader");
+                                }
+                                (ConnectionStatus::None, _) => {
+                                    return Err("No device connected".into());
+                                }
+                                (ConnectionStatus::AdbUnauthorized, _) => {
+                                    return Err(
+                                        "USB debugging is not authorized on the device".into(),
+                                    );
+                                }
+                            }
+                            log.push("[Reboot] Command sent".to_string());
+                            Ok(log)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("Task failed".to_string()))
+                    },
+                    |r| match r {
+                        Ok(lines) => Message::RebootDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::RebootEdlWithLoader(target, path) => {
+                let Some(loader_str) = path else {
+                    self.log_push("[Reboot] Cancelled — no EDL loader selected".to_string());
+                    return Task::none();
+                };
+                let loader = std::path::PathBuf::from(loader_str);
+                if !loader.exists() {
+                    self.error_msg = Some(format!("Loader not found: {}", loader.display()));
+                    return Task::none();
+                }
+                self.begin_op(View::Reboot);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Reboot] → {} (from EDL, loader={})",
+                    self.t(target.label_key()),
+                    loader.display(),
+                ));
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let mut log = Vec::new();
+                            // `auto_reset=false` — reset is triggered explicitly below.
+                            let mut session =
+                                ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
+                                    .map_err(|e| format!("EDL session open: {e}"))?;
+                            match target {
+                                RebootTarget::System => {
+                                    session.reset(&mut log).map_err(|e| format!("reset: {e}"))?;
+                                }
+                                RebootTarget::Edl => {
+                                    session
+                                        .reset_to_edl(&mut log)
+                                        .map_err(|e| format!("reset_to_edl: {e}"))?;
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "Reboot to {other:?} is not supported from EDL"
+                                    ));
+                                }
+                            }
+                            log.push("[Reboot] Command sent".to_string());
+                            Ok(log)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("Task failed".to_string()))
+                    },
+                    |r| match r {
+                        Ok(lines) => Message::RebootDone(lines),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+            }
+            Message::RebootDone(lines) => {
+                self.end_op();
+                self.log_extend(lines);
+            }
+            Message::InstallDriversDone(result) => {
+                self.installing_drivers = false;
+                match result {
+                    Ok(log) => {
+                        for line in log {
+                            self.log_push(line);
+                        }
+                        self.log_push(self.t("driver_install_done").to_string());
+                        // Re-run the presence check to clear the banner.
+                        return Task::perform(
+                            async {
+                                tokio::task::spawn_blocking(
+                                    ltbox_device::windows_driver::check_required_drivers,
+                                )
+                                .await
+                                .unwrap_or(ltbox_device::windows_driver::DriverStatus::NotWindows)
+                            },
+                            Message::DriverCheckDone,
+                        );
+                    }
+                    Err(e) => {
+                        self.log_lines
+                            .push(self.t("driver_install_failed").replace("{e}", &e));
+                        self.error_msg = Some(self.t("driver_install_failed").replace("{e}", &e));
+                    }
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn title_bar(&self) -> Element<'_, Message> {
+        let title_content = container(
+            row![
+                iced::widget::image(TITLE_BAR_ICON_HANDLE.clone())
+                    .width(16)
+                    .height(16),
+                text("LTBox").size(12).style(muted_style),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 12])
+        .width(Length::Fill);
+
+        let drag_area = iced::widget::mouse_area(title_content)
+            .on_press(Message::WindowDrag)
+            .on_double_click(Message::WindowToggleMaximize);
+
+        let btn_w = 46;
+        let btn_h = 32;
+
+        let minimize_btn = button(
+            container(svg_icon(
+                include_bytes!("../assets/icons/win_minimize.svg"),
+                10.0,
+            ))
+            .width(btn_w)
+            .height(btn_h)
+            .center_x(btn_w)
+            .center_y(btn_h),
+        )
+        .on_press(Message::WindowMinimize)
+        .padding(0)
+        .style(|_t: &Theme, status| {
+            let hover = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hover {
+                    Some(iced::Color::from_rgba(0.5, 0.5, 0.5, 0.15).into())
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
+        });
+
+        let maximize_btn = button(
+            container(svg_icon(
+                include_bytes!("../assets/icons/win_maximize.svg"),
+                10.0,
+            ))
+            .width(btn_w)
+            .height(btn_h)
+            .center_x(btn_w)
+            .center_y(btn_h),
+        )
+        .on_press(Message::WindowToggleMaximize)
+        .padding(0)
+        .style(|_t: &Theme, status| {
+            let hover = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hover {
+                    Some(iced::Color::from_rgba(0.5, 0.5, 0.5, 0.15).into())
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
+        });
+
+        let close_btn = button(
+            container(svg_icon(
+                include_bytes!("../assets/icons/win_close.svg"),
+                10.0,
+            ))
+            .width(btn_w)
+            .height(btn_h)
+            .center_x(btn_w)
+            .center_y(btn_h),
+        )
+        .on_press(Message::WindowClose)
+        .padding(0)
+        .style(|_t: &Theme, status| {
+            let hover = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hover {
+                    Some(iced::Color::from_rgb(0.9, 0.2, 0.2).into())
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
+        });
+
+        container(
+            row![drag_area, minimize_btn, maximize_btn, close_btn,]
+                .align_y(iced::Alignment::Center)
+                .height(btn_h),
+        )
+        .width(Length::Fill)
+        .style(|t: &Theme| container::Style {
+            background: Some(pal_of(t).surface_container_low.into()),
+            ..Default::default()
+        })
+        .into()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let mut main = column![];
+        main = main.push(self.title_bar());
+        main = main.push(row![self.sidebar(), self.content()].height(Length::Fill));
+        main = main.push(self.status_bar());
+
+        // Error banner below popups so the scrim dims the banner too.
+        let mut layers: Vec<Element<'_, Message>> = vec![main.into()];
+
+        if let Some(err) = &self.error_msg {
+            layers.push(self.error_banner(err));
+        }
+        if self.country_popup_open {
+            layers.push(self.country_popup_view());
+        }
+        if let Some(t) = self.reboot_confirm_target {
+            layers.push(self.reboot_confirm_popup(t));
+        }
+        if self.root.run_id_popup_open {
+            layers.push(self.root_run_id_popup());
+        }
+
+        if layers.len() == 1 {
+            layers.into_iter().next().unwrap()
+        } else {
+            iced::widget::Stack::with_children(layers).into()
+        }
+    }
+
+    fn country_popup_view(&self) -> Element<'_, Message> {
+        let mut list = column![].spacing(2);
+        for entry in COUNTRY_CODES {
+            let code = entry.code.to_string();
+            let selected = self.wf_config.country_code.as_deref() == Some(entry.code);
+            let label = format!("{} — {}", entry.code, entry.name);
+            let bg_color = if selected {
+                ACCENT
+            } else {
+                iced::Color::TRANSPARENT
+            };
+            let txt_color = if selected {
+                iced::Color::WHITE
+            } else {
+                iced::Color::BLACK
+            };
+            list = list.push(
+                button(text(label).size(13).color(txt_color))
+                    .on_press(Message::SelectCountry(code))
+                    .padding([6, 14])
+                    .width(Length::Fill)
+                    .style(move |_t: &Theme, status| {
+                        let hover = matches!(status, button::Status::Hovered);
+                        button::Style {
+                            background: Some(if selected {
+                                bg_color.into()
+                            } else if hover {
+                                iced::Color::from_rgba(0.357, 0.388, 0.878, 0.08).into()
+                            } else {
+                                iced::Color::TRANSPARENT.into()
+                            }),
+                            text_color: txt_color,
+                            ..Default::default()
+                        }
+                    }),
+            );
+        }
+
+        let popup_content = container(
+            column![
+                row![
+                    text(self.t("popup_select_country").to_string()).size(16),
+                    Space::new().width(Length::Fill),
+                    button(
+                        text(self.t("btn_cancel").to_string())
+                            .size(12)
+                            .style(muted_style)
+                    )
+                    .on_press(Message::DismissCountryPopup)
+                    .padding([4, 12])
+                    .style(neutral_pill_btn_style),
+                ]
+                .align_y(iced::Alignment::Center),
+                widget::rule::horizontal(1),
+                scrollable(list).height(300),
+            ]
+            .spacing(10)
+            .padding(20)
+            .width(400),
+        )
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container.into()),
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::MD.into(),
+                },
+                shadow: iced::Shadow {
+                    color: with_alpha(p.shadow, 0.3),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            }
+        });
+
+        container(
+            container(popup_content)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+            ..Default::default()
+        })
+        .into()
+    }
+
+    // -- Sidebar ----------------------------------------------------------
+
+    fn is_nav_enabled(&self, view: View) -> bool {
+        if self.platform_supported == Some(false) {
+            return matches!(view, View::Dashboard | View::SystemUpdate | View::Settings);
+        }
+        true
+    }
+
+    fn sidebar(&self) -> Element<'_, Message> {
+        let mut col = column![].spacing(1).padding([16, 0]);
+        for &v in NAV_MAIN {
+            col = col.push(nav_btn(
+                v,
+                self.t(v.label_key()),
+                self.current_view == v,
+                self.is_nav_enabled(v),
+            ));
+        }
+        col = col.push(sec_hdr(self.t("nav_section_tools")));
+        for &v in NAV_TOOLS {
+            col = col.push(nav_btn(
+                v,
+                self.t(v.label_key()),
+                self.current_view == v,
+                self.is_nav_enabled(v),
+            ));
+        }
+        container(scrollable(col))
+            .width(210)
+            .height(Length::Fill)
+            .style(|t: &Theme| sidebar_bg(t))
+            .into()
+    }
+
+    // -- Content ----------------------------------------------------------
+
+    fn content(&self) -> Element<'_, Message> {
+        if self.current_view == View::Root {
+            return self.view_root_wizard();
+        }
+        if self.current_view == View::Flash {
+            return self.view_flash_wizard();
+        }
+        if self.current_view == View::SystemUpdate {
+            return self.view_sysupdate_wizard();
+        }
+        if self.current_view == View::Unroot {
+            return self.view_unroot_wizard();
+        }
+        // Advanced wizards (generic + FlashPartitions) skip the grid's
+        // scrollable+padding wrapper so the step bar isn't pinched and
+        // the 280 px browse card doesn't stretch.
+        if self.current_view == View::Advanced
+            && (self.flash_parts_open || self.adv_wizard.action.is_some())
+        {
+            return self.view_advanced();
+        }
+
+        // Reboot cards need Fill height; scrollable would force Shrink
+        // and collapse them.
+        if self.current_view == View::Reboot {
+            return container(
+                container(self.view_reboot())
+                    .padding(24)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        }
+        let inner = match self.current_view {
+            View::Dashboard => self.view_dashboard(),
+            View::Advanced => self.view_advanced(),
+            View::Settings => self.view_settings(),
+            _ => self.view_placeholder(),
+        };
+        container(scrollable(container(inner).padding(24).width(Length::Fill)))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // -- Error banner -----------------------------------------------------
+
+    fn error_banner(&self, msg: &str) -> Element<'_, Message> {
+        // Floating overlay via `view()`'s stack so the layout below
+        // doesn't shift.
+        let err_bg = iced::Color::from_rgba(0.95, 0.2, 0.2, 0.94);
+        let card = container(
+            row![
+                text(format!("  {msg}")).size(12).color(iced::Color::WHITE),
+                Space::new().width(Length::Fill),
+                button(text(" × ").size(14).color(iced::Color::WHITE))
+                    .on_press(Message::DismissError)
+                    .padding([2, 10])
+                    .style(|_t: &Theme, status| {
+                        let a = matches!(status, button::Status::Hovered);
+                        button::Style {
+                            background: if a {
+                                Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.18).into())
+                            } else {
+                                None
+                            },
+                            text_color: iced::Color::WHITE,
+                            border: iced::Border {
+                                radius: 4.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }),
+            ]
+            .padding([8, 16])
+            .align_y(iced::Alignment::Center),
+        )
+        .width(Length::Fill)
+        .style(move |_t: &Theme| container::Style {
+            background: Some(err_bg.into()),
+            border: iced::Border {
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 6.0,
+            },
+            ..Default::default()
+        });
+        // Pin to y=0 via a Fill-height spacer below.
+        column![card, Space::new().width(Length::Fill).height(Length::Fill)]
+            .width(Length::Fill)
+            .into()
+    }
+
+    // -- Status bar -------------------------------------------------------
+
+    fn status_bar(&self) -> Element<'_, Message> {
+        let status_color = self.connection.color(self.pal());
+        let status_label = self.t(self.connection.label_key());
+        let model_text = if self.device_model.is_empty() {
+            ""
+        } else {
+            &self.device_model
+        };
+        let mut status_row = row![
+            text(format!("●  {status_label}"))
+                .size(12)
+                .color(status_color),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center);
+        if !model_text.is_empty() {
+            status_row =
+                status_row.push(text(format!("— {model_text}")).size(12).style(muted_style));
+        }
+        status_row = status_row.push(Space::new().width(Length::Fill));
+        if self.busy {
+            status_row = status_row.push(
+                text(self.t("status_working").to_string())
+                    .size(12)
+                    .style(accent_style),
+            );
+        }
+        status_row = status_row.push(
+            text(concat!("v", env!("CARGO_PKG_VERSION")))
+                .size(12)
+                .style(muted_style),
+        );
+        container(status_row.padding([8, 20]))
+            .width(Length::Fill)
+            .style(|t: &Theme| sidebar_bg(t))
+            .into()
+    }
+
+    // -- Dashboard --------------------------------------------------------
+
+    fn driver_warning_banner(&self) -> Element<'_, Message> {
+        let installing = self.installing_drivers;
+        let btn_label = if installing {
+            self.t("driver_installing_btn").to_string()
+        } else {
+            self.t("driver_install_btn").to_string()
+        };
+        let mut btn = button(text(btn_label).size(theme::text_size::LABEL_LARGE))
+            .padding([8, 18])
+            .style(md_filled_btn_style);
+        if !installing {
+            btn = btn.on_press(Message::InstallDrivers);
+        }
+
+        let body = column![
+            text(self.t("driver_missing_title").to_string())
+                .size(theme::text_size::TITLE_MEDIUM)
+                .color(iced::Color::WHITE),
+            text(self.t("driver_missing_desc").to_string())
+                .size(theme::text_size::BODY_SMALL)
+                .color(iced::Color::WHITE),
+        ]
+        .spacing(4);
+
+        let content = row![body, Space::new().width(Length::Fill), btn,]
+            .spacing(12)
+            .align_y(iced::Alignment::Center);
+
+        container(content)
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(|t: &Theme| {
+                let p = pal_of(t);
+                container::Style {
+                    background: Some(p.error.into()),
+                    border: iced::Border {
+                        color: p.error,
+                        width: 1.0,
+                        radius: theme::shape::SM.into(),
+                    },
+                    ..Default::default()
+                }
+            })
+            .into()
+    }
+
+    fn view_dashboard(&self) -> Element<'_, Message> {
+        let model = if self.device_model.is_empty() {
+            "—"
+        } else {
+            &self.device_model
+        };
+        let slot = if self.device_slot.is_empty() {
+            "—"
+        } else {
+            &self.device_slot
+        };
+        let firmware = if self.device_firmware.is_empty() {
+            "—"
+        } else {
+            &self.device_firmware
+        };
+        // i18n key (`arb_*`) or numeric from fastboot vars; translation
+        // layer passes numerics through.
+        let arb_raw = self.device_arb.clone();
+        let arb_display = if arb_raw.is_empty() {
+            "—".to_string()
+        } else if arb_raw.starts_with("arb_") {
+            self.t(&arb_raw).to_string()
+        } else {
+            arb_raw
+        };
+        let arb = arb_display.as_str();
+        let ram = if self.device_ram.is_empty() {
+            "—"
+        } else {
+            &self.device_ram
+        };
+        let storage = if self.device_storage.is_empty() {
+            "—"
+        } else {
+            &self.device_storage
+        };
+        let op_text = if self.busy {
+            let base = self.t("dash_operation_in_progress").to_string();
+            let label = match self.busy_view {
+                Some(v) => format!("{base} — {}", self.t(v.label_key())),
+                None => base,
+            };
+            text(label).size(13).style(accent_style)
+        } else {
+            text(self.t("dash_no_operation").to_string())
+                .size(13)
+                .style(muted_style)
+        };
+        let _log_preview_len = self.log_lines.len();
+
+        let mut content = column![
+            text(self.t("dash_title").to_string()).size(theme::text_size::TITLE_LARGE),
+            widget::rule::horizontal(1),
+        ]
+        .spacing(14)
+        .width(Length::Fill);
+
+        // Unauthorized ADB wins over the platform warning — empty
+        // `ro.boot.hardware` otherwise reads as "unsupported platform".
+        if self.connection == ConnectionStatus::AdbUnauthorized {
+            let warn_bg = iced::Color::from_rgb(0.95, 0.65, 0.0);
+            content = content.push(
+                container(
+                    text(self.t("dash_adb_unauthorized").to_string())
+                        .size(12)
+                        .color(iced::Color::WHITE),
+                )
+                .padding([10, 16])
+                .width(Length::Fill)
+                .style(move |_t: &Theme| container::Style {
+                    background: Some(warn_bg.into()),
+                    border: iced::Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        } else if self.platform_supported == Some(false) {
+            let warn_bg = iced::Color::from_rgb(0.95, 0.65, 0.0);
+            content = content.push(
+                container(
+                    text(self.t("dash_unsupported_platform").to_string())
+                        .size(12)
+                        .color(iced::Color::WHITE),
+                )
+                .padding([10, 16])
+                .width(Length::Fill)
+                .style(move |_t: &Theme| container::Style {
+                    background: Some(warn_bg.into()),
+                    border: iced::Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        if let Some(ltbox_device::windows_driver::DriverStatus::Missing(_)) = self.driver_status {
+            content = content.push(self.driver_warning_banner());
+        }
+
+        let mut device_col = column![].spacing(0).width(Length::Fill);
+        device_col = device_col.push(
+            text(self.t("dash_device").to_string())
+                .size(13)
+                .style(label_style)
+                .line_height(1.0),
+        );
+        device_col = device_col.push(Space::new().height(4));
+        if !self.device_market_name.is_empty() {
+            device_col = device_col.push(
+                text(self.device_market_name.clone())
+                    .size(16)
+                    .line_height(1.0),
+            );
+        }
+        device_col = device_col.push(Space::new().height(12));
+        device_col = device_col.push(
+            row![
+                info_kv(self.t("device_model"), model),
+                info_kv(self.t("device_ram"), ram),
+                info_kv(self.t("device_storage"), storage),
+                info_kv(self.t("device_slot"), slot),
+            ]
+            .spacing(40),
+        );
+        device_col = device_col.push(Space::new().height(6));
+        device_col = device_col.push(
+            row![
+                info_kv(self.t("device_arb"), arb),
+                info_kv(self.t("device_firmware"), firmware),
+            ]
+            .spacing(40),
+        );
+
+        let device_card_inner: Element<'_, Message> = if self.device_model.is_empty() {
+            device_col.into()
+        } else {
+            let portrait: Element<'_, Message> = match device_portrait(&self.device_model) {
+                DevicePortrait::Png(h) => iced::widget::image(h)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::ScaleDown)
+                    .into(),
+                DevicePortrait::Svg(h) => iced::widget::svg(h)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::ScaleDown)
+                    .into(),
+            };
+            row![
+                device_col,
+                container(portrait)
+                    .width(220)
+                    .height(Length::Fill)
+                    .center_x(220)
+                    .center_y(Length::Fill),
+            ]
+            .spacing(16)
+            .align_y(iced::Alignment::Center)
+            .height(160)
+            .into()
+        };
+        content = content.push(
+            container(
+                container(device_card_inner)
+                    .padding(iced::Padding {
+                        top: 10.0,
+                        right: 18.0,
+                        bottom: 14.0,
+                        left: 18.0,
+                    })
+                    .width(Length::Fill),
+            )
+            .width(Length::Fill)
+            .style(|t: &Theme| {
+                theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 0)
+            }),
+        );
+        content = content.push(card(self.t("dash_current_operation"), op_text));
+        // Read-only text_editor so drag-select + Ctrl+C work.
+        let dash_log_editor: Element<'_, Message> = iced::widget::text_editor(&self.log_editor)
+            .on_action(Message::LogEditorAction)
+            .size(11)
+            .height(120)
+            .into();
+        content = content.push(card(self.t("dash_log"), dash_log_editor));
+        content.into()
+    }
+
+    // -- Settings ---------------------------------------------------------
+
+    fn view_settings(&self) -> Element<'_, Message> {
+        let s = &self.settings;
+
+        // Single untitled "Preferences" card holds language + theme.
+        let lang_row = row![
+            text(self.t("settings_language").to_string())
+                .size(13)
+                .width(Length::Fill),
+            widget::pick_list(
+                LANGUAGES.iter().map(|l| l.label()).collect::<Vec<_>>(),
+                Some(s.language.label()),
+                |selected| {
+                    let l = LANGUAGES
+                        .iter()
+                        .find(|l| l.label() == selected)
+                        .copied()
+                        .unwrap_or(Language::En);
+                    Message::SetLanguage(l)
+                },
+            )
+            .width(160),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let t_system = self.t(ThemeChoice::System.label_key()).to_string();
+        let t_light = self.t(ThemeChoice::Light.label_key()).to_string();
+        let t_dark = self.t(ThemeChoice::Dark.label_key()).to_string();
+        let current_theme_label = match self.theme_choice {
+            ThemeChoice::System => t_system.clone(),
+            ThemeChoice::Light => t_light.clone(),
+            ThemeChoice::Dark => t_dark.clone(),
+        };
+        let theme_options: Vec<String> = vec![t_system.clone(), t_light.clone(), t_dark.clone()];
+        let theme_row = row![
+            text(self.t("settings_theme").to_string())
+                .size(13)
+                .width(Length::Fill),
+            widget::pick_list(theme_options, Some(current_theme_label), move |selected| {
+                let choice = if selected == t_system {
+                    ThemeChoice::System
+                } else if selected == t_dark {
+                    ThemeChoice::Dark
+                } else {
+                    ThemeChoice::Light
+                };
+                Message::SetTheme(choice)
+            },)
+            .width(160),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let prefs_card = container(
+            column![lang_row, theme_row,]
+                .spacing(14)
+                .padding(iced::Padding {
+                    top: 14.0,
+                    right: 18.0,
+                    bottom: 14.0,
+                    left: 18.0,
+                })
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container.into()),
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::MD.into(),
+                },
+                shadow: theme::elevation(1, is_dark(t)),
+                ..Default::default()
+            }
+        });
+
+        column![
+            text(self.t("settings_title").to_string()).size(theme::text_size::TITLE_LARGE),
+            widget::rule::horizontal(1),
+            prefs_card,
+        ]
+        .spacing(14)
+        .width(Length::Fill)
+        .into()
+    }
+
+    // -- Flash Wizard ------------------------------------------------------
+
+    fn view_flash_wizard(&self) -> Element<'_, Message> {
+        if self.log_popup_open && self.flash.is_in_exec() {
+            return self.log_popup_view();
+        }
+        let step_labels: Vec<&str> = FLASH_STEPS.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.flash.step);
+        let body = match self.flash.step {
+            0 => self.flash_region_step(),
+            1 => self.flash_target_step(),
+            2 => self.flash_data_step(),
+            3 => self.flash_folder_step(),
+            4 => self.flash_confirm_step(),
+            _ => self.flash_exec_step(),
+        };
+        let nav = if self.flash.step < 5 {
+            let is_start = self.flash.step == 4;
+            let label_owned = if is_start {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.flash.can_next() && !(self.busy && is_start);
+            wizard_nav_generic(
+                self.flash.step > 0,
+                &label_owned,
+                can,
+                self.t("btn_back"),
+                Message::FlashBack,
+                Message::FlashNext,
+            )
+        } else {
+            container(text("")).into()
+        };
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn flash_region_step(&self) -> Element<'_, Message> {
+        let prc_icon = svg_icon(include_bytes!("../assets/icons/prc.svg"), 72.0);
+        let row_icon = svg_icon(include_bytes!("../assets/icons/row.svg"), 72.0);
+        let col = column![
+            text(self.t("flash_region_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_region_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                icon_option_card_sub(
+                    prc_icon,
+                    self.t("region_prc"),
+                    self.t("region_prc_name"),
+                    self.flash.device_region == Some(DeviceRegion::Prc),
+                    Message::FlashRegion(DeviceRegion::Prc)
+                ),
+                icon_option_card_sub(
+                    row_icon,
+                    self.t("region_row"),
+                    self.t("region_row_name"),
+                    self.flash.device_region == Some(DeviceRegion::Row),
+                    Message::FlashRegion(DeviceRegion::Row)
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_target_step(&self) -> Element<'_, Message> {
+        let globe = svg_icon(include_bytes!("../assets/icons/globe.svg"), 72.0);
+        let device = svg_icon(include_bytes!("../assets/icons/device.svg"), 72.0);
+        let col = column![
+            text(self.t("flash_target_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_target_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                icon_option_card_sub(
+                    globe,
+                    self.t(FlashTarget::OtherRegion.label_key()),
+                    self.t("flashtarget_other_desc"),
+                    self.flash.target == Some(FlashTarget::OtherRegion),
+                    Message::FlashTarget(FlashTarget::OtherRegion)
+                ),
+                icon_option_card_sub(
+                    device,
+                    self.t(FlashTarget::SameRegion.label_key()),
+                    self.t("flashtarget_same_desc"),
+                    self.flash.target == Some(FlashTarget::SameRegion),
+                    Message::FlashTarget(FlashTarget::SameRegion)
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_data_step(&self) -> Element<'_, Message> {
+        let shield = svg_icon(include_bytes!("../assets/icons/shield.svg"), 72.0);
+        let wipe = svg_icon(include_bytes!("../assets/icons/wipe.svg"), 72.0);
+        let col = column![
+            text(self.t("flash_data_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_data_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                icon_option_card_sub(
+                    shield,
+                    self.t(DataMode::Keep.label_key()),
+                    self.t("datamode_keep_desc"),
+                    self.flash.data_mode == Some(DataMode::Keep),
+                    Message::FlashDataMode(DataMode::Keep)
+                ),
+                icon_option_card_sub(
+                    wipe,
+                    self.t(DataMode::Wipe.label_key()),
+                    self.t("datamode_wipe_desc"),
+                    self.flash.data_mode == Some(DataMode::Wipe),
+                    Message::FlashDataMode(DataMode::Wipe)
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_folder_step(&self) -> Element<'_, Message> {
+        let selected = self.flash.firmware_folder.is_some();
+        let status = if let Some(p) = &self.flash.firmware_folder {
+            p.clone()
+        } else {
+            self.t("flash_folder_placeholder").to_string()
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_folder").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("flash_folder_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::FlashSelectFolder)
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+        let chips = self.recent_chips(
+            &self.recent_paths.folders,
+            |p| Message::RecentFolderPicked(PickerTarget::FlashFolder, p),
+            "picker_recents",
+        );
+        let col = column![
+            text(self.t("flash_folder_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
+                .center(),
+            chips,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_confirm_step(&self) -> Element<'_, Message> {
+        let dash = "—".to_string();
+        let region = self
+            .flash
+            .device_region
+            .map(|r| self.t(r.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let target = self
+            .flash
+            .target
+            .map(|t| self.t(t.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let data = self
+            .flash
+            .data_mode
+            .map(|d| self.t(d.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let modify_region = self
+            .t(if self.wf_config.modify_region {
+                "rollback_on"
+            } else {
+                "rollback_off"
+            })
+            .to_string();
+        let rollback = self
+            .t(self.wf_config.modify_rollback.label_key())
+            .to_string();
+        let mut col = column![
+            text(self.t("flash_confirm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_confirm_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            info_kv_center(self.t("flash_region_title"), &region),
+            info_kv_center(self.t("flash_target_title"), &target),
+            info_kv_center(self.t("flash_data_title"), &data),
+            info_kv_center(self.t("adv_section_region_patch"), &modify_region),
+            info_kv_center(self.t("device_arb"), &rollback),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        if let Some(cc) = &self.wf_config.country_code {
+            let entry = COUNTRY_CODES.iter().find(|e| e.code == cc);
+            let label = entry
+                .map(|e| format!("{} — {}", e.code, e.name))
+                .unwrap_or_else(|| cc.clone());
+            col = col.push(info_kv_center(self.t("popup_select_country"), &label));
+        }
+        let folder_owned = self
+            .flash
+            .firmware_folder
+            .clone()
+            .unwrap_or_else(|| dash.clone());
+        col = col.push(info_kv_center(self.t("flash_folder_title"), &folder_owned));
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_exec_step(&self) -> Element<'_, Message> {
+        self.exec_step_view()
+    }
+
+    // -- System Update Wizard ----------------------------------------------
+
+    fn view_sysupdate_wizard(&self) -> Element<'_, Message> {
+        let step_labels: Vec<&str> = SYSUPDATE_STEPS.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.sysupdate.step);
+        let body = match self.sysupdate.step {
+            0 => self.sysupdate_action_step(),
+            1 => self.sysupdate_confirm_step(),
+            _ => self.sysupdate_exec_step(),
+        };
+        let nav = if self.sysupdate.step < 2 {
+            let is_start = self.sysupdate.step == 1;
+            let label_owned = if is_start {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.sysupdate.can_next() && !(self.busy && is_start);
+            wizard_nav_generic(
+                self.sysupdate.step > 0,
+                &label_owned,
+                can,
+                self.t("btn_back"),
+                Message::SysBack,
+                Message::SysNext,
+            )
+        } else {
+            container(text("")).into()
+        };
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn sysupdate_action_step(&self) -> Element<'_, Message> {
+        let off_icon = svg_icon(include_bytes!("../assets/icons/update_off.svg"), 72.0);
+        let on_icon = svg_icon(include_bytes!("../assets/icons/update_on.svg"), 72.0);
+        let rescue_icon = svg_icon(include_bytes!("../assets/icons/rescue.svg"), 72.0);
+        let rescue_disabled = self.platform_supported == Some(false);
+        let mut cards = row![
+            icon_option_card_sub(
+                off_icon,
+                self.t(SysUpdateAction::Disable.label_key()),
+                self.t(SysUpdateAction::Disable.desc_key()),
+                self.sysupdate.action == Some(SysUpdateAction::Disable),
+                Message::SysAction(SysUpdateAction::Disable),
+            ),
+            icon_option_card_sub(
+                on_icon,
+                self.t(SysUpdateAction::Enable.label_key()),
+                self.t(SysUpdateAction::Enable.desc_key()),
+                self.sysupdate.action == Some(SysUpdateAction::Enable),
+                Message::SysAction(SysUpdateAction::Enable),
+            ),
+        ]
+        .spacing(12);
+        if rescue_disabled {
+            // Disabled rescue card — no on_press, grayed out; still mirrors
+            // the sub-row layout of the other tiles with the Qualcomm-required
+            // hint so the label sits at the same height.
+            let content = column![
+                icon_tile(rescue_icon),
+                text(self.t("sysupdate_rescue").to_string())
+                    .size(13)
+                    .width(Length::Fill)
+                    .center()
+                    .style(label_style),
+                text(self.t("sysupdate_rescue_req").to_string())
+                    .size(11)
+                    .width(Length::Fill)
+                    .center()
+                    .style(label_style),
+            ]
+            .spacing(8)
+            .align_x(iced::Alignment::Center);
+            cards = cards.push(
+                button(
+                    container(content)
+                        .padding([20, 16])
+                        .width(Length::Fill)
+                        .height(WIZARD_CARD_HEIGHT)
+                        .center_y(WIZARD_CARD_HEIGHT)
+                        .style(|t: &Theme| {
+                            theme::surface_card_style(
+                                t,
+                                theme::SurfaceLevel::Lowest,
+                                theme::shape::MD,
+                                0,
+                            )
+                        }),
+                )
+                .padding(0)
+                .width(Length::Fill)
+                .style(|_t: &Theme, _s| button::Style {
+                    background: None,
+                    ..Default::default()
+                }),
+            );
+        } else {
+            cards = cards.push(icon_option_card_sub(
+                rescue_icon,
+                self.t(SysUpdateAction::Rescue.label_key()),
+                self.t(SysUpdateAction::Rescue.desc_key()),
+                self.sysupdate.action == Some(SysUpdateAction::Rescue),
+                Message::SysAction(SysUpdateAction::Rescue),
+            ));
+        }
+        let col = column![
+            text(self.t("sysupdate_action_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("sysupdate_action_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            cards,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn sysupdate_confirm_step(&self) -> Element<'_, Message> {
+        let dash = "—".to_string();
+        let action = self
+            .sysupdate
+            .action
+            .map(|a| self.t(a.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let desc = self
+            .sysupdate
+            .action
+            .map(|a| self.t(a.desc_key()).to_string())
+            .unwrap_or_default();
+        let col = column![
+            text(self.t("sysupdate_confirm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(desc).size(13).style(muted_style).center(),
+            widget::rule::horizontal(1),
+            info_kv_center(self.t("sysupdate_step_action"), &action),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn sysupdate_exec_step(&self) -> Element<'_, Message> {
+        self.exec_step_view()
+    }
+
+    /// Reusable exec-step view with collapsible log panel.
+    fn exec_step_view(&self) -> Element<'_, Message> {
+        let (title, detail) = if self.busy {
+            (
+                self.t("exec_executing_title").to_string(),
+                self.t("exec_executing_subtitle").to_string(),
+            )
+        } else if self.error_msg.is_some() {
+            (
+                self.t("exec_failed_title").to_string(),
+                self.t("exec_failed_subtitle").to_string(),
+            )
+        } else {
+            (
+                self.t("exec_done_title").to_string(),
+                self.t("exec_done_subtitle").to_string(),
+            )
+        };
+        let is_error = self.error_msg.is_some();
+        let is_busy = self.busy;
+
+        // Current-step card: icon swaps between running / done / failed.
+        let icon_bytes = if is_error {
+            OP_ICON_FAILED
+        } else if is_busy {
+            OP_ICON_RUNNING
+        } else {
+            OP_ICON_DONE
+        };
+        let step_icon = iced::widget::svg(iced::widget::svg::Handle::from_memory(icon_bytes))
+            .width(72)
+            .height(72);
+
+        let (eyebrow_text, label_text) = if self.op_steps.is_empty() {
+            (String::new(), detail.clone())
+        } else {
+            let idx = self.current_op_step.min(self.op_steps.len() - 1);
+            let total = self.op_steps.len();
+            let step = &self.op_steps[idx];
+            let eyebrow_key = if is_error {
+                "exec_step_eyebrow_failed"
+            } else if is_busy {
+                "exec_step_eyebrow_running"
+            } else {
+                "exec_step_eyebrow_done"
+            };
+            let eyebrow = self
+                .t(eyebrow_key)
+                .replace("{n}", &(idx + 1).to_string())
+                .replace("{total}", &total.to_string());
+            (eyebrow, step.label.clone())
+        };
+
+        let eyebrow_node: Element<'_, Message> = if eyebrow_text.is_empty() {
+            Space::new().height(0).into()
+        } else {
+            text(eyebrow_text)
+                .size(11)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    let color = if is_error {
+                        p.error
+                    } else if is_busy {
+                        p.primary
+                    } else {
+                        p.success
+                    };
+                    iced::widget::text::Style { color: Some(color) }
+                })
+                .into()
+        };
+
+        let card_body = column![
+            eyebrow_node,
+            text(label_text).size(16).style(on_surface_style),
+        ]
+        .spacing(4)
+        .width(Length::Fill);
+        let card_row = row![step_icon, card_body]
+            .spacing(20)
+            .align_y(iced::Alignment::Center);
+        let step_card = container(card_row)
+            .padding([24, 28])
+            .max_width(560)
+            .width(Length::Fill)
+            .style(move |t: &Theme| {
+                let p = pal_of(t);
+                let accent = if is_error {
+                    p.error
+                } else if is_busy {
+                    p.primary
+                } else {
+                    p.success
+                };
+                container::Style {
+                    background: Some(p.surface_container.into()),
+                    border: iced::Border {
+                        color: accent,
+                        width: 1.5,
+                        radius: theme::shape::MD.into(),
+                    },
+                    shadow: theme::elevation(2, is_dark(t)),
+                    ..Default::default()
+                }
+            });
+
+        let pill_style = neutral_pill_btn_style;
+        let show_btn = button(
+            text(self.t("btn_show_log").to_string())
+                .size(11)
+                .style(muted_style)
+                .center(),
+        )
+        .on_press(Message::ToggleLogPopup(true))
+        .padding([4, 12])
+        .style(pill_style);
+        let save_btn = button(
+            text(self.t("btn_save_log").to_string())
+                .size(11)
+                .style(muted_style)
+                .center(),
+        )
+        .on_press(Message::SaveLog)
+        .padding([4, 12])
+        .style(pill_style);
+
+        let mut button_row = row![show_btn, save_btn].spacing(8);
+
+        // "Open Folder" pill for Advanced ops that produce output —
+        // guarded on non-busy to avoid racing the file-manager launch.
+        if !self.busy
+            && self.current_view == View::Advanced
+            && self.adv_wizard.output_dir.is_some()
+            && self
+                .adv_wizard
+                .action
+                .map(|a| a.produces_output())
+                .unwrap_or(false)
+        {
+            let open_btn = button(
+                text(self.t("btn_open_folder").to_string())
+                    .size(11)
+                    .style(muted_style)
+                    .center(),
+            )
+            .on_press(Message::AdvWizOpenOutputFolder)
+            .padding([4, 12])
+            .style(pill_style);
+            button_row = button_row.push(open_btn);
+        }
+
+        if !self.busy {
+            let start_over = button(
+                text(self.t("btn_start_over").to_string())
+                    .size(11)
+                    .style(muted_style)
+                    .center(),
+            )
+            .on_press(Message::StartOver)
+            .padding([4, 12])
+            .style(pill_style);
+            button_row = button_row.push(start_over);
+        }
+
+        let col = column![
+            text(title)
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center()
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    let color = if is_error {
+                        p.error
+                    } else if is_busy {
+                        p.primary
+                    } else {
+                        p.success
+                    };
+                    iced::widget::text::Style { color: Some(color) }
+                }),
+            text(detail).size(13).style(muted_style).center(),
+            Space::new().height(8),
+            step_card,
+            Space::new().height(6),
+            button_row,
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    /// Full-viewport log popup. Replaces the wizard body while open;
+    /// dismissed via Close.
+    fn log_popup_view(&self) -> Element<'_, Message> {
+        let editor = iced::widget::text_editor(&self.log_editor)
+            .on_action(Message::LogEditorAction)
+            .size(11)
+            .height(Length::Fill);
+        let body = column![
+            row![
+                text(self.t("log_popup_title").to_string()).size(theme::text_size::TITLE_LARGE),
+                Space::new().width(Length::Fill),
+                button(text(self.t("btn_save_log").to_string()).size(12))
+                    .on_press(Message::SaveLog)
+                    .padding([6, 14])
+                    .style(|t: &Theme, _s| {
+                        let p = pal_of(t);
+                        button::Style {
+                            background: Some(with_alpha(p.on_surface, 0.1).into()),
+                            text_color: p.on_surface,
+                            border: iced::Border {
+                                radius: 6.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }),
+                button(text(self.t("btn_close").to_string()).size(12))
+                    .on_press(Message::ToggleLogPopup(false))
+                    .padding([6, 16])
+                    .style(|_t: &Theme, status| {
+                        let a = match status {
+                            button::Status::Hovered => 1.0,
+                            _ => 0.85,
+                        };
+                        button::Style {
+                            background: Some(iced::Color { a, ..ACCENT }.into()),
+                            text_color: iced::Color::WHITE,
+                            border: iced::Border {
+                                radius: 6.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            widget::rule::horizontal(1),
+            container(editor)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(10)
+                .style(|t: &Theme| theme::surface_card_style(
+                    t,
+                    theme::SurfaceLevel::Low,
+                    theme::shape::SM,
+                    0,
+                )),
+        ]
+        .spacing(12)
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill);
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // -- Unroot Wizard ----------------------------------------------------
+
+    fn view_unroot_wizard(&self) -> Element<'_, Message> {
+        if self.log_popup_open && self.unroot.is_in_exec() {
+            return self.log_popup_view();
+        }
+        let step_labels: Vec<&str> = UNROOT_STEPS.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.unroot.step);
+        let body = match self.unroot.step {
+            0 => self.unroot_type_step(),
+            1 => self.unroot_folder_step(),
+            2 => self.unroot_confirm_step(),
+            _ => self.unroot_exec_step(),
+        };
+        let nav = if self.unroot.step < 3 {
+            let is_start = self.unroot.step == 2;
+            let label_owned = if is_start {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.unroot.can_next() && !(self.busy && is_start);
+            wizard_nav_generic(
+                self.unroot.step > 0,
+                &label_owned,
+                can,
+                self.t("btn_back"),
+                Message::UnrootBack,
+                Message::UnrootNext,
+            )
+        } else {
+            container(text("")).into()
+        };
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn unroot_type_step(&self) -> Element<'_, Message> {
+        let lkm_icon = svg_icon(include_bytes!("../assets/icons/unroot_lkm.svg"), 72.0);
+        let gki_icon = svg_icon(include_bytes!("../assets/icons/unroot_gki.svg"), 72.0);
+        let col = column![
+            text(self.t("unroot_method_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("unroot_method_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                icon_option_card_sub(
+                    lkm_icon,
+                    self.t(UnrootType::MagiskLkm.label_key()),
+                    self.t(UnrootType::MagiskLkm.desc_key()),
+                    self.unroot.unroot_type == Some(UnrootType::MagiskLkm),
+                    Message::SetUnrootType(UnrootType::MagiskLkm)
+                ),
+                icon_option_card_sub(
+                    gki_icon,
+                    self.t(UnrootType::APatchGki.label_key()),
+                    self.t(UnrootType::APatchGki.desc_key()),
+                    self.unroot.unroot_type == Some(UnrootType::APatchGki),
+                    Message::SetUnrootType(UnrootType::APatchGki)
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn unroot_folder_step(&self) -> Element<'_, Message> {
+        let selected = self.unroot.folder_path.is_some();
+        let desc_owned = self
+            .unroot
+            .unroot_type
+            .map(|t| self.t(t.folder_desc_key()).to_string())
+            .unwrap_or_else(|| self.t("unroot_folder_placeholder").to_string());
+        let status = if let Some(p) = &self.unroot.folder_path {
+            p.clone()
+        } else {
+            self.t("flash_folder_placeholder").to_string()
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_folder").to_string())
+                        .size(14)
+                        .center(),
+                    text(desc_owned).size(11).style(muted_style).center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::UnrootSelectFolder)
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+        let chips = self.recent_chips(
+            &self.recent_paths.folders,
+            |p| Message::RecentFolderPicked(PickerTarget::UnrootFolder, p),
+            "picker_recents",
+        );
+        let col = column![
+            text(self.t("unroot_folder_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
+                .center(),
+            chips,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn unroot_confirm_step(&self) -> Element<'_, Message> {
+        let dash = "—".to_string();
+        let method = self
+            .unroot
+            .unroot_type
+            .map(|t| self.t(t.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let folder = self
+            .unroot
+            .folder_path
+            .clone()
+            .unwrap_or_else(|| dash.clone());
+        let col = column![
+            text(self.t("unroot_confirm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("unroot_confirm_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            info_kv_center(self.t("unroot_step_method"), &method),
+            info_kv_center(self.t("unroot_folder_title"), &folder),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn unroot_exec_step(&self) -> Element<'_, Message> {
+        self.exec_step_view()
+    }
+
+    // -- Root Wizard ------------------------------------------------------
+
+    fn view_root_wizard(&self) -> Element<'_, Message> {
+        // Superkey popup is viewport-wide; KPM body stays mounted
+        // underneath so Cancel returns to the curated list.
+        if self.root.superkey_popup_open {
+            return self.root_superkey_popup();
+        }
+        // Run-ID popup is a top-level overlay via `view()` stack —
+        // do NOT early-return for it here.
+        if self.log_popup_open && self.root.is_in_exec() {
+            return self.log_popup_view();
+        }
+        let steps = self.root.active_steps();
+        let step_labels: Vec<&str> = steps.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.root.display_step());
+        let body = match self.root.step {
+            0 => self.root_family_step(),
+            1 => self.root_mode_step(),
+            2 => {
+                if self.root.is_gki() {
+                    self.root_file_step(self.t("root_kernel_title"), self.t("root_kernel_subtitle"))
+                } else {
+                    self.root_provider_step()
+                }
+            }
+            3 => {
+                if self.root.is_forks() {
+                    self.root_file_step(self.t("root_apk_title"), self.t("root_apk_subtitle"))
+                } else {
+                    self.root_version_step()
+                }
+            }
+            4 => self.root_nightly_source_step(),
+            5 => self.root_folder_step(),
+            6 => self.root_confirm_step(),
+            8 => self.root_kpm_step(),
+            _ => self.root_flash_step(),
+        };
+        // Step 7 is in-progress — no nav. Step 8 (APatch KPM) needs
+        // the normal Back/Next bar, so exclude only 7 explicitly.
+        let nav = if self.root.step != 7 {
+            let is_start = self.root.step == 6;
+            let label_owned = if is_start {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.root.can_next() && !(self.busy && is_start);
+            wizard_nav(self.root.step > 0, &label_owned, can, self.t("btn_back"))
+        } else {
+            container(text("")).into()
+        };
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn root_kpm_step(&self) -> Element<'_, Message> {
+        // No recents here — the KPM list already competes for vertical space.
+        let pick_btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_kpm").to_string()).size(14).center(),
+                    text(self.t("root_kpm_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(|t: &Theme| sel_card_style(t, !self.root.kpm_paths.is_empty())),
+        )
+        .on_press(Message::RootSelectKpm)
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+
+        let mut list = column![].spacing(4).width(Length::Fill);
+        for path in &self.root.kpm_paths {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            let p_copy = path.clone();
+            let remove = button(text("−").size(14))
+                .padding([2, 10])
+                .on_press(Message::RootKpmRemove(p_copy))
+                .style(|t: &Theme, _s| {
+                    let p = pal_of(t);
+                    button::Style {
+                        background: Some(with_alpha(p.on_surface, 0.10).into()),
+                        text_color: p.on_surface,
+                        border: iced::Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                });
+            list = list.push(
+                row![remove, text(name).size(12).style(on_surface_style),]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
+            );
+        }
+
+        let col = column![
+            text(self.t("root_kpm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_kpm_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            pick_btn,
+            list,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_superkey_popup(&self) -> Element<'_, Message> {
+        let input = iced::widget::text_input(
+            self.t("apatch_superkey_placeholder"),
+            &self.root.superkey_buffer,
+        )
+        .on_input(Message::RootSuperkeyInput)
+        .on_submit(Message::RootSuperkeyConfirm)
+        .secure(true)
+        .padding(10)
+        .width(Length::Fill);
+
+        let err = match &self.error_msg {
+            Some(e) => text(e.clone()).size(11).style(|t: &Theme| {
+                let p = pal_of(t);
+                iced::widget::text::Style {
+                    color: Some(p.error),
+                }
+            }),
+            None => text(String::new()).size(11),
+        };
+
+        let body = column![
+            text(self.t("apatch_superkey_title").to_string()).size(theme::text_size::TITLE_LARGE),
+            text(self.t("apatch_superkey_subtitle").to_string())
+                .size(13)
+                .style(muted_style),
+            widget::rule::horizontal(1),
+            input,
+            err,
+            widget::rule::horizontal(1),
+            row![
+                button(text(self.t("btn_cancel").to_string()).size(13))
+                    .padding([8, 20])
+                    .on_press(Message::RootSuperkeyCancel)
+                    .style(|t: &Theme, _s| {
+                        let p = pal_of(t);
+                        button::Style {
+                            background: Some(with_alpha(p.on_surface, 0.1).into()),
+                            text_color: p.on_surface_variant,
+                            ..Default::default()
+                        }
+                    }),
+                Space::new().width(Length::Fill),
+                button(text(self.t("btn_ok").to_string()).size(13))
+                    .padding([8, 20])
+                    .on_press(Message::RootSuperkeyConfirm)
+                    .style(|_t: &Theme, status| {
+                        let a = match status {
+                            button::Status::Hovered => 1.0,
+                            _ => 0.85,
+                        };
+                        button::Style {
+                            background: Some(iced::Color { a, ..ACCENT }.into()),
+                            text_color: iced::Color::WHITE,
+                            border: iced::Border {
+                                radius: 6.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }),
+            ]
+            .spacing(8),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill);
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_run_id_popup(&self) -> Element<'_, Message> {
+        // M3 text-input dialog — 380 wide, outlined Cancel + filled OK.
+        let input = iced::widget::text_input(
+            self.t("nightly_manual_placeholder"),
+            &self.root.run_id_buffer,
+        )
+        .on_input(Message::RootRunIdInput)
+        .on_submit(Message::RootRunIdConfirm)
+        .padding([10, 12])
+        .width(Length::Fill)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
+            iced::widget::text_input::Style {
+                background: p.surface.into(),
+                border: iced::Border {
+                    color: if focused {
+                        p.primary
+                    } else {
+                        p.outline_variant
+                    },
+                    width: if focused { 2.0 } else { 1.0 },
+                    radius: 8.0.into(),
+                },
+                placeholder: with_alpha(p.on_surface, 0.5),
+                icon: p.on_surface,
+                value: p.on_surface,
+                selection: with_alpha(p.primary, 0.3),
+            }
+        });
+
+        let err: Element<'_, Message> = match &self.error_msg {
+            Some(e) => text(e.clone())
+                .size(12)
+                .style(|t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(p.error),
+                    }
+                })
+                .into(),
+            None => Space::new().height(0).into(),
+        };
+
+        let content = column![
+            text(self.t("nightly_manual_title").to_string()).size(20),
+            text(self.t("nightly_manual_subtitle").to_string())
+                .size(13)
+                .style(muted_style),
+            input,
+            err,
+            row![
+                Space::new().width(Length::Fill),
+                button(text(self.t("btn_cancel").to_string()).size(13))
+                    .on_press(Message::RootRunIdCancel)
+                    .padding([8, 18])
+                    .style(md_text_btn_style),
+                button(text(self.t("btn_ok").to_string()).size(13))
+                    .on_press(Message::RootRunIdConfirm)
+                    .padding([8, 18])
+                    .style(md_filled_btn_style),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(14)
+        .padding(24)
+        .width(380);
+
+        m3_dialog(content.into())
+    }
+
+    fn root_family_step(&self) -> Element<'_, Message> {
+        let mk = |f: Family| -> Element<'_, Message> {
+            icon_option_card_sub(
+                f.icon(),
+                self.t(f.label_key()),
+                self.t(f.desc_key()),
+                self.root.family == Some(f),
+                Message::RootFamily(f),
+            )
+        };
+
+        let cards = row![mk(Family::Magisk), mk(Family::KernelSU), mk(Family::APatch),].spacing(12);
+
+        let col = column![
+            text(self.t("root_type_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_type_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            cards,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_provider_step(&self) -> Element<'_, Message> {
+        let family = self.root.family.unwrap_or(Family::KernelSU);
+        let providers = family.providers();
+        // KernelSU has 4 providers — 2×2 grid clipped at 620 px default
+        // window. Switch to a list layout only for that route.
+        let is_ksu_lkm_list = family == Family::KernelSU && !self.root.is_gki();
+
+        let grid_card = |p: Provider, selected: bool| -> Element<'_, Message> {
+            let sub = p.desc_key().map(|k| self.t(k)).unwrap_or("");
+            icon_option_card_sub(
+                p.icon(),
+                self.t(p.label_key()),
+                sub,
+                selected,
+                Message::RootProvider(p),
+            )
+        };
+
+        let list_card = |p: Provider, selected: bool| -> Element<'_, Message> {
+            // Icon left + label/desc right; each card Fill height so
+            // N cards split the space evenly.
+            let icon = p.icon();
+            let desc: Element<'_, Message> = match p.desc_key() {
+                Some(dk) => text(self.t(dk).to_string())
+                    .size(12)
+                    .style(muted_style)
+                    .into(),
+                None => text(" ").size(12).into(),
+            };
+            let text_block = container(
+                column![
+                    text(self.t(p.label_key()).to_string())
+                        .size(16)
+                        .style(on_surface_style),
+                    desc,
+                ]
+                .spacing(4)
+                .width(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_y(Length::Fill);
+            let body = row![icon_tile(icon), text_block]
+                .spacing(16)
+                .align_y(iced::Alignment::Center);
+            button(
+                container(body)
+                    .padding([16, 20])
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(move |t: &Theme| sel_card_style(t, selected)),
+            )
+            .on_press(Message::RootProvider(p))
+            .padding(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_t: &Theme, _s| button::Style {
+                background: None,
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let tiles: Element<'_, Message> = if is_ksu_lkm_list {
+            let mut list = column![]
+                .spacing(10)
+                .width(Length::Fill)
+                .height(Length::Fill);
+            for &p in providers {
+                list = list.push(list_card(p, self.root.provider == Some(p)));
+            }
+            list.into()
+        } else {
+            // 2-col grid — Magisk / APatch (2 providers each).
+            let mut grid = column![].spacing(10).width(Length::Fill);
+            for chunk in providers.chunks(2) {
+                let mut r = row![].spacing(10);
+                for &p in chunk {
+                    r = r.push(grid_card(p, self.root.provider == Some(p)));
+                }
+                if chunk.len() == 1 {
+                    r = r.push(Space::new().width(Length::Fill));
+                }
+                grid = grid.push(r);
+            }
+            grid.into()
+        };
+
+        let title = self
+            .t("root_provider_title_tmpl")
+            .replace("{family}", self.t(family.label_key()));
+        // KSU list claims full height; other grids stay Shrink so the
+        // outer container vertical-centres them like other wizard steps.
+        let col = column![
+            text(title)
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_provider_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            tiles,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        let col = if is_ksu_lkm_list {
+            col.height(Length::Fill)
+        } else {
+            col
+        };
+        let outer = container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill);
+        if is_ksu_lkm_list {
+            outer.into()
+        } else {
+            outer.center_y(Length::Fill).into()
+        }
+    }
+
+    fn root_file_step(&self, title: &str, subtitle: &str) -> Element<'_, Message> {
+        let selected = self.root.file_path.is_some();
+        let status_text = if let Some(p) = &self.root.file_path {
+            p.clone()
+        } else {
+            self.t("flash_folder_placeholder").to_string()
+        };
+
+        let btn_label = if self.root.is_gki() {
+            self.t("btn_browse_kernel_zip")
+        } else {
+            self.t("btn_browse_apk")
+        };
+
+        let btn = button(
+            container(
+                column![
+                    text(btn_label.to_string()).size(14).center(),
+                    text(subtitle.to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::RootSelectFile)
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+
+        let chips = self.recent_chips(
+            &self.recent_paths.files,
+            |p| Message::RecentFilePicked(PickerTarget::RootFile, p),
+            "picker_recents",
+        );
+        let col = column![
+            text(title.to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status_text)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
+                .center(),
+            chips,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    /// Recents panel — up to three chips, greyed out when stale.
+    /// Empty column when the list is empty so call sites can splice
+    /// it in unconditionally.
+    fn recent_chips<F>(&self, items: &[String], on_pick: F, label_key: &str) -> Element<'_, Message>
+    where
+        F: Fn(String) -> Message,
+    {
+        if items.is_empty() {
+            return iced::widget::column![].into();
+        }
+        let label_row = row![
+            iced::widget::svg(HISTORY_ICON_HANDLE.clone())
+                .width(Length::Fixed(12.0))
+                .height(Length::Fixed(12.0)),
+            text(self.t(label_key).to_string())
+                .size(11)
+                .style(muted_style),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        let mut col = column![label_row]
+            .spacing(4)
+            .align_x(iced::Alignment::Center);
+        for path in items.iter().take(settings_store::RECENT_MAX) {
+            let exists = std::path::Path::new(path).exists();
+            let display = path.clone();
+            let path_for_msg = path.clone();
+            let msg = on_pick(path_for_msg);
+            let mut btn = button(text(display).size(11).style(muted_style))
+                .padding([4, 10])
+                .style(|_t: &Theme, _s| button::Style {
+                    background: None,
+                    ..Default::default()
+                });
+            if exists {
+                btn = btn.on_press(msg);
+            }
+            col = col.push(btn);
+        }
+        col.into()
+    }
+
+    fn root_folder_step(&self) -> Element<'_, Message> {
+        // Folder must contain the EDL loader; pipeline searches it +
+        // `./keys/` for a fallback PEM.
+        let selected = self.root.folder_path.is_some();
+        let status = if let Some(p) = &self.root.folder_path {
+            p.clone()
+        } else {
+            self.t("flash_folder_placeholder").to_string()
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_folder").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("root_folder_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::RootSelectFolder)
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+        let chips = self.recent_chips(
+            &self.recent_paths.folders,
+            |p| Message::RecentFolderPicked(PickerTarget::RootFolder, p),
+            "picker_recents",
+        );
+        let col = column![
+            text(self.t("root_folder_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_folder_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            btn,
+            text(status)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
+                .center(),
+            chips,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_mode_step(&self) -> Element<'_, Message> {
+        let fam_label = self
+            .root
+            .family
+            .map(|f| self.t(f.label_key()))
+            .unwrap_or("?");
+        let title = self
+            .t("root_mode_title_tmpl")
+            .replace("{family}", fam_label);
+        let col = column![
+            text(title)
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_mode_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                icon_option_card_sub(
+                    RootMode::Lkm.icon(),
+                    self.t(RootMode::Lkm.label_key()),
+                    self.t(RootMode::Lkm.desc_key()),
+                    self.root.mode == Some(RootMode::Lkm),
+                    Message::RootMode(RootMode::Lkm),
+                ),
+                icon_option_card_sub(
+                    RootMode::Gki.icon(),
+                    self.t(RootMode::Gki.label_key()),
+                    self.t(RootMode::Gki.desc_key()),
+                    self.root.mode == Some(RootMode::Gki),
+                    Message::RootMode(RootMode::Gki),
+                ),
+            ]
+            .spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_version_step(&self) -> Element<'_, Message> {
+        let mk = |choice: VerChoice| -> Element<'_, Message> {
+            icon_option_card_sub(
+                choice.icon(),
+                self.t(choice.label_key()),
+                self.t(choice.desc_key()),
+                self.root.version == Some(choice),
+                Message::RootVersion(choice),
+            )
+        };
+
+        let col = column![
+            text(self.t("root_version_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_version_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![mk(VerChoice::Stable), mk(VerChoice::Nightly)].spacing(12),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_nightly_source_step(&self) -> Element<'_, Message> {
+        let mk = |src: NightlySource| -> Element<'_, Message> {
+            icon_option_card_sub(
+                src.icon(),
+                self.t(src.label_key()),
+                self.t(src.desc_key()),
+                self.root.nightly_source == Some(src),
+                Message::RootNightlySource(src),
+            )
+        };
+
+        // Committed ManualInput shows a chip beneath the cards; click re-opens.
+        let chip: Element<'_, Message> =
+            match (self.root.nightly_source, self.root.run_id.as_deref()) {
+                (Some(NightlySource::ManualInput), Some(id)) if !id.is_empty() => {
+                    let label = self.t("nightly_manual_committed").replace("{id}", id);
+                    button(text(label).size(13).style(on_surface_style))
+                        .padding([8, 14])
+                        .on_press(Message::RootNightlySource(NightlySource::ManualInput))
+                        .style(|t: &Theme, status| {
+                            let p = pal_of(t);
+                            let bg_a = match status {
+                                button::Status::Hovered => 0.18,
+                                _ => 0.10,
+                            };
+                            button::Style {
+                                background: Some(with_alpha(p.on_surface, bg_a).into()),
+                                text_color: p.on_surface,
+                                border: iced::Border {
+                                    radius: 6.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }
+                        })
+                        .into()
+                }
+                _ => Space::new().height(0).into(),
+            };
+
+        let col = column![
+            text(self.t("root_source_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("root_source_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                mk(NightlySource::AutoDetect),
+                mk(NightlySource::ManualInput)
+            ]
+            .spacing(12),
+            chip,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_confirm_step(&self) -> Element<'_, Message> {
+        let dash = "—".to_string();
+        let fam = self
+            .root
+            .family
+            .map(|f| self.t(f.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let mode = self
+            .root
+            .mode
+            .map(|m| self.t(m.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+
+        let mut col = column![
+            text(self.t("root_confirm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE),
+            text(self.t("root_confirm_subtitle").to_string())
+                .size(13)
+                .style(muted_style),
+            widget::rule::horizontal(1),
+            info_kv_center(self.t("root_step_type"), &fam),
+            info_kv_center(self.t("root_step_mode"), &mode),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+
+        if self.root.is_gki() {
+            let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
+            col = col.push(info_kv_center(self.t("root_step_kernel"), &path));
+        } else if self.root.is_forks() {
+            let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
+            col = col.push(info_kv_center(
+                self.t("root_step_provider"),
+                self.t("provider_magisk_forks"),
+            ));
+            col = col.push(info_kv_center(self.t("root_step_apk"), &path));
+        } else {
+            let prov = self
+                .root
+                .provider
+                .map(|p| self.t(p.label_key()).to_string())
+                .unwrap_or_else(|| dash.clone());
+            let ver = self
+                .root
+                .version
+                .map(|v| self.t(v.label_key()).to_string())
+                .unwrap_or_else(|| dash.clone());
+            col = col.push(info_kv_center(self.t("root_step_provider"), &prov));
+            col = col.push(info_kv_center(self.t("root_step_version"), &ver));
+            if self.root.is_nightly() {
+                let src = self
+                    .root
+                    .nightly_source
+                    .map(|s| self.t(s.label_key()).to_string())
+                    .unwrap_or_else(|| dash.clone());
+                col = col.push(info_kv_center(self.t("root_step_source"), &src));
+                if self.root.nightly_source == Some(NightlySource::ManualInput) {
+                    let id = self.root.run_id.clone().unwrap_or_else(|| dash.clone());
+                    col = col.push(info_kv_center(self.t("nightly_run_id_label"), &id));
+                }
+            }
+        }
+
+        if self.root.is_apatch() {
+            // Count only — don't echo paths (noisy) or the superkey (secret).
+            let kpm_summary = if self.root.kpm_paths.is_empty() {
+                self.t("root_kpm_none").to_string()
+            } else {
+                self.t("root_kpm_count_tmpl")
+                    .replace("{n}", &self.root.kpm_paths.len().to_string())
+            };
+            col = col.push(info_kv_center(self.t("root_step_kpm"), &kpm_summary));
+        }
+
+        let folder = self
+            .root
+            .folder_path
+            .clone()
+            .unwrap_or_else(|| dash.clone());
+        col = col.push(info_kv_center(self.t("root_step_folder"), &folder));
+
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn root_flash_step(&self) -> Element<'_, Message> {
+        self.exec_step_view()
+    }
+
+    // -- Advanced (grid) --------------------------------------------------
+
+    fn view_advanced(&self) -> Element<'_, Message> {
+        // FlashPartitions preempts the grid.
+        if self.flash_parts_open {
+            return self.view_flash_parts_wizard();
+        }
+        if self.adv_wizard.action.is_some() {
+            return self.view_adv_wizard();
+        }
+
+        let mut content = column![
+            text(self.t("nav_advanced").to_string()).size(theme::text_size::TITLE_LARGE),
+            widget::rule::horizontal(1),
+        ]
+        .spacing(14)
+        .width(Length::Fill);
+
+        for section in ADV_SECTIONS {
+            content = content.push(
+                text(self.t(section.title_key).to_string())
+                    .size(11)
+                    .style(label_style),
+            );
+            let mut rows = column![].spacing(8);
+            for chunk in section.items.chunks(3) {
+                let mut r = row![].spacing(8);
+                for &item in chunk {
+                    r = r.push(adv_grid_btn(item, self.t(item.label_key())));
+                }
+                for _ in chunk.len()..3 {
+                    r = r.push(Space::new().width(Length::Fill));
+                }
+                rows = rows.push(r);
+            }
+            content = content.push(rows);
+        }
+
+        content.into()
+    }
+
+    // -- Advanced wizard (generic) ----------------------------------------
+
+    /// Advanced wizard. PatchDevinfo: source/country/confirm/exec.
+    /// Others: source/confirm/exec.
+    fn view_adv_wizard(&self) -> Element<'_, Message> {
+        let step_labels: Vec<&str> = self.adv_wizard.steps().iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.adv_wizard.step);
+
+        let needs_country = self.adv_wizard.needs_country();
+        let is_confirm = self.adv_wizard.is_confirm_step();
+        let is_exec = self.adv_wizard.step == self.adv_wizard.exec_step();
+
+        let body: Element<'_, Message> = if is_exec {
+            self.exec_step_view()
+        } else if is_confirm {
+            self.adv_wiz_confirm_step()
+        } else if needs_country && self.adv_wizard.step == 1 {
+            self.adv_wiz_country_step()
+        } else {
+            self.adv_wiz_source_step()
+        };
+
+        let nav: Element<'_, Message> = if is_exec {
+            container(text("")).into()
+        } else {
+            let label = if is_confirm {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.adv_wizard.can_next() && !(self.busy && is_confirm);
+            wizard_nav_generic(
+                true,
+                &label,
+                can,
+                self.t("btn_back"),
+                Message::AdvWizBack,
+                Message::AdvWizNext,
+            )
+        };
+
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Step 0 — Browse tile. Matches Flash/Root folder steps.
+    fn adv_wiz_source_step(&self) -> Element<'_, Message> {
+        let action = match self.adv_wizard.action {
+            Some(a) => a,
+            None => return container(text("")).into(),
+        };
+        let selected = self.adv_wizard.file_path.is_some();
+        let status = self
+            .adv_wizard
+            .file_path
+            .clone()
+            .unwrap_or_else(|| self.t("adv_source_placeholder").to_string());
+        let browse_key = if self.adv_wizard.is_folder_op() {
+            "btn_browse_folder"
+        } else {
+            "btn_browse_file"
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t(browse_key).to_string()).size(14).center(),
+                    text(self.t(action.source_desc_key()).to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fixed(280.0))
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(Length::Fixed(280.0))
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .width(Length::Shrink)
+        .on_press(Message::AdvWizBrowse)
+        .padding(0)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        });
+        // Shrink-wrap the 280 px card so the hit area stays tight.
+        let btn_row = row![
+            Space::new().width(Length::Fill),
+            btn,
+            Space::new().width(Length::Fill),
+        ];
+        let status_color = if selected { GREEN } else { LABEL };
+        let chip_source = if self.adv_wizard.is_folder_op() {
+            &self.recent_paths.folders
+        } else {
+            &self.recent_paths.files
+        };
+        let chips = self.recent_chips(
+            chip_source,
+            |p| Message::AdvWizBrowseDone(Some(p)),
+            "picker_recents",
+        );
+        let col = column![
+            text(self.t(action.label_key()).to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn_row,
+            text(status).size(12).color(status_color).center(),
+            chips,
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    /// Step 1 (PatchDevinfo only) — country picker tile; opens the
+    /// shared country popup.
+    fn adv_wiz_country_step(&self) -> Element<'_, Message> {
+        let selected = self.adv_wizard.country.is_some();
+        let status = self
+            .adv_wizard
+            .country
+            .clone()
+            .unwrap_or_else(|| self.t("adv_country_placeholder").to_string());
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_pick_country").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("adv_country_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fixed(280.0))
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(Length::Fixed(280.0))
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .width(Length::Shrink)
+        .on_press(Message::AdvWizOpenCountry)
+        .padding(0)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        });
+        let btn_row = row![
+            Space::new().width(Length::Fill),
+            btn,
+            Space::new().width(Length::Fill),
+        ];
+        let status_color = if selected { GREEN } else { LABEL };
+        let col = column![
+            text(self.t("adv_country_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("adv_country_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            btn_row,
+            text(status).size(12).color(status_color).center(),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    /// Confirm step — Next becomes Start.
+    fn adv_wiz_confirm_step(&self) -> Element<'_, Message> {
+        let action = match self.adv_wizard.action {
+            Some(a) => a,
+            None => return container(text("")).into(),
+        };
+        let dash = "—".to_string();
+        let path = self
+            .adv_wizard
+            .file_path
+            .clone()
+            .unwrap_or_else(|| dash.clone());
+        let mut col = column![
+            text(self.t(action.label_key()).to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t(action.desc_key()).to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            Space::new().height(12),
+            info_kv_center(self.t("adv_confirm_source"), &path),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        if self.adv_wizard.needs_country() {
+            let code = self.adv_wizard.country.clone().unwrap_or(dash);
+            col = col.push(info_kv_center(self.t("adv_confirm_country"), &code));
+        }
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    // -- Flash Partitions wizard ------------------------------------------
+
+    fn view_flash_parts_wizard(&self) -> Element<'_, Message> {
+        let step_labels: Vec<&str> = FLASH_PARTS_STEPS.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.flash_parts.step);
+
+        let body: Element<'_, Message> = match self.flash_parts.step {
+            0 => self.flash_parts_folder_step(),
+            1 => self.flash_parts_select_step(),
+            2 => self.flash_parts_confirm_step(),
+            _ => self.exec_step_view(),
+        };
+
+        let nav = if self.flash_parts.step < 3 {
+            let is_start = self.flash_parts.step == 2;
+            let label = if is_start {
+                self.t("btn_start").to_string()
+            } else {
+                self.t("btn_next").to_string()
+            };
+            let can = self.flash_parts.can_next() && !(self.busy && is_start);
+            wizard_nav_generic(
+                true,
+                &label,
+                can,
+                self.t("btn_back"),
+                if self.flash_parts.step == 0 {
+                    Message::FlashPartsClose
+                } else {
+                    Message::FlashPartsBack
+                },
+                Message::FlashPartsNext,
+            )
+        } else {
+            container(text("")).into()
+        };
+
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn flash_parts_folder_step(&self) -> Element<'_, Message> {
+        let selected = self.flash_parts.folder_path.is_some();
+        let status = match (&self.flash_parts.folder_path, &self.flash_parts.parse_error) {
+            (Some(p), None) => p.clone(),
+            (Some(_), Some(e)) => format!("⚠ {e}"),
+            _ => self.t("flash_folder_placeholder").to_string(),
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_folder").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("flash_parts_folder_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::FlashPartsSelectFolder)
+        .padding(0)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        });
+        let status_color = if self.flash_parts.parse_error.is_some() {
+            iced::Color::from_rgb(0.9, 0.2, 0.2)
+        } else if selected {
+            GREEN
+        } else {
+            LABEL
+        };
+        let col = column![
+            text(self.t("flash_folder_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status).size(12).color(status_color).center(),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn flash_parts_select_step(&self) -> Element<'_, Message> {
+        let header = row![
+            text(" ").size(11).width(32), // checkbox col
+            text(self.t("flash_parts_col_lun").to_string())
+                .size(11)
+                .width(50)
+                .style(muted_style),
+            text(self.t("flash_parts_col_label").to_string())
+                .size(11)
+                .width(Length::FillPortion(3))
+                .style(muted_style),
+            text(self.t("flash_parts_col_start").to_string())
+                .size(11)
+                .width(Length::FillPortion(2))
+                .style(muted_style),
+            text(self.t("flash_parts_col_size").to_string())
+                .size(11)
+                .width(Length::FillPortion(2))
+                .style(muted_style),
+            text(self.t("flash_parts_col_filename").to_string())
+                .size(11)
+                .width(Length::FillPortion(3))
+                .style(muted_style),
+        ]
+        .spacing(8)
+        .padding([6, 10])
+        .align_y(iced::Alignment::Center);
+
+        let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
+        for (idx, row) in self.flash_parts.rows.iter().enumerate() {
+            let cb = iced::widget::checkbox(row.selected)
+                .on_toggle(move |_| Message::FlashPartsToggleRow(idx));
+            let data_row = iced::widget::row![
+                container(cb).width(32),
+                text(row.lun.clone()).size(12).width(50),
+                text(row.label.clone())
+                    .size(12)
+                    .width(Length::FillPortion(3)),
+                text(row.start_sector.clone())
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+                text(row.size_kb.clone())
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+                text(row.filename.clone())
+                    .size(12)
+                    .width(Length::FillPortion(3)),
+            ]
+            .spacing(8)
+            .padding([4, 10])
+            .align_y(iced::Alignment::Center);
+            list = list.push(data_row);
+        }
+
+        let scrolled = scrollable(list).height(Length::Fill).width(Length::Fill);
+
+        let col = column![
+            text(self.t("flash_parts_select_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_parts_select_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            scrolled,
+        ]
+        .spacing(10)
+        .padding(20)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn flash_parts_confirm_step(&self) -> Element<'_, Message> {
+        let selected = self.flash_parts.selected_rows();
+        let mut list = column![].spacing(4);
+        for r in &selected {
+            list = list.push(
+                text(format!("• {} ← {}", r.label, r.filename))
+                    .size(12)
+                    .style(muted_style),
+            );
+        }
+        let col = column![
+            text(self.t("flash_parts_confirm_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("flash_parts_confirm_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            scrollable(list).height(Length::Fill).width(Length::Fill),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // -- Reboot panel -----------------------------------------------------
+
+    fn view_reboot(&self) -> Element<'_, Message> {
+        let conn = self.connection;
+        let conn_label = self.t(conn.label_key()).to_string();
+        // 1 col × N rows — each target splits the vertical space.
+        // Disabled cards: M3 tokens (12% surface alpha, 38% text alpha).
+        let mut list = column![]
+            .spacing(10)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        for &target in RebootTarget::all().iter() {
+            let available = target.available_from(conn);
+            let label = self.t(target.label_key()).to_string();
+            let desc = self.t(target.desc_key()).to_string();
+            let label_style = if available {
+                on_surface_style
+            } else {
+                |t: &Theme| iced::widget::text::Style {
+                    color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
+                }
+            };
+            let desc_style = if available {
+                muted_style
+            } else {
+                |t: &Theme| iced::widget::text::Style {
+                    color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
+                }
+            };
+            // Empty desc → centred single label; non-empty keeps the stack.
+            let label_col: Element<'_, Message> = if desc.is_empty() {
+                container(text(label).size(18).style(label_style))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .into()
+            } else {
+                column![
+                    text(label).size(18).style(label_style),
+                    text(desc).size(12).style(desc_style),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .into()
+            };
+            let card_content = row![icon_tile(target.icon()), label_col]
+                .spacing(16)
+                .align_y(iced::Alignment::Center);
+            let card_inner = container(card_content)
+                .padding([20, 24])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_y(Length::Fill)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    if available {
+                        sel_card_style(t, false)
+                    } else {
+                        container::Style {
+                            background: Some(with_alpha(p.on_surface, 0.12).into()),
+                            border: iced::Border {
+                                color: iced::Color::TRANSPARENT,
+                                width: 0.0,
+                                radius: theme::shape::MD.into(),
+                            },
+                            ..Default::default()
+                        }
+                    }
+                });
+            let btn: Element<'_, Message> = if available {
+                button(card_inner)
+                    .on_press(Message::RebootRequest(target))
+                    .padding(0)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_t: &Theme, _s| button::Style {
+                        background: None,
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                card_inner.into()
+            };
+            list = list.push(btn);
+        }
+
+        let header = text(self.t("reboot_title").to_string()).size(theme::text_size::TITLE_LARGE);
+        let subtitle = text(self.t("reboot_subtitle").replace("{conn}", &conn_label))
+            .size(13)
+            .style(muted_style);
+        column![header, subtitle, widget::rule::horizontal(1), list,]
+            .spacing(14)
+            .padding(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// M3 confirm dialog for the Reboot panel.
+    fn reboot_confirm_popup(&self, target: RebootTarget) -> Element<'_, Message> {
+        let short = self.t(target.short_name_key()).to_string();
+        let title = self.t("reboot_confirm_title").replace("{target}", &short);
+        let body = self.t("reboot_confirm_body").replace("{target}", &short);
+        let content = column![
+            text(title).size(20),
+            text(body).size(13).style(muted_style),
+            widget::rule::horizontal(1),
+            row![
+                Space::new().width(Length::Fill),
+                button(
+                    text(self.t("btn_cancel").to_string())
+                        .size(13)
+                        .style(muted_style)
+                )
+                .on_press(Message::RebootDismiss)
+                .padding([8, 18])
+                .style(|t: &Theme, _s| {
+                    let p = pal_of(t);
+                    button::Style {
+                        background: Some(with_alpha(p.on_surface, 0.06).into()),
+                        border: iced::Border {
+                            radius: 20.0.into(),
+                            ..Default::default()
+                        },
+                        text_color: p.on_surface_variant,
+                        ..Default::default()
+                    }
+                }),
+                button(text(self.t("btn_reboot_confirm").to_string()).size(13))
+                    .on_press(Message::RebootConfirm)
+                    .padding([8, 18])
+                    .style(md_filled_btn_style),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(14)
+        .padding(24)
+        .width(380);
+        m3_dialog(content.into())
+    }
+
+    // -- Placeholder ------------------------------------------------------
+
+    fn view_placeholder(&self) -> Element<'_, Message> {
+        column![
+            text(self.t(self.current_view.label_key()).to_string())
+                .size(theme::text_size::TITLE_LARGE),
+            widget::rule::horizontal(1),
+            container(text("").size(14).style(muted_style))
+                .padding(48)
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        ]
+        .spacing(14)
+        .width(Length::Fill)
+        .into()
+    }
+}
+
+// =========================================================================
+// Wizard step bar
+// =========================================================================
+
+fn wizard_step_bar<'a>(steps: &[&str], current: usize) -> Element<'a, Message> {
+    let mut r = row![]
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .padding([14, 24]);
+
+    for (i, &label) in steps.iter().enumerate() {
+        if i > 0 {
+            let completed = i <= current;
+            r = r.push(container(text("")).width(Length::Fill).height(2).style(
+                move |t: &Theme| {
+                    let p = pal_of(t);
+                    let color = if completed {
+                        p.success
+                    } else {
+                        p.outline_variant
+                    };
+                    container::Style {
+                        background: Some(color.into()),
+                        ..Default::default()
+                    }
+                },
+            ));
+        }
+
+        let done = i < current;
+        let active = i == current;
+        let dot_text = if done {
+            "\u{2713}".to_string()
+        } else {
+            (i + 1).to_string()
+        };
+
+        let dot = container(text(dot_text).size(12).center().style(move |t: &Theme| {
+            let p = pal_of(t);
+            let fg = if done || active {
+                iced::Color::WHITE
+            } else {
+                p.on_surface_variant
+            };
+            iced::widget::text::Style { color: Some(fg) }
+        }))
+        .width(28)
+        .height(28)
+        .center_x(28)
+        .center_y(28)
+        .style(move |t: &Theme| {
+            let p = pal_of(t);
+            let bg = if done {
+                p.success
+            } else if active {
+                p.primary
+            } else {
+                p.surface_container_high
+            };
+            let border_color = if done || active {
+                bg
+            } else {
+                p.outline_variant
+            };
+            container::Style {
+                background: Some(bg.into()),
+                border: iced::Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 14.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+        let lbl_widget = text(label.to_string()).size(12).style(move |t: &Theme| {
+            let p = pal_of(t);
+            let color = if done {
+                p.success
+            } else if active {
+                p.primary
+            } else {
+                p.on_surface_variant
+            };
+            iced::widget::text::Style { color: Some(color) }
+        });
+        r = r.push(
+            row![dot, lbl_widget]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+        );
+    }
+
+    container(r)
+        .width(Length::Fill)
+        .style(|t: &Theme| sidebar_bg(t))
+        .into()
+}
+
+fn wizard_nav<'a>(
+    can_back: bool,
+    next_label: &str,
+    can_next: bool,
+    back_label: &str,
+) -> Element<'a, Message> {
+    let mut r = row![].spacing(8).padding([12, 24]);
+
+    if can_back {
+        r = r.push(
+            button(text(back_label.to_string()).size(13))
+                .on_press(Message::RootBack)
+                .padding([10, 20])
+                .style(md_text_btn_style),
+        );
+    }
+
+    r = r.push(Space::new().width(Length::Fill));
+
+    let next_btn = button(text(next_label.to_string()).size(13))
+        .padding([10, 24])
+        .style(md_filled_btn_style);
+
+    r = r.push(if can_next {
+        next_btn.on_press(Message::RootNext)
+    } else {
+        next_btn
+    });
+
+    container(r)
+        .width(Length::Fill)
+        .style(|t: &Theme| sidebar_bg(t))
+        .into()
+}
+
+/// M3 filled button — primary bg + state-layer overlay on hover/press.
+fn md_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
+    let p = pal_of(t);
+    let state_alpha = match status {
+        button::Status::Hovered => theme::state::HOVER,
+        button::Status::Pressed => theme::state::PRESSED,
+        _ => 0.0,
+    };
+    let bg = blend(p.primary, p.on_primary, state_alpha);
+    button::Style {
+        background: Some(bg.into()),
+        text_color: p.on_primary,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// M3 text button — no fill, state layer on hover/press.
+fn md_text_btn_style(t: &Theme, status: button::Status) -> button::Style {
+    let p = pal_of(t);
+    let bg_alpha = match status {
+        button::Status::Hovered => theme::state::HOVER,
+        button::Status::Pressed => theme::state::PRESSED,
+        _ => 0.0,
+    };
+    button::Style {
+        background: if bg_alpha > 0.0 {
+            Some(with_alpha(p.primary, bg_alpha).into())
+        } else {
+            None
+        },
+        text_color: p.primary,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Linear mix of two colors by `t` ∈ [0, 1].
+fn blend(base: iced::Color, overlay: iced::Color, t: f32) -> iced::Color {
+    let t = t.clamp(0.0, 1.0);
+    iced::Color {
+        r: base.r * (1.0 - t) + overlay.r * t,
+        g: base.g * (1.0 - t) + overlay.g * t,
+        b: base.b * (1.0 - t) + overlay.b * t,
+        a: base.a,
+    }
+}
+
+// =========================================================================
+// Reusable widgets
+// =========================================================================
+
+fn sec_hdr<'a>(label: &str) -> Element<'a, Message> {
+    let owned = label.to_string();
+    container(
+        text(owned)
+            .size(theme::text_size::LABEL_SMALL)
+            .style(|t: &Theme| iced::widget::text::Style {
+                color: Some(pal_of(t).on_surface_variant),
+            }),
+    )
+    .padding([10, 22])
+    .into()
+}
+
+fn nav_btn<'a>(view: View, label: &str, active: bool, enabled: bool) -> Element<'a, Message> {
+    let icon = iced::widget::svg(iced::widget::svg::Handle::from_memory(view.icon_bytes()))
+        .width(18)
+        .height(18)
+        .style(move |t: &iced::Theme, _s| {
+            let p = pal_of(t);
+            let color = if !enabled {
+                with_alpha(p.on_surface, 0.38)
+            } else if active {
+                p.primary
+            } else {
+                p.on_surface_variant
+            };
+            iced::widget::svg::Style { color: Some(color) }
+        });
+
+    let content = row![icon, text(label.to_string()).size(13)]
+        .spacing(12)
+        .align_y(iced::Alignment::Center);
+
+    let btn =
+        button(content)
+            .padding([10, 22])
+            .width(Length::Fill)
+            .style(move |t: &Theme, status| {
+                let p = pal_of(t);
+                if !enabled {
+                    return button::Style {
+                        background: None,
+                        text_color: with_alpha(p.on_surface, 0.38),
+                        ..Default::default()
+                    };
+                }
+                if active {
+                    button::Style {
+                        background: Some(with_alpha(p.primary, 0.14).into()),
+                        text_color: p.primary,
+                        ..Default::default()
+                    }
+                } else {
+                    match status {
+                        button::Status::Hovered => button::Style {
+                            background: Some(with_alpha(p.on_surface, theme::state::HOVER).into()),
+                            text_color: p.on_surface,
+                            ..Default::default()
+                        },
+                        _ => button::Style {
+                            background: None,
+                            text_color: p.on_surface_variant,
+                            ..Default::default()
+                        },
+                    }
+                }
+            });
+    if enabled {
+        btn.on_press(Message::Navigate(view)).into()
+    } else {
+        btn.into()
+    }
+}
+
+fn card<'a>(title: &str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(
+        column![
+            text(title.to_string())
+                .size(13)
+                .style(label_style)
+                .line_height(1.0),
+            content.into(),
+        ]
+        .spacing(6)
+        .padding(iced::Padding {
+            top: 10.0,
+            right: 18.0,
+            bottom: 14.0,
+            left: 18.0,
+        })
+        .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .style(|t: &Theme| {
+        theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
+    })
+    .into()
+}
+
+fn info_kv<'a>(label: &str, value: &str) -> Element<'a, Message> {
+    column![
+        text(label.to_string()).size(11).style(label_style),
+        text(value.to_string()).size(14),
+    ]
+    .spacing(3)
+    .into()
+}
+
+fn info_kv_center<'a>(label: &str, value: &str) -> Element<'a, Message> {
+    column![
+        text(label.to_string())
+            .size(11)
+            .style(label_style)
+            .width(Length::Fill)
+            .center(),
+        text(value.to_string())
+            .size(14)
+            .width(Length::Fill)
+            .center(),
+    ]
+    .spacing(3)
+    .width(Length::Fill)
+    .align_x(iced::Alignment::Center)
+    .into()
+}
+
+fn adv_grid_btn<'a>(item: AdvAction, label: &str) -> Element<'a, Message> {
+    let content = container(
+        text(label.to_string())
+            .size(12)
+            .center()
+            .width(Length::Fill)
+            // Palette on_surface — iced default (black) is unreadable in dark mode.
+            .style(|t: &Theme| iced::widget::text::Style {
+                color: Some(pal_of(t).on_surface),
+            }),
+    )
+    .padding([18, 12])
+    .width(Length::Fill)
+    .center_x(Length::Fill)
+    .style(|t: &Theme| {
+        theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 0)
+    });
+
+    button(content)
+        .on_press(Message::AdvConfirm(item))
+        .padding(0)
+        .width(Length::Fill)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            match status {
+                button::Status::Hovered => button::Style {
+                    background: Some(with_alpha(p.primary, theme::state::HOVER).into()),
+                    text_color: p.on_surface,
+                    ..Default::default()
+                },
+                _ => button::Style {
+                    background: None,
+                    text_color: p.on_surface,
+                    ..Default::default()
+                },
+            }
+        })
+        .into()
+}
+
+/// Advanced → Flash Partitions end-to-end. Routes to EDL, opens an
+/// `EdlSession`, flashes each selected image, resets.
+fn flash_parts_execute(
+    conn: ConnectionStatus,
+    folder: String,
+    rows: Vec<FlashPartRow>,
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let dir = std::path::PathBuf::from(&folder);
+
+    match conn {
+        ConnectionStatus::Edl => {
+            log.push("[FlashParts] Device already in EDL mode".to_string());
+        }
+        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
+            log.push("[FlashParts] $ adb reboot edl".to_string());
+            let mut mgr = ltbox_device::adb::AdbManager::new();
+            if let Err(e) = mgr.reboot("edl") {
+                log.push(format!("[FlashParts] adb reboot edl failed: {e}"));
+                log.push(
+                    "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
+                        .to_string(),
+                );
+                return log;
+            }
+        }
+        ConnectionStatus::Fastboot => {
+            log.push("[FlashParts] $ fastboot oem edl".to_string());
+            match ltbox_device::fastboot::FastbootDevice::open() {
+                Ok(mut dev) => {
+                    if let Err(e) = dev.oem_edl() {
+                        log.push(format!("[FlashParts] fastboot oem edl failed: {e}"));
+                        log.push(
+                            "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
+                                .to_string(),
+                        );
+                        return log;
+                    }
+                }
+                Err(e) => {
+                    log.push(format!("[FlashParts] Fastboot device open failed: {e}"));
+                    log.push(
+                        "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
+                            .to_string(),
+                    );
+                    return log;
+                }
+            }
+        }
+        ConnectionStatus::AdbUnauthorized => {
+            log.push(
+                "[FlashParts] USB debugging is not authorized — accept the prompt on the device and retry."
+                    .to_string(),
+            );
+            return log;
+        }
+        ConnectionStatus::None => {
+            log.push("[FlashParts] No device connected. Connect the device (ADB / Fastboot / EDL) and retry.".to_string());
+            return log;
+        }
+    }
+
+    let loader = find_edl_loader(&dir).or_else(|| dir.parent().and_then(find_edl_loader));
+    let loader = match loader {
+        Some(l) => l,
+        None => {
+            log.push("[FlashParts] xbl_s_devprg_ns.melf not found in the folder".to_string());
+            return log;
+        }
+    };
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push(format!("[FlashParts] EDL session open failed: {e}"));
+            return log;
+        }
+    };
+
+    for row in &rows {
+        let img_path = dir.join(&row.filename);
+        if !img_path.exists() {
+            log.push(format!(
+                "[FlashParts] Skipping {}: image {} missing",
+                row.label, row.filename
+            ));
+            continue;
+        }
+        let lun: u8 = row.lun.parse().unwrap_or(0);
+        log.push(format!(
+            "[FlashParts] Flashing {} from {} (LUN {lun})",
+            row.label, row.filename
+        ));
+        if let Err(e) = session.flash_partition(&row.label, &img_path, 0, lun, &mut log) {
+            log.push(format!("[FlashParts] {} failed: {e}", row.label));
+        }
+    }
+
+    log.push("[FlashParts] Resetting device to system...".to_string());
+    let _ = session.reset(&mut log);
+    log.push("[FlashParts] Done.".to_string());
+    log
+}
+
+/// Locate a testkey PEM. Checks the image's folder, then `./keys/`.
+/// Matches `testkey_rsa4096.pem` or `testkey_rsa2048.pem`.
+fn find_testkey(image: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = image.parent()?;
+    let candidates = ["testkey_rsa4096.pem", "testkey_rsa2048.pem"];
+    for name in candidates {
+        let p = dir.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+        let kp = dir.join("keys").join(name);
+        if kp.exists() {
+            return Some(kp);
+        }
+    }
+    None
+}
+
+fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidate = dir.join("xbl_s_devprg_ns.melf");
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name == "xbl_s_devprg_ns.melf" {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+// Device portrait handles — built once, cloned each render.
+// Unknown models fall through to `GENERIC_TABLET_SVG_HANDLE`.
+static TB321FU_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/tb321fu.png").as_slice(),
+        )
+    });
+static TB322FC_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/tb322fc.png").as_slice(),
+        )
+    });
+static TB710FU_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/tb710fu.png").as_slice(),
+        )
+    });
+static GENERIC_TABLET_SVG_HANDLE: std::sync::LazyLock<iced::widget::svg::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::svg::Handle::from_memory(
+            include_bytes!("../assets/devices/generic_tablet.svg").as_slice(),
+        )
+    });
+
+/// Asset for the Dashboard portrait slot.
+enum DevicePortrait {
+    Png(iced::widget::image::Handle),
+    Svg(iced::widget::svg::Handle),
+}
+
+fn device_portrait(model: &str) -> DevicePortrait {
+    match model.to_uppercase().as_str() {
+        "TB321FU" => DevicePortrait::Png(TB321FU_HANDLE.clone()),
+        "TB322FC" => DevicePortrait::Png(TB322FC_HANDLE.clone()),
+        "TB710FU" => DevicePortrait::Png(TB710FU_HANDLE.clone()),
+        _ => DevicePortrait::Svg(GENERIC_TABLET_SVG_HANDLE.clone()),
+    }
+}
+
+fn svg_icon(bytes: &'static [u8], size: f32) -> iced::widget::Svg<'static> {
+    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+        .width(size)
+        .height(size)
+}
+
+const WIZARD_CARD_HEIGHT: f32 = 180.0;
+
+/// Fixed sub-row height (~2 lines at size 11) so cards line up across
+/// translations.
+const SUB_ROW_HEIGHT: f32 = 32.0;
+
+fn icon_option_card_sub(
+    icon: iced::widget::Svg<'static>,
+    label: &str,
+    sub: &str,
+    selected: bool,
+    msg: Message,
+) -> Element<'static, Message> {
+    // Sub text centres vertically inside the fixed box — top-aligning
+    // left long gaps between short descs and the label above.
+    let sub_text: Element<'static, Message> = if sub.is_empty() {
+        text(" ").size(11).width(Length::Fill).center().into()
+    } else {
+        text(sub.to_string())
+            .size(11)
+            .style(muted_style)
+            .width(Length::Fill)
+            .center()
+            .into()
+    };
+    let sub_row = container(sub_text)
+        .width(Length::Fill)
+        .height(Length::Fixed(SUB_ROW_HEIGHT))
+        .align_y(iced::alignment::Vertical::Center);
+    // Explicit icon→label vs label→desc gaps — a single `spacing` read
+    // unbalanced because the centred sub-row adds ~9 px padding.
+    let content = column![
+        icon_tile(icon),
+        Space::new().height(14),
+        text(label.to_string())
+            .size(13)
+            .style(on_surface_style)
+            .width(Length::Fill)
+            .center(),
+        Space::new().height(4),
+        sub_row,
+    ]
+    .spacing(0)
+    .align_x(iced::Alignment::Center);
+
+    button(
+        container(content)
+            .padding([20, 16])
+            .width(Length::Fill)
+            .height(WIZARD_CARD_HEIGHT)
+            .center_x(Length::Fill)
+            .center_y(WIZARD_CARD_HEIGHT)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+    )
+    .on_press(msg)
+    .padding(0)
+    .width(Length::Fill)
+    .style(|t: &Theme, _s| button::Style {
+        background: None,
+        text_color: pal_of(t).on_surface,
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Wrap a wizard icon. Icons already carry their own rounded-rect bg,
+/// so no outer border.
+fn icon_tile<'a, M: 'static>(icon: iced::widget::Svg<'static>) -> Element<'a, M> {
+    container(icon).padding(0).into()
+}
+
+fn wizard_nav_generic<'a>(
+    can_back: bool,
+    next_label: &str,
+    can_next: bool,
+    back_label: &str,
+    back_msg: Message,
+    next_msg: Message,
+) -> Element<'a, Message> {
+    let mut r = row![].spacing(8).padding([12, 24]);
+    if can_back {
+        r = r.push(
+            button(text(back_label.to_string()).size(13))
+                .on_press(back_msg)
+                .padding([10, 20])
+                .style(md_text_btn_style),
+        );
+    }
+    r = r.push(Space::new().width(Length::Fill));
+    let next_btn = button(text(next_label.to_string()).size(13))
+        .padding([10, 24])
+        .style(md_filled_btn_style);
+    r = r.push(if can_next {
+        next_btn.on_press(next_msg)
+    } else {
+        next_btn
+    });
+    container(r)
+        .width(Length::Fill)
+        .style(|t: &Theme| sidebar_bg(t))
+        .into()
+}
+
+// -- Shared styles --------------------------------------------------------
+
+fn sidebar_bg(t: &Theme) -> container::Style {
+    let p = pal_of(t);
+    container::Style {
+        background: Some(p.surface_container_low.into()),
+        border: iced::Border {
+            color: p.outline_variant,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn sel_card_style(t: &Theme, selected: bool) -> container::Style {
+    let p = pal_of(t);
+    if selected {
+        container::Style {
+            background: Some(with_alpha(p.primary, 0.12).into()),
+            border: iced::Border {
+                color: p.primary,
+                width: 2.0,
+                radius: theme::shape::MD.into(),
+            },
+            ..Default::default()
+        }
+    } else {
+        container::Style {
+            background: Some(p.surface_container.into()),
+            border: iced::Border {
+                color: p.outline_variant,
+                width: 1.0,
+                radius: theme::shape::MD.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_lang_jsons_parse_and_share_keys() {
+        let en = Translations::load(Language::En);
+        for lang in [Language::Ko, Language::Zh, Language::Ru] {
+            let tr = Translations::load(lang);
+            for key in en.fallback.keys() {
+                assert!(
+                    tr.primary.contains_key(key),
+                    "lang {:?} missing key {}",
+                    lang,
+                    key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn language_switch_returns_localized_string() {
+        let en = Translations::load(Language::En);
+        let ko = Translations::load(Language::Ko);
+        assert_eq!(en.t("nav_dashboard"), "Dashboard");
+        assert_eq!(ko.t("nav_dashboard"), "대시보드");
+    }
+
+    #[test]
+    fn unknown_key_falls_back_to_itself() {
+        let t = Translations::load(Language::En);
+        assert_eq!(t.t("__no_such_key__"), "__no_such_key__");
+    }
+
+    // Wizard state-machine tests ------------------------------------------
+
+    #[test]
+    fn flash_wizard_next_back_round_trip() {
+        let mut w = FlashWizard::default();
+        assert_eq!(w.step, 0);
+        // Can't advance without a region selected.
+        assert!(!w.can_next());
+        w.device_region = Some(DeviceRegion::Prc);
+        assert!(w.can_next());
+        w.next();
+        assert_eq!(w.step, 1);
+        w.back();
+        assert_eq!(w.step, 0);
+        // Reset wipes every field.
+        w.next();
+        w.reset();
+        assert_eq!(w.step, 0);
+        assert!(w.device_region.is_none());
+    }
+
+    #[test]
+    fn root_wizard_kernelsu_lkm_path() {
+        let mut w = RootWizard {
+            family: Some(Family::KernelSU),
+            ..RootWizard::default()
+        };
+        w.next(); // 0 → 1 (Mode)
+        assert_eq!(w.step, 1);
+        w.mode = Some(RootMode::Lkm);
+        w.next(); // 1 → 2 (Provider)
+        assert_eq!(w.step, 2);
+        w.provider = Some(Provider::KernelSU);
+        w.next(); // 2 → 3 (Version)
+        assert_eq!(w.step, 3);
+        w.version = Some(VerChoice::Stable);
+        w.next(); // Stable skips NightlySource, jumps to Confirm (5)
+        assert_eq!(w.step, 5);
+    }
+
+    #[test]
+    fn root_wizard_magisk_skips_mode() {
+        let mut w = RootWizard {
+            family: Some(Family::Magisk),
+            ..RootWizard::default()
+        };
+        w.next(); // 0 → 2 directly (Magisk has no modes)
+        assert_eq!(w.step, 2);
+    }
+
+    #[test]
+    fn sysupdate_wizard_gate_requires_action() {
+        let mut w = SysUpdateWizard::default();
+        assert!(!w.can_next());
+        w.action = Some(SysUpdateAction::Disable);
+        assert!(w.can_next());
+        w.next();
+        assert_eq!(w.step, 1);
+        w.next();
+        w.next();
+        // Caps at len - 1.
+        assert_eq!(w.step, SYSUPDATE_STEPS.len() - 1);
+    }
+
+    #[test]
+    fn flash_parts_wizard_requires_selection() {
+        let mut w = FlashPartsWizard::default();
+        assert!(!w.can_next());
+        w.folder_path = Some("/tmp".to_string());
+        w.rows.push(FlashPartRow {
+            label: "boot_a".into(),
+            filename: "boot.img".into(),
+            lun: "0".into(),
+            start_sector: "0".into(),
+            size_kb: "4096".into(),
+            selected: false,
+        });
+        // Still false — at least one row must be ticked.
+        assert!(w.can_next()); // step 0: folder + rows present
+        w.next();
+        assert_eq!(w.step, 1);
+        assert!(!w.can_next()); // step 1: no selection yet
+        w.rows[0].selected = true;
+        assert!(w.can_next());
+    }
+}

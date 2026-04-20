@@ -1,0 +1,33 @@
+[package]
+name = "ltbox-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ltbox"
+path = "src/main.rs"
+
+[dependencies]
+ltbox-core = { path = "../ltbox-core" }
+ltbox-device = { path = "../ltbox-device" }
+ltbox-patch = { path = "../ltbox-patch" }
+iced = { workspace = true }
+iced_aw = { workspace = true }
+rfd = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+fs2 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+camino = { workspace = true }
+noto-fonts-dl = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+os_pipe = { workspace = true }
+
+[build-dependencies]
+winresource = { workspace = true }

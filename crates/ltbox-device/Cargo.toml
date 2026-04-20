@@ -1,0 +1,21 @@
+[package]
+name = "ltbox-device"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ltbox-core = { path = "../ltbox-core" }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+qdl = { workspace = true }
+gptman = { workspace = true }
+adb_client = { workspace = true }
+nusb = { workspace = true }
+pollster = { workspace = true }
+serialport = { workspace = true }
+ureq = { workspace = true }
+roxmltree = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip = { workspace = true }

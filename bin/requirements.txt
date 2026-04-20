@@ -1,9 +1,0 @@
-httpx
-protobuf
-six
-cryptography
-pyserial
-cachetools
-rich
-tqdm
-questionary

@@ -1,0 +1,23 @@
+[package]
+name = "ltbox-patch"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ltbox-core = { path = "../ltbox-core" }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+avbtool-rs = { workspace = true }
+magiskboot = { workspace = true }
+kptools = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+digest = { workspace = true }
+zip = { workspace = true }
+fs-err = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,4 +1,0 @@
-python_ci:
-  - 'bin/**'
-  - 'tests/**'
-  - '.github/workflows/**'

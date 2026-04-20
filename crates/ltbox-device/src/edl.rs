@@ -1,0 +1,813 @@
+//! EDL (Emergency Download) — Qualcomm 9008 serial port detection and
+//! session management (Sahara → Firehose configure → operations).
+
+use std::io::{Cursor, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use thiserror::Error;
+
+use ltbox_core::i18n::tr;
+
+use qdl::types::{
+    FirehoseConfiguration, FirehoseResetMode, FirehoseStorageType, QdlBackend, QdlChan, QdlDevice,
+    QdlReadWrite,
+};
+
+const QUALCOMM_VID: u16 = 0x05C6;
+const QUALCOMM_EDL_PID: u16 = 0x9008;
+
+const EDL_STABILITY_INTERVAL: Duration = Duration::from_secs(1);
+const EDL_DISCONNECT_OBSERVE: Duration = Duration::from_secs(5);
+const EDL_SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[derive(Error, Debug)]
+pub enum EdlError {
+    #[error("EDL port not found")]
+    PortNotFound,
+    #[error("Timed out after {0:?} waiting for a stable EDL port")]
+    PortTimeout(Duration),
+    #[error("Serial error: {0}")]
+    Serial(String),
+    #[error("EDL session error: {0}")]
+    Session(String),
+    #[error("Partition not found: {0}")]
+    PartitionNotFound(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+type Result<T> = std::result::Result<T, EdlError>;
+
+/// Scan for the Qualcomm 9008 serial port.
+pub fn find_edl_port() -> Result<String> {
+    let ports = serialport::available_ports().map_err(|e| EdlError::Serial(e.to_string()))?;
+    for port in &ports {
+        if let serialport::SerialPortType::UsbPort(usb) = &port.port_type
+            && usb.vid == QUALCOMM_VID
+            && usb.pid == QUALCOMM_EDL_PID
+        {
+            return Ok(port.port_name.clone());
+        }
+    }
+    Err(EdlError::PortNotFound)
+}
+
+pub fn check_device() -> bool {
+    find_edl_port().is_ok()
+}
+
+/// Wait for a stable EDL port after a reset. Two phases:
+/// 1. If a port is visible, observe for `EDL_DISCONNECT_OBSERVE`; treat a
+///    name change or disconnect as stale and fall through.
+/// 2. Otherwise, return when the same port is seen twice in a row
+///    (`EDL_STABILITY_INTERVAL` apart).
+///
+/// Returns [`EdlError::PortTimeout`] once `deadline_exceeded()` trips.
+fn wait_for_stable_port_with<F, S, D>(
+    mut find_port: F,
+    mut sleep: S,
+    mut deadline_exceeded: D,
+    timeout: Duration,
+) -> Result<String>
+where
+    F: FnMut() -> Result<String>,
+    S: FnMut(Duration),
+    D: FnMut() -> bool,
+{
+    // Phase 1: watch for disconnect OR name change; the OS can keep the
+    // old COM handle alive briefly while the new one enumerates.
+    if let Ok(initial) = find_port() {
+        let mut observed = Duration::ZERO;
+        let mut saw_disconnect = false;
+        while observed < EDL_DISCONNECT_OBSERVE && !deadline_exceeded() {
+            sleep(EDL_STABILITY_INTERVAL);
+            observed += EDL_STABILITY_INTERVAL;
+            match find_port() {
+                Ok(current) if current == initial => {}
+                // Name changed → old handle stale. Phase 2 tolerates the move.
+                Ok(_) => {
+                    saw_disconnect = true;
+                    break;
+                }
+                Err(EdlError::PortNotFound) => {
+                    saw_disconnect = true;
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if !saw_disconnect {
+            return Ok(initial);
+        }
+    }
+
+    // Phase 2: wait for post-reset port to appear + stabilize.
+    let mut last: Option<String> = None;
+    while !deadline_exceeded() {
+        sleep(EDL_STABILITY_INTERVAL);
+        match find_port() {
+            Ok(port) => {
+                if last.as_deref() == Some(port.as_str()) {
+                    return Ok(port);
+                }
+                last = Some(port);
+            }
+            Err(EdlError::PortNotFound) => last = None,
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(EdlError::PortTimeout(timeout))
+}
+
+fn wait_for_stable_port() -> Result<String> {
+    let deadline = Instant::now() + EDL_SESSION_OPEN_TIMEOUT;
+    wait_for_stable_port_with(
+        find_edl_port,
+        std::thread::sleep,
+        move || Instant::now() >= deadline,
+        EDL_SESSION_OPEN_TIMEOUT,
+    )
+}
+
+/// Wait for an EDL device; returns port name.
+pub fn wait_for_device() -> Result<String> {
+    wait_for_stable_port()
+}
+
+/// EDL session: owns `QdlDevice`, exposes partition ops.
+pub struct EdlSession {
+    dev: QdlDevice<dyn QdlReadWrite>,
+}
+
+impl EdlSession {
+    /// Open: find port → Sahara upload → Firehose configure.
+    ///
+    /// `auto_reset` is **intentionally ignored** — `reset_on_drop` stays
+    /// `false` because qdl's drop-time reset path recurses into
+    /// `firehose_write` → `firehose_reset` → … and overflows the stack
+    /// when the channel vanishes mid-flash. Call [`EdlSession::reset`]
+    /// explicitly on the happy path.
+    pub fn open(loader_path: &Path, auto_reset: bool, log: &mut Vec<String>) -> Result<Self> {
+        let _ = auto_reset;
+        log.push(format!("[EDL] {}", tr("log_edl_scanning")));
+        let port = wait_for_stable_port()?;
+        log.push(format!("[EDL] {} {port}", tr("log_edl_found_on")));
+
+        log.push(format!(
+            "[EDL] {} {}",
+            tr("log_edl_loading_programmer"),
+            loader_path.display()
+        ));
+        let mbn = std::fs::read(loader_path)
+            .map_err(|e| EdlError::Session(format!("Failed to read loader: {e}")))?;
+        log.push(format!(
+            "[EDL] {} {} bytes",
+            tr("log_edl_programmer_size"),
+            mbn.len()
+        ));
+
+        log.push(format!("[EDL] {}", tr("log_edl_serial_transport")));
+        let rw = qdl::setup_target_device(QdlBackend::Serial, None, Some(port.clone()))
+            .map_err(|e| EdlError::Session(format!("Transport setup failed: {e}")))?;
+
+        let mut dev = QdlDevice {
+            rw,
+            fh_cfg: FirehoseConfiguration {
+                storage_type: FirehoseStorageType::Ufs,
+                storage_sector_size: 4096,
+                bypass_storage: false,
+                backend: QdlBackend::Serial,
+                skip_firehose_log: true,
+                verbose_firehose: false,
+                ..Default::default()
+            },
+            reset_on_drop: false,
+        };
+
+        log.push(format!("[EDL] {}", tr("log_edl_sahara_uploading")));
+        qdl::sahara::sahara_run(
+            &mut dev,
+            qdl::sahara::SaharaMode::WaitingForImage,
+            None,
+            &mut [mbn],
+            vec![],
+            false,
+        )
+        .map_err(|e| EdlError::Session(format!("Sahara failed: {e}")))?;
+        log.push(format!("[EDL] {}", tr("log_edl_sahara_uploaded")));
+
+        // See `open` doc: reset_on_drop stays false to dodge qdl's recursive reset.
+        dev.reset_on_drop = false;
+
+        log.push(format!("[EDL] {}", tr("log_edl_firehose_configuring")));
+        qdl::firehose_read(&mut dev, qdl::parsers::firehose_parser_ack_nak)
+            .map_err(|e| EdlError::Session(format!("Firehose read failed: {e}")))?;
+        qdl::firehose_configure(&mut dev, false)
+            .map_err(|e| EdlError::Session(format!("Firehose configure failed: {e}")))?;
+        qdl::firehose_read(&mut dev, qdl::parsers::firehose_parser_configure_response)
+            .map_err(|e| EdlError::Session(format!("Firehose config response failed: {e}")))?;
+        log.push(format!("[EDL] {}", tr("log_edl_firehose_configured")));
+
+        Ok(Self { dev })
+    }
+
+    /// GPT lookup by partition name.
+    fn find_partition(&mut self, part_name: &str, slot: u8, lun: u8) -> Result<(u64, u64)> {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        qdl::firehose_read_storage(&mut self.dev, &mut buf, 1, slot, lun, 1)
+            .map_err(|e| EdlError::Session(format!("GPT probe failed: {e}")))?;
+        buf.rewind()?;
+        let header = gptman::GPTHeader::read_from(&mut buf)
+            .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
+        let gpt_len = header.first_usable_lba as usize;
+        buf.rewind()?;
+        qdl::firehose_read_storage(&mut self.dev, &mut buf, gpt_len, slot, lun, 0)
+            .map_err(|e| EdlError::Session(format!("GPT read failed: {e}")))?;
+        buf.set_position(self.dev.fh_config().storage_sector_size as u64);
+        let gpt = gptman::GPT::read_from(&mut buf, self.dev.fh_config().storage_sector_size as u64)
+            .map_err(|e| EdlError::Session(format!("GPT parse failed: {e}")))?;
+
+        let part = gpt
+            .iter()
+            .find(|(_, p)| p.partition_name.as_str() == part_name)
+            .ok_or_else(|| EdlError::PartitionNotFound(part_name.to_string()))?
+            .1;
+        Ok((part.starting_lba, part.ending_lba))
+    }
+
+    /// Dump a partition (GPT-by-name) to a file.
+    pub fn dump_partition(
+        &mut self,
+        part_name: &str,
+        output: &Path,
+        slot: u8,
+        lun: u8,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        log.push(format!(
+            "[EDL] {} '{part_name}' on LUN {lun}...",
+            tr("log_edl_lookup_partition")
+        ));
+        let (start, end) = self.find_partition(part_name, slot, lun)?;
+        let sectors = (end - start + 1) as usize;
+        log.push(format!(
+            "[EDL] {} {part_name}: LBA {start}-{end} ({sectors} sectors)",
+            tr("log_edl_found_partition")
+        ));
+
+        let mut out_file = std::fs::File::create(output)?;
+        log.push(format!(
+            "[EDL] $ {} {part_name} → {}",
+            tr("log_edl_dump_cmd"),
+            output.display()
+        ));
+        qdl::firehose_read_storage(
+            &mut self.dev,
+            &mut out_file,
+            sectors,
+            slot,
+            lun,
+            start as u32,
+        )
+        .map_err(|e| EdlError::Session(format!("Partition read failed: {e}")))?;
+        log.push(format!("[EDL] {} {part_name}", tr("log_edl_dumped")));
+        Ok(())
+    }
+
+    /// Dump with pre-resolved (LUN, start, length); skips GPT lookup.
+    /// Needed because some Lenovo devices put boot/init_boot on non-zero
+    /// LUNs that the LUN-0 GPT can't describe. Mirrors v2
+    /// `EdlPartitionService.dump_partition`.
+    pub fn dump_partition_at(
+        &mut self,
+        part_name: &str,
+        output: &Path,
+        lun: u8,
+        start_sector: u32,
+        num_sectors: usize,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let mut out_file = std::fs::File::create(output)?;
+        log.push(format!(
+            "[EDL] $ {} {part_name} → {} (LUN {lun}, start {start_sector}, {num_sectors} sectors)",
+            tr("log_edl_dump_cmd"),
+            output.display()
+        ));
+        qdl::firehose_read_storage(
+            &mut self.dev,
+            &mut out_file,
+            num_sectors,
+            0,
+            lun,
+            start_sector,
+        )
+        .map_err(|e| EdlError::Session(format!("Partition read failed: {e}")))?;
+        log.push(format!("[EDL] {} {part_name}", tr("log_edl_dumped")));
+        Ok(())
+    }
+
+    /// Flash with pre-resolved (LUN, start). Counterpart to
+    /// [`dump_partition_at`]; skips the GPT lookup used by [`flash_partition`].
+    pub fn flash_partition_at(
+        &mut self,
+        part_name: &str,
+        image: &Path,
+        lun: u8,
+        start_sector: &str,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let mut file = std::fs::File::open(image)?;
+        let file_len = file.metadata()?.len();
+        let sector_size = self.dev.fh_config().storage_sector_size as u64;
+        let num_sectors = file_len.div_ceil(sector_size) as usize;
+        log.push(format!(
+            "[EDL] $ {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors, LUN {lun})",
+            tr("log_edl_flash_cmd"),
+            image.display()
+        ));
+        qdl::firehose_program_storage(
+            &mut self.dev,
+            &mut file,
+            part_name,
+            num_sectors,
+            0,
+            lun,
+            start_sector,
+        )
+        .map_err(|e| EdlError::Session(format!("Partition write failed: {e}")))?;
+        log.push(format!("[EDL] {} {part_name}", tr("log_edl_flashed")));
+        Ok(())
+    }
+
+    /// Flash image to a partition (GPT-by-name).
+    pub fn flash_partition(
+        &mut self,
+        part_name: &str,
+        image: &Path,
+        slot: u8,
+        lun: u8,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        log.push(format!(
+            "[EDL] {} '{part_name}' on LUN {lun}...",
+            tr("log_edl_lookup_partition")
+        ));
+        let (start, _end) = self.find_partition(part_name, slot, lun)?;
+
+        let mut file = std::fs::File::open(image)?;
+        let file_len = file.metadata()?.len();
+        let sector_size = self.dev.fh_config().storage_sector_size as u64;
+        let num_sectors = file_len.div_ceil(sector_size) as usize;
+        log.push(format!(
+            "[EDL] $ {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors)",
+            tr("log_edl_flash_cmd"),
+            image.display()
+        ));
+
+        qdl::firehose_program_storage(
+            &mut self.dev,
+            &mut file,
+            part_name,
+            num_sectors,
+            slot,
+            lun,
+            &start.to_string(),
+        )
+        .map_err(|e| EdlError::Session(format!("Partition write failed: {e}")))?;
+        log.push(format!("[EDL] {} {part_name}", tr("log_edl_flashed")));
+        Ok(())
+    }
+
+    pub fn reset(&mut self, log: &mut Vec<String>) -> Result<()> {
+        log.push(format!("[EDL] $ {}", tr("log_edl_reset_cmd")));
+        qdl::firehose_reset(&mut self.dev, &FirehoseResetMode::Reset, 2)
+            .map_err(|e| EdlError::Session(format!("Reset failed: {e}")))?;
+        log.push(format!("[EDL] {}", tr("log_edl_reset_initiated")));
+        Ok(())
+    }
+
+    /// Bounce back to Sahara (does NOT boot system). Required after a
+    /// dump-only session so the next `open()` gets a fresh Hello —
+    /// otherwise Sahara times out. Mirrors v2 qdl-rs default behavior.
+    pub fn reset_to_edl(&mut self, log: &mut Vec<String>) -> Result<()> {
+        log.push(format!("[EDL] $ {}", tr("log_edl_reset_to_edl_cmd")));
+        qdl::firehose_reset(&mut self.dev, &FirehoseResetMode::ResetToEdl, 0)
+            .map_err(|e| EdlError::Session(format!("reset_to_edl failed: {e}")))?;
+        log.push(format!("[EDL] {}", tr("log_edl_reset_to_edl_sent")));
+        Ok(())
+    }
+
+    /// Flash every `<program>` in the rawprogram XMLs, then apply patch
+    /// XMLs. XML coordinates drive the flash, so no slot-suffix guessing
+    /// (EDL can't read slot suffix from ADB). Images resolve against the
+    /// XML's own directory. Empty filename / `num_sectors=0` entries
+    /// skipped (GPT placeholders). Missing images logged and skipped.
+    /// Mirrors v2 `flash_rawprogram` in `bin/ltbox/device/edl.py`.
+    pub fn flash_rawprogram(
+        &mut self,
+        program_xmls: &[PathBuf],
+        patch_xmls: &[PathBuf],
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        // Back-compat: default to keep-data.
+        self.flash_rawprogram_with_wipe(program_xmls, patch_xmls, false, log)
+    }
+
+    /// Erased on wipe=true (matches v2 `_ERASE_LABELS`).
+    const WIPE_ERASE_BASES: &'static [&'static str] = &["userdata", "metadata", "frp"];
+
+    /// Skipped on wipe=false. Narrower than `WIPE_ERASE_BASES`: frp is
+    /// not user state. Matches v2 `_patch_xml_for_wipe` (wipe=0).
+    const KEEP_DATA_SKIP_BASES: &'static [&'static str] = &["userdata", "metadata"];
+
+    /// Match `label` against bases, with or without `_a`/`_b` suffix.
+    fn label_matches_base(label: &str, bases: &[&str]) -> bool {
+        let l = label.to_ascii_lowercase();
+        bases
+            .iter()
+            .any(|b| l == *b || l.starts_with(&format!("{b}_")))
+    }
+
+    fn wipe_labels(label: &str) -> bool {
+        Self::label_matches_base(label, Self::WIPE_ERASE_BASES)
+    }
+
+    fn keep_data_skip_labels(label: &str) -> bool {
+        Self::label_matches_base(label, Self::KEEP_DATA_SKIP_BASES)
+    }
+
+    /// Flash with explicit user-data mode.
+    ///
+    /// `wipe=true` (v2 `pre_erase=True`): erase userdata/metadata/frp
+    /// (+ slot variants) before flashing, then flash rawprograms, then
+    /// apply patches.
+    ///
+    /// `wipe=false` (v2 `_patch_xml_for_wipe(wipe=0)`): skip
+    /// userdata/metadata entries during the flash pass.
+    pub fn flash_rawprogram_with_wipe(
+        &mut self,
+        program_xmls: &[PathBuf],
+        patch_xmls: &[PathBuf],
+        wipe: bool,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        if wipe {
+            log.push(format!("[Flash] {}", tr("log_flash_wipe_enabled")));
+            self.pre_erase_wipe_labels(program_xmls, log)?;
+        } else {
+            log.push(format!("[Flash] {}", tr("log_flash_wipe_disabled")));
+        }
+
+        for xml_path in program_xmls {
+            log.push(format!(
+                "[EDL] $ {} {}",
+                tr("log_edl_flash_cmd"),
+                xml_path.display()
+            ));
+            self.flash_one_rawprogram(xml_path, wipe, log)?;
+        }
+        for xml_path in patch_xmls {
+            log.push(format!("[EDL] $ patch {}", xml_path.display()));
+            self.apply_patch_xml(xml_path, log)?;
+        }
+        Ok(())
+    }
+
+    /// Erase every `<program>` whose label is in `WIPE_ERASE_BASES`
+    /// using XML-reported coordinates. Skips partitions absent from the XMLs.
+    fn pre_erase_wipe_labels(
+        &mut self,
+        program_xmls: &[PathBuf],
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        for xml_path in program_xmls {
+            let xml_content = std::fs::read_to_string(xml_path)?;
+            let doc = roxmltree::Document::parse(&xml_content).map_err(|e| {
+                EdlError::Session(format!("XML parse error in {}: {e}", xml_path.display()))
+            })?;
+            for node in doc.descendants() {
+                if !node.tag_name().name().eq_ignore_ascii_case("program") {
+                    continue;
+                }
+                let label = node.attribute("label").unwrap_or("").trim();
+                if !Self::wipe_labels(label) {
+                    continue;
+                }
+                let num_sectors: usize = node
+                    .attribute("num_partition_sectors")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if num_sectors == 0 {
+                    continue;
+                }
+                let lun: u8 = node
+                    .attribute("physical_partition_number")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let start_sector = node.attribute("start_sector").unwrap_or("0");
+                log.push(format!(
+                    "[EDL] erase {label} (LUN {lun}, start {start_sector}, {num_sectors} sectors)"
+                ));
+                qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
+                    .map_err(|e| EdlError::Session(format!("Erase {label} failed: {e}")))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flash_one_rawprogram(
+        &mut self,
+        xml_path: &Path,
+        wipe: bool,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let xml_content = std::fs::read_to_string(xml_path)?;
+        let doc = roxmltree::Document::parse(&xml_content).map_err(|e| {
+            EdlError::Session(format!("XML parse error in {}: {e}", xml_path.display()))
+        })?;
+        let xml_dir = xml_path.parent().unwrap_or(Path::new("."));
+
+        for node in doc.descendants() {
+            match node.tag_name().name().to_lowercase().as_str() {
+                "program" => {
+                    // Keep-data: skip userdata/metadata entries.
+                    if !wipe {
+                        let label = node.attribute("label").unwrap_or("").trim();
+                        if Self::keep_data_skip_labels(label) {
+                            log.push(format!("[EDL] skip {label} (keep data)"));
+                            continue;
+                        }
+                    }
+                    self.flash_program_node(&node, xml_dir, log)?;
+                }
+                "erase" => self.erase_program_node(&node, log)?,
+                _ => continue,
+            }
+        }
+        Ok(())
+    }
+
+    fn flash_program_node(
+        &mut self,
+        node: &roxmltree::Node<'_, '_>,
+        xml_dir: &Path,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let label = node.attribute("label").unwrap_or("").trim().to_string();
+        let filename = node.attribute("filename").unwrap_or("").trim().to_string();
+        let num_sectors: usize = node
+            .attribute("num_partition_sectors")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Skip GPT placeholders / empty entries (qdl CLI `parse_program_cmd`).
+        if filename.is_empty() || num_sectors == 0 {
+            return Ok(());
+        }
+
+        let lun: u8 = node
+            .attribute("physical_partition_number")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let slot: u8 = node
+            .attribute("slot")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let start_sector = node.attribute("start_sector").unwrap_or("0");
+        let file_sector_offset: u64 = node
+            .attribute("file_sector_offset")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let sector_size: u64 = self.dev.fh_config().storage_sector_size as u64;
+
+        let image_path = xml_dir.join(&filename);
+        if !image_path.exists() {
+            log.push(format!(
+                "[EDL] Skipping {label}: image {} not found",
+                image_path.display()
+            ));
+            return Ok(());
+        }
+
+        let mut file = std::fs::File::open(&image_path)?;
+        if file_sector_offset > 0 {
+            file.seek(SeekFrom::Start(sector_size * file_sector_offset))?;
+        }
+
+        log.push(format!(
+            "[EDL] flash {label} ← {} (LUN {lun}, start {start_sector}, {num_sectors} sectors)",
+            image_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(""),
+        ));
+
+        qdl::firehose_program_storage(
+            &mut self.dev,
+            &mut file,
+            &label,
+            num_sectors,
+            slot,
+            lun,
+            start_sector,
+        )
+        .map_err(|e| EdlError::Session(format!("Program {label} failed: {e}")))?;
+        Ok(())
+    }
+
+    fn erase_program_node(
+        &mut self,
+        node: &roxmltree::Node<'_, '_>,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let num_sectors: usize = node
+            .attribute("num_partition_sectors")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if num_sectors == 0 {
+            return Ok(());
+        }
+        let lun: u8 = node
+            .attribute("physical_partition_number")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let start_sector = node.attribute("start_sector").unwrap_or("0");
+
+        log.push(format!(
+            "[EDL] erase LUN {lun} @ {start_sector} ({num_sectors} sectors)"
+        ));
+        qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
+            .map_err(|e| EdlError::Session(format!("Erase failed: {e}")))?;
+        Ok(())
+    }
+
+    fn apply_patch_xml(&mut self, xml_path: &Path, log: &mut Vec<String>) -> Result<()> {
+        let xml_content = std::fs::read_to_string(xml_path)?;
+        let doc = roxmltree::Document::parse(&xml_content).map_err(|e| {
+            EdlError::Session(format!("XML parse error in {}: {e}", xml_path.display()))
+        })?;
+
+        for node in doc.descendants() {
+            if !node.tag_name().name().eq_ignore_ascii_case("patch") {
+                continue;
+            }
+            // Non-DISK patches target files, not storage.
+            let filename = node.attribute("filename").unwrap_or("");
+            if filename != "DISK" {
+                continue;
+            }
+            let byte_off: u64 = node
+                .attribute("byte_offset")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let lun: u8 = node
+                .attribute("physical_partition_number")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let slot: u8 = node
+                .attribute("slot")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let size: u64 = node
+                .attribute("size_in_bytes")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let start_sector = node.attribute("start_sector").unwrap_or("0");
+            let value = node.attribute("value").unwrap_or("");
+
+            log.push(format!(
+                "[EDL] patch LUN {lun} @ {start_sector}+{byte_off} ({size}B) = {value}"
+            ));
+            qdl::firehose_patch(
+                &mut self.dev,
+                byte_off,
+                slot,
+                lun,
+                size,
+                start_sector,
+                value,
+            )
+            .map_err(|e| EdlError::Session(format!("Patch failed: {e}")))?;
+        }
+        Ok(())
+    }
+}
+
+/// Collect `rawprogram*.xml` and `patch*.xml` from `dir`. Drops v2 filter
+/// targets (WIPE/BLANK variants, `rawprogram0.xml` GPT programmer).
+/// Returns `(raw_xmls, patch_xmls)` sorted.
+pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut raw_xmls = Vec::new();
+    let mut patch_xmls = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return (raw_xmls, patch_xmls),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let lower = name.to_lowercase();
+        if !lower.ends_with(".xml") {
+            continue;
+        }
+        if lower.starts_with("rawprogram") {
+            // v2 skips WIPE / zero-GPT variants.
+            if name.contains("WIPE_PARTITIONS") || name.contains("BLANK_GPT") {
+                continue;
+            }
+            if name == "rawprogram0.xml" {
+                continue;
+            }
+            raw_xmls.push(path);
+        } else if lower.starts_with("patch") {
+            patch_xmls.push(path);
+        }
+    }
+
+    raw_xmls.sort();
+    patch_xmls.sort();
+    (raw_xmls, patch_xmls)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn run_with_deadline_never(ports: Vec<Result<String>>) -> Result<String> {
+        let mut queue: VecDeque<Result<String>> = ports.into();
+        wait_for_stable_port_with(
+            || queue.pop_front().unwrap_or(Err(EdlError::PortNotFound)),
+            |_| {},
+            || false,
+            EDL_SESSION_OPEN_TIMEOUT,
+        )
+    }
+
+    #[test]
+    fn stale_port_disconnects_then_new_port_stabilizes() {
+        // Phase 1: Ok(COM6) → disconnect. Phase 2: COM7 twice → return.
+        let port = run_with_deadline_never(vec![
+            Ok("COM6".to_string()),
+            Err(EdlError::PortNotFound),
+            Ok("COM7".to_string()),
+            Ok("COM7".to_string()),
+        ])
+        .expect("stable port");
+        assert_eq!(port, "COM7");
+    }
+
+    #[test]
+    fn visible_port_without_disconnect_is_trusted() {
+        // Port visible for full 5-poll observation window.
+        let port = run_with_deadline_never(vec![
+            Ok("COM6".to_string()),
+            Ok("COM6".to_string()),
+            Ok("COM6".to_string()),
+            Ok("COM6".to_string()),
+            Ok("COM6".to_string()),
+            Ok("COM6".to_string()),
+        ])
+        .expect("stable port");
+        assert_eq!(port, "COM6");
+    }
+
+    #[test]
+    fn phase1_name_change_forces_phase2() {
+        // Regression: Phase 1 that only checks Ok/Err presence would latch
+        // the dead COM6 handle across a reset-to-EDL renumeration.
+        let port = run_with_deadline_never(vec![
+            Ok("COM6".to_string()),
+            Ok("COM7".to_string()), // phase 1 name change → fall through
+            Ok("COM7".to_string()),
+            Ok("COM7".to_string()),
+        ])
+        .expect("stable port");
+        assert_eq!(port, "COM7");
+    }
+
+    #[test]
+    fn timeout_returns_port_timeout_error() {
+        let mut polls_remaining: u32 = 3;
+        let err = wait_for_stable_port_with(
+            || Err(EdlError::PortNotFound),
+            |_| {},
+            move || {
+                if polls_remaining == 0 {
+                    true
+                } else {
+                    polls_remaining -= 1;
+                    false
+                }
+            },
+            EDL_SESSION_OPEN_TIMEOUT,
+        )
+        .expect_err("should time out");
+        assert!(matches!(err, EdlError::PortTimeout(_)));
+    }
+}

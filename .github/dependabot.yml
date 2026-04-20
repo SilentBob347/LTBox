@@ -1,23 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
-    directory: "/bin"
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "monthly"
-
-  - package-ecosystem: "github-actions"
-    directory: "/.github/actions/setup-python-deps"
-    schedule:
-      interval: "monthly"
-
-  - package-ecosystem: "github-actions"
-    directory: "/.github/actions/setup-fw-env"
     schedule:
       interval: "monthly"
 
@@ -26,8 +16,3 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-
-  - package-ecosystem: "gitsubmodule"
-    directory: "/"
-    schedule:
-      interval: "weekly"
