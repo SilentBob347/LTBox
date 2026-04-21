@@ -91,6 +91,19 @@ jobs:
         with:
           arch: ${{ matrix.msvc_arch }}
 
+      - name: Prepend x64 LLVM to PATH (aarch64 cross)
+        # `ring`'s build.rs hard-codes the compiler to `clang` for
+        # aarch64-pc-windows-msvc cross builds, bypassing any
+        # `CC_*_pc_windows_msvc` override. msvc-dev-cmd with
+        # `arch: arm64` puts the ARM64-hosted LLVM shipped with VS in
+        # front on PATH, which the x64 runner cannot execute (OS
+        # error 216). Prepend the x64 LLVM dir so the bare `clang`
+        # lookup resolves to the x64 build.
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Install Rust toolchain (${{ matrix.target }})
         uses: dtolnay/rust-toolchain@stable
         with:
