@@ -115,6 +115,15 @@ jobs:
           "is_release=${{ startsWith(github.ref, 'refs/tags/v') }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: cargo build --release
+        # Cross-compile quirk: msvc-dev-cmd puts the ARM64 LLVM shipped
+        # with VS first on PATH. The `ring` crate's build script then
+        # picks that `clang.exe` to build its C sources, but the runner
+        # itself is x64, so the ARM64 `clang.exe` fails with OS error
+        # 216 (EXE machine-type mismatch). Point cc-rs at the x64
+        # clang that ships in `C:\Program Files\LLVM\bin` for the
+        # aarch64 target only.
+        env:
+          CC_aarch64_pc_windows_msvc: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'C:\Program Files\LLVM\bin\clang.exe' || '' }}
         run: cargo build --release --target ${{ matrix.target }} -p ltbox-gui
 
       - name: cargo test (host arch only)
