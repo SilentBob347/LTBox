@@ -1832,14 +1832,51 @@ impl SysUpdateAction {
     }
 }
 
+/// Region target for Boot Recovery (Rescue). PRC/ROW hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RescueRegion {
+    Prc,
+    Row,
+}
+
+impl RescueRegion {
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::Prc => "rescue_region_prc",
+            Self::Row => "rescue_region_row",
+        }
+    }
+    fn to_target(self) -> ltbox_patch::region::RegionTarget {
+        match self {
+            Self::Prc => ltbox_patch::region::RegionTarget::Prc,
+            Self::Row => ltbox_patch::region::RegionTarget::Row,
+        }
+    }
+}
+
 #[derive(Default)]
 struct SysUpdateWizard {
     step: usize,
     action: Option<SysUpdateAction>,
+    /// Rescue: firmware folder containing loader (`xbl_s_devprg_ns.melf`).
+    rescue_folder: Option<String>,
+    /// Rescue: selected target region. Set via popup between Folder and
+    /// Confirm steps.
+    rescue_region: Option<RescueRegion>,
+    /// Rescue: region popup overlay flag. Opens on Next press from the
+    /// Folder step when no region is committed yet.
+    rescue_region_popup_open: bool,
 }
 
-const SYSUPDATE_STEPS: &[&str] = &[
+const SYSUPDATE_STEPS_COMPACT: &[&str] = &[
     "sysupdate_step_action",
+    "sysupdate_step_confirm",
+    "sysupdate_step_execute",
+];
+
+const SYSUPDATE_STEPS_RESCUE: &[&str] = &[
+    "sysupdate_step_action",
+    "sysupdate_step_folder",
     "sysupdate_step_confirm",
     "sysupdate_step_execute",
 ];
@@ -1848,11 +1885,23 @@ impl SysUpdateWizard {
     fn reset(&mut self) {
         *self = Self::default();
     }
+    /// Rescue gets an extra Folder step — distinct step list keeps the
+    /// other actions (Disable/Enable) on their short 3-step flow.
+    fn steps(&self) -> &'static [&'static str] {
+        if matches!(self.action, Some(SysUpdateAction::Rescue)) {
+            SYSUPDATE_STEPS_RESCUE
+        } else {
+            SYSUPDATE_STEPS_COMPACT
+        }
+    }
+    fn is_rescue(&self) -> bool {
+        matches!(self.action, Some(SysUpdateAction::Rescue))
+    }
     fn is_in_exec(&self) -> bool {
-        self.step == SYSUPDATE_STEPS.len() - 1
+        self.step == self.steps().len() - 1
     }
     fn next(&mut self) {
-        if self.step < SYSUPDATE_STEPS.len() - 1 {
+        if self.step < self.steps().len() - 1 {
             self.step += 1;
         }
     }
@@ -1862,10 +1911,25 @@ impl SysUpdateWizard {
         }
     }
     fn can_next(&self) -> bool {
-        match self.step {
-            0 => self.action.is_some(),
-            1 => true,
-            _ => false,
+        if self.is_rescue() {
+            // Rescue flow: Action → Folder → Confirm → Exec.
+            match self.step {
+                0 => self.action.is_some(),
+                1 => self
+                    .rescue_folder
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .and_then(find_edl_loader)
+                    .is_some(),
+                2 => self.rescue_region.is_some(),
+                _ => false,
+            }
+        } else {
+            match self.step {
+                0 => self.action.is_some(),
+                1 => true,
+                _ => false,
+            }
         }
     }
 }
@@ -2291,6 +2355,11 @@ enum Message {
     // System Update execution
     SysExecStart,
     SysExecDone(Vec<String>),
+    /// Rescue flow: folder picker → region popup → exec.
+    SysRescueSelectFolder,
+    SysRescueFolderChosen(Option<String>),
+    SysRescueRegion(RescueRegion),
+    SysRescueRegionPopupDismiss,
     FileSelected(Option<String>),
     FolderSelected(Option<String>),
     /// Recent-chip click — routes like the picker messages, no dialog.
@@ -3503,19 +3572,70 @@ impl App {
                 }
             }
             // System Update wizard
-            Message::SysAction(a) => self.sysupdate.action = Some(a),
+            Message::SysAction(a) => {
+                // Switching action resets Rescue-specific state so a stale
+                // folder/region can't leak into a fresh flow.
+                self.sysupdate.action = Some(a);
+                self.sysupdate.rescue_folder = None;
+                self.sysupdate.rescue_region = None;
+                self.sysupdate.rescue_region_popup_open = false;
+            }
             Message::SysNext => {
-                if self.sysupdate.step == 1 {
+                // Rescue flow: Action(0) → Folder(1) → Confirm(2) → Exec(3).
+                // Gate: popping the region popup between Folder and Confirm.
+                if self.sysupdate.is_rescue() {
+                    if self.sysupdate.step == 1 && self.sysupdate.rescue_region.is_none() {
+                        self.sysupdate.rescue_region_popup_open = true;
+                        return Task::none();
+                    }
+                    if self.sysupdate.step == 2 {
+                        self.sysupdate.next();
+                        return self.update(Message::SysExecStart);
+                    }
                     self.sysupdate.next();
-                    return self.update(Message::SysExecStart);
+                } else {
+                    // Disable/Enable: Action(0) → Confirm(1) → Exec(2).
+                    if self.sysupdate.step == 1 {
+                        self.sysupdate.next();
+                        return self.update(Message::SysExecStart);
+                    }
+                    self.sysupdate.next();
                 }
-                self.sysupdate.next();
             }
             Message::SysBack => self.sysupdate.back(),
+            Message::SysRescueSelectFolder => {
+                return pick_folder_task(Message::SysRescueFolderChosen);
+            }
+            Message::SysRescueFolderChosen(path) => {
+                if let Some(p) = path {
+                    self.sysupdate.rescue_folder = Some(p);
+                    // Force re-pick of region when folder changes — a stale
+                    // region from a prior folder could target the wrong
+                    // hardware.
+                    self.sysupdate.rescue_region = None;
+                }
+            }
+            Message::SysRescueRegion(r) => {
+                self.sysupdate.rescue_region = Some(r);
+                self.sysupdate.rescue_region_popup_open = false;
+                // Auto-advance out of Folder step into Confirm — picking
+                // the region is the implicit "Next" of the popup.
+                if self.sysupdate.step == 1 {
+                    self.sysupdate.next();
+                }
+            }
+            Message::SysRescueRegionPopupDismiss => {
+                self.sysupdate.rescue_region_popup_open = false;
+            }
             Message::SysExecStart => {
                 let Some(action) = self.sysupdate.action else {
                     return Task::none();
                 };
+                // Rescue captures folder + region into the blocking task.
+                // Cloning here keeps `self` untouched while the async move
+                // takes ownership.
+                let rescue_folder = self.sysupdate.rescue_folder.clone();
+                let rescue_region = self.sysupdate.rescue_region;
                 self.begin_op(View::SystemUpdate);
                 self.error_msg = None;
                 self.log_push(format!(
@@ -3581,15 +3701,279 @@ impl App {
                                     Ok(log)
                                 }
                                 SysUpdateAction::Rescue => {
-                                    log.push("[Rescue] Rescue boot after OTA — requires EDL".to_string());
+                                    // Precondition: folder + region picked in the wizard.
+                                    let Some(fw_folder) = rescue_folder else {
+                                        return Err(
+                                            "Boot Recovery: firmware folder not selected".into(),
+                                        );
+                                    };
+                                    let Some(region) = rescue_region else {
+                                        return Err(
+                                            "Boot Recovery: target region (PRC/ROW) not selected".into(),
+                                        );
+                                    };
+                                    let fw_dir = std::path::Path::new(&fw_folder);
+                                    let loader = find_edl_loader(fw_dir).ok_or_else(|| {
+                                        format!(
+                                            "Boot Recovery: xbl_s_devprg_ns.melf not found in {}",
+                                            fw_dir.display()
+                                        )
+                                    })?;
+                                    log.push(format!("[Rescue] Loader: {}", loader.display()));
+                                    log.push(format!(
+                                        "[Rescue] Target region: {}",
+                                        match region {
+                                            RescueRegion::Prc => "PRC",
+                                            RescueRegion::Row => "ROW",
+                                        }
+                                    ));
+
+                                    // Stage dumps + patched outputs in a
+                                    // timestamped temp dir next to the loader
+                                    // so nothing collides with the user's
+                                    // firmware folder.
+                                    let ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    let work_dir = fw_dir.join(format!("rescue_{ts}"));
+                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+                                        return Err(format!("create work dir: {e}"));
+                                    }
+                                    log.push(format!(
+                                        "[Rescue] Work dir: {}",
+                                        work_dir.display()
+                                    ));
+
                                     log.push("[Rescue] Transitioning to EDL...".to_string());
                                     let _ = adb.reboot("edl");
                                     std::thread::sleep(std::time::Duration::from_secs(5));
                                     log.push("[EDL] Waiting for device...".to_string());
                                     ltbox_device::edl::wait_for_device()
                                         .map_err(|e| format!("EDL not found: {e}"))?;
-                                    log.push("[Rescue] EDL device found — rescue requires firmware folder with loader".to_string());
-                                    log.push("[Rescue] Use Flash Firmware wizard with same-region + keep-data for full rescue".to_string());
+
+                                    let mut session = ltbox_device::edl::EdlSession::open(
+                                        &loader, true, &mut log,
+                                    )
+                                    .map_err(|e| format!("EDL open: {e}"))?;
+
+                                    // Dump both slots; partitions live on LUN
+                                    // 0 for vendor_boot / vbmeta on TB3xx
+                                    // platforms — GPT-by-name handles the
+                                    // slot suffix naming.
+                                    let slots = ["a", "b"];
+                                    let mut dumped: Vec<(String, String, std::path::PathBuf)> =
+                                        Vec::new();
+                                    for slot in &slots {
+                                        for base in &["vendor_boot", "vbmeta"] {
+                                            let part_name = format!("{base}_{slot}");
+                                            let out =
+                                                work_dir.join(format!("{part_name}.img"));
+                                            log.push(format!(
+                                                "[Rescue] Dumping {part_name}..."
+                                            ));
+                                            if let Err(e) = session.dump_partition(
+                                                &part_name, &out, 0, 0, &mut log,
+                                            ) {
+                                                log.push(format!(
+                                                    "[Rescue] Skip {part_name}: {e}"
+                                                ));
+                                                continue;
+                                            }
+                                            dumped.push((
+                                                (*base).to_string(),
+                                                (*slot).to_string(),
+                                                out,
+                                            ));
+                                        }
+                                    }
+
+                                    if dumped.is_empty() {
+                                        return Err(
+                                            "Boot Recovery: no partitions dumped — aborting"
+                                                .into(),
+                                        );
+                                    }
+
+                                    // Patch vendor_boot per region, rebuild
+                                    // footer, rebuild vbmeta chain per slot.
+                                    let target = region.to_target();
+                                    let prc_dot = vec![0x2E, 0x50, 0x52, 0x43]; // ".PRC"
+                                    let prc_i = vec![0x49, 0x50, 0x52, 0x43]; // "IPRC"
+                                    let row_dot = vec![0x2E, 0x52, 0x4F, 0x57]; // ".ROW"
+                                    let row_i = vec![0x49, 0x52, 0x4F, 0x57]; // "IROW"
+                                    let prc_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                        (prc_dot.clone(), row_dot.clone()),
+                                        (prc_i.clone(), row_i.clone()),
+                                    ];
+                                    let row_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                        (row_dot.clone(), prc_dot.clone()),
+                                        (row_i.clone(), prc_i.clone()),
+                                    ];
+
+                                    // testkey resolution — prefer folder's
+                                    // own keys/ then loader-adjacent.
+                                    let testkey = find_testkey(fw_dir).or_else(|| {
+                                        loader.parent().and_then(find_testkey)
+                                    });
+
+                                    let mut flash_plan: Vec<(String, std::path::PathBuf)> =
+                                        Vec::new();
+                                    for slot in &slots {
+                                        let vb_src = dumped.iter().find(|(b, s, _)| {
+                                            b == "vendor_boot" && s == slot
+                                        });
+                                        let vbm_src = dumped.iter().find(|(b, s, _)| {
+                                            b == "vbmeta" && s == slot
+                                        });
+                                        let (Some(vb_src), Some(vbm_src)) = (vb_src, vbm_src)
+                                        else {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: missing dump — skipping"
+                                            ));
+                                            continue;
+                                        };
+
+                                        let vb_patched = work_dir
+                                            .join(format!("vendor_boot_{slot}.patched.img"));
+                                        log.push(format!(
+                                            "[Rescue] Patching vendor_boot_{slot} → {}",
+                                            match region {
+                                                RescueRegion::Prc => "PRC",
+                                                RescueRegion::Row => "ROW",
+                                            }
+                                        ));
+                                        let n = match ltbox_patch::region::patch_vendor_boot(
+                                            &vb_src.2,
+                                            &vb_patched,
+                                            target,
+                                            &prc_patterns,
+                                            &row_patterns,
+                                        ) {
+                                            Ok(n) => n,
+                                            Err(e) => {
+                                                log.push(format!(
+                                                    "[Rescue] Slot {slot}: region patch failed: {e} — skipping"
+                                                ));
+                                                continue;
+                                            }
+                                        };
+                                        if n == 0 {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: no region bytes changed — already on target region?"
+                                            ));
+                                        } else {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: {n} occurrences patched"
+                                            ));
+                                        }
+
+                                        // Rebuild AVB hash footer on the
+                                        // patched vendor_boot using metadata
+                                        // from the original.
+                                        let vb_info =
+                                            match ltbox_patch::avb::extract_image_avb_info(
+                                                &vb_src.2,
+                                            ) {
+                                                Ok(i) => i,
+                                                Err(e) => {
+                                                    log.push(format!(
+                                                        "[Rescue] Slot {slot}: vendor_boot AVB inspect failed: {e}"
+                                                    ));
+                                                    continue;
+                                                }
+                                            };
+                                        let key_spec = testkey
+                                            .as_deref()
+                                            .map(|p| p.display().to_string());
+                                        if let Err(e) = ltbox_patch::avb::add_hash_footer(
+                                            &vb_patched,
+                                            &vb_info,
+                                            key_spec.as_deref(),
+                                            None,
+                                        ) {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: add_hash_footer failed: {e} — skipping"
+                                            ));
+                                            continue;
+                                        }
+
+                                        // Rebuild vbmeta chained to the
+                                        // patched vendor_boot. Key fallback:
+                                        // algorithm comes from the original
+                                        // vbmeta header.
+                                        let vbm_info =
+                                            match ltbox_patch::avb::extract_image_avb_info(
+                                                &vbm_src.2,
+                                            ) {
+                                                Ok(i) => i,
+                                                Err(e) => {
+                                                    log.push(format!(
+                                                        "[Rescue] Slot {slot}: vbmeta inspect failed: {e}"
+                                                    ));
+                                                    continue;
+                                                }
+                                            };
+                                        let Some(vbm_key) = key_spec.clone() else {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: no testkey (testkey_rsa{{2048,4096}}.pem) under {} — cannot re-sign vbmeta",
+                                                fw_dir.display()
+                                            ));
+                                            continue;
+                                        };
+                                        let vbm_rebuilt = work_dir
+                                            .join(format!("vbmeta_{slot}.rebuilt.img"));
+                                        let chained: [&std::path::Path; 1] =
+                                            [vb_patched.as_path()];
+                                        if let Err(e) =
+                                            ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                                                &vbm_rebuilt,
+                                                &vbm_src.2,
+                                                &chained,
+                                                &vbm_key,
+                                                Some(vbm_info.algorithm.as_str()),
+                                            )
+                                        {
+                                            log.push(format!(
+                                                "[Rescue] Slot {slot}: rebuild vbmeta failed: {e} — skipping"
+                                            ));
+                                            continue;
+                                        }
+
+                                        flash_plan.push((
+                                            format!("vendor_boot_{slot}"),
+                                            vb_patched,
+                                        ));
+                                        flash_plan
+                                            .push((format!("vbmeta_{slot}"), vbm_rebuilt));
+                                    }
+
+                                    if flash_plan.is_empty() {
+                                        return Err(
+                                            "Boot Recovery: nothing to flash after patch/resign"
+                                                .into(),
+                                        );
+                                    }
+
+                                    log.push(format!(
+                                        "[Rescue] Flashing {} target(s)...",
+                                        flash_plan.len()
+                                    ));
+                                    for (part_name, image) in &flash_plan {
+                                        if let Err(e) = session.flash_partition(
+                                            part_name, image, 0, 0, &mut log,
+                                        ) {
+                                            log.push(format!(
+                                                "[Rescue] Flash {part_name}: {e}"
+                                            ));
+                                        }
+                                    }
+
+                                    log.push("[Rescue] Resetting device...".to_string());
+                                    let _ = session.reset(&mut log);
+                                    log.push(
+                                        "[Rescue] Boot recovery complete.".to_string(),
+                                    );
                                     Ok(log)
                                 }
                             }
@@ -6552,15 +6936,33 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     // -- System Update Wizard ----------------------------------------------
 
     fn view_sysupdate_wizard(&self) -> Element<'_, Message> {
-        let step_labels: Vec<&str> = SYSUPDATE_STEPS.iter().map(|k| self.t(k)).collect();
+        // Exec-step log popup overlay — without this the "Show log" button
+        // on the exec card was a no-op for System Update (Flash/Root/Unroot
+        // all had it wired; SysUpdate had been missed).
+        if self.log_popup_open && self.sysupdate.is_in_exec() {
+            return self.log_popup_view();
+        }
+        let steps = self.sysupdate.steps();
+        let step_labels: Vec<&str> = steps.iter().map(|k| self.t(k)).collect();
         let step_bar = wizard_step_bar(&step_labels, self.sysupdate.step);
-        let body = match self.sysupdate.step {
-            0 => self.sysupdate_action_step(),
-            1 => self.sysupdate_confirm_step(),
-            _ => self.sysupdate_exec_step(),
+        let is_rescue = self.sysupdate.is_rescue();
+        let body = if is_rescue {
+            match self.sysupdate.step {
+                0 => self.sysupdate_action_step(),
+                1 => self.sysupdate_rescue_folder_step(),
+                2 => self.sysupdate_confirm_step(),
+                _ => self.sysupdate_exec_step(),
+            }
+        } else {
+            match self.sysupdate.step {
+                0 => self.sysupdate_action_step(),
+                1 => self.sysupdate_confirm_step(),
+                _ => self.sysupdate_exec_step(),
+            }
         };
-        let nav = if self.sysupdate.step < 2 {
-            let is_start = self.sysupdate.step == 1;
+        let last_nav_step = steps.len() - 2; // Exec step has no nav row.
+        let nav = if self.sysupdate.step <= last_nav_step {
+            let is_start = self.sysupdate.step == last_nav_step;
             let label_owned = if is_start {
                 self.t("btn_start").to_string()
             } else {
@@ -6578,10 +6980,15 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         } else {
             container(text("")).into()
         };
-        column![step_bar, body, nav]
+        let core: Element<'_, Message> = column![step_bar, body, nav]
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+        if self.sysupdate.rescue_region_popup_open {
+            iced::widget::Stack::with_children(vec![core, self.rescue_region_popup_view()]).into()
+        } else {
+            core
+        }
     }
 
     fn sysupdate_action_step(&self) -> Element<'_, Message> {
@@ -6691,7 +7098,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             .action
             .map(|a| self.t(a.desc_key()).to_string())
             .unwrap_or_default();
-        let col = column![
+        let mut col = column![
             text(self.t("sysupdate_confirm_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
@@ -6703,11 +7110,178 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
+        // Rescue: echo the chosen firmware folder + region so the user
+        // confirms exactly what's about to flash.
+        if self.sysupdate.is_rescue() {
+            let folder = self
+                .sysupdate
+                .rescue_folder
+                .clone()
+                .unwrap_or_else(|| dash.clone());
+            let region = self
+                .sysupdate
+                .rescue_region
+                .map(|r| self.t(r.label_key()).to_string())
+                .unwrap_or_else(|| dash.clone());
+            col = col.push(info_kv_center(self.t("rescue_folder_label"), &folder));
+            col = col.push(info_kv_center(self.t("rescue_region_label"), &region));
+        }
         container(col)
             .width(Length::Fill)
             .height(Length::Fill)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
+            .into()
+    }
+
+    fn sysupdate_rescue_folder_step(&self) -> Element<'_, Message> {
+        let dash = "—".to_string();
+        let folder_path = self
+            .sysupdate
+            .rescue_folder
+            .clone()
+            .unwrap_or_else(|| dash.clone());
+        let loader_status = self
+            .sysupdate
+            .rescue_folder
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(find_edl_loader)
+            .map(|p| p.display().to_string());
+        let status_text = match &loader_status {
+            Some(p) => self.t("rescue_loader_found").replace("{path}", p),
+            None => self.t("rescue_loader_missing").to_string(),
+        };
+        let browse_btn = button(
+            text(self.t("btn_browse_folder").to_string())
+                .size(13)
+                .style(on_surface_style)
+                .center(),
+        )
+        .on_press(Message::SysRescueSelectFolder)
+        .padding([8, 20])
+        .style(neutral_pill_btn_style);
+        let col = column![
+            text(self.t("rescue_folder_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("rescue_folder_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            info_kv_center(self.t("rescue_folder_label"), &folder_path),
+            text(status_text).size(12).style(muted_style).center(),
+            Space::new().height(8),
+            browse_btn,
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn rescue_region_popup_view(&self) -> Element<'_, Message> {
+        let mk_option = |region: RescueRegion, desc_key: &'static str| {
+            let label = self.t(region.label_key()).to_string();
+            let desc = self.t(desc_key).to_string();
+            let selected = self.sysupdate.rescue_region == Some(region);
+            button(
+                column![
+                    text(label).size(15).style(on_surface_style),
+                    text(desc).size(12).style(muted_style),
+                ]
+                .spacing(4),
+            )
+            .on_press(Message::SysRescueRegion(region))
+            .padding([10, 16])
+            .width(Length::Fill)
+            .style(move |t: &Theme, status| {
+                let p = pal_of(t);
+                let hover = matches!(status, button::Status::Hovered);
+                let bg = if selected {
+                    p.primary_container.into()
+                } else if hover {
+                    with_alpha(p.primary, theme::state::HOVER).into()
+                } else {
+                    iced::Color::TRANSPARENT.into()
+                };
+                button::Style {
+                    background: Some(bg),
+                    text_color: p.on_surface,
+                    border: iced::Border {
+                        color: if selected {
+                            p.primary
+                        } else {
+                            p.outline_variant
+                        },
+                        width: 1.0,
+                        radius: theme::shape::SM.into(),
+                    },
+                    ..Default::default()
+                }
+            })
+        };
+        let popup_content = container(
+            column![
+                row![
+                    text(self.t("rescue_region_popup_title").to_string()).size(16),
+                    Space::new().width(Length::Fill),
+                    button(
+                        text(self.t("btn_cancel").to_string())
+                            .size(12)
+                            .style(muted_style)
+                    )
+                    .on_press(Message::SysRescueRegionPopupDismiss)
+                    .padding([4, 12])
+                    .style(neutral_pill_btn_style),
+                ]
+                .align_y(iced::Alignment::Center),
+                widget::rule::horizontal(1),
+                text(self.t("rescue_region_popup_subtitle").to_string())
+                    .size(12)
+                    .style(muted_style),
+                mk_option(RescueRegion::Prc, "rescue_region_prc_desc"),
+                mk_option(RescueRegion::Row, "rescue_region_row_desc"),
+            ]
+            .spacing(10)
+            .padding(20)
+            .width(420),
+        )
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container.into()),
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::MD.into(),
+                },
+                shadow: iced::Shadow {
+                    color: with_alpha(p.shadow, 0.3),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            }
+        });
+        // Dim-scrim under the dialog so the wizard behind it doesn't
+        // visually compete with the choice.
+        container(popup_content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_t: &Theme| container::Style {
+                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -9463,7 +10037,7 @@ mod tests {
         w.next();
         w.next();
         // Caps at len - 1.
-        assert_eq!(w.step, SYSUPDATE_STEPS.len() - 1);
+        assert_eq!(w.step, SYSUPDATE_STEPS_COMPACT.len() - 1);
     }
 
     #[test]
