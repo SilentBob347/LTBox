@@ -31,3 +31,4 @@ os_pipe = { workspace = true }
 
 [build-dependencies]
 winresource = { workspace = true }
+iced_lucide = { workspace = true }

@@ -2,6 +2,10 @@
 crash.log
 ltbox.log
 
+# iced_lucide codegen output — regenerated every build from fonts/lucide.toml
+crates/ltbox-gui/src/icon.rs
+crates/ltbox-gui/fonts/lucide.ttf
+
 *.apk
 *.img
 *.zip

@@ -11,6 +11,10 @@
 //! Sub-modules: [`theme`] M3 tokens · [`settings_store`] `settings.json`
 //! in the user config dir · [`stdout_tap`] native-crate log capture.
 
+#[rustfmt::skip]
+#[allow(dead_code)]
+#[path = "icon.rs"]
+mod icon;
 mod settings_store;
 mod stdout_tap;
 mod theme;
@@ -53,14 +57,6 @@ static TITLE_BAR_ICON_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
     std::sync::LazyLock::new(|| {
         let bytes: &'static [u8] = include_bytes!("../assets/icon_32.bin");
         iced::widget::image::Handle::from_rgba(32, 32, bytes.to_vec())
-    });
-
-/// "History" glyph next to the "Recents" label on browse-step pickers.
-static HISTORY_ICON_HANDLE: std::sync::LazyLock<iced::widget::svg::Handle> =
-    std::sync::LazyLock::new(|| {
-        iced::widget::svg::Handle::from_memory(
-            include_bytes!("../assets/icons/history.svg").to_vec(),
-        )
     });
 
 /// `on_surface_variant` — secondary labels / descriptions.
@@ -164,6 +160,10 @@ fn main() -> iced::Result {
     for (_, bytes) in noto_fonts_dl::load_fonts() {
         app = app.font(bytes.clone());
     }
+    // Subset Lucide TTF generated at build time from
+    // `fonts/lucide.toml`. Registered under the family `"lucide"` so
+    // the text-based icon widgets from `mod icon` resolve against it.
+    app = app.font(icon::FONT);
     app.run()
 }
 
@@ -237,16 +237,16 @@ impl View {
         }
     }
 
-    fn icon_bytes(&self) -> &'static [u8] {
+    fn nav_icon(&self) -> iced::widget::Text<'static, Theme, iced::Renderer> {
         match self {
-            Self::Dashboard => include_bytes!("../assets/icons/nav/dashboard.svg"),
-            Self::Flash => include_bytes!("../assets/icons/nav/flash.svg"),
-            Self::SystemUpdate => include_bytes!("../assets/icons/nav/system_update.svg"),
-            Self::Root => include_bytes!("../assets/icons/nav/root.svg"),
-            Self::Unroot => include_bytes!("../assets/icons/nav/unroot.svg"),
-            Self::Reboot => include_bytes!("../assets/icons/nav/reboot.svg"),
-            Self::Advanced => include_bytes!("../assets/icons/nav/advanced.svg"),
-            Self::Settings => include_bytes!("../assets/icons/nav/settings.svg"),
+            Self::Dashboard => icon::nav_dashboard(),
+            Self::Flash => icon::nav_flash(),
+            Self::SystemUpdate => icon::nav_system_update(),
+            Self::Root => icon::nav_root(),
+            Self::Unroot => icon::nav_unroot(),
+            Self::Reboot => icon::nav_reboot(),
+            Self::Advanced => icon::nav_advanced(),
+            Self::Settings => icon::nav_settings(),
         }
     }
 }
@@ -314,16 +314,14 @@ impl RebootTarget {
     fn all() -> &'static [RebootTarget] {
         &[Self::System, Self::Recovery, Self::Bootloader, Self::Edl]
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
-        let bytes: &'static [u8] = match self {
-            Self::System => include_bytes!("../assets/icons/reboot_system.svg"),
-            Self::Recovery => include_bytes!("../assets/icons/reboot_recovery.svg"),
-            Self::Bootloader => include_bytes!("../assets/icons/reboot_bootloader.svg"),
-            Self::Edl => include_bytes!("../assets/icons/reboot_edl.svg"),
+    fn icon(self) -> Element<'static, Message> {
+        let glyph = match self {
+            Self::System => icon::reboot_system(),
+            Self::Recovery => icon::reboot_recovery(),
+            Self::Bootloader => icon::reboot_bootloader(),
+            Self::Edl => icon::reboot_edl(),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(64)
-            .height(64)
+        lucide_primary(glyph, 32.0)
     }
 }
 
@@ -521,15 +519,15 @@ impl Family {
             Self::APatch => "family_apatch_desc",
         }
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
+    fn icon(self) -> Element<'static, Message> {
+        // Kept as bundled SVG assets — these are per-brand logos, not
+        // monochrome glyphs, so Lucide's icon set doesn't cover them.
         let bytes: &'static [u8] = match self {
             Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
             Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
             Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(72)
-            .height(72)
+        svg_icon(bytes, 72.0)
     }
     fn has_modes(&self) -> bool {
         matches!(self, Self::KernelSU)
@@ -583,7 +581,8 @@ impl Provider {
             Self::FolkPatch => Some("provider_folkpatch_desc"),
         }
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
+    fn icon(self) -> Element<'static, Message> {
+        // Provider brand logos — kept as bespoke SVG, not Lucide.
         let bytes: &'static [u8] = match self {
             Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
             Self::MagiskForks => include_bytes!("../assets/icons/magisk_forks.svg"),
@@ -594,9 +593,7 @@ impl Provider {
             Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
             Self::FolkPatch => include_bytes!("../assets/icons/folkpatch.svg"),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(72)
-            .height(72)
+        svg_icon(bytes, 72.0)
     }
 }
 
@@ -618,16 +615,13 @@ impl RootMode {
             Self::Gki => "rootmode_gki_desc",
         }
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
-        // Root-specific glyphs: chip (LKM) vs stacked slab (GKI). Unroot
-        // keeps its "revert to stock" curving-arrow motif.
-        let bytes: &'static [u8] = match self {
-            Self::Lkm => include_bytes!("../assets/icons/root_lkm.svg"),
-            Self::Gki => include_bytes!("../assets/icons/root_gki.svg"),
+    fn icon(self) -> Element<'static, Message> {
+        // Lucide chip/layers glyphs in place of the old bespoke SVGs.
+        let glyph = match self {
+            Self::Lkm => icon::root_lkm(),
+            Self::Gki => icon::root_gki(),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(72)
-            .height(72)
+        lucide_primary(glyph, 57.6)
     }
 }
 
@@ -649,14 +643,12 @@ impl VerChoice {
             Self::Nightly => "verchoice_nightly_desc",
         }
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
-        let bytes: &'static [u8] = match self {
-            Self::Stable => include_bytes!("../assets/icons/stable.svg"),
-            Self::Nightly => include_bytes!("../assets/icons/nightly.svg"),
+    fn icon(self) -> Element<'static, Message> {
+        let glyph = match self {
+            Self::Stable => icon::ver_stable(),
+            Self::Nightly => icon::ver_nightly(),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(72)
-            .height(72)
+        lucide_primary(glyph, 57.6)
     }
 }
 
@@ -678,14 +670,12 @@ impl NightlySource {
             Self::ManualInput => "nightly_manual_desc",
         }
     }
-    fn icon(self) -> iced::widget::Svg<'static> {
-        let bytes: &'static [u8] = match self {
-            Self::AutoDetect => include_bytes!("../assets/icons/nightly_auto.svg"),
-            Self::ManualInput => include_bytes!("../assets/icons/nightly_manual.svg"),
+    fn icon(self) -> Element<'static, Message> {
+        let glyph = match self {
+            Self::AutoDetect => icon::nightly_auto(),
+            Self::ManualInput => icon::nightly_manual(),
         };
-        iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-            .width(72)
-            .height(72)
+        lucide_primary(glyph, 57.6)
     }
 }
 
@@ -1163,10 +1153,10 @@ fn parse_phase_marker(line: &str) -> Option<usize> {
     rest[..slash].trim().parse::<usize>().ok()
 }
 
-// Icon bytes for the current-step card (running / done / failed).
-const OP_ICON_RUNNING: &[u8] = include_bytes!("../assets/icons/op_running.svg");
-const OP_ICON_DONE: &[u8] = include_bytes!("../assets/icons/op_done.svg");
-const OP_ICON_FAILED: &[u8] = include_bytes!("../assets/icons/op_failed.svg");
+// Icon glyphs for the current-step card (running / done / failed).
+// Colour is applied at the call site so running/done/failed each paint
+// with the palette role appropriate to the outcome (primary / success
+// / error).
 
 // =========================================================================
 // Translations
@@ -5921,10 +5911,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         let btn_h = 32;
 
         let minimize_btn = button(
-            container(svg_icon(
-                include_bytes!("../assets/icons/win_minimize.svg"),
-                10.0,
-            ))
+            container(lucide_icon(icon::win_minimize(), 12.0, |t: &Theme| {
+                pal_of(t).on_surface
+            }))
             .width(btn_w)
             .height(btn_h)
             .center_x(btn_w)
@@ -5945,10 +5934,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         });
 
         let maximize_btn = button(
-            container(svg_icon(
-                include_bytes!("../assets/icons/win_maximize.svg"),
-                10.0,
-            ))
+            container(lucide_icon(icon::win_maximize(), 12.0, |t: &Theme| {
+                pal_of(t).on_surface
+            }))
             .width(btn_w)
             .height(btn_h)
             .center_x(btn_w)
@@ -5969,10 +5957,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         });
 
         let close_btn = button(
-            container(svg_icon(
-                include_bytes!("../assets/icons/win_close.svg"),
-                10.0,
-            ))
+            container(lucide_icon(icon::win_close(), 12.0, |t: &Theme| {
+                pal_of(t).on_surface
+            }))
             .width(btn_w)
             .height(btn_h)
             .center_x(btn_w)
@@ -6674,8 +6661,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn flash_region_step(&self) -> Element<'_, Message> {
-        let prc_icon = svg_icon(include_bytes!("../assets/icons/prc.svg"), 72.0);
-        let row_icon = svg_icon(include_bytes!("../assets/icons/row.svg"), 72.0);
+        let prc_icon = lucide_primary(icon::region_prc(), 57.6);
+        let row_icon = lucide_primary(icon::region_row(), 57.6);
         let col = column![
             text(self.t("flash_region_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -6715,8 +6702,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn flash_target_step(&self) -> Element<'_, Message> {
-        let globe = svg_icon(include_bytes!("../assets/icons/globe.svg"), 72.0);
-        let device = svg_icon(include_bytes!("../assets/icons/device.svg"), 72.0);
+        let globe = lucide_primary(icon::tile_globe(), 57.6);
+        let device = lucide_primary(icon::tile_device(), 57.6);
         let col = column![
             text(self.t("flash_target_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -6756,8 +6743,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn flash_data_step(&self) -> Element<'_, Message> {
-        let shield = svg_icon(include_bytes!("../assets/icons/shield.svg"), 72.0);
-        let wipe = svg_icon(include_bytes!("../assets/icons/wipe.svg"), 72.0);
+        let shield = lucide_primary(icon::tile_shield(), 57.6);
+        let wipe = lucide_primary(icon::tile_wipe(), 57.6);
         let col = column![
             text(self.t("flash_data_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -6992,9 +6979,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn sysupdate_action_step(&self) -> Element<'_, Message> {
-        let off_icon = svg_icon(include_bytes!("../assets/icons/update_off.svg"), 72.0);
-        let on_icon = svg_icon(include_bytes!("../assets/icons/update_on.svg"), 72.0);
-        let rescue_icon = svg_icon(include_bytes!("../assets/icons/rescue.svg"), 72.0);
+        let off_icon = lucide_primary(icon::tile_update_off(), 57.6);
+        let on_icon = lucide_primary(icon::tile_update_on(), 57.6);
+        let rescue_icon = lucide_primary(icon::tile_rescue(), 57.6);
         let rescue_disabled = self.platform_supported == Some(false);
         let mut cards = row![
             icon_option_card_sub(
@@ -7311,16 +7298,13 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         let is_busy = self.busy;
 
         // Current-step card: icon swaps between running / done / failed.
-        let icon_bytes = if is_error {
-            OP_ICON_FAILED
+        let step_icon: Element<'_, Message> = if is_error {
+            lucide_icon(icon::op_failed(), 72.0, |t: &Theme| pal_of(t).error)
         } else if is_busy {
-            OP_ICON_RUNNING
+            lucide_primary(icon::op_running(), 72.0)
         } else {
-            OP_ICON_DONE
+            lucide_icon(icon::op_done(), 72.0, |t: &Theme| pal_of(t).success)
         };
-        let step_icon = iced::widget::svg(iced::widget::svg::Handle::from_memory(icon_bytes))
-            .width(72)
-            .height(72);
 
         let (eyebrow_text, label_text) = if self.op_steps.is_empty() {
             (String::new(), detail.clone())
@@ -7596,8 +7580,11 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn unroot_type_step(&self) -> Element<'_, Message> {
-        let lkm_icon = svg_icon(include_bytes!("../assets/icons/unroot_lkm.svg"), 72.0);
-        let gki_icon = svg_icon(include_bytes!("../assets/icons/unroot_gki.svg"), 72.0);
+        // Unroot reuses the Lucide puzzle/layers glyphs that the root
+        // wizard uses for the LKM/GKI pick — context (title + label)
+        // disambiguates.
+        let lkm_icon = lucide_primary(icon::root_lkm(), 57.6);
+        let gki_icon = lucide_primary(icon::root_gki(), 57.6);
         let col = column![
             text(self.t("unroot_method_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -8271,9 +8258,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             return iced::widget::column![].into();
         }
         let label_row = row![
-            iced::widget::svg(HISTORY_ICON_HANDLE.clone())
-                .width(Length::Fixed(12.0))
-                .height(Length::Fixed(12.0)),
+            lucide_icon(icon::history(), 12.0, |t: &Theme| pal_of(t)
+                .on_surface_variant),
             text(self.t(label_key).to_string())
                 .size(11)
                 .style(muted_style),
@@ -9460,20 +9446,16 @@ fn sec_hdr<'a>(label: &str) -> Element<'a, Message> {
 }
 
 fn nav_btn<'a>(view: View, label: &str, active: bool, enabled: bool) -> Element<'a, Message> {
-    let icon = iced::widget::svg(iced::widget::svg::Handle::from_memory(view.icon_bytes()))
-        .width(18)
-        .height(18)
-        .style(move |t: &iced::Theme, _s| {
-            let p = pal_of(t);
-            let color = if !enabled {
-                with_alpha(p.on_surface, 0.38)
-            } else if active {
-                p.primary
-            } else {
-                p.on_surface_variant
-            };
-            iced::widget::svg::Style { color: Some(color) }
-        });
+    let icon = lucide_icon(view.nav_icon(), 18.0, move |t: &Theme| {
+        let p = pal_of(t);
+        if !enabled {
+            with_alpha(p.on_surface, 0.38)
+        } else if active {
+            p.primary
+        } else {
+            p.on_surface_variant
+        }
+    });
 
     let content = row![icon, text(label.to_string()).size(13)]
         .spacing(12)
@@ -9793,10 +9775,40 @@ fn device_portrait(model: &str) -> DevicePortrait {
     }
 }
 
-fn svg_icon(bytes: &'static [u8], size: f32) -> iced::widget::Svg<'static> {
+fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
     iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
         .width(size)
         .height(size)
+        .into()
+}
+
+/// Primary-coloured Lucide icon sized to `size`. Matches the colour
+/// role the old per-asset SVG glyphs used for wizard tiles, status
+/// markers, and confirm-step eyebrows.
+fn lucide_primary(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    size: f32,
+) -> Element<'static, Message> {
+    icon.size(size)
+        .style(|t: &Theme| iced::widget::text::Style {
+            color: Some(pal_of(t).primary),
+        })
+        .into()
+}
+
+/// Lucide icon coloured by an arbitrary theme-driven closure. Used
+/// where colour depends on widget state (nav active / disabled,
+/// op success / failure, title-bar hover).
+fn lucide_icon(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    size: f32,
+    color: impl Fn(&Theme) -> iced::Color + 'static,
+) -> Element<'static, Message> {
+    icon.size(size)
+        .style(move |t: &Theme| iced::widget::text::Style {
+            color: Some(color(t)),
+        })
+        .into()
 }
 
 const WIZARD_CARD_HEIGHT: f32 = 180.0;
@@ -9806,7 +9818,7 @@ const WIZARD_CARD_HEIGHT: f32 = 180.0;
 const SUB_ROW_HEIGHT: f32 = 32.0;
 
 fn icon_option_card_sub(
-    icon: iced::widget::Svg<'static>,
+    icon: Element<'static, Message>,
     label: &str,
     sub: &str,
     selected: bool,
@@ -9866,7 +9878,7 @@ fn icon_option_card_sub(
 
 /// Wrap a wizard icon. Icons already carry their own rounded-rect bg,
 /// so no outer border.
-fn icon_tile<'a, M: 'static>(icon: iced::widget::Svg<'static>) -> Element<'a, M> {
+fn icon_tile(icon: Element<'static, Message>) -> Element<'static, Message> {
     container(icon).padding(0).into()
 }
 

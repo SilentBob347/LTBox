@@ -79,7 +79,7 @@ pollster = "0.4"
 serialport = "4"
 
 # GUI
-iced = { version = "0.14", features = ["tokio", "svg", "image"] }
+iced = { version = "0.14", features = ["tokio", "svg", "image", "advanced"] }
 iced_aw = { version = "0.13", default-features = false, features = ["badge", "card", "menu", "selection_list", "drop_down"] }
 rfd = "0.17"
 dirs = "6"
@@ -96,3 +96,8 @@ avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", branch = "main" 
 magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
 kptools = { git = "https://github.com/miner7222/kptools-rs", branch = "master" }
 qdl = { git = "https://github.com/miner7222/qdlrs", branch = "main", features = ["serial"] }
+# Build-time Lucide icon subsetter — generates `src/icon.rs` at build
+# time with one Text-returning function per icon declared in
+# `fonts/lucide.toml`. No runtime dependency on the crate itself; the
+# generated code only uses `iced::widget::text` + `iced::Font`.
+iced_lucide = { git = "https://github.com/A-Disruption/iced_lucide", branch = "master" }

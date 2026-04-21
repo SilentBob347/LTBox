@@ -1,0 +1,61 @@
+# iced_lucide subset definition — generates `src/icon.rs` at build
+# time with one Text-returning function per entry.
+#
+# Format: `<rust_fn_name> = "<lucide-kebab-case-name>"`.
+# Browse available icons at https://lucide.dev/icons.
+module = "icon"
+
+[icons]
+# Sidebar nav (18 px)
+nav_dashboard     = "layout-dashboard"
+nav_flash         = "zap"
+nav_system_update = "cloud-download"
+nav_root          = "shield"
+nav_unroot        = "shield-off"
+nav_reboot        = "rotate-cw"
+nav_advanced      = "sliders-horizontal"
+nav_settings      = "settings"
+
+# Reboot target cards (64 px)
+reboot_system     = "smartphone"
+reboot_recovery   = "wrench"
+reboot_bootloader = "terminal"
+reboot_edl        = "usb"
+
+# Root mode (72 px)
+root_lkm          = "puzzle"
+root_gki          = "layers"
+
+# Version choice (72 px)
+ver_stable        = "badge-check"
+ver_nightly       = "moon"
+
+# Nightly source (72 px)
+nightly_auto      = "wand-sparkles"
+nightly_manual    = "pencil-line"
+
+# Operation status (72 px)
+op_running        = "loader-circle"
+op_done           = "circle-check-big"
+op_failed         = "circle-x"
+
+# Window chrome (10 px)
+win_minimize      = "minus"
+win_maximize      = "square"
+win_close         = "x"
+
+# Region picker
+region_prc        = "star"
+region_row        = "globe"
+
+# Flash / sysupdate wizard cards
+tile_globe        = "globe-x"
+tile_device       = "earth-lock"
+tile_shield       = "file-text"
+tile_wipe         = "shredder"
+tile_update_off   = "bell-off"
+tile_update_on    = "bell"
+tile_rescue       = "life-buoy"
+
+# Recents label (12 px)
+history           = "history"
