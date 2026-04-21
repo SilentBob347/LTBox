@@ -78,7 +78,7 @@ jobs:
             msvc_arch: x64
           - name: win_arm64
             target: aarch64-pc-windows-msvc
-            msvc_arch: arm64
+            msvc_arch: amd64_arm64
     defaults:
       run:
         shell: pwsh
@@ -94,11 +94,11 @@ jobs:
       - name: Prepend x64 LLVM to PATH (aarch64 cross)
         # `ring`'s build.rs hard-codes the compiler to `clang` for
         # aarch64-pc-windows-msvc cross builds, bypassing any
-        # `CC_*_pc_windows_msvc` override. msvc-dev-cmd with
-        # `arch: arm64` puts the ARM64-hosted LLVM shipped with VS in
-        # front on PATH, which the x64 runner cannot execute (OS
-        # error 216). Prepend the x64 LLVM dir so the bare `clang`
-        # lookup resolves to the x64 build.
+        # `CC_*_pc_windows_msvc` override. msvc-dev-cmd may still put
+        # the ARM64-hosted LLVM shipped with VS in front on PATH,
+        # which the x64 runner cannot execute (OS error 216). Prepend
+        # the x64 LLVM dir so the bare `clang` lookup resolves to the
+        # x64 build.
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
@@ -130,11 +130,16 @@ jobs:
       - name: cargo build --release
         # Cross-compile quirks for aarch64-pc-windows-msvc on an x64
         # runner:
-        # 1. msvc-dev-cmd puts the ARM64 LLVM shipped with VS first on
-        #    PATH. cc-rs would then resolve `clang` against that, but
-        #    the runner host is x64, so the ARM64 `clang.exe` fails
-        #    with OS error 216 (EXE machine-type mismatch).
-        # 2. cc-rs adds MSVC-style flags like `/source-charset:utf-8`
+        # 1. msvc-dev-cmd with `arch: arm64` installs the ARM64-hosted
+        #    MSVC toolchain; `link.exe` then fails machine-type check
+        #    on the x64 runner and PATH falls through to Git Bash's
+        #    coreutils `/usr/bin/link`. Use `amd64_arm64` to get the
+        #    x64-host → arm64-target cross toolchain instead.
+        # 2. msvc-dev-cmd puts the bundled LLVM first on PATH. cc-rs
+        #    would then resolve `clang` against that, but a mismatched
+        #    host `clang.exe` fails with OS error 216 (EXE machine-
+        #    type mismatch). The Prepend x64 LLVM step fixes this.
+        # 3. cc-rs adds MSVC-style flags like `/source-charset:utf-8`
         #    whenever the target is `*-msvc`. The plain `clang.exe`
         #    driver is gnu-style and interprets `/…` as a file path,
         #    so it dies with `no such file or directory`. `clang-cl`
