@@ -271,7 +271,7 @@
   "provider_resukisu": "ReSukiSU",
   "provider_resukisu_desc": "SukiSU Ultra 的分支，新增变更更稳定，ReSukiSU 开发",
   "provider_sukisu": "SukiSU Ultra",
-  "provider_sukisu_desc": "含 KPM 加载器的 KernelSU 增强分支，ShirkNeko 开发",
+  "provider_sukisu_desc": "包含一些有趣变更的 KernelSU 分支，ShirkNeko 开发",
   "reboot_bootloader": "重启到 Bootloader",
   "reboot_bootloader_desc": "",
   "reboot_confirm_body": "设备将重启到 {target} 模式。",

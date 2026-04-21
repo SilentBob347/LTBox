@@ -271,7 +271,7 @@
   "provider_resukisu": "ReSukiSU",
   "provider_resukisu_desc": "Fork of SukiSU Ultra with added changes + stability, by ReSukiSU",
   "provider_sukisu": "SukiSU Ultra",
-  "provider_sukisu_desc": "Enhanced KernelSU fork with KPM loader, by ShirkNeko",
+  "provider_sukisu_desc": "KernelSU fork with some interesting changes, by ShirkNeko",
   "reboot_bootloader": "Reboot to Bootloader",
   "reboot_bootloader_desc": "",
   "reboot_confirm_body": "The device will reboot into {target} mode.",

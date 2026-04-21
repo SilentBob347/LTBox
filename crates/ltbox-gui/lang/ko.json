@@ -271,7 +271,7 @@
   "provider_resukisu": "ReSukiSU",
   "provider_resukisu_desc": "추가 변경사항과 안정성을 강화한 SukiSU Ultra 포크, ReSukiSU 제작",
   "provider_sukisu": "SukiSU Ultra",
-  "provider_sukisu_desc": "KPM 로더가 포함된 KernelSU 강화 포크, ShirkNeko 제작",
+  "provider_sukisu_desc": "일부 흥미로운 변경이 포함된 KernelSU 포크, ShirkNeko 제작",
   "reboot_bootloader": "부트로더로 재부팅",
   "reboot_bootloader_desc": "",
   "reboot_confirm_body": "기기가 {target}(으)로 재부팅됩니다.",

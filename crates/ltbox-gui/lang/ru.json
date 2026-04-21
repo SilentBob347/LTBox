@@ -271,7 +271,7 @@
   "provider_resukisu": "ReSukiSU",
   "provider_resukisu_desc": "Форк SukiSU Ultra с доп. правками и стабильностью, автор ReSukiSU",
   "provider_sukisu": "SukiSU Ultra",
-  "provider_sukisu_desc": "Усиленный форк KernelSU с KPM-загрузчиком, автор ShirkNeko",
+  "provider_sukisu_desc": "Форк KernelSU с некоторыми интересными изменениями, автор ShirkNeko",
   "reboot_bootloader": "Перезагрузка в Bootloader",
   "reboot_bootloader_desc": "",
   "reboot_confirm_body": "Устройство перезагрузится в режим {target}.",
