@@ -7122,47 +7122,77 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn sysupdate_rescue_folder_step(&self) -> Element<'_, Message> {
-        let dash = "—".to_string();
-        let folder_path = self
-            .sysupdate
-            .rescue_folder
-            .clone()
-            .unwrap_or_else(|| dash.clone());
-        let loader_status = self
+        // Matches the flash / root / unroot folder-step pattern:
+        // title + 280-wide card button + colored status path + recent
+        // chips. Rescue-specific: an extra muted line below the status
+        // showing whether the EDL loader (`xbl_s_devprg_ns.melf`) was
+        // detected inside the picked folder.
+        let selected = self.sysupdate.rescue_folder.is_some();
+        let status = if let Some(p) = &self.sysupdate.rescue_folder {
+            p.clone()
+        } else {
+            self.t("flash_folder_placeholder").to_string()
+        };
+        let loader_found = self
             .sysupdate
             .rescue_folder
             .as_deref()
             .map(std::path::Path::new)
             .and_then(find_edl_loader)
             .map(|p| p.display().to_string());
-        let status_text = match &loader_status {
+        let loader_text = match &loader_found {
             Some(p) => self.t("rescue_loader_found").replace("{path}", p),
             None => self.t("rescue_loader_missing").to_string(),
         };
-        let browse_btn = button(
-            text(self.t("btn_browse_folder").to_string())
-                .size(13)
-                .style(on_surface_style)
-                .center(),
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_folder").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("rescue_folder_subtitle").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
         )
         .on_press(Message::SysRescueSelectFolder)
-        .padding([8, 20])
-        .style(neutral_pill_btn_style);
+        .padding(0)
+        .style(|t: &Theme, _s| button::Style {
+            background: None,
+            text_color: pal_of(t).on_surface,
+            ..Default::default()
+        });
+        let chips = self.recent_chips(
+            &self.recent_paths.folders,
+            |p| Message::SysRescueFolderChosen(Some(p)),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("rescue_folder_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
-            text(self.t("rescue_folder_subtitle").to_string())
-                .size(13)
-                .style(muted_style)
+            btn,
+            text(status)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
                 .center(),
-            widget::rule::horizontal(1),
-            info_kv_center(self.t("rescue_folder_label"), &folder_path),
-            text(status_text).size(12).style(muted_style).center(),
-            Space::new().height(8),
-            browse_btn,
+            text(loader_text).size(11).style(muted_style).center(),
+            chips,
         ]
-        .spacing(10)
+        .spacing(14)
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
