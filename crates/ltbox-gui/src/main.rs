@@ -9765,6 +9765,12 @@ fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 
 // Device portrait handles — built once, cloned each render.
 // Unknown models fall through to `GENERIC_TABLET_SVG_HANDLE`.
+static TB320FC_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/tb320fc.png").as_slice(),
+        )
+    });
 static TB321FU_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
     std::sync::LazyLock::new(|| {
         iced::widget::image::Handle::from_bytes(
@@ -9775,6 +9781,12 @@ static TB322FC_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
     std::sync::LazyLock::new(|| {
         iced::widget::image::Handle::from_bytes(
             include_bytes!("../assets/devices/tb322fc.png").as_slice(),
+        )
+    });
+static TB520FU_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/tb520fu.png").as_slice(),
         )
     });
 static TB710FU_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
@@ -9798,8 +9810,10 @@ enum DevicePortrait {
 
 fn device_portrait(model: &str) -> DevicePortrait {
     match model.to_uppercase().as_str() {
+        "TB320FC" => DevicePortrait::Png(TB320FC_HANDLE.clone()),
         "TB321FU" => DevicePortrait::Png(TB321FU_HANDLE.clone()),
         "TB322FC" => DevicePortrait::Png(TB322FC_HANDLE.clone()),
+        "TB520FU" => DevicePortrait::Png(TB520FU_HANDLE.clone()),
         "TB710FU" => DevicePortrait::Png(TB710FU_HANDLE.clone()),
         _ => DevicePortrait::Svg(GENERIC_TABLET_SVG_HANDLE.clone()),
     }
