@@ -19,7 +19,7 @@ LTBox exploits this to enable:
 - 🌍 **Region conversion** — switch between PRC (China) and ROW (Global) firmware
 - 🔓 **Root** — install Magisk, KernelSU, APatch, and more on a locked bootloader
 - 🛡️ **Anti-rollback bypass** — flash older/newer firmware without rollback protection blocking you
-- ⚡ **Partition flashing** — read/write individual partitions via EDL (Emergency Download) mode
+- ⚡ **Partition flashing** — read/write partitions via EDL (Emergency Download) mode
 
 ### Supported Devices
 
@@ -36,57 +36,32 @@ LTBox exploits this to enable:
 
 ## 🚀 Quick Start
 
-1. Download the [latest release](../../releases/latest) and extract it (no spaces or special chars in path)
-2. Double-click **`start.bat`**
-3. Follow the on-screen menu
+1. Download the [latest release](../../releases/latest) and extract the zip (no spaces or special chars in the path)
+2. Double-click **`ltbox.exe`**
+3. Pick a task from the sidebar and follow the wizard
+
+Windows x86_64 and aarch64 builds are published currently.
 
 ---
 
 ## 📋 What Can It Do?
 
-### Main Menu
+The app is a sidebar-driven GUI. Each entry opens a guided wizard.
 
-| Option | What it does |
+| Sidebar entry | What it does |
 |---|---|
-| **Install firmware (Wipe/Keep)** | All-in-one: convert region → patch → flash. Wipe or keep data. |
-| **Disable/Enable System Updates** | Prevent or restore OTA updates via ADB |
-| **Rescue from Boot Failure** | Fix boot issues after OTA on a converted device |
-| **Root device** | Root with KernelSU / KernelSU Next / SukiSU / ReSukiSU / APatch / FolkPatch |
-| **Unroot device** | Restore stock boot image from backup |
-| **Settings** | Preset, region, rollback, language, skip ADB |
-| **Advanced** | Individual steps — see below |
-
-### Root Providers
-
-**Magisk variants** — classic ramdisk injection
-
-| Provider |
-|---|
-| Magisk |
-| Other Forks |
-
-
-**KernelSU variants** — LKM (loadable kernel module) or GKI (custom kernel) mode
-
-| Provider | LKM | GKI |
-|---|---|---|
-| KernelSU | ✅ | ✅ |
-| KernelSU Next | ✅ | ✅ |
-| SukiSU Ultra | ✅ | ✅ |
-| ReSukiSU | ✅ | ✅ |
-
-**APatch variants** — direct boot image patch (GKI)
-
-| Provider |
-|---|
-| APatch |
-| FolkPatch |
-
-> Y700 2nd Gen only supports KernelSU variants in GKI mode and APatch variants.
+| **Dashboard** | Device status, region, recent folders, one-click actions |
+| **Flash Firmware** | All-in-one: region → target → wipe/keep → flash. Drives region conversion + rollback handling end-to-end. |
+| **System Update** | Disable or enable OTA updates; **Boot Recovery** for rescuing a device that failed to boot after an OTA on a converted region |
+| **Root Device** | Root with KernelSU / KernelSU Next / SukiSU / ReSukiSU / APatch / FolkPatch / Magisk (+ forks) |
+| **Unroot Device** | Restore the stock boot image from a prior Root backup |
+| **Reboot** | Jump to System, Recovery, Bootloader, or EDL |
+| **Advanced** | Individual pipeline steps for manual control — see below |
+| **Settings** | Language (en/ko/zh/ru), theme, default region, rollback preset, ADB skip |
 
 ### Advanced Menu
 
-Step-by-step manual control:
+Step-by-step manual control over the pipeline:
 
 - Convert region (vendor_boot + vbmeta rebuild)
 - Dump / patch / flash devinfo & persist
@@ -96,6 +71,7 @@ Step-by-step manual control:
 - Flash firmware or selected partitions via EDL
 - Rebuild vbmeta for modified images
 - Sign & flash custom recovery
+- Inspect `.img` AVB metadata
 
 ---
 
@@ -103,17 +79,24 @@ Step-by-step manual control:
 
 **Region conversion** patches bytes in `vendor_boot.img` (PRC↔ROW region identifiers), then re-signs the image with AOSP test keys and rebuilds `vbmeta.img` so the bootloader accepts it.
 
-**Rooting** unpacks `boot.img` or `init_boot.img`, injects root provider files into the ramdisk (CPIO archive), repacks, and re-signs with the original AVB keys. The device boots the modified image because the bootloader trusts the test key signature.
+**Rooting** unpacks `boot.img` or `init_boot.img`, injects root provider files into the ramdisk, repacks, and re-signs with the original AVB keys. The device boots the modified image because the bootloader trusts the test key signature.
 
 **Anti-rollback bypass** reads the device's current rollback index via Fastboot, then re-signs the target firmware images with a matching index so the bootloader doesn't reject them as "older" builds.
 
-**All flashing** goes through EDL (Qualcomm Emergency Download) mode — LTBox handles the full flow: ADB → Fastboot → EDL transition, programmer upload, partition read/write, and reset.
+**All flashing** goes through EDL mode — LTBox handles the full flow: ADB → Fastboot → EDL transition, programmer upload, partition read/write, and reset.
 
 ---
 
-## 🛠️ Utilities
+## 🏗️ Project Layout
 
-**`info_image.bat`** — drag and drop `.img` files or folders to view AVB metadata.
+| Crate | Role |
+|---|---|
+| `ltbox-core` | Primitives — errors, settings, logging, GitHub/nightly.link clients, crypto, XML decrypt |
+| `ltbox-device` | Transport layer — ADB, Fastboot, EDL / QDL, serialport discovery |
+| `ltbox-patch` | Image pipeline — AVB, boot image ramdisk patching, region conversion, rollback, root provider integration |
+| `ltbox-gui` | `iced` desktop app — the `ltbox.exe` binary |
+
+Built and signed in CI via `cargo build --release` on `windows-latest` for both `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets.
 
 ---
 
