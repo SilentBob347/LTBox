@@ -408,6 +408,26 @@ impl EdlSession {
         Ok(())
     }
 
+    /// Erase a sector range. Used by the Flash Partitions wizard when
+    /// the user flags a row as "erase". `start_sector` is passed through
+    /// Firehose as a string so negative offsets (e.g. "-1") stay valid.
+    pub fn erase_partition_at(
+        &mut self,
+        part_name: &str,
+        lun: u8,
+        start_sector: &str,
+        num_sectors: usize,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        log.push(format!(
+            "[EDL] erase {part_name} on LUN {lun} @ {start_sector} ({num_sectors} sectors)"
+        ));
+        qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
+            .map_err(|e| EdlError::Session(format!("Erase {part_name} failed: {e}")))?;
+        log.push(format!("[EDL] erased {part_name}"));
+        Ok(())
+    }
+
     /// Flash image to a partition (GPT-by-name).
     pub fn flash_partition(
         &mut self,

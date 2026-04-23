@@ -1928,27 +1928,55 @@ impl SysUpdateWizard {
 // Flash Partitions wizard state (Advanced → Flash Partitions)
 // =========================================================================
 
+/// Tri-state row action — clicking the checkbox cycles through these
+/// in order. Flash requires a `file_path`; Erase wipes the sector range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlashRowState {
+    Unchecked,
+    Flash,
+    Erase,
+}
+
+impl Default for FlashRowState {
+    fn default() -> Self {
+        Self::Unchecked
+    }
+}
+
+impl FlashRowState {
+    fn cycle(self) -> Self {
+        match self {
+            Self::Unchecked => Self::Flash,
+            Self::Flash => Self::Erase,
+            Self::Erase => Self::Unchecked,
+        }
+    }
+}
+
+/// One GPT entry surfaced in the wizard table. `file_path` is populated
+/// when the user double-clicks the row and picks an image file.
 #[derive(Debug, Clone)]
 struct FlashPartRow {
+    lun: u8,
     label: String,
-    filename: String,
-    lun: String,
-    start_sector: String,
-    size_kb: String,
-    selected: bool,
+    start_sector: u64,
+    num_sectors: u64,
+    size_bytes: u64,
+    file_path: Option<String>,
+    state: FlashRowState,
 }
 
 #[derive(Default)]
 struct FlashPartsWizard {
-    step: usize, // 0=Folder, 1=Select, 2=Confirm, 3=Exec
-    folder_path: Option<String>,
+    step: usize, // 0=Loader, 1=Select, 2=Confirm, 3=Exec
+    loader_path: Option<String>,
     rows: Vec<FlashPartRow>,
-    /// Set only when XML parsing fails.
-    parse_error: Option<String>,
+    scanning: bool,
+    scan_error: Option<String>,
 }
 
 const FLASH_PARTS_STEPS: &[&str] = &[
-    "flash_step_folder",
+    "flash_parts_step_loader",
     "flash_parts_step_select",
     "flash_step_confirm",
     "flash_step_flash",
@@ -1970,15 +1998,36 @@ impl FlashPartsWizard {
     }
     fn can_next(&self) -> bool {
         match self.step {
-            0 => self.folder_path.is_some() && self.parse_error.is_none() && !self.rows.is_empty(),
-            1 => self.rows.iter().any(|r| r.selected),
+            0 => self.loader_path.is_some() && !self.scanning,
+            1 => self.rows.iter().any(|r| match r.state {
+                FlashRowState::Flash => r.file_path.is_some(),
+                FlashRowState::Erase => true,
+                FlashRowState::Unchecked => false,
+            }),
             2 => true,
             _ => false,
         }
     }
-    fn selected_rows(&self) -> Vec<FlashPartRow> {
-        self.rows.iter().filter(|r| r.selected).cloned().collect()
+    fn active_rows(&self) -> Vec<FlashPartRow> {
+        self.rows
+            .iter()
+            .filter(|r| match r.state {
+                FlashRowState::Flash => r.file_path.is_some(),
+                FlashRowState::Erase => true,
+                FlashRowState::Unchecked => false,
+            })
+            .cloned()
+            .collect()
     }
+}
+
+/// Scan-phase result carried in a single message. Same shape as the
+/// DumpParts variant but with the Flash row type.
+#[derive(Debug, Clone, Default)]
+struct FlashPartsScanResult {
+    logs: Vec<String>,
+    rows: Vec<FlashPartRow>,
+    error: Option<String>,
 }
 
 // =========================================================================
@@ -2441,13 +2490,18 @@ enum Message {
     DriverCheckDone(ltbox_device::windows_driver::DriverStatus),
     InstallDrivers,
     InstallDriversDone(Result<Vec<String>, String>),
-    // Advanced → Flash Partitions wizard
-    FlashPartsSelectFolder,
-    FlashPartsFolderChosen(Option<String>),
+    // Advanced → Flash Partitions wizard (loader-only: scan GPT, pick
+    // per-row images via double-click, tri-state flash/erase).
+    FlashPartsSelectLoader,
+    FlashPartsLoaderChosen(Option<String>),
     FlashPartsToggleRow(usize),
+    FlashPartsPickRowFile(usize),
+    FlashPartsRowFileChosen(usize, Option<String>),
     FlashPartsNext,
     FlashPartsBack,
     FlashPartsClose,
+    FlashPartsScanStart,
+    FlashPartsScanDone(FlashPartsScanResult),
     FlashPartsExecStart,
     FlashPartsExecDone(Vec<String>),
     DumpPartsSelectLoader,
@@ -5669,97 +5723,125 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                     Message::InstallDriversDone,
                 );
             }
-            Message::FlashPartsSelectFolder => {
-                return pick_folder_task(Message::FlashPartsFolderChosen);
+            Message::FlashPartsSelectLoader => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_string_lossy().to_string())
+                    },
+                    Message::FlashPartsLoaderChosen,
+                );
             }
-            Message::FlashPartsFolderChosen(path) => {
-                if let Some(folder) = path {
-                    self.flash_parts.folder_path = Some(folder.clone());
-                    self.flash_parts.rows.clear();
-                    self.flash_parts.parse_error = None;
-
-                    let dir = std::path::Path::new(&folder);
-                    // Gather every `rawprogram*.xml` in the folder.
-                    let mut xml_paths: Vec<std::path::PathBuf> = Vec::new();
-                    if let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            let name = p
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_lowercase())
-                                .unwrap_or_default();
-                            if name.starts_with("rawprogram") && name.ends_with(".xml") {
-                                xml_paths.push(p);
-                            }
-                        }
-                    }
-                    if xml_paths.is_empty() {
-                        self.flash_parts.parse_error =
-                            Some("No rawprogram*.xml found in folder".to_string());
-                    } else {
-                        let refs: Vec<&std::path::Path> =
-                            xml_paths.iter().map(|p| p.as_path()).collect();
-                        match ltbox_core::xml_catalog::XmlCatalog::from_paths(&refs) {
-                            Ok(cat) => {
-                                for r in cat.records() {
-                                    // Skip entries with no filename — those are GPT / erase
-                                    // placeholders, not flashable images.
-                                    if r.filename.is_empty() {
-                                        continue;
-                                    }
-                                    self.flash_parts.rows.push(FlashPartRow {
-                                        label: r.label.clone(),
-                                        filename: r.filename.clone(),
-                                        lun: r.lun.clone().unwrap_or_default(),
-                                        start_sector: r.start_sector.clone().unwrap_or_default(),
-                                        size_kb: r.size_in_kb.clone().unwrap_or_default(),
-                                        selected: false,
-                                    });
-                                }
-                                if self.flash_parts.rows.is_empty() {
-                                    self.flash_parts.parse_error = Some(
-                                        "rawprogram XML contained no flashable partitions"
-                                            .to_string(),
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                self.flash_parts.parse_error = Some(format!("{e}"));
-                            }
-                        }
-                    }
+            Message::FlashPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    self.flash_parts.loader_path = Some(p);
+                    self.flash_parts.scan_error = None;
                 }
             }
             Message::FlashPartsToggleRow(idx) => {
                 if let Some(row) = self.flash_parts.rows.get_mut(idx) {
-                    row.selected = !row.selected;
+                    row.state = row.state.cycle();
                 }
             }
-            Message::FlashPartsNext => {
-                if self.flash_parts.step == 2 {
-                    return self.update(Message::FlashPartsExecStart);
-                }
-                self.flash_parts.next();
+            Message::FlashPartsPickRowFile(idx) => {
+                return Task::perform(
+                    async move {
+                        let file = rfd::AsyncFileDialog::new()
+                            .add_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_string_lossy().to_string());
+                        (idx, file)
+                    },
+                    |(idx, path)| Message::FlashPartsRowFileChosen(idx, path),
+                );
             }
+            Message::FlashPartsRowFileChosen(idx, path) => {
+                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                    if let Some(p) = path {
+                        row.file_path = Some(p);
+                        // Picking a file implicitly flips the row to Flash
+                        // so the user doesn't have to also cycle the box.
+                        row.state = FlashRowState::Flash;
+                    }
+                }
+            }
+            Message::FlashPartsNext => match self.flash_parts.step {
+                0 => return self.update(Message::FlashPartsScanStart),
+                1 => self.flash_parts.next(), // → Confirm
+                2 => return self.update(Message::FlashPartsExecStart),
+                _ => {}
+            },
             Message::FlashPartsBack => self.flash_parts.back(),
             Message::FlashPartsClose => {
                 self.flash_parts_open = false;
                 self.flash_parts.reset();
             }
+            Message::FlashPartsScanStart => {
+                self.begin_op(View::Flash);
+                self.error_msg = None;
+                self.flash_parts.scanning = true;
+                self.flash_parts.scan_error = None;
+                self.flash_parts.rows.clear();
+                let conn = self.connection;
+                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
+                self.log_lines
+                    .push("[FlashParts] Scanning partitions...".to_string());
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || flash_parts_scan(conn, loader))
+                                .unwrap_or_else(|e| FlashPartsScanResult {
+                                    logs: vec![format!("[FlashParts] heavy thread error: {e}")],
+                                    rows: Vec::new(),
+                                    error: Some(format!("{e}")),
+                                })
+                        })
+                        .await
+                        .unwrap_or_else(|_| FlashPartsScanResult {
+                            logs: vec!["[FlashParts] scan task panicked".to_string()],
+                            rows: Vec::new(),
+                            error: Some("scan task panicked".to_string()),
+                        })
+                    },
+                    Message::FlashPartsScanDone,
+                );
+            }
+            Message::FlashPartsScanDone(result) => {
+                self.log_extend(result.logs);
+                self.flash_parts.scanning = false;
+                self.flash_parts.rows = result.rows;
+                self.flash_parts.scan_error = result.error.clone();
+                self.end_op();
+                if result.error.is_none() && !self.flash_parts.rows.is_empty() {
+                    self.flash_parts.next(); // → Select
+                }
+            }
             Message::FlashPartsExecStart => {
                 self.flash_parts.next(); // advance to Exec screen
                 self.begin_op(View::Flash);
                 self.error_msg = None;
-                let folder = self.flash_parts.folder_path.clone().unwrap_or_default();
-                let rows = self.flash_parts.selected_rows();
-                let conn = self.connection;
-                self.log_lines
-                    .push(format!("[FlashParts] Flashing {} partition(s)", rows.len()));
+                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
+                let rows = self.flash_parts.active_rows();
+                let flash_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Flash)
+                    .count();
+                let erase_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Erase)
+                    .count();
+                self.log_lines.push(format!(
+                    "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
+                ));
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
                             ltbox_core::runtime::run_heavy(move || {
-                                flash_parts_execute(conn, folder, rows)
+                                flash_parts_execute(loader, rows)
                             })
                             .unwrap_or_else(|e| {
                                 vec![format!("[FlashParts] heavy thread error: {e}")]
@@ -9122,19 +9204,20 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         let step_bar = wizard_step_bar(&step_labels, self.flash_parts.step);
 
         let body: Element<'_, Message> = match self.flash_parts.step {
-            0 => self.flash_parts_folder_step(),
+            0 => self.flash_parts_loader_step(),
             1 => self.flash_parts_select_step(),
             2 => self.flash_parts_confirm_step(),
             _ => self.exec_step_view(),
         };
 
         let nav = if self.flash_parts.step < 3 {
-            let is_start = self.flash_parts.step == 2;
-            let label = if is_start {
-                self.t("btn_start").to_string()
-            } else {
-                self.t("btn_next").to_string()
+            let label = match self.flash_parts.step {
+                0 => self.t("btn_scan").to_string(),
+                1 => self.t("btn_next").to_string(),
+                2 => self.t("btn_start").to_string(),
+                _ => self.t("btn_next").to_string(),
             };
+            let is_start = self.flash_parts.step == 2 || self.flash_parts.step == 0;
             let can = self.flash_parts.can_next() && !(self.busy && is_start);
             wizard_nav_generic(
                 true,
@@ -9158,20 +9241,20 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             .into()
     }
 
-    fn flash_parts_folder_step(&self) -> Element<'_, Message> {
-        let selected = self.flash_parts.folder_path.is_some();
-        let status = match (&self.flash_parts.folder_path, &self.flash_parts.parse_error) {
+    fn flash_parts_loader_step(&self) -> Element<'_, Message> {
+        let selected = self.flash_parts.loader_path.is_some();
+        let status = match (&self.flash_parts.loader_path, &self.flash_parts.scan_error) {
+            (_, Some(e)) => format!("⚠ {e}"),
             (Some(p), None) => p.clone(),
-            (Some(_), Some(e)) => format!("⚠ {e}"),
-            _ => self.t("flash_folder_placeholder").to_string(),
+            _ => self.t("dump_parts_loader_placeholder").to_string(),
         };
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_folder").to_string())
+                    text(self.t("btn_browse_file").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("flash_parts_folder_desc").to_string())
+                    text(self.t("dump_parts_loader_desc").to_string())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -9184,13 +9267,13 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::FlashPartsSelectFolder)
+        .on_press(Message::FlashPartsSelectLoader)
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
             ..Default::default()
         });
-        let status_color = if self.flash_parts.parse_error.is_some() {
+        let status_color = if self.flash_parts.scan_error.is_some() {
             iced::Color::from_rgb(0.9, 0.2, 0.2)
         } else if selected {
             GREEN
@@ -9198,7 +9281,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             LABEL
         };
         let col = column![
-            text(self.t("flash_folder_title").to_string())
+            text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
@@ -9231,11 +9314,11 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 .size(11)
                 .width(Length::FillPortion(2))
                 .style(muted_style),
-            text(self.t("flash_parts_col_size").to_string())
+            text(self.t("dump_parts_col_size").to_string())
                 .size(11)
                 .width(Length::FillPortion(2))
                 .style(muted_style),
-            text(self.t("flash_parts_col_filename").to_string())
+            text(self.t("flash_parts_col_file").to_string())
                 .size(11)
                 .width(Length::FillPortion(3))
                 .style(muted_style),
@@ -9245,29 +9328,56 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         .align_y(iced::Alignment::Center);
 
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
-        for (idx, row) in self.flash_parts.rows.iter().enumerate() {
-            let cb = iced::widget::checkbox(row.selected)
-                .on_toggle(move |_| Message::FlashPartsToggleRow(idx));
+        for (idx, r) in self.flash_parts.rows.iter().enumerate() {
+            // Tri-state indicator: ☐ / ☑ / ⛔
+            let marker: Element<'_, Message> = match r.state {
+                FlashRowState::Unchecked => text("☐").size(16).style(muted_style).into(),
+                FlashRowState::Flash => text("☑").size(16).color(GREEN).into(),
+                FlashRowState::Erase => text("⛔")
+                    .size(16)
+                    .color(iced::Color::from_rgb(0.9, 0.2, 0.2))
+                    .into(),
+            };
+            let marker_btn = button(container(marker).width(32).center_x(Length::Fill))
+                .padding(0)
+                .on_press(Message::FlashPartsToggleRow(idx))
+                .style(|_t: &Theme, _s| button::Style {
+                    background: None,
+                    ..Default::default()
+                });
+
+            // Filename column: short display only.
+            let file_disp = r
+                .file_path
+                .as_ref()
+                .map(|p| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.clone())
+                })
+                .unwrap_or_default();
+
             let data_row = iced::widget::row![
-                container(cb).width(32),
-                text(row.lun.clone()).size(12).width(50),
-                text(row.label.clone())
-                    .size(12)
-                    .width(Length::FillPortion(3)),
-                text(row.start_sector.clone())
+                container(marker_btn).width(32),
+                text(r.lun.to_string()).size(12).width(50),
+                text(r.label.clone()).size(12).width(Length::FillPortion(3)),
+                text(r.start_sector.to_string())
                     .size(12)
                     .width(Length::FillPortion(2)),
-                text(row.size_kb.clone())
+                text(format_bytes_auto(r.size_bytes))
                     .size(12)
                     .width(Length::FillPortion(2)),
-                text(row.filename.clone())
-                    .size(12)
-                    .width(Length::FillPortion(3)),
+                text(file_disp).size(12).width(Length::FillPortion(3)),
             ]
             .spacing(8)
             .padding([4, 10])
             .align_y(iced::Alignment::Center);
-            list = list.push(data_row);
+
+            // Whole row is a double-click target for the file picker.
+            let clickable = iced::widget::mouse_area(data_row)
+                .on_double_click(Message::FlashPartsPickRowFile(idx));
+            list = list.push(clickable);
         }
 
         let scrolled = scrollable(list).height(Length::Fill).width(Length::Fill);
@@ -9294,16 +9404,17 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     }
 
     fn flash_parts_confirm_step(&self) -> Element<'_, Message> {
-        let selected = self.flash_parts.selected_rows();
-        let mut list = column![].spacing(4);
-        for r in &selected {
-            list = list.push(
-                text(format!("• {} ← {}", r.label, r.filename))
-                    .size(12)
-                    .style(muted_style),
-            );
-        }
-        let col = column![
+        let rows = self.flash_parts.active_rows();
+        let erase_rows: Vec<&FlashPartRow> = rows
+            .iter()
+            .filter(|r| r.state == FlashRowState::Erase)
+            .collect();
+        let flash_rows: Vec<&FlashPartRow> = rows
+            .iter()
+            .filter(|r| r.state == FlashRowState::Flash)
+            .collect();
+
+        let mut col = column![
             text(self.t("flash_parts_confirm_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
@@ -9312,13 +9423,78 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 .style(muted_style)
                 .center(),
             widget::rule::horizontal(1),
-            scrollable(list).height(Length::Fill).width(Length::Fill),
         ]
         .spacing(10)
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
-        container(col)
+
+        // ERASE block first, red and loud.
+        if !erase_rows.is_empty() {
+            let red = iced::Color::from_rgb(0.9, 0.2, 0.2);
+            let mut erase_col = column![
+                text(self.t("flash_parts_confirm_erase_warn").to_string())
+                    .size(14)
+                    .color(red)
+            ]
+            .spacing(4);
+            for r in &erase_rows {
+                erase_col = erase_col.push(
+                    text(format!(
+                        "⛔ {} (LUN {}, {})",
+                        r.label,
+                        r.lun,
+                        format_bytes_auto(r.size_bytes)
+                    ))
+                    .size(13)
+                    .color(red),
+                );
+            }
+            let erase_card =
+                container(erase_col)
+                    .padding(14)
+                    .style(move |t: &Theme| container::Style {
+                        background: Some(iced::Background::Color(with_alpha(red, 0.12))),
+                        border: iced::Border {
+                            color: red,
+                            width: 1.0,
+                            radius: 8.0.into(),
+                        },
+                        text_color: Some(pal_of(t).on_surface),
+                        ..Default::default()
+                    });
+            col = col.push(erase_card);
+        }
+
+        // FLASH block.
+        if !flash_rows.is_empty() {
+            let mut flash_col = column![
+                text(self.t("flash_parts_confirm_flash_hdr").to_string())
+                    .size(14)
+                    .style(on_surface_style)
+            ]
+            .spacing(4);
+            for r in &flash_rows {
+                let fname = r
+                    .file_path
+                    .as_ref()
+                    .map(|p| {
+                        std::path::Path::new(p)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| p.clone())
+                    })
+                    .unwrap_or_default();
+                flash_col = flash_col.push(
+                    text(format!("• {} (LUN {}) ← {}", r.label, r.lun, fname))
+                        .size(12)
+                        .style(muted_style),
+                );
+            }
+            col = col.push(container(flash_col).padding(14).width(Length::Fill));
+        }
+
+        container(scrollable(col).height(Length::Fill).width(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -10010,76 +10186,80 @@ fn adv_grid_btn<'a>(item: AdvAction, label: &str) -> Element<'a, Message> {
 
 /// Advanced → Flash Partitions end-to-end. Routes to EDL, opens an
 /// `EdlSession`, flashes each selected image, resets.
-fn flash_parts_execute(
-    conn: ConnectionStatus,
-    folder: String,
-    rows: Vec<FlashPartRow>,
-) -> Vec<String> {
+/// Scan phase mirror of `dump_parts_scan`. Transitions to EDL, opens
+/// Sahara, reads GPTs on LUN 0..=5, then bounces back to EDL so the
+/// exec pass can reopen without a power-cycle.
+fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsScanResult {
     let mut log = Vec::new();
-    let dir = std::path::PathBuf::from(&folder);
-
-    match conn {
-        ConnectionStatus::Edl => {
-            log.push("[FlashParts] Device already in EDL mode".to_string());
-        }
-        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
-            log.push("[FlashParts] $ adb reboot edl".to_string());
-            let mut mgr = ltbox_device::adb::AdbManager::new();
-            if let Err(e) = mgr.reboot("edl") {
-                log.push(format!("[FlashParts] adb reboot edl failed: {e}"));
-                log.push(
-                    "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
-                        .to_string(),
-                );
-                return log;
-            }
-        }
-        ConnectionStatus::Fastboot => {
-            log.push("[FlashParts] $ fastboot oem edl".to_string());
-            match ltbox_device::fastboot::FastbootDevice::open() {
-                Ok(mut dev) => {
-                    if let Err(e) = dev.oem_edl() {
-                        log.push(format!("[FlashParts] fastboot oem edl failed: {e}"));
-                        log.push(
-                            "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
-                                .to_string(),
-                        );
-                        return log;
-                    }
-                }
-                Err(e) => {
-                    log.push(format!("[FlashParts] Fastboot device open failed: {e}"));
-                    log.push(
-                        "[FlashParts] Reboot the device to EDL (9008) mode manually and retry."
-                            .to_string(),
-                    );
-                    return log;
-                }
-            }
-        }
-        ConnectionStatus::AdbUnauthorized => {
-            log.push(
-                "[FlashParts] USB debugging is not authorized — accept the prompt on the device and retry."
-                    .to_string(),
-            );
-            return log;
-        }
-        ConnectionStatus::None => {
-            log.push("[FlashParts] No device connected. Connect the device (ADB / Fastboot / EDL) and retry.".to_string());
-            return log;
-        }
+    if ensure_edl(conn, "FlashParts", &mut log).is_err() {
+        return FlashPartsScanResult {
+            logs: log,
+            rows: Vec::new(),
+            error: Some("Could not transition device to EDL".to_string()),
+        };
     }
 
-    let loader = find_edl_loader(&dir).or_else(|| dir.parent().and_then(find_edl_loader));
-    let loader = match loader {
-        Some(l) => l,
-        None => {
-            log.push("[FlashParts] xbl_s_devprg_ns.melf not found in the folder".to_string());
-            return log;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let loader = std::path::PathBuf::from(&loader_path);
+    let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push(format!("[FlashParts] EDL session open failed: {e}"));
+            return FlashPartsScanResult {
+                logs: log,
+                rows: Vec::new(),
+                error: Some(format!("EDL session open failed: {e}")),
+            };
         }
     };
 
+    let parts = match session.scan_partitions(0..=5, &mut log) {
+        Ok(p) => p,
+        Err(e) => {
+            log.push(format!("[FlashParts] scan failed: {e}"));
+            let _ = session.reset_to_edl(&mut log);
+            return FlashPartsScanResult {
+                logs: log,
+                rows: Vec::new(),
+                error: Some(format!("scan failed: {e}")),
+            };
+        }
+    };
+
+    let rows: Vec<FlashPartRow> = parts
+        .into_iter()
+        .map(|p| FlashPartRow {
+            lun: p.lun,
+            label: p.name,
+            start_sector: p.start_sector,
+            num_sectors: p.num_sectors,
+            size_bytes: p.size_bytes,
+            file_path: None,
+            state: FlashRowState::Unchecked,
+        })
+        .collect();
+
+    if let Err(e) = session.reset_to_edl(&mut log) {
+        log.push(format!("[FlashParts] reset_to_edl after scan failed: {e}"));
+    }
+
+    log.push(format!(
+        "[FlashParts] Scan complete — {} partitions",
+        rows.len()
+    ));
+    FlashPartsScanResult {
+        logs: log,
+        rows,
+        error: None,
+    }
+}
+
+/// Exec phase. Reopens the EDL session, walks the active rows, flashing
+/// or erasing each, then reboots to system.
+fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<String> {
+    let mut log = Vec::new();
     std::thread::sleep(std::time::Duration::from_secs(2));
+    let loader = std::path::PathBuf::from(&loader_path);
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
@@ -10089,21 +10269,57 @@ fn flash_parts_execute(
     };
 
     for row in &rows {
-        let img_path = dir.join(&row.filename);
-        if !img_path.exists() {
-            log.push(format!(
-                "[FlashParts] Skipping {}: image {} missing",
-                row.label, row.filename
-            ));
-            continue;
-        }
-        let lun: u8 = row.lun.parse().unwrap_or(0);
-        log.push(format!(
-            "[FlashParts] Flashing {} from {} (LUN {lun})",
-            row.label, row.filename
-        ));
-        if let Err(e) = session.flash_partition(&row.label, &img_path, 0, lun, &mut log) {
-            log.push(format!("[FlashParts] {} failed: {e}", row.label));
+        match row.state {
+            FlashRowState::Flash => {
+                let Some(path) = row.file_path.as_ref() else {
+                    log.push(format!(
+                        "[FlashParts] Skipping {}: no file selected",
+                        row.label
+                    ));
+                    continue;
+                };
+                let img = std::path::Path::new(path);
+                if !img.exists() {
+                    log.push(format!(
+                        "[FlashParts] Skipping {}: image {} missing",
+                        row.label, path
+                    ));
+                    continue;
+                }
+                log.push(format!(
+                    "[FlashParts] Flashing {} ← {} (LUN {})",
+                    row.label,
+                    img.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.clone()),
+                    row.lun
+                ));
+                if let Err(e) = session.flash_partition_at(
+                    &row.label,
+                    img,
+                    row.lun,
+                    &row.start_sector.to_string(),
+                    &mut log,
+                ) {
+                    log.push(format!("[FlashParts] {} failed: {e}", row.label));
+                }
+            }
+            FlashRowState::Erase => {
+                log.push(format!(
+                    "[FlashParts] Erasing {} (LUN {}, {} sectors)",
+                    row.label, row.lun, row.num_sectors
+                ));
+                if let Err(e) = session.erase_partition_at(
+                    &row.label,
+                    row.lun,
+                    &row.start_sector.to_string(),
+                    row.num_sectors as usize,
+                    &mut log,
+                ) {
+                    log.push(format!("[FlashParts] erase {} failed: {e}", row.label));
+                }
+            }
+            FlashRowState::Unchecked => {}
         }
     }
 
@@ -10666,21 +10882,29 @@ mod tests {
     fn flash_parts_wizard_requires_selection() {
         let mut w = FlashPartsWizard::default();
         assert!(!w.can_next());
-        w.folder_path = Some("/tmp".to_string());
-        w.rows.push(FlashPartRow {
-            label: "boot_a".into(),
-            filename: "boot.img".into(),
-            lun: "0".into(),
-            start_sector: "0".into(),
-            size_kb: "4096".into(),
-            selected: false,
-        });
-        // Still false — at least one row must be ticked.
-        assert!(w.can_next()); // step 0: folder + rows present
+        w.loader_path = Some("/tmp/xbl.melf".to_string());
+        // Step 0 only needs a loader picked.
+        assert!(w.can_next());
         w.next();
         assert_eq!(w.step, 1);
-        assert!(!w.can_next()); // step 1: no selection yet
-        w.rows[0].selected = true;
+        // Step 1: need at least one row with a resolvable action.
+        w.rows.push(FlashPartRow {
+            lun: 0,
+            label: "boot_a".into(),
+            start_sector: 0,
+            num_sectors: 8192,
+            size_bytes: 4 * 1024 * 1024,
+            file_path: None,
+            state: FlashRowState::Unchecked,
+        });
+        assert!(!w.can_next()); // Unchecked doesn't count
+        w.rows[0].state = FlashRowState::Flash;
+        assert!(!w.can_next()); // Flash w/o file still invalid
+        w.rows[0].file_path = Some("/tmp/boot.img".into());
+        assert!(w.can_next());
+        // Erase alone is enough — no file required.
+        w.rows[0].state = FlashRowState::Erase;
+        w.rows[0].file_path = None;
         assert!(w.can_next());
     }
 }
