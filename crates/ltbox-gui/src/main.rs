@@ -335,7 +335,6 @@ enum AdvAction {
     PatchArb,
     WriteArb,
     ConvertXml,
-    FlashFirmware,
     DumpPartitions,
     FlashPartitions,
     RebuildVbmeta,
@@ -352,7 +351,6 @@ impl AdvAction {
             Self::PatchArb => "adv_patch_arb",
             Self::WriteArb => "adv_write_arb",
             Self::ConvertXml => "adv_convert_xml",
-            Self::FlashFirmware => "adv_flash_firmware",
             Self::DumpPartitions => "adv_dump_partitions",
             Self::FlashPartitions => "adv_flash_partitions",
             Self::RebuildVbmeta => "adv_rebuild_vbmeta",
@@ -369,7 +367,6 @@ impl AdvAction {
             Self::PatchArb => "adv_patch_arb_desc",
             Self::WriteArb => "adv_write_arb_desc",
             Self::ConvertXml => "adv_convert_xml_desc",
-            Self::FlashFirmware => "adv_flash_firmware_desc",
             Self::DumpPartitions => "adv_dump_partitions_desc",
             Self::FlashPartitions => "adv_flash_partitions_desc",
             Self::RebuildVbmeta => "adv_rebuild_vbmeta_desc",
@@ -388,7 +385,6 @@ impl AdvAction {
             Self::PatchArb => "adv_src_patch_arb",
             Self::WriteArb => "adv_src_write_arb",
             Self::ConvertXml => "adv_src_convert_xml",
-            Self::FlashFirmware => "adv_src_flash_firmware",
             Self::DumpPartitions => "adv_src_dump_partitions",
             Self::FlashPartitions => "adv_src_flash_partitions",
             Self::RebuildVbmeta => "adv_src_rebuild_vbmeta",
@@ -407,7 +403,6 @@ impl AdvAction {
             Self::PatchArb => "patch_arb",
             Self::WriteArb => "write_arb",
             Self::ConvertXml => "convert_xml",
-            Self::FlashFirmware => "flash_firmware",
             Self::DumpPartitions => "dump_partitions",
             Self::FlashPartitions => "flash_partitions",
             Self::RebuildVbmeta => "rebuild_vbmeta",
@@ -491,7 +486,6 @@ const ADV_SECTIONS: &[AdvSection] = &[
         title_key: "adv_section_firmware_flashing",
         items: &[
             AdvAction::ConvertXml,
-            AdvAction::FlashFirmware,
             AdvAction::DumpPartitions,
             AdvAction::FlashPartitions,
             AdvAction::RebuildVbmeta,
@@ -2133,7 +2127,6 @@ impl AdvWizard {
             Some(AdvAction::DumpDevinfo)
                 | Some(AdvAction::WriteDevinfo)
                 | Some(AdvAction::WriteArb)
-                | Some(AdvAction::FlashFirmware)
                 // v2 parity: PatchDevinfo folder carries both devinfo.img
                 // + persist.img — country code lives in both partitions.
                 | Some(AdvAction::PatchDevinfo)
@@ -5042,8 +5035,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                         }
                                         session.reset(&mut log).ok();
                                     }
-                                    AdvAction::FlashFirmware | AdvAction::FlashPartitions | AdvAction::DumpPartitions => {
-                                        log.push("[Advanced] Use Flash Firmware wizard for full firmware flash".to_string());
+                                    AdvAction::FlashPartitions | AdvAction::DumpPartitions => {
+                                        log.push("[Advanced] Use dedicated wizard for partition flash/dump".to_string());
                                     }
                                     AdvAction::RegionConvert => {
                                         // Auto-detect source region (PRC/ROW) and
