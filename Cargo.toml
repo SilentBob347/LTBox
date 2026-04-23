@@ -100,4 +100,10 @@ qdl = { git = "https://github.com/miner7222/qdlrs", branch = "main", features = 
 # time with one Text-returning function per icon declared in
 # `fonts/lucide.toml`. No runtime dependency on the crate itself; the
 # generated code only uses `iced::widget::text` + `iced::Font`.
-iced_lucide = { git = "https://github.com/A-Disruption/iced_lucide", branch = "master" }
+# Pinned to d06e2cc — last commit before upstream PR #3 reformatted the
+# `all_icons_example` / `subset_example` Cargo.toml files with multiline
+# inline tables (rejected by cargo's stricter TOML parser since 1.84).
+# The regression is benign (example crates, not consumed by LTBox's
+# build.rs codegen) but spams `cargo build` with two parse errors per
+# run. Bump back to `branch = "master"` once upstream lands a fix.
+iced_lucide = { git = "https://github.com/A-Disruption/iced_lucide", rev = "d06e2cc" }

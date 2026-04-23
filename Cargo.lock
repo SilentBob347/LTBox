@@ -2457,7 +2457,7 @@ dependencies = [
 [[package]]
 name = "iced_lucide"
 version = "0.1.0"
-source = "git+https://github.com/A-Disruption/iced_lucide?branch=master#d7b13e4520cebececae5fc77930f664f0158812b"
+source = "git+https://github.com/A-Disruption/iced_lucide?rev=d06e2cc#d06e2cc2a16b60bcd076a0904faf3ebb6b2c89f2"
 dependencies = [
  "serde",
  "sha2 0.10.9",
