@@ -10013,12 +10013,19 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         } else {
             LABEL
         };
+        let chips = self.recent_chips(
+            self.recent_paths
+                .recent(pickers::PickerKind::File.storage_key()),
+            |p| Message::FlashPartsLoaderChosen(Some(p)),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
             text(status).size(12).color(status_color).center(),
+            chips,
         ]
         .spacing(14)
         .padding(28)
@@ -10318,12 +10325,19 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         } else {
             LABEL
         };
+        let chips = self.recent_chips(
+            self.recent_paths
+                .recent(pickers::PickerKind::File.storage_key()),
+            |p| Message::DumpPartsLoaderChosen(Some(p)),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
             text(status).size(12).color(status_color).center(),
+            chips,
         ]
         .spacing(14)
         .padding(28)
@@ -10492,12 +10506,19 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         } else {
             LABEL
         };
+        let chips = self.recent_chips(
+            self.recent_paths
+                .recent(pickers::PickerKind::File.storage_key()),
+            |p| Message::DumpPhysLoaderChosen(Some(p)),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
             text(status).size(12).color(status_color).center(),
+            chips,
         ]
         .spacing(14)
         .padding(28)
@@ -10648,12 +10669,19 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         } else {
             LABEL
         };
+        let chips = self.recent_chips(
+            self.recent_paths
+                .recent(pickers::PickerKind::File.storage_key()),
+            |p| Message::FlashPhysLoaderChosen(Some(p)),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
             text(status).size(12).color(status_color).center(),
+            chips,
         ]
         .spacing(14)
         .padding(28)
