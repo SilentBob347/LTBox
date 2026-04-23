@@ -336,6 +336,7 @@ enum AdvAction {
     WriteArb,
     ConvertXml,
     FlashFirmware,
+    DumpPartitions,
     FlashPartitions,
     RebuildVbmeta,
     SignRecovery,
@@ -352,6 +353,7 @@ impl AdvAction {
             Self::WriteArb => "adv_write_arb",
             Self::ConvertXml => "adv_convert_xml",
             Self::FlashFirmware => "adv_flash_firmware",
+            Self::DumpPartitions => "adv_dump_partitions",
             Self::FlashPartitions => "adv_flash_partitions",
             Self::RebuildVbmeta => "adv_rebuild_vbmeta",
             Self::SignRecovery => "adv_sign_recovery",
@@ -368,6 +370,7 @@ impl AdvAction {
             Self::WriteArb => "adv_write_arb_desc",
             Self::ConvertXml => "adv_convert_xml_desc",
             Self::FlashFirmware => "adv_flash_firmware_desc",
+            Self::DumpPartitions => "adv_dump_partitions_desc",
             Self::FlashPartitions => "adv_flash_partitions_desc",
             Self::RebuildVbmeta => "adv_rebuild_vbmeta_desc",
             Self::SignRecovery => "adv_sign_recovery_desc",
@@ -386,6 +389,7 @@ impl AdvAction {
             Self::WriteArb => "adv_src_write_arb",
             Self::ConvertXml => "adv_src_convert_xml",
             Self::FlashFirmware => "adv_src_flash_firmware",
+            Self::DumpPartitions => "adv_src_dump_partitions",
             Self::FlashPartitions => "adv_src_flash_partitions",
             Self::RebuildVbmeta => "adv_src_rebuild_vbmeta",
             Self::SignRecovery => "adv_src_sign_recovery",
@@ -404,6 +408,7 @@ impl AdvAction {
             Self::WriteArb => "write_arb",
             Self::ConvertXml => "convert_xml",
             Self::FlashFirmware => "flash_firmware",
+            Self::DumpPartitions => "dump_partitions",
             Self::FlashPartitions => "flash_partitions",
             Self::RebuildVbmeta => "rebuild_vbmeta",
             Self::SignRecovery => "sign_recovery",
@@ -487,6 +492,7 @@ const ADV_SECTIONS: &[AdvSection] = &[
         items: &[
             AdvAction::ConvertXml,
             AdvAction::FlashFirmware,
+            AdvAction::DumpPartitions,
             AdvAction::FlashPartitions,
             AdvAction::RebuildVbmeta,
             AdvAction::SignRecovery,
@@ -1981,6 +1987,82 @@ impl FlashPartsWizard {
     }
 }
 
+// =========================================================================
+// Dump Partitions wizard state (Advanced → Dump Partitions)
+// =========================================================================
+
+#[derive(Debug, Clone)]
+struct DumpPartRow {
+    lun: u8,
+    label: String,
+    start_sector: u64,
+    num_sectors: u64,
+    size_bytes: u64,
+    selected: bool,
+}
+
+/// Scan-phase result carried in a single message.
+#[derive(Debug, Clone, Default)]
+struct DumpPartsScanResult {
+    logs: Vec<String>,
+    rows: Vec<DumpPartRow>,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct DumpPartsWizard {
+    step: usize, // 0=Loader, 1=Select, 2=Exec
+    loader_path: Option<String>,
+    rows: Vec<DumpPartRow>,
+    output_dir: Option<String>,
+    scanning: bool,
+    scan_error: Option<String>,
+}
+
+const DUMP_PARTS_STEPS: &[&str] = &[
+    "dump_parts_step_loader",
+    "dump_parts_step_select",
+    "dump_parts_step_dump",
+];
+
+impl DumpPartsWizard {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn back(&mut self) {
+        if self.step > 0 {
+            self.step -= 1;
+        }
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.loader_path.is_some() && !self.scanning,
+            1 => self.rows.iter().any(|r| r.selected),
+            _ => false,
+        }
+    }
+    fn selected_rows(&self) -> Vec<DumpPartRow> {
+        self.rows.iter().filter(|r| r.selected).cloned().collect()
+    }
+}
+
+/// Human-readable auto-unit byte formatter (B/KB/MB/GB).
+fn format_bytes_auto(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.2} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.2} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Wizard for every non-FlashPartitions Advanced action. Steps are
 /// [source, confirm, exec], plus a country step between source and
 /// confirm for `PatchDevinfo`. Country picker routes into the shared
@@ -2375,6 +2457,17 @@ enum Message {
     FlashPartsClose,
     FlashPartsExecStart,
     FlashPartsExecDone(Vec<String>),
+    DumpPartsSelectLoader,
+    DumpPartsLoaderChosen(Option<String>),
+    DumpPartsToggleRow(usize),
+    DumpPartsNext,
+    DumpPartsBack,
+    DumpPartsClose,
+    DumpPartsScanStart,
+    DumpPartsScanDone(DumpPartsScanResult),
+    DumpPartsSelectFolder,
+    DumpPartsFolderChosen(Option<String>),
+    DumpPartsExecDone(Vec<String>),
     // Reboot: RebootRequest stages a target; popup resolves to
     // RebootConfirm / RebootDismiss.
     RebootRequest(RebootTarget),
@@ -2494,6 +2587,8 @@ struct App {
     installing_drivers: bool,
     flash_parts: FlashPartsWizard,
     flash_parts_open: bool,
+    dump_parts: DumpPartsWizard,
+    dump_parts_open: bool,
     /// Phases of the running op. Populated at exec start, cleared on
     /// `end_op`.
     op_steps: Vec<OpStep>,
@@ -2569,6 +2664,8 @@ impl Default for App {
             installing_drivers: false,
             flash_parts: FlashPartsWizard::default(),
             flash_parts_open: false,
+            dump_parts: DumpPartsWizard::default(),
+            dump_parts_open: false,
             op_steps: Vec::new(),
             current_op_step: 0,
             log_popup_open: false,
@@ -4627,10 +4724,14 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             }
             // Advanced
             Message::AdvConfirm(a) => {
-                // FlashPartitions preempts the grid with its own wizard.
+                // FlashPartitions / DumpPartitions preempt the grid with
+                // their own wizards.
                 if matches!(a, AdvAction::FlashPartitions) {
                     self.flash_parts.reset();
                     self.flash_parts_open = true;
+                } else if matches!(a, AdvAction::DumpPartitions) {
+                    self.dump_parts.reset();
+                    self.dump_parts_open = true;
                 } else {
                     return self.update(Message::AdvWizOpen(a));
                 }
@@ -4941,7 +5042,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                         }
                                         session.reset(&mut log).ok();
                                     }
-                                    AdvAction::FlashFirmware | AdvAction::FlashPartitions => {
+                                    AdvAction::FlashFirmware | AdvAction::FlashPartitions | AdvAction::DumpPartitions => {
                                         log.push("[Advanced] Use Flash Firmware wizard for full firmware flash".to_string());
                                     }
                                     AdvAction::RegionConvert => {
@@ -5681,6 +5782,123 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 self.log_extend(lines);
                 self.end_op();
             }
+            Message::DumpPartsSelectLoader => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_string_lossy().to_string())
+                    },
+                    Message::DumpPartsLoaderChosen,
+                );
+            }
+            Message::DumpPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    self.dump_parts.loader_path = Some(p);
+                    self.dump_parts.scan_error = None;
+                }
+            }
+            Message::DumpPartsToggleRow(idx) => {
+                if let Some(row) = self.dump_parts.rows.get_mut(idx) {
+                    row.selected = !row.selected;
+                }
+            }
+            Message::DumpPartsNext => match self.dump_parts.step {
+                0 => return self.update(Message::DumpPartsScanStart),
+                1 => return self.update(Message::DumpPartsSelectFolder),
+                _ => {}
+            },
+            Message::DumpPartsBack => self.dump_parts.back(),
+            Message::DumpPartsClose => {
+                self.dump_parts_open = false;
+                self.dump_parts.reset();
+            }
+            Message::DumpPartsScanStart => {
+                let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
+                if loader.is_empty() {
+                    return Task::none();
+                }
+                self.dump_parts.scanning = true;
+                self.dump_parts.scan_error = None;
+                self.dump_parts.rows.clear();
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                self.log_lines
+                    .push("[DumpParts] Scanning partition tables...".to_string());
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || dump_parts_scan(conn, loader))
+                                .unwrap_or_else(|e| DumpPartsScanResult {
+                                    logs: vec![format!("[DumpParts] heavy thread error: {e}")],
+                                    rows: Vec::new(),
+                                    error: Some(format!("{e}")),
+                                })
+                        })
+                        .await
+                        .unwrap_or_else(|_| DumpPartsScanResult {
+                            logs: vec!["[DumpParts] task panicked".to_string()],
+                            rows: Vec::new(),
+                            error: Some("task panicked".to_string()),
+                        })
+                    },
+                    Message::DumpPartsScanDone,
+                );
+            }
+            Message::DumpPartsScanDone(result) => {
+                self.log_extend(result.logs);
+                self.end_op();
+                self.dump_parts.scanning = false;
+                self.dump_parts.rows = result.rows;
+                if let Some(err) = result.error {
+                    self.dump_parts.scan_error = Some(err);
+                } else if self.dump_parts.rows.is_empty() {
+                    self.dump_parts.scan_error =
+                        Some("No partitions returned from device".to_string());
+                } else {
+                    self.dump_parts.step = 1;
+                }
+            }
+            Message::DumpPartsSelectFolder => {
+                return pick_folder_task(Message::DumpPartsFolderChosen);
+            }
+            Message::DumpPartsFolderChosen(path) => {
+                if let Some(folder) = path {
+                    self.dump_parts.output_dir = Some(folder.clone());
+                    self.dump_parts.step = 2;
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
+                    let rows = self.dump_parts.selected_rows();
+                    self.log_lines.push(format!(
+                        "[DumpParts] Dumping {} partition(s) to {}",
+                        rows.len(),
+                        folder
+                    ));
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                ltbox_core::runtime::run_heavy(move || {
+                                    dump_parts_execute(loader, folder, rows)
+                                })
+                                .unwrap_or_else(|e| {
+                                    vec![format!("[DumpParts] heavy thread error: {e}")]
+                                })
+                            })
+                            .await
+                            .unwrap_or_else(|_| vec!["[DumpParts] task panicked".to_string()])
+                        },
+                        Message::DumpPartsExecDone,
+                    );
+                }
+            }
+            Message::DumpPartsExecDone(lines) => {
+                self.log_extend(lines);
+                self.end_op();
+            }
             Message::RebootRequest(target) => {
                 if self.busy {
                     return Task::none();
@@ -6167,7 +6385,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         // scrollable+padding wrapper so the step bar isn't pinched and
         // the 280 px browse card doesn't stretch.
         if self.current_view == View::Advanced
-            && (self.flash_parts_open || self.adv_wizard.action.is_some())
+            && (self.flash_parts_open || self.dump_parts_open || self.adv_wizard.action.is_some())
         {
             return self.view_advanced();
         }
@@ -8635,9 +8853,12 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
     // -- Advanced (grid) --------------------------------------------------
 
     fn view_advanced(&self) -> Element<'_, Message> {
-        // FlashPartitions preempts the grid.
+        // FlashPartitions / DumpPartitions preempt the grid.
         if self.flash_parts_open {
             return self.view_flash_parts_wizard();
+        }
+        if self.dump_parts_open {
+            return self.view_dump_parts_wizard();
         }
         if self.adv_wizard.action.is_some() {
             return self.view_adv_wizard();
@@ -9102,6 +9323,176 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         ]
         .spacing(10)
         .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // -- Dump Partitions wizard ------------------------------------------
+
+    fn view_dump_parts_wizard(&self) -> Element<'_, Message> {
+        let step_labels: Vec<&str> = DUMP_PARTS_STEPS.iter().map(|k| self.t(k)).collect();
+        let step_bar = wizard_step_bar(&step_labels, self.dump_parts.step);
+
+        let body: Element<'_, Message> = match self.dump_parts.step {
+            0 => self.dump_parts_loader_step(),
+            1 => self.dump_parts_select_step(),
+            _ => self.exec_step_view(),
+        };
+
+        let nav = if self.dump_parts.step < 2 {
+            let is_dump_step = self.dump_parts.step == 1;
+            let label = if is_dump_step {
+                self.t("btn_dump").to_string()
+            } else {
+                self.t("btn_scan").to_string()
+            };
+            let can = self.dump_parts.can_next() && !self.busy;
+            wizard_nav_generic(
+                true,
+                &label,
+                can,
+                self.t("btn_back"),
+                if self.dump_parts.step == 0 {
+                    Message::DumpPartsClose
+                } else {
+                    Message::DumpPartsBack
+                },
+                Message::DumpPartsNext,
+            )
+        } else {
+            container(text("")).into()
+        };
+
+        column![step_bar, body, nav]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn dump_parts_loader_step(&self) -> Element<'_, Message> {
+        let selected = self.dump_parts.loader_path.is_some();
+        let status = match (&self.dump_parts.loader_path, &self.dump_parts.scan_error) {
+            (_, Some(e)) => format!("⚠ {e}"),
+            (Some(p), None) => p.clone(),
+            _ => self.t("dump_parts_loader_placeholder").to_string(),
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_file").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("dump_parts_loader_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::DumpPartsSelectLoader)
+        .padding(0)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        });
+        let status_color = if self.dump_parts.scan_error.is_some() {
+            iced::Color::from_rgb(0.9, 0.2, 0.2)
+        } else if selected {
+            GREEN
+        } else {
+            LABEL
+        };
+        let col = column![
+            text(self.t("dump_parts_loader_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status).size(12).color(status_color).center(),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn dump_parts_select_step(&self) -> Element<'_, Message> {
+        let header = row![
+            text(" ").size(11).width(32),
+            text(self.t("flash_parts_col_lun").to_string())
+                .size(11)
+                .width(50)
+                .style(muted_style),
+            text(self.t("flash_parts_col_label").to_string())
+                .size(11)
+                .width(Length::FillPortion(3))
+                .style(muted_style),
+            text(self.t("flash_parts_col_start").to_string())
+                .size(11)
+                .width(Length::FillPortion(2))
+                .style(muted_style),
+            text(self.t("dump_parts_col_size").to_string())
+                .size(11)
+                .width(Length::FillPortion(2))
+                .style(muted_style),
+        ]
+        .spacing(8)
+        .padding([6, 10])
+        .align_y(iced::Alignment::Center);
+
+        let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
+        for (idx, row) in self.dump_parts.rows.iter().enumerate() {
+            let cb = iced::widget::checkbox(row.selected)
+                .on_toggle(move |_| Message::DumpPartsToggleRow(idx));
+            let data_row = iced::widget::row![
+                container(cb).width(32),
+                text(row.lun.to_string()).size(12).width(50),
+                text(row.label.clone())
+                    .size(12)
+                    .width(Length::FillPortion(3)),
+                text(row.start_sector.to_string())
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+                text(format_bytes_auto(row.size_bytes))
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+            ]
+            .spacing(8)
+            .padding([4, 10])
+            .align_y(iced::Alignment::Center);
+            list = list.push(data_row);
+        }
+
+        let scrolled = scrollable(list).height(Length::Fill).width(Length::Fill);
+
+        let col = column![
+            text(self.t("dump_parts_select_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("dump_parts_select_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            widget::rule::horizontal(1),
+            scrolled,
+        ]
+        .spacing(10)
+        .padding(20)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
         container(col)
@@ -9726,6 +10117,188 @@ fn flash_parts_execute(
     log.push("[FlashParts] Resetting device to system...".to_string());
     let _ = session.reset(&mut log);
     log.push("[FlashParts] Done.".to_string());
+    log
+}
+
+/// Transition the device to EDL from whatever state it is in. Returns
+/// `Ok(())` if the device is already in EDL or was sent there.
+/// Shared by `dump_parts_scan`. Mirrors the inline block in
+/// `flash_parts_execute`.
+fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    match conn {
+        ConnectionStatus::Edl => {
+            log.push(format!("[{tag}] Device already in EDL mode"));
+            Ok(())
+        }
+        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
+            log.push(format!("[{tag}] $ adb reboot edl"));
+            let mut mgr = ltbox_device::adb::AdbManager::new();
+            match mgr.reboot("edl") {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    log.push(format!("[{tag}] adb reboot edl failed: {e}"));
+                    log.push(format!(
+                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                    ));
+                    Err(())
+                }
+            }
+        }
+        ConnectionStatus::Fastboot => {
+            log.push(format!("[{tag}] $ fastboot oem edl"));
+            match ltbox_device::fastboot::FastbootDevice::open() {
+                Ok(mut dev) => match dev.oem_edl() {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        log.push(format!("[{tag}] fastboot oem edl failed: {e}"));
+                        log.push(format!(
+                            "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        ));
+                        Err(())
+                    }
+                },
+                Err(e) => {
+                    log.push(format!("[{tag}] Fastboot device open failed: {e}"));
+                    log.push(format!(
+                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                    ));
+                    Err(())
+                }
+            }
+        }
+        ConnectionStatus::AdbUnauthorized => {
+            log.push(format!(
+                "[{tag}] USB debugging is not authorized — accept the prompt and retry."
+            ));
+            Err(())
+        }
+        ConnectionStatus::None => {
+            log.push(format!(
+                "[{tag}] No device connected. Connect the device (ADB / Fastboot / EDL) and retry."
+            ));
+            Err(())
+        }
+    }
+}
+
+/// Scan GPTs on LUNs 0..=5 using the picked loader. Leaves the device
+/// in EDL (bounces through `reset_to_edl`) so the dump pass can re-open
+/// Sahara without a power-cycle.
+fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScanResult {
+    let mut log = Vec::new();
+    if ensure_edl(conn, "DumpParts", &mut log).is_err() {
+        return DumpPartsScanResult {
+            logs: log,
+            rows: Vec::new(),
+            error: Some("Could not transition device to EDL".to_string()),
+        };
+    }
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let loader = std::path::PathBuf::from(&loader_path);
+    let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push(format!("[DumpParts] EDL session open failed: {e}"));
+            return DumpPartsScanResult {
+                logs: log,
+                rows: Vec::new(),
+                error: Some(format!("EDL session open failed: {e}")),
+            };
+        }
+    };
+
+    let parts = match session.scan_partitions(0..=5, &mut log) {
+        Ok(p) => p,
+        Err(e) => {
+            log.push(format!("[DumpParts] scan failed: {e}"));
+            let _ = session.reset_to_edl(&mut log);
+            return DumpPartsScanResult {
+                logs: log,
+                rows: Vec::new(),
+                error: Some(format!("scan failed: {e}")),
+            };
+        }
+    };
+
+    let rows: Vec<DumpPartRow> = parts
+        .into_iter()
+        .map(|p| DumpPartRow {
+            lun: p.lun,
+            label: p.name,
+            start_sector: p.start_sector,
+            num_sectors: p.num_sectors,
+            size_bytes: p.size_bytes,
+            selected: false,
+        })
+        .collect();
+
+    // Bounce back to Sahara so the next `open()` on the dump pass gets
+    // a fresh Hello. Without this Sahara times out.
+    if let Err(e) = session.reset_to_edl(&mut log) {
+        log.push(format!("[DumpParts] reset_to_edl after scan failed: {e}"));
+    }
+
+    log.push(format!(
+        "[DumpParts] Scan complete — {} partitions",
+        rows.len()
+    ));
+    DumpPartsScanResult {
+        logs: log,
+        rows,
+        error: None,
+    }
+}
+
+/// Dump selected partitions to `output_folder` as `<label>.img`. Reopens
+/// the EDL session (previous scan left device waiting at Sahara), runs
+/// the reads back-to-back, then reboots to system.
+fn dump_parts_execute(
+    loader_path: String,
+    output_folder: String,
+    rows: Vec<DumpPartRow>,
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let out_dir = std::path::PathBuf::from(&output_folder);
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        log.push(format!("[DumpParts] create output folder failed: {e}"));
+        return log;
+    }
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let loader = std::path::PathBuf::from(&loader_path);
+    let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push(format!("[DumpParts] EDL session open failed: {e}"));
+            return log;
+        }
+    };
+
+    for row in &rows {
+        let out_path = out_dir.join(format!("{}.img", row.label));
+        log.push(format!(
+            "[DumpParts] Dumping {} → {} (LUN {}, {} bytes)",
+            row.label,
+            out_path.display(),
+            row.lun,
+            row.size_bytes
+        ));
+        if let Err(e) = session.dump_partition_at(
+            &row.label,
+            &out_path,
+            row.lun,
+            row.start_sector as u32,
+            row.num_sectors as usize,
+            &mut log,
+        ) {
+            log.push(format!("[DumpParts] {} failed: {e}", row.label));
+        }
+    }
+
+    log.push("[DumpParts] Resetting device to system...".to_string());
+    let _ = session.reset(&mut log);
+    log.push("[DumpParts] Done.".to_string());
     log
 }
 

@@ -135,6 +135,16 @@ pub fn wait_for_device() -> Result<String> {
     wait_for_stable_port()
 }
 
+/// One partition entry surfaced by [`EdlSession::scan_partitions`].
+#[derive(Debug, Clone)]
+pub struct GptPartitionInfo {
+    pub lun: u8,
+    pub name: String,
+    pub start_sector: u64,
+    pub num_sectors: u64,
+    pub size_bytes: u64,
+}
+
 /// EDL session: owns `QdlDevice`, exposes partition ops.
 pub struct EdlSession {
     dev: QdlDevice<dyn QdlReadWrite>,
@@ -210,6 +220,64 @@ impl EdlSession {
         log.push(format!("[EDL] {}", tr("log_edl_firehose_configured")));
 
         Ok(Self { dev })
+    }
+
+    /// Read the GPT of a single LUN. Returns the parsed `gptman::GPT`.
+    /// Used by `scan_partitions` and `find_partition`.
+    fn read_gpt_for_lun(&mut self, slot: u8, lun: u8) -> Result<gptman::GPT> {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        qdl::firehose_read_storage(&mut self.dev, &mut buf, 1, slot, lun, 1)
+            .map_err(|e| EdlError::Session(format!("GPT probe failed: {e}")))?;
+        buf.rewind()?;
+        let header = gptman::GPTHeader::read_from(&mut buf)
+            .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
+        let gpt_len = header.first_usable_lba as usize;
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        qdl::firehose_read_storage(&mut self.dev, &mut buf, gpt_len, slot, lun, 0)
+            .map_err(|e| EdlError::Session(format!("GPT read failed: {e}")))?;
+        buf.set_position(self.dev.fh_config().storage_sector_size as u64);
+        gptman::GPT::read_from(&mut buf, self.dev.fh_config().storage_sector_size as u64)
+            .map_err(|e| EdlError::Session(format!("GPT parse failed: {e}")))
+    }
+
+    /// Read the GPT of every LUN in `lun_range` and flatten the named
+    /// partitions. GPT placeholder slots (empty name or zero size) are
+    /// dropped. Per-LUN failures are logged but do not abort the scan —
+    /// devices often expose only a subset of the 0..=5 LUN range.
+    pub fn scan_partitions(
+        &mut self,
+        lun_range: std::ops::RangeInclusive<u8>,
+        log: &mut Vec<String>,
+    ) -> Result<Vec<GptPartitionInfo>> {
+        let sector_size = self.dev.fh_config().storage_sector_size as u64;
+        let mut out = Vec::new();
+        for lun in lun_range {
+            log.push(format!("[EDL] {} LUN {lun}", tr("log_edl_reading_gpt")));
+            match self.read_gpt_for_lun(0, lun) {
+                Ok(gpt) => {
+                    for (_idx, part) in gpt.iter() {
+                        let name = part.partition_name.as_str().to_string();
+                        let Ok(num_sectors) = part.size() else {
+                            continue;
+                        };
+                        if num_sectors == 0 || name.is_empty() {
+                            continue;
+                        }
+                        out.push(GptPartitionInfo {
+                            lun,
+                            name,
+                            start_sector: part.starting_lba,
+                            num_sectors,
+                            size_bytes: num_sectors * sector_size,
+                        });
+                    }
+                }
+                Err(e) => {
+                    log.push(format!("[EDL] LUN {lun} GPT read failed: {e}"));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// GPT lookup by partition name.
