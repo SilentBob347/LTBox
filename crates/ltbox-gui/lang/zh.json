@@ -141,6 +141,8 @@
   "family_magisk_desc": "经典内存盘注入",
   "flash_confirm_subtitle": "刷写前请确认。",
   "flash_confirm_title": "确认",
+  "flash_confirm_warning": "⚠ 将覆盖设备分区。请确认固件与您的机型匹配。",
+  "flash_confirm_warning_wipe": "⚠ 已选择清除 — userdata 与 metadata 将被抹除。继续前请先备份所需数据。",
   "flash_data_subtitle": "刷写时保留还是清除用户数据?",
   "flash_data_title": "选择数据模式",
   "flash_folder_desc": "选择包含固件镜像与 rawprogram XML 的文件夹",

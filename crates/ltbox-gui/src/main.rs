@@ -95,6 +95,15 @@ fn success_style(t: &Theme) -> iced::widget::text::Style {
     }
 }
 
+/// `warning` — destructive-action callouts (e.g. full-flash confirm
+/// step). Kept distinct from `error_style` so it reads as "heads up, not
+/// a failure".
+fn warning_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).warning),
+    }
+}
+
 fn main() -> iced::Result {
     // Single-instance lock via fs2 advisory lock in the system temp
     // dir. Kernel drops the lock on dirty shutdown. Version-agnostic
@@ -7524,6 +7533,24 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             .clone()
             .unwrap_or_else(|| dash.clone());
         col = col.push(info_kv_center(self.t("flash_folder_title"), &folder_owned));
+
+        // Destructive-op callout — parity with v2 `_confirm_full_flash_overwrite`.
+        // The wizard's Next button is the trigger, so surface the hazard
+        // inline instead of trusting the summary alone. Uses the palette's
+        // `warning` colour (amber) so it doesn't read as an error/failure.
+        let warning_key = if self.wf_config.wipe {
+            "flash_confirm_warning_wipe"
+        } else {
+            "flash_confirm_warning"
+        };
+        col = col.push(widget::rule::horizontal(1));
+        col = col.push(
+            text(self.t(warning_key).to_string())
+                .size(13)
+                .style(warning_style)
+                .center(),
+        );
+
         container(col)
             .width(Length::Fill)
             .height(Length::Fill)

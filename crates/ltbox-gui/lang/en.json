@@ -141,6 +141,8 @@
   "family_magisk_desc": "Classic ramdisk injection",
   "flash_confirm_subtitle": "Review before flashing.",
   "flash_confirm_title": "Confirm",
+  "flash_confirm_warning": "⚠ This will overwrite partitions on the device. Make sure the firmware matches your model.",
+  "flash_confirm_warning_wipe": "⚠ Wipe selected — userdata and metadata will be erased. Back up anything you need before continuing.",
   "flash_data_subtitle": "Keep or erase user data during flash?",
   "flash_data_title": "Select Data Mode",
   "flash_folder_desc": "Select folder containing firmware images and rawprogram XML",
