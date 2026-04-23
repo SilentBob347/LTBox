@@ -221,7 +221,11 @@ pub fn patch_init_boot(
     config.push_str(&format!("SHA1={sha1}\n"));
     fs::write(work_dir.join("config"), &config)?;
 
-    // Patch ramdisk in one cpio pass.
+    // Patch ramdisk in one cpio pass. `KEEPVERITY` / `KEEPFORCEENCRYPT`
+    // must be set or magiskboot's patcher strips dm-verity and
+    // forceencrypt flags from fstab — bricks devices that expect AVB
+    // + metadata encryption. v2 `bin/ltbox/patch/root.py` sets the
+    // same env via `_get_tool_env()` before invoking magiskboot.
     log.push(format!("[Magisk] {}", tr("log_magisk_cpio_patch")));
     let cpio_cmds: &[&str] = &[
         "add 0750 init magiskinit",
@@ -235,7 +239,12 @@ pub fn patch_init_boot(
         "mkdir 000 .backup",
         "add 000 .backup/.magisk config",
     ];
-    boot::cpio(work_dir, "ramdisk.cpio", cpio_cmds)?;
+    boot::cpio_with_env(
+        work_dir,
+        "ramdisk.cpio",
+        cpio_cmds,
+        &[("KEEPVERITY", "true"), ("KEEPFORCEENCRYPT", "true")],
+    )?;
 
     // Clean up staging — don't leave plaintext payload next to the repacked image.
     for name in [

@@ -31,6 +31,25 @@ pub fn cpio(work_dir: &Path, cpio_file: &str, commands: &[&str]) -> Result<i32> 
     run_magiskboot(work_dir, &args)
 }
 
+/// CPIO operations with extra env vars set for the duration of the call.
+///
+/// Required for `cpio … patch` on Magisk/KernelSU/APatch flows: magiskboot's
+/// patcher reads `KEEPVERITY` / `KEEPFORCEENCRYPT` from the process env at
+/// call time. Without them magiskboot defaults to *stripping* dm-verity and
+/// forceencrypt fstab flags — the opposite of what stock-preserving root
+/// wants. Env is process-global; the CWD lock held by `run_magiskboot_with_env`
+/// serializes the set/restore so concurrent calls don't leak values.
+pub fn cpio_with_env(
+    work_dir: &Path,
+    cpio_file: &str,
+    commands: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<i32> {
+    let mut args = vec!["cpio", cpio_file];
+    args.extend_from_slice(commands);
+    run_magiskboot_with_env(work_dir, &args, envs)
+}
+
 /// SHA1 hash of a file (computed in Rust, no magiskboot needed).
 pub fn sha1(file_path: &Path) -> Result<String> {
     let data = fs::read(file_path).map_err(|e| LtboxError::BootImage(e.to_string()))?;
@@ -72,6 +91,10 @@ pub fn get_kernel_version(kernel_path: &Path) -> Result<Option<String>> {
 static MAGISKBOOT_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn run_magiskboot(work_dir: &Path, args: &[&str]) -> Result<i32> {
+    run_magiskboot_with_env(work_dir, args, &[])
+}
+
+fn run_magiskboot_with_env(work_dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Result<i32> {
     // Recover from poisoning: inner catch_unwind turns magiskboot panics
     // into errors, so the mutex stays safe to reuse.
     let _guard = MAGISKBOOT_CWD_LOCK
@@ -80,6 +103,22 @@ fn run_magiskboot(work_dir: &Path, args: &[&str]) -> Result<i32> {
 
     let original_dir = std::env::current_dir().ok();
     std::env::set_current_dir(work_dir).map_err(|e| LtboxError::BootImage(e.to_string()))?;
+
+    // Snapshot env values we're about to override so we can restore them.
+    // Important because the env is process-global — leaking KEEPVERITY=true
+    // into a subsequent call could invert behavior.
+    let saved_envs: Vec<(&str, Option<String>)> = envs
+        .iter()
+        .map(|(k, _)| (*k, std::env::var(*k).ok()))
+        .collect();
+    for (k, v) in envs {
+        // SAFETY: std::env::set_var is unsafe on Rust 1.82+ due to data races
+        // in multithreaded programs. The CWD lock above serializes magiskboot
+        // calls, but other threads might still read env concurrently. Callers
+        // pass only static-config vars (KEEPVERITY etc.) that magiskboot
+        // itself reads inside the same lock scope.
+        unsafe { std::env::set_var(k, v) };
+    }
 
     let mut full_args = vec!["magiskboot".to_string()];
     full_args.extend(args.iter().map(|s| s.to_string()));
@@ -90,6 +129,15 @@ fn run_magiskboot(work_dir: &Path, args: &[&str]) -> Result<i32> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         magiskboot::cli::boot_main(cmds).unwrap_or(1)
     }));
+
+    // Restore env regardless of outcome so a panicking magiskboot doesn't
+    // leave KEEPVERITY set for unrelated callers.
+    for (k, old) in &saved_envs {
+        match old {
+            Some(v) => unsafe { std::env::set_var(k, v) },
+            None => unsafe { std::env::remove_var(k) },
+        }
+    }
 
     if let Some(dir) = original_dir {
         let _ = std::env::set_current_dir(dir);
