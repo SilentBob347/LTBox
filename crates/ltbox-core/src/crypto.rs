@@ -61,7 +61,17 @@ pub fn decrypt_file(input: &Path, output: &Path) -> Result<u64> {
     // Header size is i64 LE (v2 `struct.unpack("<q", ...)`). Guard against a
     // hostile salt that produces a negative / huge size — else the `as u64`
     // cast bit-casts to u64::MAX and the slice panics.
-    let original_size_i64 = i64::from_le_bytes(plain[0..8].try_into().unwrap());
+    //
+    // `try_into::<[u8; 8]>` on an 8-byte slice is infallible; the earlier
+    // `plain.len() < 16` bail guarantees the subslice. Use `expect` over
+    // `unwrap` so a future refactor that weakens the bound trips on a
+    // readable message rather than a generic panic.
+    let header_bytes: [u8; 8] = plain
+        .get(0..8)
+        .ok_or_else(|| LtboxError::Config("Decrypted data too small for size header".into()))?
+        .try_into()
+        .expect("slice of len 8 converts to [u8; 8]");
+    let original_size_i64 = i64::from_le_bytes(header_bytes);
     let signature = &plain[8..16];
 
     if signature != SIGNATURE {
