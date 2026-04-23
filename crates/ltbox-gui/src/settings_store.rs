@@ -3,6 +3,7 @@
 //! Lives in the user's config dir (outside the install tree so
 //! replacing `ltbox.exe` keeps preferences).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -10,26 +11,72 @@ use serde::{Deserialize, Serialize};
 const APP_DIR: &str = "ltbox";
 const FILE_NAME: &str = "settings.json";
 
-/// Maximum number of recent file / folder paths to remember.
+/// Maximum number of recent paths to remember per category.
 pub const RECENT_MAX: usize = 3;
 
+/// Legacy global-files bucket key for migration from pre-category config.
+/// v2 / early-v3 settings only had `files: Vec<String>` + `folders: Vec<String>`;
+/// rather than throw the history away, we bin it into these stable keys so
+/// the user still sees their last-used paths somewhere — they can pick the
+/// actual category bucket next time they Browse.
+pub const LEGACY_FILES_KEY: &str = "legacy.files";
+pub const LEGACY_FOLDERS_KEY: &str = "legacy.folders";
+
+/// Per-category MRU path lists. Category keys are stable strings (see
+/// `PickerKind::storage_key` in main.rs) so the JSON roundtrips without
+/// coupling persistence to enum Variant ordering.
+///
+/// `BTreeMap` (not `HashMap`) for deterministic JSON output — diffing the
+/// settings file for troubleshooting is far easier when key order doesn't
+/// jitter between saves.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecentPaths {
     #[serde(default)]
+    pub by_kind: BTreeMap<String, Vec<String>>,
+
+    // ---- Legacy fields kept ONLY for load-migration ----------------------
+    // Old config had these as top-level arrays. `#[serde(default)]` lets
+    // newer builds still read them; `migrate_legacy()` folds them into
+    // `by_kind` after load. On the next save the legacy arrays emit as
+    // empty (skip on empty below) so the file gradually self-cleans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<String>,
 }
 
 impl RecentPaths {
-    /// Push to the front, dedup, truncate to `RECENT_MAX`.
-    /// Returns `true` iff the list changed.
-    pub fn push_file(&mut self, path: &str) -> bool {
-        push_front_dedup(&mut self.files, path)
+    /// Push a path onto the MRU list for `kind`. Returns `true` iff the
+    /// list changed (useful to skip redundant settings writes).
+    pub fn push(&mut self, kind: &str, path: &str) -> bool {
+        if kind.is_empty() {
+            return false;
+        }
+        let list = self.by_kind.entry(kind.to_string()).or_default();
+        push_front_dedup(list, path)
     }
 
-    pub fn push_folder(&mut self, path: &str) -> bool {
-        push_front_dedup(&mut self.folders, path)
+    /// MRU list for `kind`, or empty slice if none.
+    pub fn recent(&self, kind: &str) -> &[String] {
+        self.by_kind.get(kind).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Most-recent entry for `kind` — handy as a `rfd` starting dir.
+    pub fn most_recent(&self, kind: &str) -> Option<&str> {
+        self.by_kind
+            .get(kind)
+            .and_then(|v| v.first())
+            .map(String::as_str)
+    }
+
+    /// Fold legacy `files` / `folders` arrays into the kind map. Idempotent.
+    pub fn migrate_legacy(&mut self) {
+        for p in std::mem::take(&mut self.files) {
+            let _ = self.push(LEGACY_FILES_KEY, &p);
+        }
+        for p in std::mem::take(&mut self.folders) {
+            let _ = self.push(LEGACY_FOLDERS_KEY, &p);
+        }
     }
 }
 
@@ -86,6 +133,11 @@ fn config_path() -> Option<PathBuf> {
 }
 
 /// Load settings. `Default` on missing / malformed / no config dir.
+///
+/// Legacy `recent_paths.files` / `recent_paths.folders` arrays from
+/// pre-per-category builds are folded into `by_kind` under
+/// [`LEGACY_FILES_KEY`] / [`LEGACY_FOLDERS_KEY`] — no history loss when
+/// upgrading.
 pub fn load() -> PersistedSettings {
     let Some(path) = config_path() else {
         return PersistedSettings::default();
@@ -93,7 +145,9 @@ pub fn load() -> PersistedSettings {
     let Ok(data) = std::fs::read_to_string(&path) else {
         return PersistedSettings::default();
     };
-    serde_json::from_str(&data).unwrap_or_default()
+    let mut settings: PersistedSettings = serde_json::from_str(&data).unwrap_or_default();
+    settings.recent_paths.migrate_legacy();
+    settings
 }
 
 /// Persist settings. Errors are swallowed so a read-only config dir
@@ -132,5 +186,76 @@ mod tests {
     fn theme_field_roundtrips() {
         let s: PersistedSettings = serde_json::from_str(r#"{"theme": "dark"}"#).unwrap();
         assert_eq!(s.theme, "dark");
+    }
+
+    #[test]
+    fn push_per_kind_independent() {
+        let mut r = RecentPaths::default();
+        assert!(r.push("loader_folder", "/a"));
+        assert!(r.push("qfil_firmware", "/b"));
+        assert_eq!(r.recent("loader_folder"), &["/a".to_string()]);
+        assert_eq!(r.recent("qfil_firmware"), &["/b".to_string()]);
+        assert!(r.recent("other").is_empty());
+    }
+
+    #[test]
+    fn push_dedups_and_truncates() {
+        let mut r = RecentPaths::default();
+        for p in ["/a", "/b", "/c", "/d", "/a"] {
+            r.push("k", p);
+        }
+        // Trace: [/a] → [/b,/a] → [/c,/b,/a] → [/d,/c,/b] (cap=3 drops
+        // /a) → [/a,/d,/c] (/a re-enters at front as a fresh item).
+        // Dedup only kicks in while the entry is still inside the cap.
+        assert_eq!(r.recent("k"), &["/a", "/d", "/c"]);
+    }
+
+    #[test]
+    fn push_dedups_within_cap() {
+        let mut r = RecentPaths::default();
+        for p in ["/a", "/b", "/c", "/a"] {
+            r.push("k", p);
+        }
+        // Same as above but /a still present when re-pushed — moves to
+        // front, /b /c shift, no new slot consumed.
+        assert_eq!(r.recent("k"), &["/a", "/c", "/b"]);
+    }
+
+    #[test]
+    fn most_recent_returns_top() {
+        let mut r = RecentPaths::default();
+        r.push("k", "/x");
+        r.push("k", "/y");
+        assert_eq!(r.most_recent("k"), Some("/y"));
+        assert_eq!(r.most_recent("empty"), None);
+    }
+
+    #[test]
+    fn migrate_legacy_moves_flat_arrays_into_buckets() {
+        // Old config schema as on-disk JSON.
+        let json = r#"{
+            "language": "en",
+            "theme": "system",
+            "recent_paths": {
+                "files": ["/f1", "/f2"],
+                "folders": ["/d1"]
+            }
+        }"#;
+        let mut s: PersistedSettings = serde_json::from_str(json).unwrap();
+        s.recent_paths.migrate_legacy();
+
+        // Legacy arrays drained.
+        assert!(s.recent_paths.files.is_empty());
+        assert!(s.recent_paths.folders.is_empty());
+        // History preserved under the legacy bucket keys.
+        assert_eq!(s.recent_paths.recent(LEGACY_FILES_KEY), &["/f2", "/f1"]);
+        assert_eq!(s.recent_paths.recent(LEGACY_FOLDERS_KEY), &["/d1"]);
+    }
+
+    #[test]
+    fn empty_kind_is_rejected() {
+        let mut r = RecentPaths::default();
+        assert!(!r.push("", "/x"));
+        assert!(!r.push("k", ""));
     }
 }

@@ -15,6 +15,7 @@
 #[allow(dead_code)]
 #[path = "icon.rs"]
 mod icon;
+mod pickers;
 mod settings_store;
 mod stdout_tap;
 mod theme;
@@ -2312,19 +2313,72 @@ impl AdvWizard {
                 // v2 parity: PatchDevinfo folder carries both devinfo.img
                 // + persist.img — country code lives in both partitions.
                 | Some(AdvAction::PatchDevinfo)
+                // Encrypted rawprogram — user picks the folder holding
+                // the `*.x` payload pack; exec iterates and decrypts each.
+                | Some(AdvAction::ConvertXml)
         )
     }
     /// Extension whitelist for `rfd::AsyncFileDialog::add_filter`.
     /// Empty slice = no constraint.
     fn accepted_exts(&self) -> (&'static str, &'static [&'static str]) {
         match self.action {
-            Some(AdvAction::ConvertXml) => ("Encrypted rawprogram (*.x)", &["x"]),
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::DetectArb)
             | Some(AdvAction::PatchArb)
             | Some(AdvAction::RebuildVbmeta)
             | Some(AdvAction::SignRecovery) => ("Android partition image (*.img)", &["img"]),
             _ => ("", &[]),
+        }
+    }
+
+    /// Recents bucket for the current action. Folder actions bin into
+    /// one of the 4 user-facing folder categories + `OutputFolder` for
+    /// dump destinations; file actions share the `File` bucket per the
+    /// unified-file-picker design.
+    ///
+    /// Kept close to [`Self::is_folder_op`] so they don't diverge —
+    /// mismatches would either orphan recents (folder op writing to
+    /// `File`) or corrupt them (file path shoved into a folder bucket).
+    fn picker_kind(&self) -> pickers::PickerKind {
+        use pickers::PickerKind;
+        match self.action {
+            // Source folders (existing payloads).
+            Some(AdvAction::ConvertXml) => PickerKind::EncryptedRawprogramFolder,
+            Some(AdvAction::WriteDevinfo)
+            | Some(AdvAction::WriteArb)
+            | Some(AdvAction::PatchDevinfo) => PickerKind::QfilFirmwareFolder,
+            // Destination folders (we write the dumped img there).
+            Some(AdvAction::DumpDevinfo) => PickerKind::OutputFolder,
+            // File-picking actions — all share the unified File bucket.
+            Some(AdvAction::RegionConvert)
+            | Some(AdvAction::DetectArb)
+            | Some(AdvAction::PatchArb)
+            | Some(AdvAction::RebuildVbmeta)
+            | Some(AdvAction::SignRecovery) => PickerKind::File,
+            // Remaining actions don't open a Browse dialog on step 0
+            // (DumpPartitions/DumpPhysical/Flash* have dedicated wizards);
+            // return File defensively so storage_key() is always valid.
+            _ => PickerKind::File,
+        }
+    }
+
+    /// i18n key for the `[X]` slot in the unified Browse description.
+    /// Maps each action to a short noun phrase (e.g. "Encrypted
+    /// rawprogram folder", "ARB image"). File pickers read this via
+    /// `FilePickSpec::target_i18n_key`; folder pickers read it as the
+    /// description caption alongside the generic folder-kind label.
+    fn picker_target_i18n_key(&self) -> &'static str {
+        match self.action {
+            Some(AdvAction::ConvertXml) => "picker_target_encrypted_rawprogram",
+            Some(AdvAction::DumpDevinfo) => "picker_target_output_folder",
+            Some(AdvAction::WriteDevinfo) => "picker_target_devinfo_folder",
+            Some(AdvAction::WriteArb) => "picker_target_arb_folder",
+            Some(AdvAction::PatchDevinfo) => "picker_target_devinfo_persist_folder",
+            Some(AdvAction::RegionConvert) => "picker_target_vendor_boot_img",
+            Some(AdvAction::DetectArb) | Some(AdvAction::PatchArb) => "picker_target_arb_img",
+            Some(AdvAction::RebuildVbmeta) => "picker_target_vbmeta_img",
+            Some(AdvAction::SignRecovery) => "picker_target_recovery_img",
+            _ => "picker_target_file",
         }
     }
 }
@@ -2511,16 +2565,18 @@ fn m3_dialog(inner: Element<'_, Message>) -> Element<'_, Message> {
 
 /// `Task<Message>` wrapping `rfd::AsyncFileDialog::pick_folder` for
 /// direct `return` from an update handler.
-fn pick_folder_task(on_pick: fn(Option<String>) -> Message) -> Task<Message> {
-    Task::perform(
-        async {
-            rfd::AsyncFileDialog::new()
-                .pick_folder()
-                .await
-                .map(|f| f.path().to_string_lossy().to_string())
-        },
-        on_pick,
-    )
+///
+/// `kind` selects the recents bucket — the dialog seeds its starting
+/// directory from the kind's most-recent path so users land where they
+/// last worked. Call-sites that don't fit one of the 4 folder categories
+/// should use [`PickerKind::OutputFolder`] rather than introducing a new
+/// kind silently.
+fn pick_folder_task(
+    kind: pickers::PickerKind,
+    recents: &settings_store::RecentPaths,
+    on_pick: fn(Option<String>) -> Message,
+) -> Task<Message> {
+    pickers::pick_folder_for(kind, recents, on_pick)
 }
 
 #[derive(Debug, Clone)]
@@ -2809,6 +2865,27 @@ enum PickerTarget {
     RootFolder,
     UnrootFolder,
     FlashFolder,
+}
+
+impl PickerTarget {
+    /// Map this routing target to the recents bucket it should store into.
+    /// `None` returns `File` defensively so callers get a valid bucket even
+    /// if they forgot to set the target — the recents entry is harmless;
+    /// the field-routing `match` in `FolderSelected` / `FileSelected` is
+    /// what actually prevents wrong writes.
+    fn kind(self) -> pickers::PickerKind {
+        use pickers::PickerKind;
+        match self {
+            // Root OTA file is a unified file pick (zip or apk).
+            Self::None | Self::RootFile => PickerKind::File,
+            // Firmware folders all share the "full QFIL" bucket — Root,
+            // Unroot, and Flash typically point the user at the same
+            // dump/archive they extracted from `ltbox dump full`.
+            Self::RootFolder | Self::UnrootFolder | Self::FlashFolder => {
+                PickerKind::QfilFirmwareFolder
+            }
+        }
+    }
 }
 
 impl Default for App {
@@ -3115,16 +3192,32 @@ impl App {
         });
     }
 
-    fn remember_recent_file(&mut self, path: &str) {
-        if self.recent_paths.push_file(path) {
+    /// Record `path` in the MRU list for `kind`. Persists on change so
+    /// the list survives restarts (write is cheap — small JSON, and only
+    /// triggers when the list actually moves).
+    fn remember_recent(&mut self, kind: pickers::PickerKind, path: &str) {
+        if self.recent_paths.push(kind.storage_key(), path) {
             self.persist_settings();
         }
     }
 
-    fn remember_recent_folder(&mut self, path: &str) {
-        if self.recent_paths.push_folder(path) {
-            self.persist_settings();
-        }
+    /// Remember `folder` under [`LoaderFolder`] and resolve the fixed-name
+    /// EDL loader (`xbl_s_devprg_ns.melf`) inside it. Used by every
+    /// "select loader" Browse button — the user now picks the folder
+    /// holding the loader rather than clicking through to the file,
+    /// which avoids a common mis-pick (selecting `xbl_a.melf` etc.).
+    ///
+    /// Returns the loader's full path on success, or a user-facing error
+    /// message on miss. Callers route the error into the relevant
+    /// wizard's `*_error` field so the UI shows it next to Browse.
+    ///
+    /// [`LoaderFolder`]: pickers::PickerKind::LoaderFolder
+    fn resolve_loader_folder(&mut self, folder: &str) -> std::result::Result<String, String> {
+        let dir = std::path::Path::new(folder);
+        self.remember_recent(pickers::PickerKind::LoaderFolder, folder);
+        find_edl_loader(dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .ok_or_else(|| format!("xbl_s_devprg_ns.melf not found in {folder}"))
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -3237,7 +3330,11 @@ impl App {
             }
             Message::FlashSelectFolder => {
                 self.picker_target = PickerTarget::FlashFolder;
-                return pick_folder_task(Message::FolderSelected);
+                return pick_folder_task(
+                    pickers::PickerKind::QfilFirmwareFolder,
+                    &self.recent_paths,
+                    Message::FolderSelected,
+                );
             }
             Message::FlashExecStart => {
                 self.begin_op(View::Flash);
@@ -3899,10 +3996,19 @@ impl App {
             }
             Message::SysBack => self.sysupdate.back(),
             Message::SysRescueSelectFolder => {
-                return pick_folder_task(Message::SysRescueFolderChosen);
+                // Rescue only needs the loader + `rawprogram*.xml` fragment
+                // (v2 rescue shape) — bucket it separately from the full
+                // QFIL firmware so users who routinely switch between
+                // rescue and flash don't have their recents collide.
+                return pick_folder_task(
+                    pickers::PickerKind::LoaderRawprogramFolder,
+                    &self.recent_paths,
+                    Message::SysRescueFolderChosen,
+                );
             }
             Message::SysRescueFolderChosen(path) => {
                 if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::LoaderRawprogramFolder, &p);
                     self.sysupdate.rescue_folder = Some(p);
                     // Force re-pick of region when folder changes — a stale
                     // region from a prior folder could target the wrong
@@ -4380,26 +4486,22 @@ impl App {
             }
             Message::RootSelectFile => {
                 self.picker_target = PickerTarget::RootFile;
-                let is_gki = self.root.is_gki();
-                return Task::perform(
-                    async move {
-                        let mut dialog = rfd::AsyncFileDialog::new();
-                        if is_gki {
-                            dialog = dialog.add_filter("ZIP", &["zip"]);
-                        } else {
-                            dialog = dialog.add_filter("APK", &["apk"]);
-                        }
-                        dialog
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string())
-                    },
-                    Message::FileSelected,
-                );
+                let spec = if self.root.is_gki() {
+                    pickers::FilePickSpec::single("picker_target_kernelsu_zip")
+                        .with_filter("ZIP", &["zip"])
+                } else {
+                    pickers::FilePickSpec::single("picker_target_apatch_apk")
+                        .with_filter("APK", &["apk"])
+                };
+                return pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected);
             }
             Message::RootSelectFolder => {
                 self.picker_target = PickerTarget::RootFolder;
-                return pick_folder_task(Message::FolderSelected);
+                return pick_folder_task(
+                    pickers::PickerKind::QfilFirmwareFolder,
+                    &self.recent_paths,
+                    Message::FolderSelected,
+                );
             }
             Message::RootNext => {
                 if self.root.step == 6 {
@@ -4419,24 +4521,15 @@ impl App {
             Message::RootSelectKpm => {
                 // Multi-select; paths merge-dedup into the list so
                 // the user can Browse multiple times.
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("KPM modules", &["kpm"])
-                            .pick_files()
-                            .await
-                            .map(|files| {
-                                files
-                                    .into_iter()
-                                    .map(|f| f.path().to_string_lossy().to_string())
-                                    .collect::<Vec<_>>()
-                            })
-                    },
-                    Message::RootKpmSelected,
-                );
+                let spec = pickers::FilePickSpec::multi("picker_target_kpm_modules")
+                    .with_filter("KPM modules", &["kpm"]);
+                return pickers::pick_files_for(spec, &self.recent_paths, Message::RootKpmSelected);
             }
             Message::RootKpmSelected(paths) => {
                 if let Some(paths) = paths {
+                    if let Some(first) = paths.first() {
+                        self.remember_recent(pickers::PickerKind::File, first);
+                    }
                     for p in paths {
                         if !self.root.kpm_paths.iter().any(|existing| existing == &p) {
                             self.root.kpm_paths.push(p);
@@ -4862,7 +4955,11 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             Message::SetUnrootType(t) => self.unroot.unroot_type = Some(t),
             Message::UnrootSelectFolder => {
                 self.picker_target = PickerTarget::UnrootFolder;
-                return pick_folder_task(Message::FolderSelected);
+                return pick_folder_task(
+                    pickers::PickerKind::QfilFirmwareFolder,
+                    &self.recent_paths,
+                    Message::FolderSelected,
+                );
             }
             Message::UnrootNext => {
                 if self.unroot.step == 2 {
@@ -5065,41 +5162,27 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 self.adv_wizard.next();
             }
             Message::AdvWizBrowse => {
-                let is_folder = self.adv_wizard.is_folder_op();
+                let kind = self.adv_wizard.picker_kind();
+                if kind.is_folder() {
+                    return pick_folder_task(kind, &self.recent_paths, Message::AdvWizBrowseDone);
+                }
                 let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
-                let filter_label = filter_label.to_string();
-                let filter_exts: Vec<String> = filter_exts.iter().map(|s| s.to_string()).collect();
-                return Task::perform(
-                    async move {
-                        if is_folder {
-                            rfd::AsyncFileDialog::new()
-                                .pick_folder()
-                                .await
-                                .map(|f| f.path().to_string_lossy().to_string())
-                        } else {
-                            let mut dialog = rfd::AsyncFileDialog::new();
-                            if !filter_exts.is_empty() {
-                                let exts: Vec<&str> =
-                                    filter_exts.iter().map(|s| s.as_str()).collect();
-                                dialog = dialog.add_filter(&filter_label, &exts);
-                            }
-                            dialog
-                                .pick_file()
-                                .await
-                                .map(|f| f.path().to_string_lossy().to_string())
-                        }
-                    },
-                    Message::AdvWizBrowseDone,
-                );
+                let target_key = self.adv_wizard.picker_target_i18n_key();
+                let mut spec = pickers::FilePickSpec::single(target_key);
+                if !filter_exts.is_empty() {
+                    spec = spec.with_filter(filter_label, filter_exts);
+                }
+                return pickers::pick_file_for(spec, &self.recent_paths, Message::AdvWizBrowseDone);
             }
             Message::AdvWizBrowseDone(path) => {
                 if let Some(p) = path {
                     if std::path::Path::new(&p).exists() {
-                        if std::path::Path::new(&p).is_dir() {
-                            self.remember_recent_folder(&p);
-                        } else {
-                            self.remember_recent_file(&p);
-                        }
+                        // Kind is derived from the action (folder ops →
+                        // folder bucket, file ops → File) rather than the
+                        // runtime is_dir() check — trusting the action
+                        // keeps buckets consistent even if rfd returns an
+                        // unexpected path type.
+                        self.remember_recent(self.adv_wizard.picker_kind(), &p);
                     }
                     self.adv_wizard.file_path = Some(p);
                 }
@@ -5123,11 +5206,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             }
             Message::AdvFileSelected(action, path) => {
                 if let Some(input_path) = path {
-                    if std::path::Path::new(&input_path).is_dir() {
-                        self.remember_recent_folder(&input_path);
-                    } else {
-                        self.remember_recent_file(&input_path);
-                    }
+                    // See AdvWizBrowseDone — trust the action's kind over
+                    // the runtime is_dir() probe.
+                    self.remember_recent(self.adv_wizard.picker_kind(), &input_path);
                     self.begin_op(View::Advanced);
                     self.error_msg = None;
                     let action_label = self.t(action.label_key()).to_string();
@@ -5158,12 +5239,37 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 }
                                 match action {
                                     AdvAction::ConvertXml => {
-                                        let stem = input.file_stem().unwrap_or_default();
-                                        let output = output_dir.join(stem).with_extension("xml");
-                                        log.push(format!("[Crypto] $ decrypt_file {} → {}", input.display(), output.display()));
-                                        match ltbox_core::crypto::decrypt_file(input, &output) {
-                                            Ok(size) => log.push(format!("[Crypto] Decrypted {size} bytes")),
-                                            Err(e) => return Err(format!("Decryption failed: {e}")),
+                                        // `input` is now the folder holding the encrypted
+                                        // `*.x` pack (picker moved from file→folder so
+                                        // users don't have to repeat the dialog for each
+                                        // file). Iterate every `*.x`, decrypt to `*.xml`
+                                        // in `output_dir`.
+                                        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(input)
+                                            .map_err(|e| format!("read_dir {}: {e}", input.display()))?
+                                            .filter_map(|r| r.ok().map(|e| e.path()))
+                                            .filter(|p| {
+                                                p.is_file()
+                                                    && p.extension()
+                                                        .and_then(|s| s.to_str())
+                                                        .map(|s| s.eq_ignore_ascii_case("x"))
+                                                        .unwrap_or(false)
+                                            })
+                                            .collect();
+                                        entries.sort();
+                                        if entries.is_empty() {
+                                            return Err(format!(
+                                                "No *.x files found under {}",
+                                                input.display()
+                                            ));
+                                        }
+                                        for src in entries {
+                                            let stem = src.file_stem().unwrap_or_default();
+                                            let output = output_dir.join(stem).with_extension("xml");
+                                            log.push(format!("[Crypto] $ decrypt_file {} → {}", src.display(), output.display()));
+                                            match ltbox_core::crypto::decrypt_file(&src, &output) {
+                                                Ok(size) => log.push(format!("[Crypto] Decrypted {size} bytes")),
+                                                Err(e) => return Err(format!("Decryption failed: {e}")),
+                                            }
                                         }
                                     }
                                     AdvAction::DetectArb => {
@@ -5688,7 +5794,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             // Async results
             Message::FileSelected(path) => {
                 if let Some(p) = path {
-                    self.remember_recent_file(&p);
+                    self.remember_recent(self.picker_target.kind(), &p);
                     if self.picker_target == PickerTarget::RootFile {
                         self.root.file_path = Some(p)
                     }
@@ -5697,7 +5803,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             }
             Message::FolderSelected(path) => {
                 if let Some(p) = path {
-                    self.remember_recent_folder(&p);
+                    self.remember_recent(self.picker_target.kind(), &p);
                     match self.picker_target {
                         PickerTarget::UnrootFolder => self.unroot.folder_path = Some(p),
                         PickerTarget::FlashFolder => self.flash.firmware_folder = Some(p),
@@ -5712,7 +5818,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 if !std::path::Path::new(&path).is_file() {
                     return Task::none();
                 }
-                self.remember_recent_file(&path);
+                self.remember_recent(target.kind(), &path);
                 if target == PickerTarget::RootFile {
                     self.root.file_path = Some(path)
                 }
@@ -5721,7 +5827,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 if !std::path::Path::new(&path).is_dir() {
                     return Task::none();
                 }
-                self.remember_recent_folder(&path);
+                self.remember_recent(target.kind(), &path);
                 match target {
                     PickerTarget::UnrootFolder => self.unroot.folder_path = Some(path),
                     PickerTarget::FlashFolder => self.flash.firmware_folder = Some(path),
@@ -5968,21 +6074,27 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 );
             }
             Message::FlashPartsSelectLoader => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string())
-                    },
+                // Folder-pick: user picks the directory containing
+                // `xbl_s_devprg_ns.melf`. The handler resolves the
+                // fixed-name loader inside. Previously a file-pick,
+                // which forced the user to know which `*.melf` to click
+                // (several ship per firmware — picking `xbl_a.melf`
+                // here is a silent wrong answer).
+                return pick_folder_task(
+                    pickers::PickerKind::LoaderFolder,
+                    &self.recent_paths,
                     Message::FlashPartsLoaderChosen,
                 );
             }
             Message::FlashPartsLoaderChosen(path) => {
                 if let Some(p) = path {
-                    self.flash_parts.loader_path = Some(p);
-                    self.flash_parts.scan_error = None;
+                    match self.resolve_loader_folder(&p) {
+                        Ok(loader) => {
+                            self.flash_parts.loader_path = Some(loader);
+                            self.flash_parts.scan_error = None;
+                        }
+                        Err(msg) => self.flash_parts.scan_error = Some(msg),
+                    }
                 }
             }
             Message::FlashPartsToggleRow(idx) => {
@@ -5991,21 +6103,16 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 }
             }
             Message::FlashPartsPickRowFile(idx) => {
-                return Task::perform(
-                    async move {
-                        let file = rfd::AsyncFileDialog::new()
-                            .add_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string());
-                        (idx, file)
-                    },
-                    |(idx, path)| Message::FlashPartsRowFileChosen(idx, path),
-                );
+                let spec = pickers::FilePickSpec::single("picker_target_partition_image")
+                    .with_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"]);
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashPartsRowFileChosen(idx, path)
+                });
             }
             Message::FlashPartsRowFileChosen(idx, path) => {
-                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
-                    if let Some(p) = path {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    if let Some(row) = self.flash_parts.rows.get_mut(idx) {
                         row.file_path = Some(p);
                         // Picking a file implicitly flips the row to Flash
                         // so the user doesn't have to also cycle the box.
@@ -6041,7 +6148,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 .unwrap_or_else(|e| FlashPartsScanResult {
                                     logs: vec![format!("[FlashParts] heavy thread error: {e}")],
                                     rows: Vec::new(),
-                                    error: Some(format!("{e}")),
+                                    error: Some(e.to_string()),
                                 })
                         })
                         .await
@@ -6102,21 +6209,21 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 self.end_op();
             }
             Message::DumpPartsSelectLoader => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string())
-                    },
+                return pick_folder_task(
+                    pickers::PickerKind::LoaderFolder,
+                    &self.recent_paths,
                     Message::DumpPartsLoaderChosen,
                 );
             }
             Message::DumpPartsLoaderChosen(path) => {
                 if let Some(p) = path {
-                    self.dump_parts.loader_path = Some(p);
-                    self.dump_parts.scan_error = None;
+                    match self.resolve_loader_folder(&p) {
+                        Ok(loader) => {
+                            self.dump_parts.loader_path = Some(loader);
+                            self.dump_parts.scan_error = None;
+                        }
+                        Err(msg) => self.dump_parts.scan_error = Some(msg),
+                    }
                 }
             }
             Message::DumpPartsToggleRow(idx) => {
@@ -6154,7 +6261,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 .unwrap_or_else(|e| DumpPartsScanResult {
                                     logs: vec![format!("[DumpParts] heavy thread error: {e}")],
                                     rows: Vec::new(),
-                                    error: Some(format!("{e}")),
+                                    error: Some(e.to_string()),
                                 })
                         })
                         .await
@@ -6182,10 +6289,18 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 }
             }
             Message::DumpPartsSelectFolder => {
-                return pick_folder_task(Message::DumpPartsFolderChosen);
+                // Dump destination, not a firmware source — goes to the
+                // `OutputFolder` bucket so the MRU list doesn't mix input
+                // firmware dirs with output dump dirs.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    Message::DumpPartsFolderChosen,
+                );
             }
             Message::DumpPartsFolderChosen(path) => {
                 if let Some(folder) = path {
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_parts.output_dir = Some(folder.clone());
                     self.dump_parts.step = 2;
                     self.begin_op(View::Advanced);
@@ -6220,21 +6335,21 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             }
             // -- Physical Storage: Dump --------------------------------------
             Message::DumpPhysSelectLoader => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string())
-                    },
+                return pick_folder_task(
+                    pickers::PickerKind::LoaderFolder,
+                    &self.recent_paths,
                     Message::DumpPhysLoaderChosen,
                 );
             }
             Message::DumpPhysLoaderChosen(path) => {
                 if let Some(p) = path {
-                    self.dump_phys.loader_path = Some(p);
-                    self.dump_phys.loader_error = None;
+                    match self.resolve_loader_folder(&p) {
+                        Ok(loader) => {
+                            self.dump_phys.loader_path = Some(loader);
+                            self.dump_phys.loader_error = None;
+                        }
+                        Err(msg) => self.dump_phys.loader_error = Some(msg),
+                    }
                 }
             }
             Message::DumpPhysToggleRow(idx) => {
@@ -6253,10 +6368,16 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 self.dump_phys.reset();
             }
             Message::DumpPhysSelectFolder => {
-                return pick_folder_task(Message::DumpPhysFolderChosen);
+                // Dump destination — see DumpPartsSelectFolder.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    Message::DumpPhysFolderChosen,
+                );
             }
             Message::DumpPhysFolderChosen(path) => {
                 if let Some(folder) = path {
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_phys.output_dir = Some(folder.clone());
                     self.dump_phys.step = 2;
                     self.begin_op(View::Advanced);
@@ -6292,21 +6413,21 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             }
             // -- Physical Storage: Flash -------------------------------------
             Message::FlashPhysSelectLoader => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter("EDL loader (*.melf *.mbn)", &["melf", "mbn"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string())
-                    },
+                return pick_folder_task(
+                    pickers::PickerKind::LoaderFolder,
+                    &self.recent_paths,
                     Message::FlashPhysLoaderChosen,
                 );
             }
             Message::FlashPhysLoaderChosen(path) => {
                 if let Some(p) = path {
-                    self.flash_phys.loader_path = Some(p);
-                    self.flash_phys.loader_error = None;
+                    match self.resolve_loader_folder(&p) {
+                        Ok(loader) => {
+                            self.flash_phys.loader_path = Some(loader);
+                            self.flash_phys.loader_error = None;
+                        }
+                        Err(msg) => self.flash_phys.loader_error = Some(msg),
+                    }
                 }
             }
             Message::FlashPhysToggleRow(idx) => {
@@ -6315,22 +6436,17 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 }
             }
             Message::FlashPhysPickRowFile(idx) => {
-                return Task::perform(
-                    async move {
-                        let file = rfd::AsyncFileDialog::new()
-                            .add_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"])
-                            .pick_file()
-                            .await
-                            .map(|f| f.path().to_string_lossy().to_string());
-                        (idx, file)
-                    },
-                    |(idx, path)| Message::FlashPhysRowFileChosen(idx, path),
-                );
+                let spec = pickers::FilePickSpec::single("picker_target_storage_image")
+                    .with_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"]);
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashPhysRowFileChosen(idx, path)
+                });
             }
             Message::FlashPhysRowFileChosen(idx, path) => {
                 if idx < PHYS_LUN_COUNT
                     && let Some(p) = path
                 {
+                    self.remember_recent(pickers::PickerKind::File, &p);
                     self.flash_phys.file_paths[idx] = Some(p);
                     // Picking a file implicitly selects the row.
                     self.flash_phys.selected[idx] = true;
@@ -6408,15 +6524,12 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 }
                 // EDL needs a loader for Firehose before Power(reset).
                 // v2 parity: `_reboot_from_edl` requires `xbl_s_devprg_ns.melf`.
+                // Folder-pick keeps this consistent with the wizard loader
+                // pickers; the handler resolves the file inside.
                 if matches!(conn, ConnectionStatus::Edl) {
-                    return Task::perform(
-                        async {
-                            rfd::AsyncFileDialog::new()
-                                .add_filter("EDL loader", &["melf", "mbn", "elf"])
-                                .pick_file()
-                                .await
-                                .map(|f| f.path().to_string_lossy().to_string())
-                        },
+                    return pickers::pick_folder_for(
+                        pickers::PickerKind::LoaderFolder,
+                        &self.recent_paths,
                         move |path| Message::RebootEdlWithLoader(target, path),
                     );
                 }
@@ -6498,11 +6611,21 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 );
             }
             Message::RebootEdlWithLoader(target, path) => {
-                let Some(loader_str) = path else {
+                let Some(loader_folder) = path else {
                     self.log_push("[Reboot] Cancelled — no EDL loader selected".to_string());
                     return Task::none();
                 };
-                let loader = std::path::PathBuf::from(loader_str);
+                // Folder-pick resolves to `xbl_s_devprg_ns.melf` inside;
+                // remember_recent in resolve_loader_folder keeps the MRU
+                // even if resolution fails (user may just have pointed at
+                // the wrong folder and want to try again from there).
+                let loader = match self.resolve_loader_folder(&loader_folder) {
+                    Ok(p) => std::path::PathBuf::from(p),
+                    Err(msg) => {
+                        self.error_msg = Some(msg);
+                        return Task::none();
+                    }
+                };
                 if !loader.exists() {
                     self.error_msg = Some(format!("Loader not found: {}", loader.display()));
                     return Task::none();
@@ -7516,7 +7639,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             ..Default::default()
         });
         let chips = self.recent_chips(
-            &self.recent_paths.folders,
+            self.recent_paths
+                .recent(PickerTarget::FlashFolder.kind().storage_key()),
             |p| Message::RecentFolderPicked(PickerTarget::FlashFolder, p),
             "picker_recents",
         );
@@ -7888,7 +8012,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             ..Default::default()
         });
         let chips = self.recent_chips(
-            &self.recent_paths.folders,
+            self.recent_paths
+                .recent(pickers::PickerKind::LoaderRawprogramFolder.storage_key()),
             |p| Message::SysRescueFolderChosen(Some(p)),
             "picker_recents",
         );
@@ -8406,7 +8531,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             ..Default::default()
         });
         let chips = self.recent_chips(
-            &self.recent_paths.folders,
+            self.recent_paths
+                .recent(PickerTarget::UnrootFolder.kind().storage_key()),
             |p| Message::RecentFolderPicked(PickerTarget::UnrootFolder, p),
             "picker_recents",
         );
@@ -8962,7 +9088,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         });
 
         let chips = self.recent_chips(
-            &self.recent_paths.files,
+            self.recent_paths
+                .recent(PickerTarget::RootFile.kind().storage_key()),
             |p| Message::RecentFilePicked(PickerTarget::RootFile, p),
             "picker_recents",
         );
@@ -9071,7 +9198,8 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             ..Default::default()
         });
         let chips = self.recent_chips(
-            &self.recent_paths.folders,
+            self.recent_paths
+                .recent(PickerTarget::RootFolder.kind().storage_key()),
             |p| Message::RecentFolderPicked(PickerTarget::RootFolder, p),
             "picker_recents",
         );
@@ -9494,13 +9622,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             Space::new().width(Length::Fill),
         ];
         let status_color = if selected { GREEN } else { LABEL };
-        let chip_source = if self.adv_wizard.is_folder_op() {
-            &self.recent_paths.folders
-        } else {
-            &self.recent_paths.files
-        };
         let chips = self.recent_chips(
-            chip_source,
+            self.recent_paths
+                .recent(self.adv_wizard.picker_kind().storage_key()),
             |p| Message::AdvWizBrowseDone(Some(p)),
             "picker_recents",
         );
