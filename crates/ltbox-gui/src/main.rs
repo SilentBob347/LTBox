@@ -3931,6 +3931,10 @@ impl App {
                 // takes ownership.
                 let rescue_folder = self.sysupdate.rescue_folder.clone();
                 let rescue_region = self.sysupdate.rescue_region;
+                // Capture model for AVB fingerprint validation — mirrors
+                // v2 `_validate_device_model`, prevents flashing firmware
+                // built for a different TB3xx variant.
+                let device_model = self.device_model.clone();
                 self.begin_op(View::SystemUpdate);
                 self.error_msg = None;
                 self.log_push(format!(
@@ -4088,6 +4092,60 @@ impl App {
                                             "Boot Recovery: no partitions dumped — aborting"
                                                 .into(),
                                         );
+                                    }
+
+                                    // Cross-check firmware against device
+                                    // model via AVB vendor_boot fingerprint —
+                                    // aborts the whole rescue if the dumped
+                                    // image was built for another model. Uses
+                                    // the first available vendor_boot dump;
+                                    // slot A/B carry the same fingerprint.
+                                    if let Some(vb_probe) = dumped
+                                        .iter()
+                                        .find(|(b, _, _)| b == "vendor_boot")
+                                    {
+                                        match ltbox_patch::avb::extract_image_avb_info(
+                                            &vb_probe.2,
+                                        ) {
+                                            Ok(info) => {
+                                                use ltbox_patch::region::{
+                                                    validate_device_model, ModelValidation,
+                                                };
+                                                match validate_device_model(
+                                                    &info,
+                                                    &device_model,
+                                                ) {
+                                                    ModelValidation::Match { fingerprint } => {
+                                                        log.push(format!(
+                                                            "[Rescue] Model check OK (fingerprint={fingerprint})"
+                                                        ));
+                                                    }
+                                                    ModelValidation::Missing => {
+                                                        log.push(
+                                                            "[Rescue] WARN: vendor_boot has no fingerprint property — skipping model check"
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    ModelValidation::Mismatch {
+                                                        fingerprint,
+                                                        device_model,
+                                                    } => {
+                                                        log.push(format!(
+                                                            "[Rescue] ABORT: model mismatch (device={device_model}, firmware fingerprint={fingerprint})"
+                                                        ));
+                                                        let _ = session.reset(&mut log);
+                                                        return Err(
+                                                            "Boot Recovery: firmware/device model mismatch".into(),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log.push(format!(
+                                                    "[Rescue] WARN: AVB inspect for model check failed: {e} — skipping"
+                                                ));
+                                            }
+                                        }
                                     }
 
                                     // Patch vendor_boot per region, rebuild

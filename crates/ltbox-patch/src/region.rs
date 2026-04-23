@@ -5,8 +5,60 @@
 use fs_err as fs;
 use std::path::Path;
 
+use crate::avb::AvbImageInfo;
 use ltbox_core::{LtboxError, Result};
 use tracing::info;
+
+/// AVB property key that carries the vendor_boot fingerprint — stock
+/// Lenovo firmware embeds the full `ro.vendor.build.fingerprint` string
+/// so the device model is a substring match away.
+const VENDOR_BOOT_FINGERPRINT_KEY: &str = "com.android.build.vendor_boot.fingerprint";
+
+/// Outcome of validating a vendor_boot image against a device model.
+/// Matches v2 `_validate_device_model` three-way result: the fingerprint
+/// may match, mismatch, or be absent entirely (older firmware).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelValidation {
+    /// Fingerprint present and contains `device_model`. Safe to proceed.
+    Match { fingerprint: String },
+    /// Fingerprint present but does NOT contain `device_model`. The
+    /// firmware is for a different model — caller should abort.
+    Mismatch {
+        fingerprint: String,
+        device_model: String,
+    },
+    /// No fingerprint property in the AVB image. Caller decides — v2
+    /// logged a warning and skipped validation.
+    Missing,
+}
+
+/// Check an AVB-extracted `vendor_boot.img` against the ADB-reported
+/// device model. Mirrors v2 `_validate_device_model` in
+/// `bin/ltbox/actions/region.py`: pulls
+/// `com.android.build.vendor_boot.fingerprint` from the image's AVB
+/// props and looks for the device model as a substring.
+///
+/// Spaces in `device_model` are stripped to tolerate
+/// `"TB 320FC"`-style reads from `ro.product.model`.
+pub fn validate_device_model(info: &AvbImageInfo, device_model: &str) -> ModelValidation {
+    let normalized = device_model.replace(' ', "");
+    let fingerprint = info
+        .props
+        .iter()
+        .find(|(k, _)| k == VENDOR_BOOT_FINGERPRINT_KEY)
+        .and_then(|(_, v)| std::str::from_utf8(v).ok())
+        .map(|s| s.trim_end_matches('\0').to_string());
+
+    match fingerprint {
+        None => ModelValidation::Missing,
+        Some(fp) if normalized.is_empty() => ModelValidation::Match { fingerprint: fp },
+        Some(fp) if fp.contains(&normalized) => ModelValidation::Match { fingerprint: fp },
+        Some(fp) => ModelValidation::Mismatch {
+            fingerprint: fp,
+            device_model: normalized,
+        },
+    }
+}
 
 /// Direction of region conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
