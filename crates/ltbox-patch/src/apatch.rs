@@ -41,6 +41,13 @@ pub fn patch_boot(
 ) -> Result<PathBuf> {
     validate_superkey(superkey)?;
 
+    // kptools-base defaults LOG_ENABLE off so library embedders don't get
+    // `[+]`/`[?]`/`[-]` chatter on stderr unasked. We want it: stderr is
+    // tapped by the GUI's stdout_tap into the live log panel, and the
+    // per-step context is the only window into what kptools is doing
+    // mid-patch. Idempotent — safe to call per-invocation.
+    kptools::log::set_log_enable(true);
+
     let boot_in = work_dir.join("boot.img");
     let kpimg = work_dir.join("kpimg");
     let kernel_ori = work_dir.join("kernel.ori");
