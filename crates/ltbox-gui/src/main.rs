@@ -11163,6 +11163,21 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
 /// `bin/ltbox/actions/edl.py::dump_partitions`.
 const EDL_POST_DUMP_STABILIZE: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Partition bases whose dump failure must be surfaced as a critical
+/// error, not a per-row log line. These carry region/board state that a
+/// subsequent rescue flow cannot reconstruct from scratch. Mirrors v2
+/// `critical_targets` set in `bin/ltbox/actions/edl.py::dump_partitions`.
+const CRITICAL_DUMP_BASES: &[&str] = &["devinfo", "persist"];
+
+/// Match a partition label (possibly slot-suffixed) against the critical
+/// base set. `devinfo`, `devinfo_a`, `DEVINFO_B` all match.
+fn is_critical_dump_label(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    CRITICAL_DUMP_BASES
+        .iter()
+        .any(|base| l == *base || l.starts_with(&format!("{base}_")))
+}
+
 /// Dump selected partitions to `output_folder` as `<label>.img`. Reopens
 /// the EDL session (previous scan left device waiting at Sahara), runs
 /// the reads back-to-back, then reboots to system.
@@ -11188,6 +11203,7 @@ fn dump_parts_execute(
         }
     };
 
+    let mut critical_failures: Vec<String> = Vec::new();
     for row in &rows {
         let out_path = out_dir.join(format!("{}.img", row.label));
         log.push(format!(
@@ -11206,6 +11222,9 @@ fn dump_parts_execute(
             &mut log,
         ) {
             log.push(format!("[DumpParts] {} failed: {e}", row.label));
+            if is_critical_dump_label(&row.label) {
+                critical_failures.push(row.label.clone());
+            }
         }
     }
 
@@ -11216,6 +11235,15 @@ fn dump_parts_execute(
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
     log.push("[DumpParts] Resetting device to system...".to_string());
     let _ = session.reset(&mut log);
+    // Surface critical-partition failures prominently — region/board state
+    // (devinfo/persist) can't be reconstructed from a partial dump and a
+    // silent "Done." would hide the hazard.
+    if !critical_failures.is_empty() {
+        log.push(format!(
+            "[DumpParts] CRITICAL: failed to dump {} — output folder is incomplete, do NOT use for rescue/flash workflows",
+            critical_failures.join(", ")
+        ));
+    }
     log.push("[DumpParts] Done.".to_string());
     log
 }
