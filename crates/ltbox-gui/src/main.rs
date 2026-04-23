@@ -11264,6 +11264,39 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
         ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
             log.push(format!("[{tag}] $ adb reboot edl"));
             let mut mgr = ltbox_device::adb::AdbManager::new();
+            // `AdbManager::reboot` requires a preselected serial. Since
+            // `check_device` now accepts only `Device` state, use
+            // `check_device_state` here so recovery-state ADB can also
+            // seed the serial before issuing `reboot edl`.
+            let state = match mgr.check_device_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    log.push(format!("[{tag}] ADB state probe failed: {e}"));
+                    log.push(format!(
+                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                    ));
+                    return Err(());
+                }
+            };
+            match state {
+                Some("device") | Some("recovery") => {}
+                Some(other) => {
+                    log.push(format!(
+                        "[{tag}] ADB is in `{other}` state; cannot reboot to EDL"
+                    ));
+                    log.push(format!(
+                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                    ));
+                    return Err(());
+                }
+                None => {
+                    log.push(format!("[{tag}] No ADB device found"));
+                    log.push(format!(
+                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                    ));
+                    return Err(());
+                }
+            }
             match mgr.reboot("edl") {
                 Ok(_) => Ok(()),
                 Err(e) => {
