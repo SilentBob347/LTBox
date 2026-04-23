@@ -1157,8 +1157,8 @@ impl ThemeChoice {
 // =========================================================================
 
 /// One phase of a long-running op. The GUI advances through
-/// `Vec<OpStep>` by matching `"[{op}] Phase N/M"` markers in the log
-/// stream — no separate event channel.
+/// `Vec<OpStep>` by matching phase markers (`N/M`) in the log stream —
+/// no separate event channel.
 #[derive(Debug, Clone)]
 struct OpStep {
     /// Pre-translated label for the single-step card. Derived at op
@@ -1166,13 +1166,41 @@ struct OpStep {
     label: String,
 }
 
-/// Parse `"Phase N/M"` out of a log line. Returns `N` (1-indexed).
-/// Shape is stable across Root / Unroot / Flash / SysUpdate.
+/// Localized phase marker text that still includes a stable `N/M` token
+/// for progress parsing.
+fn phase_marker<S: AsRef<str>>(phase: usize, total: usize, label: S) -> String {
+    ltbox_core::i18n::tr("live_phase_marker")
+        .replace("{phase}", &phase.to_string())
+        .replace("{total}", &total.to_string())
+        .replace("{label}", label.as_ref())
+}
+
+/// Parse `N/M` out of a log line. Returns `N` (1-indexed).
+/// Shape stays stable across locales as long as a `digit/digit` token
+/// is present in the line.
 fn parse_phase_marker(line: &str) -> Option<usize> {
-    let idx = line.find("] Phase ")?;
-    let rest = &line[idx + "] Phase ".len()..];
-    let slash = rest.find('/')?;
-    rest[..slash].trim().parse::<usize>().ok()
+    let bytes = line.as_bytes();
+    for slash in 0..bytes.len() {
+        if bytes[slash] != b'/' {
+            continue;
+        }
+        let mut lhs = slash;
+        while lhs > 0 && bytes[lhs - 1].is_ascii_digit() {
+            lhs -= 1;
+        }
+        if lhs == slash {
+            continue;
+        }
+        let mut rhs = slash + 1;
+        while rhs < bytes.len() && bytes[rhs].is_ascii_digit() {
+            rhs += 1;
+        }
+        if rhs == slash + 1 {
+            continue;
+        }
+        return line[lhs..slash].parse::<usize>().ok();
+    }
+    None
 }
 
 // Icon glyphs for the current-step card (running / done / failed).
@@ -3387,11 +3415,16 @@ impl App {
                             let fw_dir = std::path::Path::new(&fw_folder);
 
                             // 1. Validate firmware folder
-                            live!(log, "[Flash] Phase 1/4 — {}", ll.op_flash_phase[0]);
+                            live!(log, "[Flash] {}", phase_marker(1, 4, &ll.op_flash_phase[0]));
                             if !fw_dir.exists() {
                                 return Err(format!("Firmware folder not found: {fw_folder}"));
                             }
-                            live!(log, "[Flash] Firmware folder: {fw_folder}");
+                            live!(
+                                log,
+                                "[Flash] {}",
+                                ltbox_core::i18n::tr("live_flash_firmware_folder")
+                                    .replace("{path}", &fw_folder)
+                            );
 
                             // Rollback=ON + no fastboot vars → can't target
                             // a safe index. Bail before risking a brick.
@@ -3400,7 +3433,8 @@ impl App {
                             {
                                 live!(
                                     log,
-                                    "[ARB] Rollback mode = ON but fastboot vars unreachable — cannot target a safe rollback index. Aborting and rebooting to system."
+                                    "[ARB] {}",
+                                    ltbox_core::i18n::tr("live_arb_on_fastboot_unreachable")
                                 );
                                 // Best-effort reboot — any failure stays
                                 // in the log; wizard still gets the Err.
@@ -3527,7 +3561,7 @@ impl App {
                                 }
                             };
 
-                            live!(log, "[Flash] Phase 2/4 — {}", ll.op_flash_phase[1]);
+                            live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
                             transition_to_edl(&ll, &mut log)?;
 
                             let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
@@ -3736,8 +3770,11 @@ impl App {
                                         let start = rec.start_sector.clone().unwrap_or_else(|| "0".to_string());
                                         live!(
                                             log,
-                                            "[ARB] prepared {log_name} → {} (target={target})",
-                                            patched.display()
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_arb_prepared_patch")
+                                                .replace("{name}", log_name)
+                                                .replace("{path}", &patched.display().to_string())
+                                                .replace("{target}", &target.to_string())
                                         );
                                         arb_patched.push((
                                             rec.label.clone(),
@@ -3751,10 +3788,11 @@ impl App {
 
                             live!(
                                 log,
-                                "[Flash] Phase 3/4 — {} ({} rawprogram + {} patch XML)",
-                                ll.op_flash_phase[2],
-                                raw_xmls.len(),
-                                patch_xmls.len()
+                                "[Flash] {} ({})",
+                                phase_marker(3, 4, &ll.op_flash_phase[2]),
+                                ltbox_core::i18n::tr("live_flash_phase3_xml_counts")
+                                    .replace("{raw}", &raw_xmls.len().to_string())
+                                    .replace("{patch}", &patch_xmls.len().to_string())
                             );
                             session
                                 .flash_rawprogram_with_wipe(
@@ -3768,7 +3806,12 @@ impl App {
                             // Overwrite rawprogram's stock boot + vbmeta_system
                             // with the ARB-patched copies.
                             for (label, lun, start, patched) in &arb_patched {
-                                live!(log, "[ARB] flash patched {label}");
+                                live!(
+                                    log,
+                                    "[ARB] {}",
+                                    ltbox_core::i18n::tr("live_arb_flash_patched")
+                                        .replace("{label}", label)
+                                );
                                 if let Err(e) = session.flash_partition_at(
                                     label,
                                     patched,
@@ -3787,7 +3830,12 @@ impl App {
                             // stays untouched on disk.
                             if cfg.wipe
                                 && let Some(target_code) = cfg.country_code.as_deref() {
-                                    live!(log, "[Flash] Country code patch: target={target_code}");
+                                    live!(
+                                        log,
+                                        "[Flash] {}",
+                                        ltbox_core::i18n::tr("live_flash_country_patch_target")
+                                            .replace("{target}", target_code)
+                                    );
                                     let work_dir = dirs::data_dir()
                                         .unwrap_or_else(|| std::path::PathBuf::from("."))
                                         .join("ltbox")
@@ -3857,7 +3905,15 @@ impl App {
                                             continue;
                                         }
                                         let dump_path = work_dir.join(format!("{label}.img"));
-                                        live!(log, "[Country] dump {label} (LUN {lun}, start {start}, {n} sectors)");
+                                        live!(
+                                            log,
+                                            "[Country] {}",
+                                            ltbox_core::i18n::tr("live_country_dump_partition")
+                                                .replace("{label}", label)
+                                                .replace("{lun}", &lun.to_string())
+                                                .replace("{start}", &start.to_string())
+                                                .replace("{sectors}", &n.to_string())
+                                        );
                                         if let Err(e) = session.dump_partition_at(
                                             label, &dump_path, lun, start, n, &mut log,
                                         ) {
@@ -3886,7 +3942,14 @@ impl App {
                                             ));
                                             continue;
                                         };
-                                        live!(log, "[Country] {label}: {old_code} → {target_code}");
+                                        live!(
+                                            log,
+                                            "[Country] {}",
+                                            ltbox_core::i18n::tr("live_country_patch_transition")
+                                                .replace("{label}", label)
+                                                .replace("{from}", &old_code)
+                                                .replace("{to}", target_code)
+                                        );
                                         let patched_path =
                                             work_dir.join(format!("{label}.patched.img"));
                                         match ltbox_patch::region::patch_country_code(
@@ -3908,7 +3971,12 @@ impl App {
                                                         "[Country] flash {label} failed: {e}"
                                                     ));
                                                 } else {
-                                                    live!(log, "[Country] {label} patched + flashed");
+                                                    live!(
+                                                        log,
+                                                        "[Country] {}",
+                                                        ltbox_core::i18n::tr("live_country_patched_flashed")
+                                                            .replace("{label}", label)
+                                                    );
                                                 }
                                             }
                                             Ok(false) => log
@@ -3933,7 +4001,7 @@ impl App {
                                     }
                                 }
 
-                            live!(log, "[Flash] Phase 4/4 — {}", ll.op_flash_phase[3]);
+                            live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
                             session.reset(&mut log).map_err(|e| format!("Reset: {e}"))?;
                             live!(log, "[Flash] {}", ll.flash_completed);
                             Ok(log)
@@ -4776,7 +4844,12 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                         ));
                                     if mode == Some(RootMode::Lkm) {
                                         if let Ok(Some(kv)) = adb.get_kernel_version() {
-                                            live!(log, "[ADB] Kernel version: {kv}");
+                                            live!(
+                                                log,
+                                                "[ADB] {}",
+                                                ltbox_core::i18n::tr("live_adb_kernel_version")
+                                                    .replace("{version}", &kv)
+                                            );
                                             kernel_version = Some(kv);
                                         } else {
                                             live!(log, "[ADB] {}", ll.adb_no_kver);
@@ -4787,7 +4860,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 }
                             }
 
-                            live!(log, "[Root] Phase 1/6 — {}", ll.op_root_phase[0]);
+                            live!(log, "[Root] {}", phase_marker(1, 6, &ll.op_root_phase[0]));
                             transition_to_edl(&ll, &mut log)?;
 
                             // v2 parity: drive `EdlSession::dump_partition`
@@ -4846,7 +4919,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 boot_primary, boot_resolved_label, vbmeta_primary, vbmeta_resolved_label,
                             );
 
-                            live!(log, "[Root] Phase 2/6 — {}", ll.op_root_phase[1]);
+                            live!(log, "[Root] {}", phase_marker(2, 6, &ll.op_root_phase[1]));
                             // Hoisted so Phase 6 can echo the path.
                             let exe_dir = std::env::current_exe()
                                 .ok()
@@ -4890,7 +4963,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 // the post-patch open gets a fresh handle.
                             }
 
-                            live!(log, "[Root] Phase 3/6 — {}", ll.op_root_phase[2]);
+                            live!(log, "[Root] {}", phase_marker(3, 6, &ll.op_root_phase[2]));
 
                             // `file_path` feeds either the GKI kernel zip
                             // or the MagiskFork APK (never both).
@@ -4919,9 +4992,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                             };
                             let artifacts = build_patched_artifacts(&cfg, &mut log)
                                 .map_err(|e| format!("Root patch: {e}"))?;
-                            live!(log, "[Root] Phase 4/6 — {}", ll.op_root_phase[3]);
+                            live!(log, "[Root] {}", phase_marker(4, 6, &ll.op_root_phase[3]));
 
-                            live!(log, "[Root] Phase 5/6 — {}", ll.op_root_phase[4]);
+                            live!(log, "[Root] {}", phase_marker(5, 6, &ll.op_root_phase[4]));
                             let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
                                 .map_err(|e| format!("EDL session (flash): {e}"))?;
                             let boot_start_str = boot_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
@@ -4935,7 +5008,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                     .map_err(|e| format!("Flash {vbmeta_resolved_label}: {e}"))?;
                             }
                             println!();
-                            live!(log, "[Root] Phase 6/6 — {}", ll.op_root_phase[5]);
+                            live!(log, "[Root] {}", phase_marker(6, 6, &ll.op_root_phase[5]));
                             // Surface the backup folder before the reset
                             // so the user doesn't have to scroll.
                             if backup_dir.exists() {
@@ -4998,109 +5071,195 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
-                            let mut log = Vec::new();
-                            let dir = std::path::Path::new(&folder);
+                            ltbox_core::runtime::run_heavy(
+                                move || -> Result<Vec<String>, String> {
+                                    let mut log = Vec::new();
+                                    let dir = std::path::Path::new(&folder);
 
-                            let (boot_name, base_part) = match unroot_type {
-                                UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
-                                UnrootType::APatchGki => ("boot.img", "boot"),
-                            };
-                            let boot_path = dir.join(boot_name);
-                            let vbmeta_path = dir.join("vbmeta.img");
-                            if !boot_path.exists() {
-                                return Err(format!("{boot_name} not found in selected folder"));
-                            }
-                            if !vbmeta_path.exists() {
-                                return Err("vbmeta.img not found in selected folder".to_string());
-                            }
-                            live!(log, "[Unroot] Backup: {} + vbmeta.img", boot_name);
+                                    let (boot_name, base_part) = match unroot_type {
+                                        UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
+                                        UnrootType::APatchGki => ("boot.img", "boot"),
+                                    };
+                                    let boot_path = dir.join(boot_name);
+                                    let vbmeta_path = dir.join("vbmeta.img");
+                                    if !boot_path.exists() {
+                                        return Err(format!(
+                                            "{boot_name} not found in selected folder"
+                                        ));
+                                    }
+                                    if !vbmeta_path.exists() {
+                                        return Err(
+                                            "vbmeta.img not found in selected folder".to_string()
+                                        );
+                                    }
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
+                                            .replace("{boot}", boot_name)
+                                    );
 
-                            let mut adb = ltbox_device::adb::AdbManager::new();
-                            let slot = if adb.check_device().unwrap_or(false) {
-                                let s = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
-                                live!(log, "[ADB] {}",
-                                    ll.adb_active_slot.replace(
-                                        "{slot}",
-                                        if s.is_empty() { "(none)" } else { &s },
-                                    ));
-                                s
-                            } else {
-                                live!(log, "[ADB] {}", ll.adb_default_slot_a);
-                                String::new()
-                            };
+                                    let mut adb = ltbox_device::adb::AdbManager::new();
+                                    let slot = if adb.check_device().unwrap_or(false) {
+                                        let s = adb
+                                            .get_slot_suffix()
+                                            .ok()
+                                            .flatten()
+                                            .unwrap_or_default();
+                                        live!(
+                                            log,
+                                            "[ADB] {}",
+                                            ll.adb_active_slot.replace(
+                                                "{slot}",
+                                                if s.is_empty() { "(none)" } else { &s },
+                                            )
+                                        );
+                                        s
+                                    } else {
+                                        live!(log, "[ADB] {}", ll.adb_default_slot_a);
+                                        String::new()
+                                    };
 
-                            let loader = find_edl_loader(dir)
-                                .or_else(|| dir.parent().and_then(find_edl_loader))
-                                .ok_or_else(|| format!(
-                                    "xbl_s_devprg_ns.melf not found under {}",
-                                    dir.display()
-                                ))?;
-                            live!(log, "[Unroot] Loader: {}", loader.display());
+                                    let loader = find_edl_loader(dir)
+                                        .or_else(|| dir.parent().and_then(find_edl_loader))
+                                        .ok_or_else(|| {
+                                            format!(
+                                                "xbl_s_devprg_ns.melf not found under {}",
+                                                dir.display()
+                                            )
+                                        })?;
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        ltbox_core::i18n::tr("live_unroot_loader_path")
+                                            .replace("{path}", &loader.display().to_string())
+                                    );
 
-                            // Lenovo places boot on LUN 4 — GPT-by-name
-                            // reads LUN 0 so it misses. Use rawprogram catalog.
-                            let fw_dir = loader.parent().unwrap_or(dir);
-                            let (raw_xmls, _patch_xmls) = ltbox_device::edl::collect_firmware_xmls(fw_dir);
-                            if raw_xmls.is_empty() {
-                                return Err(format!(
-                                    "No flashable rawprogram*.xml found in {}",
-                                    fw_dir.display()
-                                ));
-                            }
-                            let xml_paths: Vec<&std::path::Path> =
-                                raw_xmls.iter().map(|p| p.as_path()).collect();
-                            let catalog = ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
-                                .map_err(|e| format!("rawprogram parse failed: {e}"))?;
-                            let slot_for_flash = if slot.is_empty() { "_a" } else { &slot };
-                            let boot_primary = format!("{base_part}{slot_for_flash}");
-                            let vbmeta_primary = format!("vbmeta{slot_for_flash}");
-                            let boot_record = catalog.require(
-                                &boot_primary,
-                                &[
-                                    &format!("{base_part}_a"),
-                                    &format!("{base_part}_b"),
-                                    base_part,
-                                ],
+                                    // Lenovo places boot on LUN 4 — GPT-by-name
+                                    // reads LUN 0 so it misses. Use rawprogram catalog.
+                                    let fw_dir = loader.parent().unwrap_or(dir);
+                                    let (raw_xmls, _patch_xmls) =
+                                        ltbox_device::edl::collect_firmware_xmls(fw_dir);
+                                    if raw_xmls.is_empty() {
+                                        return Err(format!(
+                                            "No flashable rawprogram*.xml found in {}",
+                                            fw_dir.display()
+                                        ));
+                                    }
+                                    let xml_paths: Vec<&std::path::Path> =
+                                        raw_xmls.iter().map(|p| p.as_path()).collect();
+                                    let catalog =
+                                        ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
+                                            .map_err(|e| format!("rawprogram parse failed: {e}"))?;
+                                    let slot_for_flash = if slot.is_empty() { "_a" } else { &slot };
+                                    let boot_primary = format!("{base_part}{slot_for_flash}");
+                                    let vbmeta_primary = format!("vbmeta{slot_for_flash}");
+                                    let boot_record = catalog
+                                        .require(
+                                            &boot_primary,
+                                            &[
+                                                &format!("{base_part}_a"),
+                                                &format!("{base_part}_b"),
+                                                base_part,
+                                            ],
+                                        )
+                                        .map_err(|e| format!("Resolve {boot_primary}: {e}"))?;
+                                    let vbmeta_record = catalog
+                                        .require(
+                                            &vbmeta_primary,
+                                            &["vbmeta_a", "vbmeta_b", "vbmeta"],
+                                        )
+                                        .map_err(|e| format!("Resolve {vbmeta_primary}: {e}"))?;
+                                    let boot_lun: u8 = boot_record
+                                        .lun
+                                        .as_deref()
+                                        .unwrap_or("0")
+                                        .parse()
+                                        .unwrap_or(0);
+                                    let vbm_lun: u8 = vbmeta_record
+                                        .lun
+                                        .as_deref()
+                                        .unwrap_or("0")
+                                        .parse()
+                                        .unwrap_or(0);
+                                    let boot_start = boot_record
+                                        .start_sector
+                                        .clone()
+                                        .unwrap_or_else(|| "0".to_string());
+                                    let vbm_start = vbmeta_record
+                                        .start_sector
+                                        .clone()
+                                        .unwrap_or_else(|| "0".to_string());
+                                    let boot_label = boot_record.label.clone();
+                                    let vbm_label = vbmeta_record.label.clone();
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        ltbox_core::i18n::tr(
+                                            "live_unroot_resolved_from_rawprogram"
+                                        )
+                                        .replace("{boot_primary}", &boot_primary)
+                                        .replace("{boot_label}", &boot_label)
+                                        .replace("{boot_lun}", &boot_lun.to_string())
+                                        .replace("{vbmeta_primary}", &vbmeta_primary)
+                                        .replace("{vbmeta_label}", &vbm_label)
+                                        .replace("{vbmeta_lun}", &vbm_lun.to_string())
+                                    );
+
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        phase_marker(1, 3, &ll.op_unroot_phase[0])
+                                    );
+                                    transition_to_edl(&ll, &mut log)?;
+
+                                    live!(
+                                        log,
+                                        "[Unroot] {} ({})",
+                                        phase_marker(2, 3, &ll.op_unroot_phase[1]),
+                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
+                                            .replace("{boot}", boot_name)
+                                    );
+                                    let mut session = ltbox_device::edl::EdlSession::open(
+                                        &loader, true, &mut log,
+                                    )
+                                    .map_err(|e| format!("EDL session error: {e}"))?;
+                                    session
+                                        .flash_partition_at(
+                                            &boot_label,
+                                            &boot_path,
+                                            boot_lun,
+                                            &boot_start,
+                                            &mut log,
+                                        )
+                                        .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
+                                    session
+                                        .flash_partition_at(
+                                            &vbm_label,
+                                            &vbmeta_path,
+                                            vbm_lun,
+                                            &vbm_start,
+                                            &mut log,
+                                        )
+                                        .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
+
+                                    println!();
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        phase_marker(3, 3, &ll.op_unroot_phase[2])
+                                    );
+                                    session
+                                        .reset(&mut log)
+                                        .map_err(|e| format!("Reset failed: {e}"))?;
+                                    live!(log, "[Unroot] {}", ll.unroot_completed);
+                                    Ok(log)
+                                },
                             )
-                            .map_err(|e| format!("Resolve {boot_primary}: {e}"))?;
-                            let vbmeta_record = catalog.require(
-                                &vbmeta_primary,
-                                &["vbmeta_a", "vbmeta_b", "vbmeta"],
-                            )
-                            .map_err(|e| format!("Resolve {vbmeta_primary}: {e}"))?;
-                            let boot_lun: u8 = boot_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
-                            let vbm_lun: u8 = vbmeta_record.lun.as_deref().unwrap_or("0").parse().unwrap_or(0);
-                            let boot_start = boot_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
-                            let vbm_start = vbmeta_record.start_sector.clone().unwrap_or_else(|| "0".to_string());
-                            let boot_label = boot_record.label.clone();
-                            let vbm_label = vbmeta_record.label.clone();
-                            live!(log,
-                                "[Unroot] Resolved {} → {} (LUN {boot_lun}) / {} → {} (LUN {vbm_lun}) from rawprogram",
-                                boot_primary, boot_label, vbmeta_primary, vbm_label,
-                            );
-
-                            live!(log, "[Unroot] Phase 1/3 — {}", ll.op_unroot_phase[0]);
-                            transition_to_edl(&ll, &mut log)?;
-
-                            live!(log, "[Unroot] Phase 2/3 — {} ({} + vbmeta.img)", ll.op_unroot_phase[1], boot_name);
-                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-                                .map_err(|e| format!("EDL session error: {e}"))?;
-                            session
-                                .flash_partition_at(&boot_label, &boot_path, boot_lun, &boot_start, &mut log)
-                                .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
-                            session
-                                .flash_partition_at(&vbm_label, &vbmeta_path, vbm_lun, &vbm_start, &mut log)
-                                .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
-
-                            println!();
-                            live!(log, "[Unroot] Phase 3/3 — {}", ll.op_unroot_phase[2]);
-                            session.reset(&mut log)
-                                .map_err(|e| format!("Reset failed: {e}"))?;
-                            live!(log, "[Unroot] {}", ll.unroot_completed);
-                            Ok(log)
-                            }).and_then(|r| r)
-                        }).await.unwrap_or(Err("Task failed".to_string()))
+                            .and_then(|r| r)
+                        })
+                        .await
+                        .unwrap_or(Err("Task failed".to_string()))
                     },
                     |result| match result {
                         Ok(lines) => Message::UnrootExecDone(lines),
@@ -6402,9 +6561,10 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                     let loader = self.dump_phys.loader_path.clone().unwrap_or_default();
                     let luns = self.dump_phys.selected_luns();
                     self.log_push(format!(
-                        "[DumpPhys] Dumping {} LUN(s) to {}",
-                        luns.len(),
-                        folder
+                        "[DumpPhys] {}",
+                        self.t("live_dump_phys_batch_start")
+                            .replace("{count}", &luns.len().to_string())
+                            .replace("{path}", &folder)
                     ));
                     return Task::perform(
                         async move {
@@ -11289,11 +11449,17 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
 fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
     match conn {
         ConnectionStatus::Edl => {
-            log.push(format!("[{tag}] Device already in EDL mode"));
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_edl_already")
+            ));
             Ok(())
         }
         ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
-            log.push(format!("[{tag}] $ adb reboot edl"));
+            log.push(format!(
+                "[{tag}] $ {}",
+                ltbox_core::i18n::tr("live_cmd_adb_reboot_edl")
+            ));
             let mut mgr = ltbox_device::adb::AdbManager::new();
             // `AdbManager::reboot` requires a preselected serial. Since
             // `check_device` now accepts only `Device` state, use
@@ -11302,9 +11468,14 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
             let state = match mgr.check_device_state() {
                 Ok(s) => s,
                 Err(e) => {
-                    log.push(format!("[{tag}] ADB state probe failed: {e}"));
                     log.push(format!(
-                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_adb_state_probe_failed")
+                            .replace("{error}", &e.to_string())
+                    ));
+                    log.push(format!(
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                     ));
                     return Err(());
                 }
@@ -11313,17 +11484,24 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
                 Some("device") | Some("recovery") => {}
                 Some(other) => {
                     log.push(format!(
-                        "[{tag}] ADB is in `{other}` state; cannot reboot to EDL"
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_adb_state_cannot_reboot_edl")
+                            .replace("{state}", other)
                     ));
                     log.push(format!(
-                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                     ));
                     return Err(());
                 }
                 None => {
-                    log.push(format!("[{tag}] No ADB device found"));
                     log.push(format!(
-                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_no_adb_device_found")
+                    ));
+                    log.push(format!(
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                     ));
                     return Err(());
                 }
@@ -11331,31 +11509,49 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
             match mgr.reboot("edl") {
                 Ok(_) => Ok(()),
                 Err(e) => {
-                    log.push(format!("[{tag}] adb reboot edl failed: {e}"));
                     log.push(format!(
-                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_adb_reboot_edl_failed")
+                            .replace("{error}", &e.to_string())
+                    ));
+                    log.push(format!(
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                     ));
                     Err(())
                 }
             }
         }
         ConnectionStatus::Fastboot => {
-            log.push(format!("[{tag}] $ fastboot oem edl"));
+            log.push(format!(
+                "[{tag}] $ {}",
+                ltbox_core::i18n::tr("live_cmd_fastboot_oem_edl")
+            ));
             match ltbox_device::fastboot::FastbootDevice::open() {
                 Ok(mut dev) => match dev.oem_edl() {
                     Ok(_) => Ok(()),
                     Err(e) => {
-                        log.push(format!("[{tag}] fastboot oem edl failed: {e}"));
                         log.push(format!(
-                            "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                            "[{tag}] {}",
+                            ltbox_core::i18n::tr("live_fastboot_oem_edl_failed")
+                                .replace("{error}", &e.to_string())
+                        ));
+                        log.push(format!(
+                            "[{tag}] {}",
+                            ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                         ));
                         Err(())
                     }
                 },
                 Err(e) => {
-                    log.push(format!("[{tag}] Fastboot device open failed: {e}"));
                     log.push(format!(
-                        "[{tag}] Reboot the device to EDL (9008) mode manually and retry."
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_fastboot_open_failed")
+                            .replace("{error}", &e.to_string())
+                    ));
+                    log.push(format!(
+                        "[{tag}] {}",
+                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
                     ));
                     Err(())
                 }
@@ -11363,13 +11559,15 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
         }
         ConnectionStatus::AdbUnauthorized => {
             log.push(format!(
-                "[{tag}] USB debugging is not authorized — accept the prompt and retry."
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_adb_unauthorized_retry")
             ));
             Err(())
         }
         ConnectionStatus::None => {
             log.push(format!(
-                "[{tag}] No device connected. Connect the device (ADB / Fastboot / EDL) and retry."
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_no_device_connected_retry")
             ));
             Err(())
         }
@@ -11567,7 +11765,11 @@ fn dump_physical_execute(
     flush_worker_logs(&mut log);
     let out_dir = std::path::PathBuf::from(&output_folder);
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        log.push(format!("[DumpPhys] create output folder failed: {e}"));
+        log.push(format!(
+            "[DumpPhys] {}",
+            ltbox_core::i18n::tr("live_dump_phys_create_output_failed")
+                .replace("{error}", &e.to_string())
+        ));
         flush_worker_logs(&mut log);
         return Vec::new();
     }
@@ -11577,7 +11779,11 @@ fn dump_physical_execute(
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            log.push(format!("[DumpPhys] EDL session open failed: {e}"));
+            log.push(format!(
+                "[DumpPhys] {}",
+                ltbox_core::i18n::tr("live_dump_phys_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            ));
             flush_worker_logs(&mut log);
             return Vec::new();
         }
@@ -11587,25 +11793,39 @@ fn dump_physical_execute(
     for lun in &luns {
         let out_path = out_dir.join(format!("lun_{lun}.img"));
         log.push(format!(
-            "[DumpPhys] Dumping LUN {lun} → {}",
-            out_path.display()
+            "[DumpPhys] {}",
+            ltbox_core::i18n::tr("live_dump_phys_dumping_lun")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &out_path.display().to_string())
         ));
         flush_worker_logs(&mut log);
         if let Err(e) = session.dump_physical_storage(*lun, &out_path, &mut log) {
-            log.push(format!("[DumpPhys] LUN {lun} failed: {e}"));
+            log.push(format!(
+                "[DumpPhys] {}",
+                ltbox_core::i18n::tr("live_dump_phys_lun_failed")
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{error}", &e.to_string())
+            ));
         }
         flush_worker_logs(&mut log);
     }
 
     log.push(format!(
-        "[DumpPhys] Stabilizing USB endpoint ({}s)...",
-        EDL_POST_DUMP_STABILIZE.as_secs()
+        "[DumpPhys] {}",
+        ltbox_core::i18n::tr("live_dump_phys_stabilizing_usb")
+            .replace("{seconds}", &EDL_POST_DUMP_STABILIZE.as_secs().to_string())
     ));
     flush_worker_logs(&mut log);
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
-    log.push("[DumpPhys] Resetting device to system...".to_string());
+    log.push(format!(
+        "[DumpPhys] {}",
+        ltbox_core::i18n::tr("live_dump_phys_resetting_system")
+    ));
     let _ = session.reset(&mut log);
-    log.push("[DumpPhys] Done.".to_string());
+    log.push(format!(
+        "[DumpPhys] {}",
+        ltbox_core::i18n::tr("live_dump_phys_done")
+    ));
     flush_worker_logs(&mut log);
     Vec::new()
 }

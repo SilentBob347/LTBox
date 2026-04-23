@@ -273,7 +273,12 @@ impl EdlSession {
                     }
                 }
                 Err(e) => {
-                    log.push(format!("[EDL] LUN {lun} GPT read failed: {e}"));
+                    log.push(format!(
+                        "[EDL] {}",
+                        tr("log_edl_lun_gpt_read_failed")
+                            .replace("{lun}", &lun.to_string())
+                            .replace("{error}", &e.to_string())
+                    ));
                 }
             }
         }
@@ -434,7 +439,12 @@ impl EdlSession {
         let header = gptman::GPTHeader::read_from(&mut buf)
             .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
         let total = header.backup_lba + 1;
-        log.push(format!("[EDL] LUN {lun}: {total} sectors total"));
+        log.push(format!(
+            "[EDL] {}",
+            tr("log_edl_lun_total_sectors")
+                .replace("{lun}", &lun.to_string())
+                .replace("{total}", &total.to_string())
+        ));
         Ok(total)
     }
 
@@ -451,12 +461,18 @@ impl EdlSession {
         let total = self.physical_lun_sector_count(lun, log)?;
         let mut out_file = std::fs::File::create(output)?;
         log.push(format!(
-            "[EDL] $ dump LUN {lun} → {} ({total} sectors)",
-            output.display()
+            "[EDL] $ {}",
+            tr("log_edl_dump_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &output.display().to_string())
+                .replace("{total}", &total.to_string())
         ));
         qdl::firehose_read_storage(&mut self.dev, &mut out_file, total as usize, 0, lun, 0)
             .map_err(|e| EdlError::Session(format!("Physical LUN read failed: {e}")))?;
-        log.push(format!("[EDL] dumped LUN {lun}"));
+        log.push(format!(
+            "[EDL] {}",
+            tr("log_edl_dumped_lun").replace("{lun}", &lun.to_string())
+        ));
         Ok(())
     }
 
@@ -475,12 +491,19 @@ impl EdlSession {
         let sector_size = self.dev.fh_config().storage_sector_size as u64;
         let num_sectors = file_len.div_ceil(sector_size) as usize;
         log.push(format!(
-            "[EDL] $ flash LUN {lun} ← {} ({file_len} bytes, {num_sectors} sectors)",
-            image.display()
+            "[EDL] $ {}",
+            tr("log_edl_flash_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &image.display().to_string())
+                .replace("{bytes}", &file_len.to_string())
+                .replace("{sectors}", &num_sectors.to_string())
         ));
         qdl::firehose_program_storage(&mut self.dev, &mut file, "", num_sectors, 0, lun, "0")
             .map_err(|e| EdlError::Session(format!("Physical LUN write failed: {e}")))?;
-        log.push(format!("[EDL] flashed LUN {lun}"));
+        log.push(format!(
+            "[EDL] {}",
+            tr("log_edl_flashed_lun").replace("{lun}", &lun.to_string())
+        ));
         Ok(())
     }
 
@@ -496,11 +519,19 @@ impl EdlSession {
         log: &mut Vec<String>,
     ) -> Result<()> {
         log.push(format!(
-            "[EDL] erase {part_name} on LUN {lun} @ {start_sector} ({num_sectors} sectors)"
+            "[EDL] {}",
+            tr("log_edl_erase_part_cmd")
+                .replace("{part}", part_name)
+                .replace("{lun}", &lun.to_string())
+                .replace("{start}", start_sector)
+                .replace("{sectors}", &num_sectors.to_string())
         ));
         qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase {part_name} failed: {e}")))?;
-        log.push(format!("[EDL] erased {part_name}"));
+        log.push(format!(
+            "[EDL] {}",
+            tr("log_edl_erased_part").replace("{part}", part_name)
+        ));
         Ok(())
     }
 
@@ -632,7 +663,10 @@ impl EdlSession {
             self.flash_one_rawprogram(xml_path, wipe, log)?;
         }
         for xml_path in patch_xmls {
-            log.push(format!("[EDL] $ patch {}", xml_path.display()));
+            log.push(format!(
+                "[EDL] $ {}",
+                tr("log_edl_patch_xml_cmd").replace("{path}", &xml_path.display().to_string())
+            ));
             self.apply_patch_xml(xml_path, log)?;
         }
         Ok(())
@@ -667,7 +701,12 @@ impl EdlSession {
                 let lun: u8 = parse_xml_attr(&node, "physical_partition_number", 0u8, &ctx)?;
                 let start_sector = node.attribute("start_sector").unwrap_or("0");
                 log.push(format!(
-                    "[EDL] erase {label} (LUN {lun}, start {start_sector}, {num_sectors} sectors)"
+                    "[EDL] {}",
+                    tr("log_edl_pre_erase_cmd")
+                        .replace("{label}", label)
+                        .replace("{lun}", &lun.to_string())
+                        .replace("{start}", start_sector)
+                        .replace("{sectors}", &num_sectors.to_string())
                 ));
                 qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
                     .map_err(|e| EdlError::Session(format!("Erase {label} failed: {e}")))?;
@@ -695,7 +734,10 @@ impl EdlSession {
                     if !wipe {
                         let label = node.attribute("label").unwrap_or("").trim();
                         if Self::keep_data_skip_labels(label) {
-                            log.push(format!("[EDL] skip {label} (keep data)"));
+                            log.push(format!(
+                                "[EDL] {}",
+                                tr("log_edl_skip_keep_data").replace("{label}", label)
+                            ));
                             continue;
                         }
                     }
@@ -733,8 +775,10 @@ impl EdlSession {
         let image_path = xml_dir.join(&filename);
         if !image_path.exists() {
             log.push(format!(
-                "[EDL] Skipping {label}: image {} not found",
-                image_path.display()
+                "[EDL] {}",
+                tr("log_edl_skip_image_missing")
+                    .replace("{label}", &label)
+                    .replace("{path}", &image_path.display().to_string())
             ));
             return Ok(());
         }
@@ -745,11 +789,19 @@ impl EdlSession {
         }
 
         log.push(format!(
-            "[EDL] flash {label} ← {} (LUN {lun}, start {start_sector}, {num_sectors} sectors)",
-            image_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(""),
+            "[EDL] {}",
+            tr("log_edl_flash_program_cmd")
+                .replace("{label}", &label)
+                .replace(
+                    "{image}",
+                    image_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(""),
+                )
+                .replace("{lun}", &lun.to_string())
+                .replace("{start}", start_sector)
+                .replace("{sectors}", &num_sectors.to_string())
         ));
 
         qdl::firehose_program_storage(
@@ -779,7 +831,11 @@ impl EdlSession {
         let start_sector = node.attribute("start_sector").unwrap_or("0");
 
         log.push(format!(
-            "[EDL] erase LUN {lun} @ {start_sector} ({num_sectors} sectors)"
+            "[EDL] {}",
+            tr("log_edl_erase_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{start}", start_sector)
+                .replace("{sectors}", &num_sectors.to_string())
         ));
         qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase failed: {e}")))?;
@@ -810,7 +866,13 @@ impl EdlSession {
             let value = node.attribute("value").unwrap_or("");
 
             log.push(format!(
-                "[EDL] patch LUN {lun} @ {start_sector}+{byte_off} ({size}B) = {value}"
+                "[EDL] {}",
+                tr("log_edl_patch_lun_cmd")
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{start}", start_sector)
+                    .replace("{offset}", &byte_off.to_string())
+                    .replace("{bytes}", &size.to_string())
+                    .replace("{value}", value)
             ));
             qdl::firehose_patch(
                 &mut self.dev,
