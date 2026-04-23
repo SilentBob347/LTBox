@@ -22,6 +22,10 @@ pub enum AdbError {
 
 type Result<T> = std::result::Result<T, AdbError>;
 
+/// Upper bound on `wait_for_device` before surfacing `Timeout`. Matches v2's
+/// `DeviceController` ~120s expectation for post-reboot re-detection.
+const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub struct AdbManager {
     server_addr: SocketAddrV4,
     serial: Option<String>,
@@ -48,12 +52,23 @@ impl AdbManager {
         Ok(ADBServerDevice::new(serial, Some(self.server_addr)))
     }
 
-    /// Probe for any ADB device; updates stored serial.
+    /// Probe for a *fully-authorized* ADB device; updates stored serial.
+    ///
+    /// Only devices in state `Device` are treated as connected. v2
+    /// `device/adb.py::wait_for_device` used `state == "device"` for the
+    /// same reason: an `unauthorized` / `offline` / `authorizing` device
+    /// shows up in `adb devices` but every `shell` call will fail, so
+    /// treating it as connected sends destructive operations into a
+    /// guaranteed mid-flow failure. Callers that *want* to see non-Device
+    /// states should use [`check_device_state`](Self::check_device_state).
     pub fn check_device(&mut self) -> Result<bool> {
         let mut server = self.server();
         match server.devices() {
             Ok(devices) => {
-                if let Some(dev) = devices.first() {
+                if let Some(dev) = devices
+                    .iter()
+                    .find(|d| matches!(d.state, adb_client::server::DeviceState::Device))
+                {
                     self.serial = Some(dev.identifier.clone());
                     Ok(true)
                 } else {
@@ -93,14 +108,24 @@ impl AdbManager {
         }))
     }
 
+    /// Wait up to [`WAIT_TIMEOUT`] for a fully-authorized ADB device.
+    ///
+    /// Returns `AdbError::Timeout` on expiry instead of spinning forever —
+    /// important for GUI flows where the user might have toggled `skip_adb`
+    /// or the device got stuck in `unauthorized` state that will never
+    /// promote without user action.
     pub fn wait_for_device(&mut self) -> Result<()> {
         if self.skip_adb {
             return Err(AdbError::DeviceNotFound);
         }
+        let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
         loop {
             if self.check_device()? {
                 self.connected_once = true;
                 return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(AdbError::Timeout);
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
@@ -127,10 +152,16 @@ impl AdbManager {
         }
     }
 
-    /// Active slot suffix (`_a` or `_b`).
+    /// Active slot suffix — only `"_a"` or `"_b"`, else `None`.
+    ///
+    /// v2 parity: `device/adb.py::get_slot_suffix` whitelisted `["_a", "_b"]`
+    /// and returned `None` otherwise. Some bootloaders return an empty or
+    /// garbage prop on non-A/B devices; feeding that into downstream
+    /// `vendor_boot{suffix}` partition names produces lookups for e.g.
+    /// `vendor_bootxyz` that fail with a misleading error.
     pub fn get_slot_suffix(&self) -> Result<Option<String>> {
         match self.shell("getprop ro.boot.slot_suffix") {
-            Ok(s) if !s.is_empty() => Ok(Some(s)),
+            Ok(s) if s == "_a" || s == "_b" => Ok(Some(s)),
             _ => Ok(None),
         }
     }
