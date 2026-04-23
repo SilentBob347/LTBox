@@ -11156,6 +11156,13 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
     }
 }
 
+/// Post-dump stability window before the next EDL op. Large partition
+/// reads (e.g. boot_a ~96 MB) leave the USB endpoint in a lingering state;
+/// a subsequent reset/open can race a still-draining read and surface as
+/// "stale COM port" or Sahara timeout. Mirrors v2 `post_sleep=15` in
+/// `bin/ltbox/actions/edl.py::dump_partitions`.
+const EDL_POST_DUMP_STABILIZE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Dump selected partitions to `output_folder` as `<label>.img`. Reopens
 /// the EDL session (previous scan left device waiting at Sahara), runs
 /// the reads back-to-back, then reboots to system.
@@ -11202,6 +11209,11 @@ fn dump_parts_execute(
         }
     }
 
+    log.push(format!(
+        "[DumpParts] Stabilizing USB endpoint ({}s)...",
+        EDL_POST_DUMP_STABILIZE.as_secs()
+    ));
+    std::thread::sleep(EDL_POST_DUMP_STABILIZE);
     log.push("[DumpParts] Resetting device to system...".to_string());
     let _ = session.reset(&mut log);
     log.push("[DumpParts] Done.".to_string());
@@ -11249,6 +11261,11 @@ fn dump_physical_execute(
         }
     }
 
+    log.push(format!(
+        "[DumpPhys] Stabilizing USB endpoint ({}s)...",
+        EDL_POST_DUMP_STABILIZE.as_secs()
+    ));
+    std::thread::sleep(EDL_POST_DUMP_STABILIZE);
     log.push("[DumpPhys] Resetting device to system...".to_string());
     let _ = session.reset(&mut log);
     log.push("[DumpPhys] Done.".to_string());
