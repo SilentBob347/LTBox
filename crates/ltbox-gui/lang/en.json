@@ -465,7 +465,7 @@
   "sysupdate_step_action": "Action",
   "sysupdate_step_confirm": "Confirm",
   "sysupdate_step_execute": "Execute",
-  "sysupdate_step_folder": "Folder",
+  "sysupdate_step_folder": "Loader",
   "theme_dark": "Dark",
   "theme_light": "Light",
   "theme_system": "Follow system",

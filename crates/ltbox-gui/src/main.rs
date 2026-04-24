@@ -2624,10 +2624,12 @@ fn pick_folder_task(
 }
 
 fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
-    // Loader selection accepts any filename as long as the extension is a
-    // known Firehose loader type.
-    pickers::FilePickSpec::single(target_i18n_key)
-        .with_filter("EDL loader", &["melf", "mbn", "elf"])
+    // LTBox-supported devices ship `xbl_s_devprg_ns.melf` as the only
+    // viable Firehose loader, so the picker only accepts `.melf`.
+    // Filename itself is not enforced — a user-renamed copy of the same
+    // .melf still works. `.mbn` / `.elf` were dropped since neither has
+    // ever produced a successful flash on the supported hardware.
+    pickers::FilePickSpec::single(target_i18n_key).with_filter("EDL loader (.melf)", &["melf"])
 }
 
 #[derive(Debug, Clone)]
@@ -4873,9 +4875,11 @@ impl App {
                 // firmware folder — partitions resolve via the device's
                 // GPT, not `rawprogram*.xml`.
                 self.picker_target = PickerTarget::RootLoader;
-                let spec = pickers::FilePickSpec::single("picker_target_root_loader")
-                    .with_filter("Qualcomm EDL Loader", &["melf"]);
-                return pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected);
+                return pickers::pick_file_for(
+                    loader_file_spec("picker_target_edl_loader"),
+                    &self.recent_paths,
+                    Message::FileSelected,
+                );
             }
             Message::RootNext => {
                 if self.root.step == 6 {
@@ -8691,7 +8695,7 @@ impl App {
         // pickers (root, advanced) — filter to the same ext set the
         // dialog itself accepts.
         let chips = self.recent_file_chips(
-            &["melf", "mbn", "elf"],
+            &["melf"],
             |p| Message::SysRescueFolderChosen(Some(p)),
             "picker_recents",
         );
@@ -10796,7 +10800,7 @@ impl App {
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_file").to_string())
+                    text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
                     text(self.t("dump_parts_loader_desc").to_string())
@@ -10826,7 +10830,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf", "mbn", "elf"],
+            &["melf"],
             |p| Message::FlashPartsLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -11107,7 +11111,7 @@ impl App {
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_file").to_string())
+                    text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
                     text(self.t("dump_parts_loader_desc").to_string())
@@ -11137,7 +11141,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf", "mbn", "elf"],
+            &["melf"],
             |p| Message::DumpPartsLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -11287,7 +11291,7 @@ impl App {
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_file").to_string())
+                    text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
                     text(self.t("dump_parts_loader_desc").to_string())
@@ -11317,7 +11321,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf", "mbn", "elf"],
+            &["melf"],
             |p| Message::DumpPhysLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -11449,7 +11453,7 @@ impl App {
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_file").to_string())
+                    text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
                     text(self.t("dump_parts_loader_desc").to_string())
@@ -11479,7 +11483,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf", "mbn", "elf"],
+            &["melf"],
             |p| Message::FlashPhysLoaderChosen(Some(p)),
             "picker_recents",
         );
