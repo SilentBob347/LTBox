@@ -30,6 +30,12 @@ pub enum PickerKind {
     /// Folder containing the fixed-name EDL loader `xbl_s_devprg_ns.melf`.
     LoaderFolder,
     /// Folder with loader + `rawprogram*.xml` (rescue-style firmware).
+    /// Currently unused — Boot Recovery moved to a single-`.melf`
+    /// file picker (matching the root flow) since it resolves
+    /// vendor_boot / vbmeta via GPT, not rawprogram XML. Kept so the
+    /// user's existing JSON-stored recents keyed `loader_rawprogram_folder`
+    /// don't get orphaned and the storage_key contract stays stable.
+    #[allow(dead_code)]
     LoaderRawprogramFolder,
     /// Full QFIL firmware folder (programmer + all XML + partition images).
     QfilFirmwareFolder,

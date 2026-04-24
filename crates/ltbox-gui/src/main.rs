@@ -4301,22 +4301,25 @@ impl App {
             }
             Message::SysBack => self.sysupdate.back(),
             Message::SysRescueSelectFolder => {
-                // Rescue only needs the loader + `rawprogram*.xml` fragment
-                // (v2 rescue shape) — bucket it separately from the full
-                // QFIL firmware so users who routinely switch between
-                // rescue and flash don't have their recents collide.
-                return pick_folder_task(
-                    pickers::PickerKind::LoaderRawprogramFolder,
+                // Rescue dump+flash resolves vendor_boot / vbmeta against
+                // the device's on-storage GPT (LUN 0), so the wizard only
+                // needs the EDL loader binary — `rawprogram*.xml` was
+                // never read in this path. File picker with the standard
+                // loader extension filter, recents shared with the rest
+                // of the loader pickers via the File bucket.
+                let spec = loader_file_spec("picker_target_edl_loader");
+                return pickers::pick_file_for(
+                    spec,
                     &self.recent_paths,
                     Message::SysRescueFolderChosen,
                 );
             }
             Message::SysRescueFolderChosen(path) => {
                 if let Some(p) = path {
-                    self.remember_recent(pickers::PickerKind::LoaderRawprogramFolder, &p);
+                    self.remember_recent(pickers::PickerKind::File, &p);
                     self.sysupdate.rescue_folder = Some(p);
-                    // Force re-pick of region when folder changes — a stale
-                    // region from a prior folder could target the wrong
+                    // Force re-pick of region when loader changes — a stale
+                    // region from a prior firmware could target the wrong
                     // hardware.
                     self.sysupdate.rescue_region = None;
                 }
@@ -4411,10 +4414,11 @@ impl App {
                                     Ok(log)
                                 }
                                 SysUpdateAction::Rescue => {
-                                    // Precondition: folder + region picked in the wizard.
-                                    let Some(fw_folder) = rescue_folder else {
+                                    // Precondition: loader file + region
+                                    // picked in the wizard.
+                                    let Some(loader_path) = rescue_folder else {
                                         return Err(
-                                            "Boot Recovery: firmware folder not selected".into(),
+                                            "Boot Recovery: EDL loader not selected".into(),
                                         );
                                     };
                                     let Some(region) = rescue_region else {
@@ -4422,13 +4426,34 @@ impl App {
                                             "Boot Recovery: target region (PRC/ROW) not selected".into(),
                                         );
                                     };
-                                    let fw_dir = std::path::Path::new(&fw_folder);
-                                    let loader = find_edl_loader(fw_dir).ok_or_else(|| {
-                                        format!(
-                                            "Boot Recovery: xbl_s_devprg_ns.melf not found in {}",
-                                            fw_dir.display()
-                                        )
-                                    })?;
+                                    let loader = std::path::PathBuf::from(&loader_path);
+                                    if !loader.is_file() {
+                                        return Err(format!(
+                                            "Boot Recovery: loader does not exist: {}",
+                                            loader.display()
+                                        ));
+                                    }
+                                    // User spec: extension-only check —
+                                    // accept any `.melf` / `.mbn` / `.elf`
+                                    // regardless of filename, mirroring the
+                                    // root-pipeline rule.
+                                    let ext_ok = loader
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .is_some_and(|e| {
+                                            let l = e.to_ascii_lowercase();
+                                            l == "melf" || l == "mbn" || l == "elf"
+                                        });
+                                    if !ext_ok {
+                                        return Err(format!(
+                                            "Boot Recovery: loader must be .melf / .mbn / .elf, got: {}",
+                                            loader.display()
+                                        ));
+                                    }
+                                    let loader_dir = loader
+                                        .parent()
+                                        .map(std::path::Path::to_path_buf)
+                                        .unwrap_or_else(|| std::path::PathBuf::from("."));
                                     log.push(format!("[Rescue] Loader: {}", loader.display()));
                                     log.push(format!(
                                         "[Rescue] Target region: {}",
@@ -4439,14 +4464,15 @@ impl App {
                                     ));
 
                                     // Stage dumps + patched outputs in a
-                                    // timestamped temp dir next to the loader
-                                    // so nothing collides with the user's
-                                    // firmware folder.
+                                    // timestamped temp dir next to the
+                                    // loader so the user's loader directory
+                                    // doesn't get cluttered with rescue
+                                    // intermediates.
                                     let ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_secs())
                                         .unwrap_or(0);
-                                    let work_dir = fw_dir.join(format!("rescue_{ts}"));
+                                    let work_dir = loader_dir.join(format!("rescue_{ts}"));
                                     if let Err(e) = std::fs::create_dir_all(&work_dir) {
                                         return Err(format!("create work dir: {e}"));
                                     }
@@ -4467,10 +4493,15 @@ impl App {
                                     )
                                     .map_err(|e| format!("EDL open: {e}"))?;
 
-                                    // Dump both slots; partitions live on LUN
-                                    // 0 for vendor_boot / vbmeta on TB3xx
-                                    // platforms — GPT-by-name handles the
-                                    // slot suffix naming.
+                                    // vendor_boot + vbmeta on Lenovo TB3xx
+                                    // Qualcomm UFS land on LUN 0; predefine
+                                    // here so the dump + flash loops below
+                                    // share one source of truth (root flow
+                                    // does the same with `ROOT_PARTITIONS_LUN`
+                                    // for boot/init_boot on LUN 4). GPT-by-name
+                                    // resolves the actual sector geometry, so
+                                    // no rawprogram*.xml is required.
+                                    const RESCUE_PARTITIONS_LUN: u8 = 0;
                                     let slots = ["a", "b"];
                                     let mut dumped: Vec<(String, String, std::path::PathBuf)> =
                                         Vec::new();
@@ -4483,7 +4514,7 @@ impl App {
                                                 "[Rescue] Dumping {part_name}..."
                                             ));
                                             if let Err(e) = session.dump_partition(
-                                                &part_name, &out, 0, 0, &mut log,
+                                                &part_name, &out, 0, RESCUE_PARTITIONS_LUN, &mut log,
                                             ) {
                                                 log.push(format!(
                                                     "[Rescue] Skip {part_name}: {e}"
@@ -4575,10 +4606,13 @@ impl App {
                                         (row_i.clone(), prc_i.clone()),
                                     ];
 
-                                    // testkey resolution — prefer folder's
-                                    // own keys/ then loader-adjacent.
-                                    let testkey = find_testkey(fw_dir).or_else(|| {
-                                        loader.parent().and_then(find_testkey)
+                                    // testkey resolution — search the
+                                    // loader's own directory and one level
+                                    // up, since users typically drop the
+                                    // loader next to a `keys/testkey_*.pem`
+                                    // sidecar from a v2 bundle.
+                                    let testkey = find_testkey(&loader_dir).or_else(|| {
+                                        loader_dir.parent().and_then(find_testkey)
                                     });
 
                                     let mut flash_plan: Vec<(String, std::path::PathBuf)> =
@@ -4681,7 +4715,7 @@ impl App {
                                         let Some(vbm_key) = key_spec.clone() else {
                                             log.push(format!(
                                                 "[Rescue] Slot {slot}: no testkey (testkey_rsa{{2048,4096}}.pem) under {} — cannot re-sign vbmeta",
-                                                fw_dir.display()
+                                                loader_dir.display()
                                             ));
                                             continue;
                                         };
@@ -4725,7 +4759,7 @@ impl App {
                                     ));
                                     for (part_name, image) in &flash_plan {
                                         if let Err(e) = session.flash_partition(
-                                            part_name, image, 0, 0, &mut log,
+                                            part_name, image, 0, RESCUE_PARTITIONS_LUN, &mut log,
                                         ) {
                                             log.push(format!(
                                                 "[Rescue] Flash {part_name}: {e}"
@@ -8522,32 +8556,21 @@ impl App {
     }
 
     fn sysupdate_rescue_folder_step(&self) -> Element<'_, Message> {
-        // Matches the flash / root / unroot folder-step pattern:
-        // title + 280-wide card button + colored status path + recent
-        // chips. Rescue-specific: an extra muted line below the status
-        // showing whether the EDL loader (`xbl_s_devprg_ns.melf`) was
-        // detected inside the picked folder.
+        // Boot Recovery now consumes only the EDL loader file —
+        // dump+flash use GPT-by-name on a fixed LUN, no rawprogram*.xml
+        // is read. Step layout still matches the flash / root / unroot
+        // pickers (title + 280-wide card button + status path + recent
+        // chips), just with file-picker semantics.
         let selected = self.sysupdate.rescue_folder.is_some();
         let status = if let Some(p) = &self.sysupdate.rescue_folder {
             p.clone()
         } else {
             self.t("flash_folder_placeholder").to_string()
         };
-        let loader_found = self
-            .sysupdate
-            .rescue_folder
-            .as_deref()
-            .map(std::path::Path::new)
-            .and_then(find_edl_loader)
-            .map(|p| p.display().to_string());
-        let loader_text = match &loader_found {
-            Some(p) => self.t("rescue_loader_found").replace("{path}", p),
-            None => self.t("rescue_loader_missing").to_string(),
-        };
         let btn = button(
             container(
                 column![
-                    text(self.t("btn_browse_folder").to_string())
+                    text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
                     text(self.t("rescue_folder_subtitle").to_string())
@@ -8570,12 +8593,13 @@ impl App {
             text_color: pal_of(t).on_surface,
             ..Default::default()
         });
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(pickers::PickerKind::LoaderRawprogramFolder.storage_key()),
+        // Loader recents share the File bucket with other loader
+        // pickers (root, advanced) — filter to the same ext set the
+        // dialog itself accepts.
+        let chips = self.recent_file_chips(
+            &["melf", "mbn", "elf"],
             |p| Message::SysRescueFolderChosen(Some(p)),
             "picker_recents",
-            false,
         );
         let col = column![
             text(self.t("rescue_folder_title").to_string())
@@ -8591,7 +8615,6 @@ impl App {
                     }
                 })
                 .center(),
-            text(loader_text).size(11).style(muted_style).center(),
             chips,
         ]
         .spacing(14)
