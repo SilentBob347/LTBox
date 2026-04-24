@@ -331,6 +331,8 @@
   "phys_step_select": "Выбор",
   "picker_recents": "Недавние",
   "popup_select_country": "Выбор кода страны",
+  "progress_dialog_body": "{operation} выполняется.",
+  "progress_dialog_title": "Выполняется",
   "provider_apatch": "APatch",
   "provider_apatch_desc": "Root через патч ядра Android, автор bmax121",
   "provider_folkpatch": "FolkPatch",

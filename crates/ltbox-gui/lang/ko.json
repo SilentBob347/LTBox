@@ -331,6 +331,8 @@
   "phys_step_select": "선택",
   "picker_recents": "최근",
   "popup_select_country": "국가 코드 선택",
+  "progress_dialog_body": "{operation}을(를) 진행 중입니다.",
+  "progress_dialog_title": "작업 중",
   "provider_apatch": "APatch",
   "provider_apatch_desc": "Android 커널 패치 기반 루트 솔루션, bmax121 제작",
   "provider_folkpatch": "FolkPatch",

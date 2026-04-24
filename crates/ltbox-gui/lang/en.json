@@ -331,6 +331,8 @@
   "phys_step_select": "Select",
   "picker_recents": "Recent",
   "popup_select_country": "Select Country Code",
+  "progress_dialog_body": "{operation} is in progress.",
+  "progress_dialog_title": "Working",
   "provider_apatch": "APatch",
   "provider_apatch_desc": "Kernel-patching root solution for Android, by bmax121",
   "provider_folkpatch": "FolkPatch",

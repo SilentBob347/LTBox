@@ -331,6 +331,8 @@
   "phys_step_select": "选择",
   "picker_recents": "最近",
   "popup_select_country": "选择国家码",
+  "progress_dialog_body": "{operation} 正在进行中。",
+  "progress_dialog_title": "正在处理",
   "provider_apatch": "APatch",
   "provider_apatch_desc": "基于内核补丁的 Android root 方案，bmax121 开发",
   "provider_folkpatch": "FolkPatch",

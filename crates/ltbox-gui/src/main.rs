@@ -35,6 +35,7 @@ use std::collections::HashMap;
 
 use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Subscription, Task, Theme};
+use iced_aw::widget::Spinner;
 
 use theme::{Palette, palette, with_alpha};
 
@@ -3260,6 +3261,78 @@ impl App {
             let drop = self.log_lines.len() - LOG_MAX_LINES;
             self.log_lines.drain(..drop);
         }
+    }
+
+    fn advanced_inline_exec_surface_active(&self) -> bool {
+        if self.flash_parts_open {
+            return self.flash_parts.step >= 3;
+        }
+        if self.dump_parts_open {
+            return self.dump_parts.step >= 2;
+        }
+        if self.dump_phys_open {
+            return self.dump_phys.step >= 2;
+        }
+        if self.flash_phys_open {
+            return self.flash_phys.step >= 3;
+        }
+        self.adv_wizard.action.is_some() && self.adv_wizard.step == self.adv_wizard.exec_step()
+    }
+
+    fn current_view_has_inline_exec_surface(&self) -> bool {
+        match self.current_view {
+            View::Flash => self.flash.is_in_exec(),
+            View::SystemUpdate => self.sysupdate.is_in_exec(),
+            View::Root => self.root.is_in_exec(),
+            View::Unroot => self.unroot.is_in_exec(),
+            View::Advanced => self.advanced_inline_exec_surface_active(),
+            View::Dashboard | View::Reboot | View::Settings => false,
+        }
+    }
+
+    fn blocking_popup_open(&self) -> bool {
+        self.country_popup_open
+            || self.reboot_confirm_target.is_some()
+            || self.sysupdate.rescue_region_popup_open
+            || self.root.superkey_popup_open
+            || self.root.run_id_popup_open
+            || self.root.kernel_version_popup_open
+    }
+
+    fn should_show_busy_progress_dialog(&self) -> bool {
+        self.busy
+            && self.current_view != View::Dashboard
+            && !self.blocking_popup_open()
+            && !self.current_view_has_inline_exec_surface()
+    }
+
+    fn advanced_operation_label(&self) -> Option<String> {
+        if self.flash_parts_open {
+            return Some(self.t(AdvAction::FlashPartitions.label_key()).to_string());
+        }
+        if self.dump_parts_open {
+            return Some(self.t(AdvAction::DumpPartitions.label_key()).to_string());
+        }
+        if self.dump_phys_open {
+            return Some(self.t(AdvAction::DumpPhysical.label_key()).to_string());
+        }
+        if self.flash_phys_open {
+            return Some(self.t(AdvAction::FlashPhysical.label_key()).to_string());
+        }
+        self.adv_wizard
+            .action
+            .map(|action| self.t(action.label_key()).to_string())
+    }
+
+    fn busy_operation_label(&self) -> String {
+        if self.busy_view == Some(View::Advanced)
+            && let Some(label) = self.advanced_operation_label()
+        {
+            return label;
+        }
+        self.busy_view
+            .map(|view| self.t(view.label_key()).to_string())
+            .unwrap_or_else(|| self.t("status_working").to_string())
     }
 
     /// Rebuild the editor from `log_lines` and auto-scroll to the
@@ -7176,12 +7249,60 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         if self.root.kernel_version_popup_open {
             layers.push(self.root_kernel_version_popup());
         }
+        if self.should_show_busy_progress_dialog() {
+            layers.push(self.busy_progress_dialog());
+        }
 
         if layers.len() == 1 {
             layers.into_iter().next().unwrap()
         } else {
             iced::widget::Stack::with_children(layers).into()
         }
+    }
+
+    fn busy_progress_dialog(&self) -> Element<'_, Message> {
+        let op_name = self.busy_operation_label();
+        let body = self
+            .t("progress_dialog_body")
+            .replace("{operation}", &op_name);
+
+        let spinner: Element<'_, Message> = Spinner::new()
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .circle_radius(3.0)
+            .into();
+        let spinner_box = container(spinner)
+            .width(56)
+            .height(56)
+            .center_x(56)
+            .center_y(56)
+            .style(|t: &Theme| {
+                let p = pal_of(t);
+                container::Style {
+                    text_color: Some(p.primary),
+                    ..Default::default()
+                }
+            });
+
+        let title_col = column![
+            text(self.t("progress_dialog_title").to_string())
+                .size(theme::text_size::TITLE_MEDIUM)
+                .style(on_surface_style),
+            text(body).size(13).style(muted_style),
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+
+        let content = column![
+            row![spinner_box, title_col]
+                .spacing(18)
+                .align_y(iced::Alignment::Center),
+        ]
+        .spacing(16)
+        .padding(24)
+        .width(420);
+
+        m3_dialog(content.into())
     }
 
     fn country_popup_view(&self) -> Element<'_, Message> {
@@ -7545,10 +7666,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         };
         let op_text = if self.busy {
             let base = self.t("dash_operation_in_progress").to_string();
-            let label = match self.busy_view {
-                Some(v) => format!("{base} — {}", self.t(v.label_key())),
-                None => base,
-            };
+            let label = format!("{base} - {}", self.busy_operation_label());
             text(label).size(13).style(accent_style)
         } else {
             text(self.t("dash_no_operation").to_string())
@@ -12570,6 +12688,67 @@ mod tests {
         w.rows[0].state = FlashRowState::Erase;
         w.rows[0].file_path = None;
         assert!(w.can_next());
+    }
+
+    #[test]
+    fn busy_progress_dialog_shows_only_without_inline_log_surface() {
+        let mut app = App {
+            busy: true,
+            busy_view: Some(View::Reboot),
+            current_view: View::Reboot,
+            ..App::default()
+        };
+
+        assert!(app.should_show_busy_progress_dialog());
+
+        app.current_view = View::Dashboard;
+        assert!(!app.should_show_busy_progress_dialog());
+
+        app.current_view = View::Advanced;
+        app.flash_parts_open = true;
+        app.flash_parts.step = 0;
+        assert!(app.should_show_busy_progress_dialog());
+
+        app.flash_parts.step = 3;
+        assert!(!app.should_show_busy_progress_dialog());
+
+        app.flash_parts_open = false;
+        app.dump_parts_open = true;
+        app.dump_parts.step = 0;
+        assert!(app.should_show_busy_progress_dialog());
+
+        app.dump_parts.step = 2;
+        assert!(!app.should_show_busy_progress_dialog());
+
+        app.dump_parts_open = false;
+        app.current_view = View::Flash;
+        app.flash.step = FLASH_STEPS.len() - 1;
+        assert!(!app.should_show_busy_progress_dialog());
+    }
+
+    #[test]
+    fn busy_operation_label_names_advanced_subtask() {
+        let mut app = App {
+            busy: true,
+            busy_view: Some(View::Advanced),
+            current_view: View::Advanced,
+            ..App::default()
+        };
+
+        app.adv_wizard.action = Some(AdvAction::PatchDevinfo);
+        assert_eq!(
+            app.busy_operation_label(),
+            app.t(AdvAction::PatchDevinfo.label_key()).to_string()
+        );
+
+        app.flash_parts_open = true;
+        assert_eq!(
+            app.busy_operation_label(),
+            app.t(AdvAction::FlashPartitions.label_key()).to_string()
+        );
+
+        app.busy_view = Some(View::Reboot);
+        assert_eq!(app.busy_operation_label(), app.t("nav_reboot").to_string());
     }
 
     #[test]
