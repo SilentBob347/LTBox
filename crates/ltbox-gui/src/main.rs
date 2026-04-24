@@ -7980,7 +7980,42 @@ impl App {
             .size(11)
             .height(120)
             .into();
-        content = content.push(card(self.t("dash_log"), dash_log_editor));
+        // Bottom-right "Save Log" — same neutral pill the wizard exec
+        // step uses, sized so the label doesn't get clipped at any
+        // language. Right-aligned via a Fill spacer.
+        let dash_save_btn = button(
+            text(self.t("btn_save_log").to_string())
+                .size(11)
+                .style(muted_style)
+                .center(),
+        )
+        .on_press(Message::SaveLog)
+        .padding([4, 14])
+        .style(neutral_pill_btn_style);
+        let dash_log_card = container(
+            column![
+                text(self.t("dash_log").to_string())
+                    .size(13)
+                    .style(label_style)
+                    .line_height(1.0),
+                dash_log_editor,
+                row![Space::new().width(Length::Fill), dash_save_btn]
+                    .align_y(iced::Alignment::Center),
+            ]
+            .spacing(8)
+            .padding(iced::Padding {
+                top: 10.0,
+                right: 18.0,
+                bottom: 14.0,
+                left: 18.0,
+            })
+            .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .style(|t: &Theme| {
+            theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
+        });
+        content = content.push(dash_log_card);
         content.into()
     }
 
