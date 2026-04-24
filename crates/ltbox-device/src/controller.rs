@@ -30,6 +30,26 @@ pub enum ControllerError {
 
 type Result<T> = std::result::Result<T, ControllerError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdlTransitionRoute {
+    AlreadyEdl,
+    AdbReboot,
+    FastbootContinueThenAdb,
+    ManualWait,
+}
+
+fn plan_edl_transition(in_edl: bool, in_fastboot: bool, skip_adb: bool) -> EdlTransitionRoute {
+    if in_edl {
+        EdlTransitionRoute::AlreadyEdl
+    } else if in_fastboot && !skip_adb {
+        EdlTransitionRoute::FastbootContinueThenAdb
+    } else if skip_adb {
+        EdlTransitionRoute::ManualWait
+    } else {
+        EdlTransitionRoute::AdbReboot
+    }
+}
+
 pub struct DeviceController {
     pub adb: AdbManager,
     pub skip_adb: bool,
@@ -89,46 +109,34 @@ impl DeviceController {
     }
 
     pub fn ensure_edl(&mut self) -> Result<()> {
-        if edl::check_device() {
-            self.mode = DeviceMode::Edl;
-            return Ok(());
-        }
-
-        // Try every transition that doesn't need ADB first, so the skip_adb
-        // user with the device in Fastboot still gets a chance via OEM EDL.
-        if FastbootDevice::check_device() {
-            info!("Device in Fastboot, attempting EDL transition...");
-            if let Ok(mut dev) = FastbootDevice::open() {
-                if dev.oem_edl().is_ok() {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    if edl::check_device() {
-                        self.mode = DeviceMode::Edl;
-                        return Ok(());
-                    }
-                }
-                // OEM EDL didn't land the device in EDL. Without ADB there
-                // is no second-chance transition available — bail instead
-                // of blocking on `edl::wait_for_device()` that cannot
-                // complete.
-                if self.skip_adb {
-                    return Err(ControllerError::NoDevice);
-                }
-                info!("OEM EDL failed, falling back to ADB...");
+        match plan_edl_transition(
+            edl::check_device(),
+            FastbootDevice::check_device(),
+            self.skip_adb,
+        ) {
+            EdlTransitionRoute::AlreadyEdl => {
+                self.mode = DeviceMode::Edl;
+                return Ok(());
+            }
+            EdlTransitionRoute::FastbootContinueThenAdb => {
+                info!("Device in Fastboot, resuming boot for ADB EDL transition...");
+                let mut dev = FastbootDevice::open()?;
                 let _ = dev.continue_boot();
+                info!("Waiting for ADB...");
+                self.adb.wait_for_device()?;
+                info!("Rebooting to EDL via ADB...");
+                self.adb.reboot("edl")?;
+            }
+            EdlTransitionRoute::AdbReboot => {
+                info!("Rebooting to EDL via ADB...");
                 self.adb.wait_for_device()?;
                 self.adb.reboot("edl")?;
-            } else if self.skip_adb {
-                return Err(ControllerError::NoDevice);
             }
-        } else if self.skip_adb {
-            // No EDL, no Fastboot, skip_adb: nothing we can do to drive
-            // the transition. Refuse instead of blocking for the whole
-            // edl::wait_for_device timeout.
-            return Err(ControllerError::NoDevice);
-        } else {
-            info!("Rebooting to EDL via ADB...");
-            self.adb.wait_for_device()?;
-            self.adb.reboot("edl")?;
+            EdlTransitionRoute::ManualWait => {
+                let _ = edl::wait_for_device()?;
+                self.mode = DeviceMode::Edl;
+                return Ok(());
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -148,5 +156,26 @@ impl DeviceController {
 impl Default for DeviceController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edl_route_from_fastboot_prefers_adb_when_available() {
+        assert_eq!(
+            plan_edl_transition(false, true, false),
+            EdlTransitionRoute::FastbootContinueThenAdb
+        );
+    }
+
+    #[test]
+    fn edl_route_from_fastboot_waits_manual_when_adb_skipped() {
+        assert_eq!(
+            plan_edl_transition(false, true, true),
+            EdlTransitionRoute::ManualWait
+        );
     }
 }

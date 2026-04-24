@@ -2431,11 +2431,6 @@ struct LiveLabels {
     op_root_phase: [String; 6],
     op_unroot_phase: [String; 3],
     op_flash_phase: [String; 4],
-    reboot_to_edl: String,
-    reboot_to_edl_sent: String, // "{n}" placeholder
-    wait_edl_port: String,
-    edl_ready: String,
-    edl_already: String,
     closing_dump: String,
     flash_completed: String,
     root_completed: String,
@@ -2489,37 +2484,23 @@ fn strip_twrp_prefix(product: &str) -> String {
 
 /// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.
 ///
-/// Already-EDL: no-op. Fastboot live: `oem edl` + 3s wait. ADB live:
-/// `adb reboot edl` + 5s wait. Then block on `wait_for_device`.
-fn transition_to_edl(ll: &LiveLabels, log: &mut Vec<String>) -> std::result::Result<(), String> {
-    if ltbox_device::edl::check_device() {
-        live!(log, "[EDL] {}", ll.edl_already);
-        return Ok(());
-    }
-    if ltbox_device::fastboot::FastbootDevice::check_device() {
-        live!(log, "[Fastboot] {}", ll.reboot_to_edl);
-        if let Ok(mut dev) = ltbox_device::fastboot::FastbootDevice::open() {
-            let _ = dev.oem_edl();
-        }
-        live!(
-            log,
-            "[Fastboot] {}",
-            ll.reboot_to_edl_sent.replace("{n}", "3")
-        );
-        std::thread::sleep(std::time::Duration::from_secs(3));
+/// Already-EDL: no-op. Fastboot live: continue system boot, wait for ADB,
+/// then `adb reboot edl`. ADB live: `adb reboot edl`. If ADB is not
+/// usable, ask the user to reboot manually and wait for 9008.
+fn transition_to_edl(_ll: &LiveLabels, log: &mut Vec<String>) -> std::result::Result<(), String> {
+    let conn = if ltbox_device::edl::check_device() {
+        ConnectionStatus::Edl
+    } else if ltbox_device::fastboot::FastbootDevice::check_device() {
+        ConnectionStatus::Fastboot
     } else {
         let mut adb = ltbox_device::adb::AdbManager::new();
         if adb.check_device().unwrap_or(false) {
-            live!(log, "[ADB] {}", ll.reboot_to_edl);
-            let _ = adb.reboot("edl");
-            live!(log, "[ADB] {}", ll.reboot_to_edl_sent.replace("{n}", "5"));
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            ConnectionStatus::Adb
+        } else {
+            ConnectionStatus::None
         }
-    }
-    live!(log, "[EDL] {}", ll.wait_edl_port);
-    ltbox_device::edl::wait_for_device().map_err(|e| format!("EDL not found: {e}"))?;
-    live!(log, "[EDL] {}", ll.edl_ready);
-    Ok(())
+    };
+    ensure_edl(conn, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
 }
 
 /// M3 neutral pill — translucent `on_surface` fill, muted text, 4 dp
@@ -2855,6 +2836,23 @@ impl ConnectionStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdlEntryAction {
+    AlreadyEdl,
+    AdbReboot,
+    FastbootContinueThenAdb,
+    ManualWait,
+}
+
+fn edl_entry_action(conn: ConnectionStatus) -> EdlEntryAction {
+    match conn {
+        ConnectionStatus::Edl => EdlEntryAction::AlreadyEdl,
+        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => EdlEntryAction::AdbReboot,
+        ConnectionStatus::Fastboot => EdlEntryAction::FastbootContinueThenAdb,
+        ConnectionStatus::AdbUnauthorized | ConnectionStatus::None => EdlEntryAction::ManualWait,
+    }
+}
+
 struct App {
     window_id: Option<iced::window::Id>,
     current_view: View,
@@ -3175,11 +3173,6 @@ impl App {
                 t("op_flash_phase_3"),
                 t("op_flash_phase_4"),
             ],
-            reboot_to_edl: t("live_reboot_to_edl"),
-            reboot_to_edl_sent: t("live_reboot_to_edl_sent"),
-            wait_edl_port: t("live_wait_edl_port"),
-            edl_ready: t("live_edl_ready"),
-            edl_already: t("live_edl_already"),
             closing_dump: t("live_closing_dump_session"),
             flash_completed: t("live_flash_completed"),
             root_completed: t("live_root_completed"),
@@ -6980,8 +6973,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                             dev.reboot_bootloader().map_err(|e| format!("reboot-bootloader: {e}"))?;
                                         }
                                         RebootTarget::Edl => {
-                                            log.push("[Fastboot] $ oem edl".to_string());
-                                            dev.oem_edl().map_err(|e| format!("oem edl: {e}"))?;
+                                            drop(dev);
+                                            ensure_edl(ConnectionStatus::Fastboot, "Reboot", &mut log)
+                                                .map_err(|()| "Could not transition device to EDL".to_string())?;
                                         }
                                         RebootTarget::Recovery => {
                                             return Err("Fastboot cannot reboot to recovery directly — switch to ADB first".into());
@@ -11942,131 +11936,139 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
 /// `Ok(())` if the device is already in EDL or was sent there.
 /// Shared by `dump_parts_scan`. Mirrors the inline block in
 /// `flash_parts_execute`.
+fn wait_for_edl_ready(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    log.push(format!(
+        "[{tag}] {}",
+        ltbox_core::i18n::tr("live_wait_edl_port")
+    ));
+    match ltbox_device::edl::wait_for_device() {
+        Ok(_) => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_edl_ready")
+            ));
+            Ok(())
+        }
+        Err(e) => {
+            log.push(format!("[{tag}] EDL not found: {e}"));
+            Err(())
+        }
+    }
+}
+
+fn wait_for_manual_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    log.push(format!(
+        "[{tag}] {}",
+        ltbox_core::i18n::tr("live_manual_reboot_edl_wait")
+    ));
+    wait_for_edl_ready(tag, log)
+}
+
+fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    log.push(format!(
+        "[{tag}] $ {}",
+        ltbox_core::i18n::tr("live_cmd_adb_reboot_edl")
+    ));
+    let mut mgr = ltbox_device::adb::AdbManager::new();
+    // `AdbManager::reboot` requires a preselected serial. Since
+    // `check_device` now accepts only `Device` state, use
+    // `check_device_state` here so recovery-state ADB can also
+    // seed the serial before issuing `reboot edl`.
+    let state = match mgr.check_device_state() {
+        Ok(s) => s,
+        Err(e) => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_adb_state_probe_failed")
+                    .replace("{error}", &e.to_string())
+            ));
+            return wait_for_manual_edl(tag, log);
+        }
+    };
+    match state {
+        Some("device") | Some("recovery") => {}
+        Some(other) => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_adb_state_cannot_reboot_edl").replace("{state}", other)
+            ));
+            return wait_for_manual_edl(tag, log);
+        }
+        None => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_no_adb_device_found")
+            ));
+            return wait_for_manual_edl(tag, log);
+        }
+    }
+    match mgr.reboot("edl") {
+        Ok(_) => wait_for_edl_ready(tag, log),
+        Err(e) => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_adb_reboot_edl_failed")
+                    .replace("{error}", &e.to_string())
+            ));
+            wait_for_manual_edl(tag, log)
+        }
+    }
+}
+
+fn fastboot_continue_then_adb_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    log.push(format!(
+        "[{tag}] $ {}",
+        ltbox_core::i18n::tr("live_cmd_fastboot_continue")
+    ));
+    match ltbox_device::fastboot::FastbootDevice::open() {
+        Ok(mut dev) => {
+            if let Err(e) = dev.continue_boot() {
+                log.push(format!(
+                    "[{tag}] {}",
+                    ltbox_core::i18n::tr("live_fastboot_continue_failed")
+                        .replace("{error}", &e.to_string())
+                ));
+                return wait_for_manual_edl(tag, log);
+            }
+        }
+        Err(e) => {
+            log.push(format!(
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_fastboot_open_failed")
+                    .replace("{error}", &e.to_string())
+            ));
+            return wait_for_manual_edl(tag, log);
+        }
+    }
+
+    log.push(format!(
+        "[{tag}] {}",
+        ltbox_core::i18n::tr("live_adb_wait_after_fastboot")
+    ));
+    let mut mgr = ltbox_device::adb::AdbManager::new();
+    if let Err(e) = mgr.wait_for_device() {
+        log.push(format!(
+            "[{tag}] {}",
+            ltbox_core::i18n::tr("live_adb_wait_after_fastboot_failed")
+                .replace("{error}", &e.to_string())
+        ));
+        return wait_for_manual_edl(tag, log);
+    }
+    reboot_adb_to_edl(tag, log)
+}
+
 fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
-    match conn {
-        ConnectionStatus::Edl => {
+    match edl_entry_action(conn) {
+        EdlEntryAction::AlreadyEdl => {
             log.push(format!(
                 "[{tag}] {}",
                 ltbox_core::i18n::tr("live_edl_already")
             ));
             Ok(())
         }
-        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
-            log.push(format!(
-                "[{tag}] $ {}",
-                ltbox_core::i18n::tr("live_cmd_adb_reboot_edl")
-            ));
-            let mut mgr = ltbox_device::adb::AdbManager::new();
-            // `AdbManager::reboot` requires a preselected serial. Since
-            // `check_device` now accepts only `Device` state, use
-            // `check_device_state` here so recovery-state ADB can also
-            // seed the serial before issuing `reboot edl`.
-            let state = match mgr.check_device_state() {
-                Ok(s) => s,
-                Err(e) => {
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_adb_state_probe_failed")
-                            .replace("{error}", &e.to_string())
-                    ));
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                    ));
-                    return Err(());
-                }
-            };
-            match state {
-                Some("device") | Some("recovery") => {}
-                Some(other) => {
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_adb_state_cannot_reboot_edl")
-                            .replace("{state}", other)
-                    ));
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                    ));
-                    return Err(());
-                }
-                None => {
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_no_adb_device_found")
-                    ));
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                    ));
-                    return Err(());
-                }
-            }
-            match mgr.reboot("edl") {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_adb_reboot_edl_failed")
-                            .replace("{error}", &e.to_string())
-                    ));
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                    ));
-                    Err(())
-                }
-            }
-        }
-        ConnectionStatus::Fastboot => {
-            log.push(format!(
-                "[{tag}] $ {}",
-                ltbox_core::i18n::tr("live_cmd_fastboot_oem_edl")
-            ));
-            match ltbox_device::fastboot::FastbootDevice::open() {
-                Ok(mut dev) => match dev.oem_edl() {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        log.push(format!(
-                            "[{tag}] {}",
-                            ltbox_core::i18n::tr("live_fastboot_oem_edl_failed")
-                                .replace("{error}", &e.to_string())
-                        ));
-                        log.push(format!(
-                            "[{tag}] {}",
-                            ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                        ));
-                        Err(())
-                    }
-                },
-                Err(e) => {
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_fastboot_open_failed")
-                            .replace("{error}", &e.to_string())
-                    ));
-                    log.push(format!(
-                        "[{tag}] {}",
-                        ltbox_core::i18n::tr("live_manual_reboot_edl_retry")
-                    ));
-                    Err(())
-                }
-            }
-        }
-        ConnectionStatus::AdbUnauthorized => {
-            log.push(format!(
-                "[{tag}] {}",
-                ltbox_core::i18n::tr("live_adb_unauthorized_retry")
-            ));
-            Err(())
-        }
-        ConnectionStatus::None => {
-            log.push(format!(
-                "[{tag}] {}",
-                ltbox_core::i18n::tr("live_no_device_connected_retry")
-            ));
-            Err(())
-        }
+        EdlEntryAction::AdbReboot => reboot_adb_to_edl(tag, log),
+        EdlEntryAction::FastbootContinueThenAdb => fastboot_continue_then_adb_edl(tag, log),
+        EdlEntryAction::ManualWait => wait_for_manual_edl(tag, log),
     }
 }
 
@@ -12917,5 +12919,21 @@ mod tests {
         assert!(is_loader_file(std::path::Path::new("firehose_loader.MBN")));
         assert!(is_loader_file(std::path::Path::new("prog.elf")));
         assert!(!is_loader_file(std::path::Path::new("xbl_s_devprg_ns.bin")));
+    }
+
+    #[test]
+    fn edl_entry_action_uses_adb_from_fastboot() {
+        assert_eq!(
+            edl_entry_action(ConnectionStatus::Fastboot),
+            EdlEntryAction::FastbootContinueThenAdb
+        );
+    }
+
+    #[test]
+    fn edl_entry_action_waits_manual_without_usable_adb() {
+        assert_eq!(
+            edl_entry_action(ConnectionStatus::AdbUnauthorized),
+            EdlEntryAction::ManualWait
+        );
     }
 }
