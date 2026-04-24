@@ -7,6 +7,20 @@
   "tools": {
     "platform_tools_url": "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
   },
+  "magiskboot": {
+    "archive_url": "https://github.com/miner7222/LTBox/releases/download/v2.6.7/LTBox-win_amd64-v2.6.7.zip",
+    "archive_sha256": "618ab70984fd129f6702bf686eb3d21d8e73157632d92703da376aaccf80339a",
+    "files": [
+      "magiskboot.exe",
+      "magiskboot_xz_helper.exe",
+      "openssl.exe",
+      "libwinpthread-1.dll",
+      "msys-2.0.dll",
+      "msys-crypto-3.dll",
+      "msys-ssl-3.dll",
+      "msys-z.dll"
+    ]
+  },
   "kptools": {
     "repo": "bmax121/KernelPatch",
     "asset_name": "kptools-msys2-win.7z"

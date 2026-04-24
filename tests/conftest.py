@@ -13,6 +13,11 @@ INTEGRATION_TOOL_FILES = (
     "magiskboot.exe",
     "magiskboot_xz_helper.exe",
     "openssl.exe",
+    "libwinpthread-1.dll",
+    "msys-2.0.dll",
+    "msys-crypto-3.dll",
+    "msys-ssl-3.dll",
+    "msys-z.dll",
 )
 
 if str(BIN_PATH) not in sys.path:

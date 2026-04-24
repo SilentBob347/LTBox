@@ -2,6 +2,7 @@
 
 import json
 import re
+import hashlib
 import shutil
 import sys
 import zipfile
@@ -13,6 +14,14 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_TOOLS_CONFIG = REPO_ROOT / ".github" / "ci-tools.json"
 TOOLS_DIR = REPO_ROOT / "bin" / "tools"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _download(url: str, dest: Path, description: str, *, max_retries: int = 4) -> None:
@@ -53,6 +62,54 @@ def bundle_platform_tools(url: str) -> None:
                 print(f"[bundle-tools] Extracted {file_name}")
 
     temp_zip.unlink()
+
+
+def bundle_magiskboot(config: dict) -> None:
+    file_names = config["files"]
+    if all((TOOLS_DIR / name).exists() for name in file_names):
+        print("[bundle-tools] magiskboot tools already present, skipping.")
+        return
+
+    archive_url = config["archive_url"]
+    temp_zip = TOOLS_DIR / "magiskboot-prebuilt.zip"
+    _download(archive_url, temp_zip, "magiskboot prebuilt tools")
+
+    expected_sha256 = config.get("archive_sha256")
+    if expected_sha256:
+        actual_sha256 = _sha256(temp_zip)
+        if actual_sha256.lower() != expected_sha256.lower():
+            raise RuntimeError(
+                "magiskboot prebuilt archive SHA-256 mismatch: "
+                f"expected {expected_sha256}, got {actual_sha256}"
+            )
+
+    try:
+        with zipfile.ZipFile(temp_zip, "r") as zf:
+            for file_name in file_names:
+                member = next(
+                    (
+                        item
+                        for item in zf.infolist()
+                        if not item.is_dir()
+                        and Path(item.filename)
+                        .as_posix()
+                        .endswith(f"bin/tools/{file_name}")
+                    ),
+                    None,
+                )
+                if member is None:
+                    raise RuntimeError(
+                        f"{file_name} not found in magiskboot prebuilt archive"
+                    )
+
+                with zf.open(member) as src, open(TOOLS_DIR / file_name, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                print(f"[bundle-tools] Extracted {file_name}")
+    finally:
+        if temp_zip.exists():
+            temp_zip.unlink()
+
+    print("[bundle-tools] magiskboot ready.")
 
 
 def bundle_avb_tools() -> None:
@@ -145,6 +202,7 @@ def main() -> None:
 
     tools = config["tools"]
     bundle_platform_tools(tools["platform_tools_url"])
+    bundle_magiskboot(config["magiskboot"])
     bundle_avb_tools()
 
     kp = config["kptools"]

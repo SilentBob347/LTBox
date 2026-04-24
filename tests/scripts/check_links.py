@@ -105,6 +105,9 @@ def main() -> None:
     print("--- Static Tools ---")
     if not check_url(tools.get("platform_tools_url"), "Platform Tools"):
         has_error = True
+    magiskboot = ci_tools.get("magiskboot", {})
+    if not check_url(magiskboot.get("archive_url"), "Magiskboot Prebuilt Tools"):
+        has_error = True
 
     # 2. KernelSU-Next (GitHub Release)
     print("\n--- KernelSU-Next ---")
