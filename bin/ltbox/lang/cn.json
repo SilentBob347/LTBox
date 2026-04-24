@@ -377,6 +377,7 @@
   "device_no_edl": "[!] 未找到 EDL (9008) 设备。",
   "device_no_fastboot": "[!] 未找到 Fastboot 设备。",
   "device_oem_edl_failed": "[X] EDL 切换失败。正在尝试替代方法...",
+  "device_pre_erase_xml": "[*] 全量清除模式下，刷入固件前先发送 '{name}'。",
   "device_resetting": "[*] 正在通过 qdl-rs 重启设备...",
   "device_skip_adb": "[!] 已按要求跳过 ADB。",
   "device_status_adb": "设备状态: USB调试已连接",

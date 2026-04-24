@@ -391,6 +391,7 @@ class EdlManager(BaseDeviceManager):
                 erase_xml = self._build_fhloader_erase_xml(
                     loader_path.parent, program_xmls
                 )
+                ui.info(get_string("device_pre_erase_xml").format(name=erase_xml.name))
                 program_xmls.insert(0, erase_xml)
 
             with prevent_sleep_during_flash():

@@ -97,6 +97,7 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
 
     with (
         patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
+        patch("ltbox.device.edl.ui.info") as mock_info,
         patch.object(manager, "load_programmer_safe"),
         patch.object(manager, "_ensure_edl_port", side_effect=lambda p, **kw: p),
         patch.object(manager, "_run_command") as mock_run,
@@ -118,6 +119,9 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
     assert "-x" in flash_cmd
 
     erase_xml = tmp_path / "FHLoaderErase.xml"
+    logged = [call.args[0] for call in mock_info.call_args_list if call.args]
+    assert any("FHLoaderErase.xml" in message for message in logged)
+
     p_indices = [i for i, item in enumerate(flash_cmd) if item == "-p"]
     assert flash_cmd[p_indices[0] + 1] == str(erase_xml)
     assert flash_cmd[p_indices[1] + 1] == str(raw_xml)

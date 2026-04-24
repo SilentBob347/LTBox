@@ -377,6 +377,7 @@
   "device_no_edl": "[!] No EDL (9008) device found.",
   "device_no_fastboot": "[!] fastboot device not found.",
   "device_oem_edl_failed": "[X] EDL transition failed. Trying alternative method...",
+  "device_pre_erase_xml": "[*] Sending '{name}' before firmware flashing for wipe mode.",
   "device_resetting": "[*] Rebooting device via qdl-rs...",
   "device_skip_adb": "[!] Skipping ADB as requested.",
   "device_status_adb": "Device Status: USB Debugging Connected",

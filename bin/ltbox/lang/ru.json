@@ -377,6 +377,7 @@
   "device_no_edl": "[!] Устройств в режиме EDL (9008) не обнаружено.",
   "device_no_fastboot": "[!] Устройство Fastboot не найдено",
   "device_oem_edl_failed": "[!] Переход в EDL не удался. Пробуем альтернативный способ...",
+  "device_pre_erase_xml": "[*] Отправляется '{name}' перед прошивкой firmware в режиме очистки.",
   "device_resetting": "[*] Перезагрузка устройства, используя qdl-rs...",
   "device_skip_adb": "[!] Запрошен пропуск ADB.",
   "device_status_adb": "Статус устройства: USB-отладка подключена",

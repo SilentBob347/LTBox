@@ -377,6 +377,7 @@
   "device_no_edl": "[!] EDL (9008) 기기를 찾을 수 없습니다.",
   "device_no_fastboot": "[!] Fastboot 기기를 찾을 수 없습니다.",
   "device_oem_edl_failed": "[X] EDL 전환 실패. 대체 방법 시도 중...",
+  "device_pre_erase_xml": "[*] 전체 초기화를 위해 펌웨어 플래싱 전에 '{name}'을(를) 전송합니다.",
   "device_resetting": "[*] qdl-rs를 통해 기기 재부팅 중...",
   "device_skip_adb": "[!] 요청에 따라 ADB 건너뜀.",
   "device_status_adb": "기기 상태: USB 디버깅 연결됨",
