@@ -9697,9 +9697,16 @@ impl App {
             ..Default::default()
         });
 
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(PickerTarget::RootFile.kind().storage_key()),
+        // Root OTA file picker flips between AnyKernel3 zip (GKI route)
+        // and provider APK (Magisk fork / APatch manual) — mirror the
+        // dialog filter so recents don't surface the wrong family.
+        let accepted: &[&str] = if self.root.is_gki() {
+            &["zip"]
+        } else {
+            &["apk"]
+        };
+        let chips = self.recent_file_chips(
+            accepted,
             |p| Message::RecentFilePicked(PickerTarget::RootFile, p),
             "picker_recents",
         );
@@ -9732,6 +9739,43 @@ impl App {
     }
 
     /// Recents panel — up to three chips, greyed out when stale.
+    /// Per-ext-filtered recents strip for file pickers.
+    ///
+    /// The `File` recents bucket is shared across every file picker
+    /// (APK, ZIP, KPM, `.melf`, `.img`, …) because a per-picker bucket
+    /// explosion wasn't worth the storage-key churn. The strip itself
+    /// would still look noisy though — a user opening the KPM picker
+    /// shouldn't see their last Magisk APK. Filter at render time by
+    /// the ext list the picker dialog itself accepts; empty list means
+    /// "show everything" (legacy behaviour).
+    fn recent_file_chips<F>(
+        &self,
+        accepted_exts: &[&str],
+        on_pick: F,
+        label_key: &str,
+    ) -> Element<'_, Message>
+    where
+        F: Fn(String) -> Message,
+    {
+        let all = self
+            .recent_paths
+            .recent(pickers::PickerKind::File.storage_key());
+        let filtered: Vec<String> = if accepted_exts.is_empty() {
+            all.to_vec()
+        } else {
+            all.iter()
+                .filter(|p| {
+                    std::path::Path::new(p)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| accepted_exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
+                })
+                .cloned()
+                .collect()
+        };
+        self.recent_chips(&filtered, on_pick, label_key)
+    }
+
     /// Empty column when the list is empty so call sites can splice
     /// it in unconditionally.
     fn recent_chips<F>(&self, items: &[String], on_pick: F, label_key: &str) -> Element<'_, Message>
@@ -9809,24 +9853,8 @@ impl App {
             text_color: pal_of(t).on_surface,
             ..Default::default()
         });
-        // Recent `.melf` picks only — the File bucket is shared with
-        // other file pickers (root OTA zip, magisk fork APK, …) so
-        // filter by extension to keep unrelated picks out of the
-        // loader recents strip.
-        let loader_recents: Vec<String> = self
-            .recent_paths
-            .recent(PickerTarget::RootLoader.kind().storage_key())
-            .iter()
-            .filter(|p| {
-                std::path::Path::new(p)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("melf"))
-            })
-            .cloned()
-            .collect();
-        let chips = self.recent_chips(
-            &loader_recents,
+        let chips = self.recent_file_chips(
+            &["melf"],
             |p| Message::RecentFilePicked(PickerTarget::RootLoader, p),
             "picker_recents",
         );
@@ -10275,19 +10303,27 @@ impl App {
         ];
         let status_color = if selected { GREEN } else { LABEL };
         let chips: Element<'_, Message> = if self.adv_wizard.is_image_info() {
-            self.recent_chips(
-                self.recent_paths
-                    .recent(pickers::PickerKind::File.storage_key()),
+            self.recent_file_chips(
+                &["img"],
                 |p| Message::AdvWizBrowseManyDone(Some(vec![p])),
                 "picker_recents",
             )
         } else {
-            self.recent_chips(
-                self.recent_paths
-                    .recent(self.adv_wizard.picker_kind().storage_key()),
-                |p| Message::AdvWizBrowseDone(Some(p)),
-                "picker_recents",
-            )
+            let kind = self.adv_wizard.picker_kind();
+            if kind.is_folder() {
+                self.recent_chips(
+                    self.recent_paths.recent(kind.storage_key()),
+                    |p| Message::AdvWizBrowseDone(Some(p)),
+                    "picker_recents",
+                )
+            } else {
+                let (_, exts) = self.adv_wizard.accepted_exts();
+                self.recent_file_chips(
+                    exts,
+                    |p| Message::AdvWizBrowseDone(Some(p)),
+                    "picker_recents",
+                )
+            }
         };
         let col = column![
             text(self.t(action.label_key()).to_string())
@@ -10596,9 +10632,8 @@ impl App {
         } else {
             LABEL
         };
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(pickers::PickerKind::File.storage_key()),
+        let chips = self.recent_file_chips(
+            &["melf", "mbn", "elf"],
             |p| Message::FlashPartsLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -10908,9 +10943,8 @@ impl App {
         } else {
             LABEL
         };
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(pickers::PickerKind::File.storage_key()),
+        let chips = self.recent_file_chips(
+            &["melf", "mbn", "elf"],
             |p| Message::DumpPartsLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -11089,9 +11123,8 @@ impl App {
         } else {
             LABEL
         };
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(pickers::PickerKind::File.storage_key()),
+        let chips = self.recent_file_chips(
+            &["melf", "mbn", "elf"],
             |p| Message::DumpPhysLoaderChosen(Some(p)),
             "picker_recents",
         );
@@ -11252,9 +11285,8 @@ impl App {
         } else {
             LABEL
         };
-        let chips = self.recent_chips(
-            self.recent_paths
-                .recent(pickers::PickerKind::File.storage_key()),
+        let chips = self.recent_file_chips(
+            &["melf", "mbn", "elf"],
             |p| Message::FlashPhysLoaderChosen(Some(p)),
             "picker_recents",
         );
