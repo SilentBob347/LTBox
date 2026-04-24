@@ -342,7 +342,7 @@
   "device_edl_setup_done": "[*] [EDL Setup] Device Connected",
   "device_edl_setup_title": "\n=== [EDL Setup] Rebooting to EDL ===",
   "device_edl_via_fastboot": "[*] Device is in fastboot. Attempting EDL transition...",
-  "device_edl_via_fastboot_fallback": "[*] Falling back to ADB for EDL transition. Resuming boot...",
+  "device_edl_via_fastboot_fallback": "[*] Using ADB for EDL transition. Resuming boot from Fastboot...",
   "device_enable_usb_debug": "[!] Enable USB Debugging and connect via USB.",
   "device_err_check_edl": "[X] EDL check error: {e}",
   "device_err_check_fastboot": "[X] fastboot check error: {e}",

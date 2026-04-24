@@ -96,12 +96,6 @@ class DeviceController:
         in_fastboot = self.fastboot.check_device(silent=True)
 
         if in_fastboot:
-            ui.info(get_string("device_edl_via_fastboot"))
-            if self.fastboot.oem_edl():
-                return
-
-            ui.warn(get_string("device_oem_edl_failed"))
-
             if not self.skip_adb:
                 ui.info(get_string("device_edl_via_fastboot_fallback"))
                 self.fastboot.continue_boot()
@@ -111,6 +105,7 @@ class DeviceController:
             else:
                 width = ui.get_term_width()
                 ui.echo("\n" + "=" * width)
+                ui.echo(get_string("device_manual_edl_req"))
                 ui.echo(get_string("act_manual_edl"))
                 ui.echo("=" * width + "\n")
         elif not self.skip_adb:

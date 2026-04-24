@@ -342,7 +342,7 @@
   "device_edl_setup_done": "[*] [Настройка EDL] Устройство подключено",
   "device_edl_setup_title": "\n=== [Настройка EDL] Перезагрузка в режим EDL ===",
   "device_edl_via_fastboot": "[*] Устройство в режиме Fastboot. Попытка перехода в EDL...",
-  "device_edl_via_fastboot_fallback": "[*] Откат к способу ADB для перехода в EDL. Возобновление загрузки...",
+  "device_edl_via_fastboot_fallback": "[*] Используется ADB для перехода в EDL. Возобновление загрузки из Fastboot...",
   "device_enable_usb_debug": "[!] Активируйте отладку по USB и подключите устройство к USB порту.",
   "device_err_check_edl": "[X] Ошибка проверки EDL: {e}",
   "device_err_check_fastboot": "[X] Ошибка проверки Fastboot: {e}",

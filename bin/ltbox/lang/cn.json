@@ -342,7 +342,7 @@
   "device_edl_setup_done": "[*] [EDL 设置] 设备已连接",
   "device_edl_setup_title": "\n=== [EDL 设置] 正在重启至 EDL ===",
   "device_edl_via_fastboot": "[*] 设备处于 Fastboot 模式。正在尝试切换至 EDL...",
-  "device_edl_via_fastboot_fallback": "[*] 正在回退到 ADB 方式切换 EDL。恢复启动中...",
+  "device_edl_via_fastboot_fallback": "[*] 正在使用 ADB 方式切换至 EDL。正在从 Fastboot 恢复启动...",
   "device_enable_usb_debug": "[!] 请开启 USB 调试并连接。",
   "device_err_check_edl": "[X] EDL 检查错误: {e}",
   "device_err_check_fastboot": "[X] Fastboot 检查错误: {e}",

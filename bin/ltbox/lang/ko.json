@@ -342,7 +342,7 @@
   "device_edl_setup_done": "[*] [EDL 설정] 기기 연결됨.",
   "device_edl_setup_title": "\n=== [EDL 설정] EDL 모드로 재부팅 중 ===",
   "device_edl_via_fastboot": "[*] 기기가 Fastboot 모드에 있습니다. EDL 전환 시도 중...",
-  "device_edl_via_fastboot_fallback": "[*] ADB 방식으로 EDL 전환을 대체합니다. 부팅 재개 중...",
+  "device_edl_via_fastboot_fallback": "[*] ADB 방식으로 EDL 전환을 진행합니다. Fastboot에서 부팅 재개 중...",
   "device_enable_usb_debug": "[!] USB 디버깅을 활성화하고 USB로 연결하세요.",
   "device_err_check_edl": "[X] EDL 확인 오류: {e}",
   "device_err_check_fastboot": "[X] Fastboot 확인 오류: {e}",

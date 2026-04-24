@@ -321,6 +321,54 @@ def test_ensure_edl_port_raises_when_port_never_returns():
             manager._ensure_edl_port("COM6", timeout=10.0)
 
 
+def test_ensure_edl_mode_prefers_adb_reboot_from_fastboot():
+    adb = MagicMock(skip_adb=False)
+    fastboot = MagicMock()
+    edl = MagicMock()
+    controller = DeviceController(
+        adb_manager=adb,
+        fastboot_manager=fastboot,
+        edl_manager=edl,
+    )
+    edl.check_device.return_value = False
+    fastboot.check_device.return_value = True
+
+    with patch("ltbox.device.controller.ui"):
+        controller.ensure_edl_mode()
+
+    fastboot.oem_edl.assert_not_called()
+    fastboot.continue_boot.assert_called_once()
+    adb.wait_for_device.assert_called_once()
+    adb.reboot.assert_called_once_with("edl")
+
+
+def test_setup_edl_connection_waits_for_manual_edl_when_skip_adb_from_fastboot(
+    mock_env,
+):
+    adb = MagicMock(skip_adb=True)
+    fastboot = MagicMock()
+    edl = MagicMock()
+    controller = DeviceController(
+        adb_manager=adb,
+        fastboot_manager=fastboot,
+        edl_manager=edl,
+    )
+    edl.check_device.return_value = False
+    edl.wait_for_device.return_value = "COM9"
+    fastboot.check_device.return_value = True
+
+    with patch("ltbox.device.controller.ui") as mock_ui:
+        port = controller.setup_edl_connection()
+
+    assert port == "COM9"
+    fastboot.oem_edl.assert_not_called()
+    fastboot.continue_boot.assert_not_called()
+    adb.wait_for_device.assert_not_called()
+    adb.reboot.assert_not_called()
+    edl.wait_for_device.assert_called_once()
+    assert mock_ui.echo.call_count >= 3
+
+
 def test_edl_session_logs_single_reset_message():
     controller = DeviceController(
         adb_manager=MagicMock(skip_adb=False),
