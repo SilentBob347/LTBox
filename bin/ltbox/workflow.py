@@ -26,6 +26,7 @@ from .errors import (
 )
 from .i18n import get_string
 from .logger import logging_context
+from .menus.terminal import TerminalMenu
 from .menus.workflow_prompts import UiWorkflowPrompts, WorkflowPrompts
 from .part.backups import find_backup_critical_dirs
 
@@ -195,6 +196,17 @@ def _dump_images(ctx: TaskContext) -> None:
         )
 
 
+def _select_workflow_country_code(
+    options: list[tuple[str, str]], prompt_msg: str
+) -> str:
+    menu = TerminalMenu(prompt_msg)
+    for idx, (code, name) in enumerate(options):
+        menu.add_option(str(idx + 1), f"{name} ({code})")
+
+    choice = menu.ask(get_string("prompt_select"), get_string("act_invalid_selection"))
+    return options[int(choice) - 1][0]
+
+
 def _patch_devinfo(ctx: TaskContext) -> None:
     if not ctx.skip_dp_workflow:
         prompts = ctx.prompts or UiWorkflowPrompts()
@@ -202,6 +214,7 @@ def _patch_devinfo(ctx: TaskContext) -> None:
             on_log=ctx.on_log,
             on_confirm=prompts.confirm,
             serialno=ctx.serialno,
+            on_select=_select_workflow_country_code,
         )
 
 

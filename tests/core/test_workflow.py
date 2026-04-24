@@ -1,7 +1,7 @@
 import contextlib
 import pytest
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 from ltbox.execution import TaskResult
 from ltbox import workflow
@@ -86,6 +86,36 @@ def test_patch_all_wipe_passes_wipe_flag_to_flash():
         workflow.patch_all(dev=mock_dev, wipe=1)
 
         assert mock_actions.flash_full_firmware.call_args.kwargs["wipe"] is True
+
+
+def test_workflow_country_code_selection_uses_plain_prompt():
+    mock_dev = make_device_mock()
+    ctx = TaskContext(
+        dev=mock_dev,
+        modify_region_code=True,
+        skip_dp_workflow=False,
+        on_log=lambda _message: None,
+    )
+
+    with patch("ltbox.workflow.actions") as mock_actions:
+        workflow._patch_devinfo(ctx)
+
+    assert (
+        mock_actions.edit_devinfo_persist.call_args.kwargs["on_select"]
+        is workflow._select_workflow_country_code
+    )
+
+
+def test_workflow_country_code_selector_has_no_breadcrumbs():
+    menu_instance = MagicMock()
+    menu_instance.ask.return_value = "1"
+
+    with patch("ltbox.workflow.TerminalMenu", return_value=menu_instance) as mock_menu:
+        selected = workflow._select_workflow_country_code([("KR", "Korea")], "SELECT")
+
+    mock_menu.assert_called_once_with("SELECT")
+    menu_instance.add_option.assert_called_once_with("1", "Korea (KR)")
+    assert selected == "KR"
 
 
 def test_patch_all_writes_flash_log_under_log_directory(tmp_path):
