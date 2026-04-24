@@ -4031,7 +4031,8 @@ impl App {
                                         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                                         .unwrap_or_else(|| std::path::PathBuf::from("."));
                                     let critical_backup = exe_dir.join(format!("backup_critical_{ts}"));
-                                    let _ = std::fs::create_dir_all(&critical_backup);
+                                    std::fs::create_dir_all(&critical_backup)
+                                        .map_err(|e| format!("critical backup folder: {e}"))?;
                                     let xml_paths: Vec<&std::path::Path> =
                                         raw_xmls.iter().map(|p| p.as_path()).collect();
                                     let catalog =
@@ -4049,11 +4050,12 @@ impl App {
                                         "DE","GR","HU","IE","IT","LV","LT","LU","MT","NL",
                                         "PL","PT","RO","SK","SI","ES","SE",
                                     ];
+                                    let mut country_progress = CountryPatchProgress::default();
                                     for label in ["devinfo", "persist"] {
                                         let Ok(rec) = catalog.require(label, &[]) else {
-                                            log.push(format!(
-                                                "[Country] Partition {label} not in rawprogram — skipping"
-                                            ));
+                                            let reason = "partition not in rawprogram";
+                                            log.push(format!("[Country] {label}: {reason}"));
+                                            country_progress.mark_failed(label, reason);
                                             continue;
                                         };
                                         let lun: u8 = rec
@@ -4075,7 +4077,9 @@ impl App {
                                             .parse()
                                             .unwrap_or(0);
                                         if n == 0 {
-                                            log.push(format!("[Country] {label} num_sectors=0 — skipping"));
+                                            let reason = "num_sectors=0";
+                                            log.push(format!("[Country] {label}: {reason}"));
+                                            country_progress.mark_failed(label, reason);
                                             continue;
                                         }
                                         let dump_path = work_dir.join(format!("{label}.img"));
@@ -4091,29 +4095,38 @@ impl App {
                                         if let Err(e) = session.dump_partition_at(
                                             label, &dump_path, lun, start, n, &mut log,
                                         ) {
-                                            log.push(format!("[Country] dump {label} failed: {e} — skipping"));
+                                            let reason = format!("dump failed: {e}");
+                                            log.push(format!("[Country] {label}: {reason}"));
+                                            country_progress.mark_failed(label, reason);
                                             continue;
                                         }
                                         // Preserve the original partition
                                         // *before* any patch touches it.
-                                        let _ = std::fs::copy(
+                                        if let Err(e) = std::fs::copy(
                                             &dump_path,
                                             critical_backup.join(format!("{label}.img")),
-                                        );
+                                        ) {
+                                            let reason = format!("backup failed: {e}");
+                                            log.push(format!("[Country] {label}: {reason}"));
+                                            country_progress.mark_failed(label, reason);
+                                            continue;
+                                        }
                                         let detected = match ltbox_patch::region::detect_country_code(
                                             &dump_path,
                                             KNOWN_CODES,
                                         ) {
                                             Ok(c) => c,
                                             Err(e) => {
-                                                log.push(format!("[Country] detect {label} failed: {e}"));
+                                                let reason = format!("detect failed: {e}");
+                                                log.push(format!("[Country] {label}: {reason}"));
+                                                country_progress.mark_failed(label, reason);
                                                 None
                                             }
                                         };
                                         let Some(old_code) = detected else {
-                                            log.push(format!(
-                                                "[Country] {label}: no known code detected — skipping"
-                                            ));
+                                            let reason = "no known code detected";
+                                            log.push(format!("[Country] {label}: {reason}"));
+                                            country_progress.mark_failed(label, reason);
                                             continue;
                                         };
                                         live!(
@@ -4144,6 +4157,10 @@ impl App {
                                                     log.push(format!(
                                                         "[Country] flash {label} failed: {e}"
                                                     ));
+                                                    country_progress.mark_failed(
+                                                        label,
+                                                        format!("flash failed: {e}"),
+                                                    );
                                                 } else {
                                                     live!(
                                                         log,
@@ -4151,13 +4168,30 @@ impl App {
                                                         ltbox_core::i18n::tr("live_country_patched_flashed")
                                                             .replace("{label}", label)
                                                     );
+                                                    country_progress.mark_flashed(label);
                                                 }
                                             }
-                                            Ok(false) => log
-                                                .push(format!("[Country] {label}: no replacements")),
-                                            Err(e) => log
-                                                .push(format!("[Country] patch {label} failed: {e}")),
+                                            Ok(false) if old_code == target_code => {
+                                                log.push(format!(
+                                                    "[Country] {label}: already {target_code}"
+                                                ));
+                                                country_progress.mark_flashed(label);
+                                            }
+                                            Ok(false) => {
+                                                let reason = "no replacements";
+                                                log.push(format!("[Country] {label}: {reason}"));
+                                                country_progress.mark_failed(label, reason);
+                                            }
+                                            Err(e) => {
+                                                let reason = format!("patch failed: {e}");
+                                                log.push(format!("[Country] {label}: {reason}"));
+                                                country_progress.mark_failed(label, reason);
+                                            }
                                         }
+                                    }
+                                    if let Err(e) = country_progress.finish() {
+                                        log.push(format!("[Country] {e}"));
+                                        return Err(e);
                                     }
                                     // Surface the backup location once
                                     // per run. Empty dir = every label
@@ -12163,6 +12197,48 @@ fn is_critical_dump_label(label: &str) -> bool {
         .any(|base| l == *base || l.starts_with(&format!("{base}_")))
 }
 
+#[derive(Debug, Default)]
+struct CountryPatchProgress {
+    flashed_or_confirmed: Vec<String>,
+    failures: Vec<String>,
+}
+
+impl CountryPatchProgress {
+    fn mark_flashed(&mut self, label: &str) {
+        if !self.flashed_or_confirmed.iter().any(|seen| seen == label) {
+            self.flashed_or_confirmed.push(label.to_string());
+        }
+    }
+
+    fn mark_failed(&mut self, label: &str, reason: impl Into<String>) {
+        self.failures.push(format!("{label}: {}", reason.into()));
+    }
+
+    fn finish(&self) -> std::result::Result<(), String> {
+        let missing = CRITICAL_DUMP_BASES
+            .iter()
+            .filter(|label| !self.flashed_or_confirmed.iter().any(|seen| seen == **label))
+            .copied()
+            .collect::<Vec<_>>();
+
+        if self.failures.is_empty() && missing.is_empty() {
+            return Ok(());
+        }
+
+        let mut parts = Vec::new();
+        if !self.failures.is_empty() {
+            parts.push(self.failures.join("; "));
+        }
+        if !missing.is_empty() {
+            parts.push(format!("missing {}", missing.join(", ")));
+        }
+        Err(format!(
+            "country-code patch incomplete ({})",
+            parts.join("; ")
+        ))
+    }
+}
+
 /// Forward buffered worker logs to the stdout tap queue immediately.
 ///
 /// Long-running advanced actions often collect lines in a local `Vec<String>`
@@ -12935,5 +13011,26 @@ mod tests {
             edl_entry_action(ConnectionStatus::AdbUnauthorized),
             EdlEntryAction::ManualWait
         );
+    }
+
+    #[test]
+    fn country_patch_progress_requires_devinfo_and_persist() {
+        let mut progress = CountryPatchProgress::default();
+        progress.mark_flashed("devinfo");
+
+        let err = progress.finish().expect_err("persist must be required");
+        assert!(err.contains("persist"));
+    }
+
+    #[test]
+    fn country_patch_progress_surfaces_partition_failures() {
+        let mut progress = CountryPatchProgress::default();
+        progress.mark_flashed("devinfo");
+        progress.mark_failed("persist", "no known country code");
+
+        let err = progress
+            .finish()
+            .expect_err("recorded persist failure must fail workflow");
+        assert!(err.contains("persist: no known country code"));
     }
 }
