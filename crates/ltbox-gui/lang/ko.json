@@ -378,6 +378,8 @@
   "reboot_target_recovery": "복구 모드",
   "reboot_target_system": "시스템",
   "reboot_title": "기기 재부팅",
+  "recent_missing_file": "이 파일은 더 이상 존재하지 않습니다.",
+  "recent_missing_folder": "이 폴더는 더 이상 존재하지 않습니다.",
   "region_prc": "PRC",
   "region_prc_name": "중국",
   "region_row": "ROW",

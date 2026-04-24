@@ -378,6 +378,8 @@
   "reboot_target_recovery": "Recovery",
   "reboot_target_system": "System",
   "reboot_title": "Reboot Device",
+  "recent_missing_file": "That file no longer exists.",
+  "recent_missing_folder": "That folder no longer exists.",
   "region_prc": "PRC",
   "region_prc_name": "China",
   "region_row": "ROW",

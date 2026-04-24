@@ -2717,6 +2717,10 @@ enum Message {
     /// Recent-chip click — routes like the picker messages, no dialog.
     RecentFilePicked(PickerTarget, String),
     RecentFolderPicked(PickerTarget, String),
+    /// Click on a recents chip whose backing path no longer exists.
+    /// `true` → file picker, `false` → folder picker; the handler picks
+    /// the matching i18n key (`recent_missing_file` / `recent_missing_folder`).
+    NoticeRecentMissing(bool),
     OperationError(String),
     DismissError,
     /// Reset the current wizard — fired by the "Start Over" pill.
@@ -6306,6 +6310,18 @@ impl App {
                     _ => {}
                 }
             }
+            Message::NoticeRecentMissing(is_file) => {
+                // Surface as the existing error banner — it already
+                // overlays every view and has a dismiss button. Keep
+                // out of the main log so the user's run history isn't
+                // littered with picker UI noise.
+                let key = if is_file {
+                    "recent_missing_file"
+                } else {
+                    "recent_missing_folder"
+                };
+                self.error_msg = Some(self.t(key).to_string());
+            }
             Message::OperationError(e) => {
                 self.end_op();
                 self.error_msg = Some(e.clone());
@@ -8182,6 +8198,7 @@ impl App {
                 .recent(PickerTarget::FlashFolder.kind().storage_key()),
             |p| Message::RecentFolderPicked(PickerTarget::FlashFolder, p),
             "picker_recents",
+            false,
         );
         let col = column![
             text(self.t("flash_folder_title").to_string())
@@ -8555,6 +8572,7 @@ impl App {
                 .recent(pickers::PickerKind::LoaderRawprogramFolder.storage_key()),
             |p| Message::SysRescueFolderChosen(Some(p)),
             "picker_recents",
+            false,
         );
         let col = column![
             text(self.t("rescue_folder_title").to_string())
@@ -9097,6 +9115,7 @@ impl App {
                 .recent(PickerTarget::UnrootFolder.kind().storage_key()),
             |p| Message::RecentFolderPicked(PickerTarget::UnrootFolder, p),
             "picker_recents",
+            false,
         );
         let col = column![
             text(self.t("unroot_folder_title").to_string())
@@ -9796,12 +9815,18 @@ impl App {
                 .cloned()
                 .collect()
         };
-        self.recent_chips(&filtered, on_pick, label_key)
+        self.recent_chips(&filtered, on_pick, label_key, true)
     }
 
     /// Empty column when the list is empty so call sites can splice
     /// it in unconditionally.
-    fn recent_chips<F>(&self, items: &[String], on_pick: F, label_key: &str) -> Element<'_, Message>
+    fn recent_chips<F>(
+        &self,
+        items: &[String],
+        on_pick: F,
+        label_key: &str,
+        is_file_picker: bool,
+    ) -> Element<'_, Message>
     where
         F: Fn(String) -> Message,
     {
@@ -9824,16 +9849,25 @@ impl App {
             let exists = std::path::Path::new(path).exists();
             let display = path.clone();
             let path_for_msg = path.clone();
-            let msg = on_pick(path_for_msg);
-            let mut btn = button(text(display).size(11).style(muted_style))
+            // Missing entries used to be `on_press`-less (silent no-op),
+            // which was confusing — the chip looked clickable but didn't
+            // do anything. Route clicks on a stale chip to a banner so
+            // the user actually learns *why* nothing happened. The
+            // file/folder split decides which i18n key fires; we pick it
+            // up at click time, not now, so the kind enum stays out of
+            // the chip closure.
+            let on_press = if exists {
+                on_pick(path_for_msg)
+            } else {
+                Message::NoticeRecentMissing(is_file_picker)
+            };
+            let btn = button(text(display).size(11).style(muted_style))
                 .padding([4, 10])
                 .style(|_t: &Theme, _s| button::Style {
                     background: None,
                     ..Default::default()
-                });
-            if exists {
-                btn = btn.on_press(msg);
-            }
+                })
+                .on_press(on_press);
             col = col.push(btn);
         }
         col.into()
@@ -10338,6 +10372,7 @@ impl App {
                     self.recent_paths.recent(kind.storage_key()),
                     |p| Message::AdvWizBrowseDone(Some(p)),
                     "picker_recents",
+                    false,
                 )
             } else {
                 let (_, exts) = self.adv_wizard.accepted_exts();

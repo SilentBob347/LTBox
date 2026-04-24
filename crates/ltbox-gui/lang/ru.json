@@ -378,6 +378,8 @@
   "reboot_target_recovery": "Recovery",
   "reboot_target_system": "Систему",
   "reboot_title": "Перезагрузка устройства",
+  "recent_missing_file": "Этот файл больше не существует.",
+  "recent_missing_folder": "Эта папка больше не существует.",
   "region_prc": "PRC",
   "region_prc_name": "Китай",
   "region_row": "ROW",

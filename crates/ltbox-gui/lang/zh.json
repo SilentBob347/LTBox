@@ -378,6 +378,8 @@
   "reboot_target_recovery": "Recovery",
   "reboot_target_system": "系统",
   "reboot_title": "重启设备",
+  "recent_missing_file": "该文件不再存在。",
+  "recent_missing_folder": "该文件夹不再存在。",
   "region_prc": "PRC",
   "region_prc_name": "中国",
   "region_row": "ROW",
