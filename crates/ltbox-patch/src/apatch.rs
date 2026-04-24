@@ -67,7 +67,7 @@ pub fn patch_boot(
         )));
     }
 
-    crate::live!(
+    ltbox_core::live!(
         log,
         "[APatch] extract_kernel {} -> {}",
         boot_in.display(),
@@ -108,14 +108,14 @@ pub fn patch_boot(
                 "kernel missing CONFIG_KALLSYMS=y — kptools cannot resolve patch points. Flashing would brick the device. Aborting.".into(),
             ));
         } else if !has_kallsyms {
-            crate::live!(
+            ltbox_core::live!(
                 log,
                 "[APatch] CONFIG_KALLSYMS check inconclusive (no IKCONFIG payload) — proceeding, but patch may fail"
             );
         } else {
-            crate::live!(log, "[APatch] CONFIG_KALLSYMS=y — OK");
+            ltbox_core::live!(log, "[APatch] CONFIG_KALLSYMS=y — OK");
             if !has_kallsyms_all {
-                crate::live!(
+                ltbox_core::live!(
                     log,
                     "[APatch] CONFIG_KALLSYMS_ALL=y missing — non-fatal, but some KPMs may need it"
                 );
@@ -134,7 +134,7 @@ pub fn patch_boot(
             })
         })
         .collect::<Result<_>>()?;
-    crate::live!(
+    ltbox_core::live!(
         log,
         "[APatch] patching kernel (kpm_count={}, superkey_len={})",
         extras.len(),
@@ -152,7 +152,7 @@ pub fn patch_boot(
     })
     .map_err(|e| LtboxError::Patch(format!("kptools patch_update_img failed: {e}")))?;
 
-    crate::live!(
+    ltbox_core::live!(
         log,
         "[APatch] repack_bootimg {} + {} -> {}",
         boot_in.display(),

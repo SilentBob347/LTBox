@@ -220,7 +220,7 @@ pub fn patch_init_boot(
         )));
     }
 
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_unpack_initboot"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_unpack_initboot"));
     boot::unpack(&img_path, work_dir)?;
 
     let ramdisk = work_dir.join("ramdisk.cpio");
@@ -231,7 +231,7 @@ pub fn patch_init_boot(
     }
 
     // magiskboot cpio test: 0=stock, 1=already-patched, 2=unsupported.
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_cpio_test"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_cpio_test"));
     let status = boot::cpio(work_dir, "ramdisk.cpio", &["test"])?;
     match status {
         0 => {}
@@ -249,12 +249,12 @@ pub fn patch_init_boot(
 
     // SHA-1 of stock boot for Magisk config.
     let sha1 = boot::sha1(&img_path)?;
-    crate::live!(log, "[Magisk] {}: {sha1}", tr("log_magisk_stock_sha1"));
+    ltbox_core::live!(log, "[Magisk] {}: {sha1}", tr("log_magisk_stock_sha1"));
 
     // Back up stock ramdisk so Magisk can restore on unroot.
     fs::copy(&ramdisk, work_dir.join("ramdisk.cpio.orig"))?;
 
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_compressing_payload"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_compressing_payload"));
     boot::compress(work_dir, "xz", "magisk", "magisk.xz")?;
     boot::compress(work_dir, "xz", "stub.apk", "stub.xz")?;
     boot::compress(work_dir, "xz", "init-ld", "init-ld.xz")?;
@@ -276,7 +276,7 @@ pub fn patch_init_boot(
     // forceencrypt flags from fstab — bricks devices that expect AVB
     // + metadata encryption. v2 `bin/ltbox/patch/root.py` sets the
     // same env via `_get_tool_env()` before invoking magiskboot.
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_cpio_patch"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_cpio_patch"));
     let cpio_cmds: &[&str] = &[
         "add 0750 init magiskinit",
         "mkdir 0750 overlay.d",
@@ -307,7 +307,7 @@ pub fn patch_init_boot(
         let _ = fs::remove_file(work_dir.join(name));
     }
 
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_repack_initboot"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_repack_initboot"));
     boot::repack(img_name, work_dir)?;
 
     let new_boot = work_dir.join("new-boot.img");
@@ -316,7 +316,7 @@ pub fn patch_init_boot(
             "magiskboot repack produced no new-boot.img".into(),
         ));
     }
-    crate::live!(log, "[Magisk] {}", tr("log_magisk_patch_complete"));
+    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_patch_complete"));
     Ok(new_boot)
 }
 

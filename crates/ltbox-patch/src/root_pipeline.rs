@@ -12,26 +12,10 @@ use fs_err as fs;
 use ltbox_core::downloader::download_to_file;
 use ltbox_core::github::GitHubClient;
 use ltbox_core::i18n::tr;
+use ltbox_core::live;
 use ltbox_core::{LtboxError, Result};
 
 use crate::{avb, gki, key_map, ksu, magisk};
-
-/// Echo to `println!` so the GUI's stdout tap streams it to the live log.
-/// `$log` kept for call-site compatibility but ignored — pushing here
-/// would duplicate in the GUI's final `log_extend`, which re-drains the
-/// returned Vec on top of what the tap already captured.
-///
-/// `#[macro_export]` so sibling modules (`apatch`, `gki`, `magisk`,
-/// `ksu`, …) emit through the same path instead of `log.push`, which
-/// buffers everything until the pipeline returns — users saw the whole
-/// APatch/GKI run as one log dump at the end.
-#[macro_export]
-macro_rules! live {
-    ($log:expr, $($arg:tt)*) => {{
-        let _ = &$log;
-        println!($($arg)*);
-    }};
-}
 
 /// Pick the avbtool-rs key_spec for re-signing.
 /// `None` → unsigned (NONE algorithm); `Some(sha)` → `KEY_MAP` lookup,
