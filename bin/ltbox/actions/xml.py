@@ -425,17 +425,18 @@ def _create_write_xml(
         utils.ui.error(get_string(error_key).format(name=dest_xml_path.name, e=e))
 
 
-def create_write_xmls_for_dp() -> None:
+def create_write_xmls_for_dp(xml_dir: Optional[Path] = None) -> None:
     """Create write XMLs for devinfo/persist partitions.
 
     Called lazily from flash preparation when patched DP images will be flashed,
     rather than unconditionally during XML modification.
     """
+    xml_dir = xml_dir or const.OUTPUT_XML_DIR
     utils.ui.info(get_string("act_create_write_xml"))
 
     _create_write_xml(
-        src_xml_path=(const.OUTPUT_XML_DIR / "rawprogram_save_persist_unsparse0.xml"),
-        dest_xml_path=(const.OUTPUT_XML_DIR / "rawprogram_write_persist_unsparse0.xml"),
+        src_xml_path=(xml_dir / "rawprogram_save_persist_unsparse0.xml"),
+        dest_xml_path=(xml_dir / "rawprogram_write_persist_unsparse0.xml"),
         target_label="persist",
         new_filename="persist.img",
         success_key="act_created_xml",
@@ -443,8 +444,8 @@ def create_write_xmls_for_dp() -> None:
     )
 
     _create_write_xml(
-        src_xml_path=(const.OUTPUT_XML_DIR / "rawprogram4.xml"),
-        dest_xml_path=(const.OUTPUT_XML_DIR / "rawprogram4_write_devinfo.xml"),
+        src_xml_path=(xml_dir / "rawprogram4.xml"),
+        dest_xml_path=(xml_dir / "rawprogram4_write_devinfo.xml"),
         target_label="devinfo",
         new_filename="devinfo.img",
         success_key="act_created_xml",

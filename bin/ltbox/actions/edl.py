@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .. import constants as const
 from .. import device, utils
+from ..errors import DeviceCommandError
 from ..i18n import get_string
 from ..menus.prompt_helpers import (
     prompt_choice,
@@ -597,7 +598,7 @@ def _prepare_flash_files(skip_dp: bool = False) -> None:
                         name=const.OUTPUT_DP_DIR.name, e=e
                     )
                 )
-            xml.create_write_xmls_for_dp()
+            xml.create_write_xmls_for_dp(const.IMAGE_DIR)
         else:
             utils.ui.echo(
                 get_string("act_skip_dp_copy").format(dir=const.OUTPUT_DP_DIR.name)
@@ -804,7 +805,12 @@ def _execute_full_flash_plan(
                 pre_erase=flash_plan.pre_erase,
                 reset_after=flash_plan.reset_after,
             )
-        except (subprocess.CalledProcessError, OSError, RuntimeError) as e:
+        except (
+            subprocess.CalledProcessError,
+            OSError,
+            RuntimeError,
+            DeviceCommandError,
+        ) as e:
             utils.ui.error(get_string("act_err_main_flash").format(e=e))
             utils.ui.error(
                 get_string("err_detailed_traceback") + traceback.format_exc()

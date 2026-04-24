@@ -69,6 +69,67 @@ def test_xml_select_prefers_ota_keep_data_xml(mock_env):
     assert "rawprogram_save_persist_unsparse0.xml" not in r_names
 
 
+def test_prepare_flash_files_creates_dp_write_xmls_in_image_dir(mock_env):
+    out_xml = mock_env["OUTPUT_XML_DIR"]
+    out_dp = mock_env["OUTPUT_DP_DIR"]
+    image_dir = mock_env["IMAGE_DIR"]
+
+    (out_xml / "rawprogram_save_persist_unsparse0.xml").write_text(
+        '<data><program label="persist" filename=""/></data>',
+        encoding="utf-8",
+    )
+    (out_xml / "rawprogram4.xml").write_text(
+        '<data><program label="devinfo" filename=""/></data>',
+        encoding="utf-8",
+    )
+    (out_dp / "persist.img").write_bytes(b"persist")
+    (out_dp / "devinfo.img").write_bytes(b"devinfo")
+
+    with patch("ltbox.actions.edl.utils.ui"):
+        edl._prepare_flash_files(skip_dp=False)
+
+    persist_xml = image_dir / "rawprogram_write_persist_unsparse0.xml"
+    devinfo_xml = image_dir / "rawprogram4_write_devinfo.xml"
+
+    assert persist_xml.exists()
+    assert devinfo_xml.exists()
+    assert ET.parse(persist_xml).getroot().find(".//program").get("filename") == (
+        "persist.img"
+    )
+    assert ET.parse(devinfo_xml).getroot().find(".//program").get("filename") == (
+        "devinfo.img"
+    )
+
+
+def test_select_flash_xmls_uses_patched_dp_xmls_after_prepare(mock_env):
+    out_xml = mock_env["OUTPUT_XML_DIR"]
+    out_dp = mock_env["OUTPUT_DP_DIR"]
+
+    (out_xml / "rawprogram1.xml").write_text("<data/>", encoding="utf-8")
+    (out_xml / "rawprogram_save_persist_unsparse0.xml").write_text(
+        '<data><program label="persist" filename=""/></data>',
+        encoding="utf-8",
+    )
+    (out_xml / "rawprogram4.xml").write_text(
+        '<data><program label="devinfo" filename=""/></data>',
+        encoding="utf-8",
+    )
+    (out_xml / "patch0.xml").write_text("<patches/>", encoding="utf-8")
+    (out_dp / "persist.img").write_bytes(b"persist")
+    (out_dp / "devinfo.img").write_bytes(b"devinfo")
+
+    with patch("ltbox.actions.edl.utils.ui"):
+        edl._prepare_flash_files(skip_dp=False)
+        raw, _patch_files = edl._select_flash_xmls(skip_dp=False)
+
+    r_names = [p.name for p in raw]
+
+    assert "rawprogram_write_persist_unsparse0.xml" in r_names
+    assert "rawprogram4_write_devinfo.xml" in r_names
+    assert "rawprogram_save_persist_unsparse0.xml" not in r_names
+    assert "rawprogram4.xml" not in r_names
+
+
 def test_replace_vbmeta_descriptors_keeps_root_chain_descriptors_intact():
     class FakeChainDescriptor:
         def __init__(

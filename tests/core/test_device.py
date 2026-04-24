@@ -1,3 +1,4 @@
+import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,8 +72,28 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
     patch_xml = tmp_path / "patch0.xml"
     qdlrs = tmp_path / "qdl-rs.exe"
 
-    for path in (loader_path, raw_xml, patch_xml, qdlrs):
+    for path in (loader_path, patch_xml, qdlrs):
         path.write_text("x", encoding="utf-8")
+
+    raw_xml.write_text(
+        """<?xml version="1.0"?>
+<data>
+  <program label="metadata" physical_partition_number="0" filename="metadata.img"
+           start_sector="100" num_partition_sectors="2"
+           SECTOR_SIZE_IN_BYTES="4096" />
+  <program label="frp" physical_partition_number="0" filename=""
+           start_sector="200" num_partition_sectors="128"
+           start_byte_hex="0x16108000" SECTOR_SIZE_IN_BYTES="4096" />
+  <program label="userdata_a" physical_partition_number="6" filename="userdata.img"
+           start_sector="4096" num_partition_sectors="8192"
+           SECTOR_SIZE_IN_BYTES="4096" />
+  <program label="super" physical_partition_number="0" filename="super.img"
+           start_sector="9999" num_partition_sectors="32"
+           SECTOR_SIZE_IN_BYTES="4096" />
+</data>
+""",
+        encoding="utf-8",
+    )
 
     with (
         patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
@@ -90,23 +111,62 @@ def test_edl_flash_rawprogram_sends_pre_erase_and_reset(tmp_path):
             reset_after=True,
         )
 
-    # 3 erase calls (frp, metadata, userdata sorted) + 1 flasher call
-    assert mock_run.call_count == 4
-
-    erase_cmds = [mock_run.call_args_list[i].args[0] for i in range(3)]
-    for cmd in erase_cmds:
-        assert "erase" in cmd
-
-    erase_labels = [cmd[-1] for cmd in erase_cmds]
-    assert erase_labels == ["frp", "metadata", "userdata"]
-
-    flash_cmd = mock_run.call_args_list[3].args[0]
+    assert mock_run.call_count == 1
+    flash_cmd = mock_run.call_args_list[0].args[0]
     assert "flasher" in flash_cmd
     assert "-p" in flash_cmd
     assert "-x" in flash_cmd
+
+    erase_xml = tmp_path / "FHLoaderErase.xml"
+    p_indices = [i for i, item in enumerate(flash_cmd) if item == "-p"]
+    assert flash_cmd[p_indices[0] + 1] == str(erase_xml)
+    assert flash_cmd[p_indices[1] + 1] == str(raw_xml)
+
+    erase_entries = ET.parse(erase_xml).getroot().findall("erase")
+    assert [entry.get("label") for entry in erase_entries] == [
+        "metadata",
+        "frp",
+        "userdata_a",
+    ]
+    assert all(entry.get("filename") is None for entry in erase_entries)
+
     # reset_after embeds --reset-mode system in the flasher command
     rm_idx = flash_cmd.index("--reset-mode")
     assert flash_cmd[rm_idx + 1] == "system"
+
+
+def test_edl_flash_rawprogram_requires_erase_spans_for_pre_erase(tmp_path):
+    from ltbox.device import DeviceCommandError
+
+    manager = EdlManager()
+    loader_path = tmp_path / "xbl_s_devprg_ns.melf"
+    raw_xml = tmp_path / "rawprogram1.xml"
+    patch_xml = tmp_path / "patch0.xml"
+    qdlrs = tmp_path / "qdl-rs.exe"
+
+    for path in (loader_path, patch_xml, qdlrs):
+        path.write_text("x", encoding="utf-8")
+
+    raw_xml.write_text(
+        '<data><program label="super" physical_partition_number="0" '
+        'start_sector="1" num_partition_sectors="2"/></data>',
+        encoding="utf-8",
+    )
+
+    with (
+        patch("ltbox.device.edl.const.QDLRS_EXE", qdlrs),
+        patch.object(manager, "load_programmer_safe"),
+    ):
+        with pytest.raises(DeviceCommandError, match="erase spans"):
+            manager.flash_rawprogram(
+                "COM1",
+                loader_path,
+                "UFS",
+                [raw_xml],
+                [patch_xml],
+                pre_erase=True,
+                reset_after=False,
+            )
 
 
 def test_edl_flash_rawprogram_skips_erase_and_reset_when_disabled(tmp_path):
