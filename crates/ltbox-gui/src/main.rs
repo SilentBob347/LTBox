@@ -8708,11 +8708,34 @@ impl App {
         let is_error = self.error_msg.is_some();
         let is_busy = self.busy;
 
-        // Current-step card: icon swaps between running / done / failed.
+        // Current-step card: spinner while running, static glyph
+        // on terminal states. Every wizard funnels through this view,
+        // so swapping the running glyph for an animated `Spinner`
+        // here unifies the in-progress visual across Flash / Root /
+        // Unroot / SystemUpdate / Advanced — previously a couple of
+        // them showed a static lucide glyph (the firmware-flash one
+        // rendered as a sun) and looked frozen.
         let step_icon: Element<'_, Message> = if is_error {
             lucide_icon(icon::op_failed(), 72.0, |t: &Theme| pal_of(t).error)
         } else if is_busy {
-            lucide_primary(icon::op_running(), 72.0)
+            container(
+                Spinner::new()
+                    .width(Length::Fixed(56.0))
+                    .height(Length::Fixed(56.0))
+                    .circle_radius(3.5),
+            )
+            .width(72)
+            .height(72)
+            .center_x(72)
+            .center_y(72)
+            .style(|t: &Theme| {
+                let p = pal_of(t);
+                container::Style {
+                    text_color: Some(p.primary),
+                    ..Default::default()
+                }
+            })
+            .into()
         } else {
             lucide_icon(icon::op_done(), 72.0, |t: &Theme| pal_of(t).success)
         };
