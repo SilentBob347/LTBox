@@ -729,6 +729,10 @@ struct RootWizard {
     run_id: Option<String>,
     run_id_popup_open: bool,
     run_id_buffer: String,
+    /// KernelSU LKM: normalized `major.minor` kernel version from ADB or manual popup.
+    kernel_version: Option<String>,
+    kernel_version_popup_open: bool,
+    kernel_version_buffer: String,
 }
 
 const ROOT_STEPS: &[&str] = &[
@@ -825,6 +829,14 @@ impl RootWizard {
     }
     fn is_apatch(&self) -> bool {
         self.family == Some(Family::APatch)
+    }
+
+    fn is_ksu_lkm(&self) -> bool {
+        self.family == Some(Family::KernelSU) && self.mode == Some(RootMode::Lkm)
+    }
+
+    fn needs_ksu_lkm_kernel_version(&self) -> bool {
+        self.is_ksu_lkm() && self.kernel_version.is_none()
     }
 
     fn active_steps(&self) -> &'static [&'static str] {
@@ -2663,6 +2675,9 @@ enum Message {
     /// Cancel the run-ID popup and roll back NightlySource so the
     /// user can't end up half-confirmed.
     RootRunIdCancel,
+    RootKernelVersionInput(String),
+    RootKernelVersionConfirm,
+    RootKernelVersionCancel,
     RootExecStart,
     RootExecDone(Vec<String>),
     // Unroot wizard
@@ -4533,6 +4548,7 @@ impl App {
                 self.root.provider = None;
                 self.root.mode = None;
                 self.root.file_path = None;
+                self.root.kernel_version = None;
             }
             Message::RootProvider(p) => {
                 self.root.provider = Some(p);
@@ -4541,6 +4557,7 @@ impl App {
             Message::RootMode(m) => {
                 self.root.mode = Some(m);
                 self.root.file_path = None;
+                self.root.kernel_version = None;
             }
             Message::RootVersion(v) => {
                 self.root.version = Some(v);
@@ -4584,6 +4601,26 @@ impl App {
             }
             Message::RootNext => {
                 if self.root.step == 6 {
+                    if self.root.needs_ksu_lkm_kernel_version() {
+                        let detected = {
+                            let mut adb = ltbox_device::adb::AdbManager::new();
+                            if adb.check_device().unwrap_or(false) {
+                                adb.get_kernel_version().ok().flatten().and_then(|kv| {
+                                    ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv)
+                                })
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(kv) = detected {
+                            self.root.kernel_version = Some(kv);
+                        } else {
+                            self.root.kernel_version_buffer =
+                                self.root.kernel_version.clone().unwrap_or_default();
+                            self.root.kernel_version_popup_open = true;
+                            return Task::none();
+                        }
+                    }
                     self.root.next();
                     return self.update(Message::RootExecStart);
                 }
@@ -4667,6 +4704,34 @@ impl App {
                     self.root.nightly_source = None;
                 }
             }
+            Message::RootKernelVersionInput(text) => {
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                    .take(16)
+                    .collect();
+                self.root.kernel_version_buffer = filtered;
+            }
+            Message::RootKernelVersionConfirm => {
+                let input = self.root.kernel_version_buffer.trim();
+                let Some(kv) = ltbox_patch::root_pipeline::normalize_ksu_kernel_version(input)
+                else {
+                    self.error_msg = Some(self.t("root_kernel_version_invalid").to_string());
+                    return Task::none();
+                };
+                self.root.kernel_version = Some(kv);
+                self.root.kernel_version_buffer.clear();
+                self.root.kernel_version_popup_open = false;
+                self.error_msg = None;
+                if self.root.step == 6 {
+                    self.root.next();
+                    return self.update(Message::RootExecStart);
+                }
+            }
+            Message::RootKernelVersionCancel => {
+                self.root.kernel_version_buffer.clear();
+                self.root.kernel_version_popup_open = false;
+            }
             Message::RootExecStart => {
                 self.begin_op(View::Root);
                 self.op_steps = self.derive_root_op_steps();
@@ -4676,6 +4741,7 @@ impl App {
                 let provider = self.root.provider;
                 let version = self.root.version;
                 let file_path = self.root.file_path.clone();
+                let gui_kernel_version = self.root.kernel_version.clone();
                 let conn = self.connection;
                 // Folder must contain `xbl_s_devprg_ns.melf`; optional
                 // `keys/testkey_rsa{2048,4096}.pem` as KEY_MAP fallback.
@@ -4828,7 +4894,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                             // Must run before EDL — ADB vanishes past 9008.
                             // KernelSU stable picks `.ko` by kernel MAJOR.MINOR.PATCH.
                             let mut slot_suffix = String::new();
-                            let mut kernel_version: Option<String> = None;
+                            let mut kernel_version: Option<String> = gui_kernel_version.clone();
                             if !skip_adb {
                                 let mut adb = ltbox_device::adb::AdbManager::new();
                                 if adb.check_device().unwrap_or(false) {
@@ -4844,13 +4910,20 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                         ));
                                     if mode == Some(RootMode::Lkm) {
                                         if let Ok(Some(kv)) = adb.get_kernel_version() {
+                                            let normalized =
+                                                ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv);
                                             live!(
                                                 log,
                                                 "[ADB] {}",
                                                 ltbox_core::i18n::tr("live_adb_kernel_version")
-                                                    .replace("{version}", &kv)
+                                                    .replace(
+                                                        "{version}",
+                                                        normalized.as_deref().unwrap_or(&kv),
+                                                    )
                                             );
-                                            kernel_version = Some(kv);
+                                            if let Some(kv) = normalized {
+                                                kernel_version = Some(kv);
+                                            }
                                         } else {
                                             live!(log, "[ADB] {}", ll.adb_no_kver);
                                         }
@@ -4858,6 +4931,12 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 } else {
                                     live!(log, "[ADB] {}", ll.adb_no_device_slot);
                                 }
+                            }
+                            if mode == Some(RootMode::Lkm) && kernel_version.is_none() {
+                                return Err(
+                                    "KernelSU LKM requires kernel version before EDL; enter it manually and retry."
+                                        .to_string(),
+                                );
                             }
 
                             live!(log, "[Root] {}", phase_marker(1, 6, &ll.op_root_phase[0]));
@@ -7002,6 +7081,9 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
         if self.root.run_id_popup_open {
             layers.push(self.root_run_id_popup());
         }
+        if self.root.kernel_version_popup_open {
+            layers.push(self.root_kernel_version_popup());
+        }
 
         if layers.len() == 1 {
             layers.into_iter().next().unwrap()
@@ -9047,6 +9129,77 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                     .style(md_text_btn_style),
                 button(text(self.t("btn_ok").to_string()).size(13))
                     .on_press(Message::RootRunIdConfirm)
+                    .padding([8, 18])
+                    .style(md_filled_btn_style),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(14)
+        .padding(24)
+        .width(380);
+
+        m3_dialog(content.into())
+    }
+
+    fn root_kernel_version_popup(&self) -> Element<'_, Message> {
+        let input = iced::widget::text_input(
+            self.t("root_kernel_version_placeholder"),
+            &self.root.kernel_version_buffer,
+        )
+        .on_input(Message::RootKernelVersionInput)
+        .on_submit(Message::RootKernelVersionConfirm)
+        .padding([10, 12])
+        .width(Length::Fill)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
+            iced::widget::text_input::Style {
+                background: p.surface.into(),
+                border: iced::Border {
+                    color: if focused {
+                        p.primary
+                    } else {
+                        p.outline_variant
+                    },
+                    width: if focused { 2.0 } else { 1.0 },
+                    radius: 8.0.into(),
+                },
+                placeholder: with_alpha(p.on_surface, 0.5),
+                icon: p.on_surface,
+                value: p.on_surface,
+                selection: with_alpha(p.primary, 0.3),
+            }
+        });
+
+        let err: Element<'_, Message> = match &self.error_msg {
+            Some(e) => text(e.clone())
+                .size(12)
+                .style(|t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(p.error),
+                    }
+                })
+                .into(),
+            None => Space::new().height(0).into(),
+        };
+
+        let content = column![
+            text(self.t("root_kernel_version_manual_title").to_string()).size(20),
+            text(self.t("root_kernel_version_manual_subtitle").to_string())
+                .size(13)
+                .style(muted_style),
+            input,
+            err,
+            row![
+                Space::new().width(Length::Fill),
+                button(text(self.t("btn_cancel").to_string()).size(13))
+                    .on_press(Message::RootKernelVersionCancel)
+                    .padding([8, 18])
+                    .style(md_text_btn_style),
+                button(text(self.t("btn_ok").to_string()).size(13))
+                    .on_press(Message::RootKernelVersionConfirm)
                     .padding([8, 18])
                     .style(md_filled_btn_style),
             ]
@@ -12254,6 +12407,23 @@ mod tests {
         w.version = Some(VerChoice::Stable);
         w.next(); // Stable skips NightlySource, jumps to Confirm (5)
         assert_eq!(w.step, 5);
+    }
+
+    #[test]
+    fn root_wizard_kernelsu_lkm_requires_kernel_version_before_exec() {
+        let mut w = RootWizard {
+            family: Some(Family::KernelSU),
+            mode: Some(RootMode::Lkm),
+            provider: Some(Provider::KernelSU),
+            version: Some(VerChoice::Stable),
+            folder_path: Some("firmware".to_string()),
+            step: 6,
+            ..RootWizard::default()
+        };
+
+        assert!(w.needs_ksu_lkm_kernel_version());
+        w.kernel_version = Some("6.1".to_string());
+        assert!(!w.needs_ksu_lkm_kernel_version());
     }
 
     #[test]

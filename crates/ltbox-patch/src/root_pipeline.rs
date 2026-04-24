@@ -462,12 +462,22 @@ pub fn download_apatch_payload_nightly(
 
 /// Reduce kernel version to `major.minor` for KSU asset matching
 /// (e.g. `6.6.118` → `6.6`). Already-short strings pass through.
-fn kernel_major_minor(kver: &str) -> String {
-    let mut parts = kver.split('.');
-    match (parts.next(), parts.next()) {
-        (Some(major), Some(minor)) => format!("{major}.{minor}"),
-        _ => kver.to_string(),
+pub fn normalize_ksu_kernel_version(kver: &str) -> Option<String> {
+    let trimmed = kver.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let minor_digits: String = minor.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if minor_digits.is_empty() {
+        return None;
+    }
+    Some(format!("{major}.{minor_digits}"))
 }
 
 /// True iff `lower_filename` embeds `kver` between `-{kver}_` delimiters.
@@ -475,6 +485,31 @@ fn kernel_major_minor(kver: &str) -> String {
 fn ksu_ko_kver_matches(lower_filename: &str, kver: &str) -> bool {
     let needle = format!("-{kver}_");
     lower_filename.contains(&needle)
+}
+
+fn select_ksu_release_ko_asset(
+    assets: &[(String, String)],
+    kver: &str,
+) -> Option<(String, String)> {
+    let want = kver.to_lowercase();
+    assets
+        .iter()
+        .find(|(n, _)| {
+            let lower = n.to_lowercase();
+            lower.ends_with("_kernelsu.ko") && ksu_ko_kver_matches(&lower, &want)
+        })
+        .cloned()
+}
+
+fn select_ksu_nightly_ko_artifact(artifact_names: &[String], kver: &str) -> Option<String> {
+    let want = kver.to_lowercase();
+    artifact_names
+        .iter()
+        .find(|n| {
+            let lower = n.to_lowercase();
+            lower.contains("_kernelsu.ko") && ksu_ko_kver_matches(&lower, &want)
+        })
+        .cloned()
 }
 
 pub fn download_ksu_payload(
@@ -494,33 +529,19 @@ pub fn download_ksu_payload(
     // -------- 1. Per-kernel `.ko` from release assets --------
     // KSU tags assets by kernel branch (`android15-6.6_kernelsu.ko`);
     // strip patch suffix from device kver before matching.
-    let kver: Option<String> = kernel_version
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(kernel_major_minor);
-    let want_kver_lower = kver.as_deref().map(|s| s.to_lowercase());
-    let (ko_name, ko_url) = {
-        let pick = assets
-            .iter()
-            .find(|(n, _)| {
-                let lower = n.to_lowercase();
-                if !lower.ends_with("_kernelsu.ko") {
-                    return false;
-                }
-                match want_kver_lower.as_deref() {
-                    // `-{kv}_` boundary required — see `ksu_ko_kver_matches`.
-                    Some(kv) => ksu_ko_kver_matches(&lower, kv),
-                    None => true,
-                }
-            })
-            .cloned();
-        pick.ok_or_else(|| {
-            LtboxError::Download(format!(
-                "No `_kernelsu.ko` release asset on latest {repo} matching kernel `{}`.",
-                kver.as_deref().unwrap_or("(any)"),
-            ))
-        })?
-    };
+    let kver = kernel_version
+        .and_then(normalize_ksu_kernel_version)
+        .ok_or_else(|| {
+            LtboxError::Download(
+                "KernelSU LKM requires a kernel version such as `6.1`; no safe module fallback is allowed."
+                    .into(),
+            )
+        })?;
+    let (ko_name, ko_url) = select_ksu_release_ko_asset(&assets, &kver).ok_or_else(|| {
+        LtboxError::Download(format!(
+            "No `_kernelsu.ko` release asset on latest {repo} matching kernel `{kver}`."
+        ))
+    })?;
     live!(log, "[KSU] Downloading LKM: {ko_name}");
     fs::create_dir_all(staging_dir)?;
     let ko_path = staging_dir.join("kernelsu.ko");
@@ -586,7 +607,7 @@ pub fn download_ksu_payload(
 }
 
 /// Download `.ko` + `init` from a KSU nightly run into `staging_dir`.
-/// LKM selection prefers kver match, falls back to any `_kernelsu.ko`.
+/// LKM selection requires an exact kernel major.minor match.
 /// `manual_run_id = None` → latest successful run on provider's workflow.
 pub fn download_ksu_payload_nightly(
     provider: RootProvider,
@@ -607,35 +628,21 @@ pub fn download_ksu_payload_nightly(
     }
 
     fs::create_dir_all(staging_dir)?;
-    let kver: Option<String> = kernel_version
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(kernel_major_minor);
-    let kver_lower = kver.as_deref().map(str::to_lowercase);
+    let kver = kernel_version
+        .and_then(normalize_ksu_kernel_version)
+        .ok_or_else(|| {
+            LtboxError::Patch(
+                "KernelSU Nightly LKM requires a kernel version such as `6.1`; no safe module fallback is allowed."
+                    .into(),
+            )
+        })?;
 
     // -------- 1. Kernel `.ko` --------
-    let ko_artifact = {
-        let kv = kver_lower.as_deref();
-        artifact_names
-            .iter()
-            .find(|n| {
-                let lower = n.to_lowercase();
-                // `-{kv}_` boundary required — see `ksu_ko_kver_matches`.
-                lower.contains("_kernelsu.ko") && kv.is_none_or(|k| ksu_ko_kver_matches(&lower, k))
-            })
-            .or_else(|| {
-                artifact_names
-                    .iter()
-                    .find(|n| n.to_lowercase().contains("_kernelsu.ko"))
-            })
-            .cloned()
-            .ok_or_else(|| {
-                LtboxError::Patch(format!(
-                    "{repo} run {run_id}: no *_kernelsu.ko artifact (kver={:?}, artifacts={:?})",
-                    kver, artifact_names
-                ))
-            })?
-    };
+    let ko_artifact = select_ksu_nightly_ko_artifact(&artifact_names, &kver).ok_or_else(|| {
+        LtboxError::Patch(format!(
+            "{repo} run {run_id}: no *_kernelsu.ko artifact matching kernel {kver} (artifacts={artifact_names:?})"
+        ))
+    })?;
     live!(log, "[KSU] nightly LKM artifact: {ko_artifact}");
     let ko_zip_path = staging_dir.join("ksu_nightly_lkm.zip");
     let ko_url = nightly_artifact_url(repo, run_id, &ko_artifact);
@@ -954,7 +961,10 @@ pub fn build_patched_artifacts(
 
 #[cfg(test)]
 mod tests {
-    use super::ksu_ko_kver_matches;
+    use super::{
+        ksu_ko_kver_matches, normalize_ksu_kernel_version, select_ksu_nightly_ko_artifact,
+        select_ksu_release_ko_asset,
+    };
 
     #[test]
     fn exact_major_minor_matches() {
@@ -981,5 +991,57 @@ mod tests {
     fn missing_leading_dash_does_not_match() {
         // `-{kver}_` boundary is required; bare `6.1_kernelsu.ko` is not a stock layout.
         assert!(!ksu_ko_kver_matches("6.1_kernelsu.ko", "6.1"));
+    }
+
+    #[test]
+    fn ksu_kernel_version_normalizes_to_major_minor() {
+        assert_eq!(normalize_ksu_kernel_version("6.1"), Some("6.1".to_string()));
+        assert_eq!(
+            normalize_ksu_kernel_version("6.1.75"),
+            Some("6.1".to_string())
+        );
+        assert_eq!(
+            normalize_ksu_kernel_version("  5.15.149-android14  "),
+            Some("5.15".to_string())
+        );
+    }
+
+    #[test]
+    fn ksu_kernel_version_rejects_missing_or_malformed_input() {
+        assert_eq!(normalize_ksu_kernel_version(""), None);
+        assert_eq!(normalize_ksu_kernel_version("6"), None);
+        assert_eq!(normalize_ksu_kernel_version("six.one"), None);
+    }
+
+    #[test]
+    fn ksu_release_asset_selection_requires_matching_kernel() {
+        let assets = vec![
+            (
+                "android14-5.15_kernelsu.ko".to_string(),
+                "https://example.invalid/5.15.ko".to_string(),
+            ),
+            (
+                "android15-6.6_kernelsu.ko".to_string(),
+                "https://example.invalid/6.6.ko".to_string(),
+            ),
+        ];
+
+        let picked = select_ksu_release_ko_asset(&assets, "6.6").expect("6.6 asset");
+        assert_eq!(picked.0, "android15-6.6_kernelsu.ko");
+        assert!(select_ksu_release_ko_asset(&assets, "6.1").is_none());
+    }
+
+    #[test]
+    fn ksu_nightly_artifact_selection_does_not_fallback_to_any_module() {
+        let artifacts = vec![
+            "android14-5.15_kernelsu.ko".to_string(),
+            "ksuinit-arm64.zip".to_string(),
+        ];
+
+        assert_eq!(
+            select_ksu_nightly_ko_artifact(&artifacts, "5.15"),
+            Some("android14-5.15_kernelsu.ko".to_string())
+        );
+        assert_eq!(select_ksu_nightly_ko_artifact(&artifacts, "6.1"), None);
     }
 }
