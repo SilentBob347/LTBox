@@ -67,18 +67,25 @@ pub fn patch_boot(
         )));
     }
 
-    log.push(format!(
+    crate::live!(
+        log,
         "[APatch] extract_kernel {} -> {}",
         boot_in.display(),
         kernel_ori.display()
-    ));
+    );
     bootimg::extract_kernel(&boot_in, &kernel_ori)
         .map_err(|e| LtboxError::Patch(format!("kptools extract_kernel failed: {e}")))?;
 
-    // Bail if kernel is already patched — parse_image_patch_info returns Ok iff preset magic present.
+    // Bail if kernel is already patched. `parse_image_patch_info` returns
+    // Ok for any kernel with a Linux banner (patched or pristine); only
+    // `preset_offset.is_some()` distinguishes the two. The previous
+    // `is_ok()` check false-positived on every pristine stock image,
+    // blocking fresh root runs with "already APatch-patched".
     {
         let kimg_bytes = fs::read(&kernel_ori)?;
-        if patch::parse_image_patch_info(&kimg_bytes).is_ok() {
+        if let Ok(info) = patch::parse_image_patch_info(&kimg_bytes)
+            && info.preset_offset.is_some()
+        {
             return Err(LtboxError::Patch(
                 "boot kernel is already APatch-patched — unroot first before re-patching".into(),
             ));
@@ -101,15 +108,16 @@ pub fn patch_boot(
                 "kernel missing CONFIG_KALLSYMS=y — kptools cannot resolve patch points. Flashing would brick the device. Aborting.".into(),
             ));
         } else if !has_kallsyms {
-            log.push(
-                "[APatch] CONFIG_KALLSYMS check inconclusive (no IKCONFIG payload) — proceeding, but patch may fail".into(),
+            crate::live!(
+                log,
+                "[APatch] CONFIG_KALLSYMS check inconclusive (no IKCONFIG payload) — proceeding, but patch may fail"
             );
         } else {
-            log.push("[APatch] CONFIG_KALLSYMS=y — OK".into());
+            crate::live!(log, "[APatch] CONFIG_KALLSYMS=y — OK");
             if !has_kallsyms_all {
-                log.push(
+                crate::live!(
+                    log,
                     "[APatch] CONFIG_KALLSYMS_ALL=y missing — non-fatal, but some KPMs may need it"
-                        .into(),
                 );
             }
         }
@@ -126,11 +134,12 @@ pub fn patch_boot(
             })
         })
         .collect::<Result<_>>()?;
-    log.push(format!(
+    crate::live!(
+        log,
         "[APatch] patching kernel (kpm_count={}, superkey_len={})",
         extras.len(),
         superkey.len()
-    ));
+    );
 
     patch::patch_update_img(PatchArgs {
         kimg_path: &kernel_ori,
@@ -143,12 +152,13 @@ pub fn patch_boot(
     })
     .map_err(|e| LtboxError::Patch(format!("kptools patch_update_img failed: {e}")))?;
 
-    log.push(format!(
+    crate::live!(
+        log,
         "[APatch] repack_bootimg {} + {} -> {}",
         boot_in.display(),
         kernel_out.display(),
         boot_out.display()
-    ));
+    );
     bootimg::repack_bootimg(&boot_in, &kernel_out, &boot_out)
         .map_err(|e| LtboxError::Patch(format!("kptools repack_bootimg failed: {e}")))?;
 
@@ -203,5 +213,38 @@ mod tests {
         let err = patch_boot(tmp.path(), &[], "abcdefgh", &mut log).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("missing kpimg"), "unexpected: {msg}");
+    }
+
+    /// Regression: previous version of `patch_boot` used
+    /// `parse_image_patch_info(..).is_ok()` to decide "already patched",
+    /// which is True on **every** kernel with a Linux banner — including
+    /// pristine stock images. The fix narrows the check to
+    /// `preset_offset.is_some()`, the actual patched-state marker.
+    ///
+    /// This test pulls the real TB322 stock `boot.img` sitting next to
+    /// the LTBox repo, extracts its kernel, and asserts the patch-info
+    /// parser reports `preset_offset = None`. Gated behind `#[ignore]`
+    /// so CI (which doesn't ship the firmware) skips it; run locally
+    /// with `cargo test -p ltbox-patch -- --ignored tb322`.
+    #[test]
+    #[ignore = "requires D:/Git/Project-LTBOX/TB322_ZUXOS_1.5.10.183/boot.img"]
+    fn tb322_pristine_boot_not_flagged_as_patched() {
+        let boot_img =
+            std::path::PathBuf::from("D:/Git/Project-LTBOX/TB322_ZUXOS_1.5.10.183/boot.img");
+        if !boot_img.exists() {
+            eprintln!("skipping — fixture missing: {}", boot_img.display());
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = tmp.path().join("kernel.ori");
+        kptools::bootimg::extract_kernel(&boot_img, &kernel).unwrap();
+        let bytes = fs_err::read(&kernel).unwrap();
+        let info =
+            kptools::patch::parse_image_patch_info(&bytes).expect("pristine kernel parses cleanly");
+        assert!(
+            info.preset_offset.is_none(),
+            "pristine TB322 kernel should report preset_offset=None, got {:?}",
+            info.preset_offset
+        );
     }
 }

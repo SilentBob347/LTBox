@@ -17,8 +17,15 @@ use ltbox_core::{LtboxError, Result};
 use crate::{avb, gki, key_map, ksu, magisk};
 
 /// Echo to `println!` so the GUI's stdout tap streams it to the live log.
-/// `$log` kept for call-site compatibility but ignored — library messages
-/// push into it separately.
+/// `$log` kept for call-site compatibility but ignored — pushing here
+/// would duplicate in the GUI's final `log_extend`, which re-drains the
+/// returned Vec on top of what the tap already captured.
+///
+/// `#[macro_export]` so sibling modules (`apatch`, `gki`, `magisk`,
+/// `ksu`, …) emit through the same path instead of `log.push`, which
+/// buffers everything until the pipeline returns — users saw the whole
+/// APatch/GKI run as one log dump at the end.
+#[macro_export]
 macro_rules! live {
     ($log:expr, $($arg:tt)*) => {{
         let _ = &$log;
@@ -209,7 +216,9 @@ pub fn provider_repo(provider: RootProvider) -> Option<&'static str> {
         RootProvider::Magisk => "topjohnwu/Magisk",
         RootProvider::MagiskFork => return None,
         RootProvider::KernelSU => "tiann/KernelSU",
-        RootProvider::KernelSUNext => "rifsxd/KernelSU-Next",
+        // Upstream moved to the KernelSU-Next org; the old `rifsxd/KernelSU-Next`
+        // redirects but its release assets aren't mirrored, so pin the new slug.
+        RootProvider::KernelSUNext => "KernelSU-Next/KernelSU-Next",
         RootProvider::SukiSU => "SukiSU-Ultra/SukiSU-Ultra",
         RootProvider::ReSukiSU => "ReSukiSU/ReSukiSU",
         RootProvider::APatch => "bmax121/APatch",
@@ -217,50 +226,87 @@ pub fn provider_repo(provider: RootProvider) -> Option<&'static str> {
     })
 }
 
-fn ksu_manager_asset_preferences(provider: RootProvider) -> &'static [&'static str] {
+/// Ordered keyword preferences for picking a manager asset from a **stable
+/// release** asset list. Keywords are case-insensitive substrings matched
+/// against `.apk` asset names (e.g. `KernelSU_v3.2.4_32457-release.apk`).
+///
+/// Spoofed variants go first so providers that ship both `-spoofed` and
+/// non-spoofed release APKs (KernelSU-Next today, SukiSU going forward)
+/// land on the spoofed one. ReSukiSU has no stable channel, hence empty.
+fn ksu_manager_stable_preferences(provider: RootProvider) -> &'static [&'static str] {
     match provider {
-        RootProvider::KernelSU => &["manager.zip", "Manager.zip"],
-        RootProvider::KernelSUNext => &["manager-spoofed.zip", "manager.zip"],
-        RootProvider::SukiSU => &["Spoofed-Manager.zip", "Manager.zip", "manager.zip"],
+        RootProvider::KernelSU => &["-release.apk"],
+        RootProvider::KernelSUNext => &["-spoofed", "-release.apk"],
+        RootProvider::SukiSU => &["-spoofed", "-release.apk"],
+        // ReSukiSU publishes no stable releases; GUI gates this off but we
+        // also return empty here so a stray Stable call fails fast instead
+        // of grabbing some unrelated asset.
+        RootProvider::ReSukiSU => &[],
+        _ => &[],
+    }
+}
+
+/// Ordered keyword preferences for picking a manager artifact from a
+/// **nightly workflow run**. Workflow artifact names are bare (no suffix),
+/// so exact-match is the common case; substring fallback is the safety net.
+fn ksu_manager_nightly_preferences(provider: RootProvider) -> &'static [&'static str] {
+    match provider {
+        RootProvider::KernelSU => &["manager"],
+        // Upstream ships `manager-spoofed` + `manager`; prefer the spoofed
+        // one for Play Integrity / Widevine preservation.
+        RootProvider::KernelSUNext => &["manager-spoofed", "manager"],
+        // SukiSU doesn't currently emit `manager-spoofed`, but upstream has
+        // signalled intent — keep spoofed first so future runs pick it up
+        // without code changes.
+        RootProvider::SukiSU => &["manager-spoofed", "manager"],
+        // ReSukiSU emits four variants; user preference is
+        // release > debug, spoofed > plain, checked in that order.
         RootProvider::ReSukiSU => &[
-            "Spoofed-Manager-release.zip",
-            "Manager-release.zip",
-            "manager.zip",
+            "Spoofed-Manager-release",
+            "Manager-release",
+            "Spoofed-Manager-debug",
+            "Manager-debug",
         ],
         _ => &[],
     }
 }
 
+/// Pick a manager asset from `assets` using `preferred_keywords`.
+///
+/// Matching is two-tiered, both case-insensitive:
+///
+/// 1. Exact asset-name match against each preferred keyword, in order.
+///    Handles nightly artifact names (bare, no suffix) cleanly.
+/// 2. Substring match against each preferred keyword, in order.
+///    Handles stable release `.apk` names whose keyword is only a fragment
+///    (e.g. `-spoofed` inside `KernelSU_Next_v3.2.0-spoofed_33129-release.apk`).
+///
+/// The iteration order of `preferred_keywords` is the priority order —
+/// earlier entries win even when later entries would also substring-match.
 fn select_manager_asset(
     assets: &[(String, String)],
-    preferred_names: &[&str],
+    preferred_keywords: &[&str],
 ) -> Option<(String, String)> {
-    preferred_names
-        .iter()
-        .find_map(|preferred| {
-            assets
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(preferred))
-                .cloned()
-        })
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|(name, _)| {
-                    let lower = name.to_lowercase();
-                    lower.ends_with(".apk") && lower.contains("manager") && !lower.contains("debug")
-                })
-                .cloned()
-        })
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|(name, _)| {
-                    let lower = name.to_lowercase();
-                    lower.ends_with(".zip") && lower.contains("manager")
-                })
-                .cloned()
-        })
+    // Tier 1 — exact match (nightly artifact names).
+    for keyword in preferred_keywords {
+        if let Some(hit) = assets
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(keyword))
+        {
+            return Some(hit.clone());
+        }
+    }
+    // Tier 2 — substring match (stable `.apk` names).
+    for keyword in preferred_keywords {
+        let keyword_lower = keyword.to_lowercase();
+        if let Some(hit) = assets
+            .iter()
+            .find(|(name, _)| name.to_lowercase().contains(&keyword_lower))
+        {
+            return Some(hit.clone());
+        }
+    }
+    None
 }
 
 /// Download latest Magisk APK into `dst_path`; returns the tag name.
@@ -588,7 +634,7 @@ fn download_ksu_manager_apk_stable(
     })?;
     let client = GitHubClient::new(repo)?;
     let (tag, assets) = client.latest_release_assets()?;
-    let (name, url) = select_manager_asset(&assets, ksu_manager_asset_preferences(provider))
+    let (name, url) = select_manager_asset(&assets, ksu_manager_stable_preferences(provider))
         .ok_or_else(|| LtboxError::Download(format!("No manager APK artifact on latest {repo}")))?;
     log.push(format!("[KSU] {repo} manager: {tag} -> {name}"));
     let asset_path = work_dir.join(&name);
@@ -611,12 +657,14 @@ fn download_ksu_manager_apk_nightly(
         .iter()
         .map(|name| (name.clone(), String::new()))
         .collect();
-    let (artifact_name, _) = select_manager_asset(&pairs, ksu_manager_asset_preferences(provider))
-        .ok_or_else(|| {
-            LtboxError::Patch(format!(
-                "{repo} run {run_id}: no manager APK artifact (got {artifact_names:?})"
-            ))
-        })?;
+    let (artifact_name, _) =
+        select_manager_asset(&pairs, ksu_manager_nightly_preferences(provider)).ok_or_else(
+            || {
+                LtboxError::Patch(format!(
+                    "{repo} run {run_id}: no manager APK artifact (got {artifact_names:?})"
+                ))
+            },
+        )?;
     log.push(format!(
         "[KSU] {repo} nightly manager artifact: {artifact_name}"
     ));

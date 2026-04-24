@@ -34,7 +34,7 @@ pub fn patch_boot(work_dir: &Path, kernel_zip: &Path, log: &mut Vec<String>) -> 
         )));
     }
 
-    log.push(format!("[GKI] {}", tr("log_gki_unpack_boot")));
+    crate::live!(log, "[GKI] {}", tr("log_gki_unpack_boot"));
     boot::unpack(&img_path, work_dir)?;
     let kernel_dst = work_dir.join("kernel");
     if !kernel_dst.exists() {
@@ -45,25 +45,26 @@ pub fn patch_boot(work_dir: &Path, kernel_zip: &Path, log: &mut Vec<String>) -> 
 
     // Kernel-version sanity check — diagnostic only, catches wrong-kernel-family zips.
     if let Some(ver) = extract_linux_version(&kernel_dst) {
-        log.push(format!("[GKI] {}: {ver}", tr("log_gki_stock_kver")));
+        crate::live!(log, "[GKI] {}: {ver}", tr("log_gki_stock_kver"));
     } else {
-        log.push(format!("[GKI] {}", tr("log_gki_stock_kver_missing")));
+        crate::live!(log, "[GKI] {}", tr("log_gki_stock_kver_missing"));
     }
 
-    log.push(format!(
+    crate::live!(
+        log,
         "[GKI] {} {}",
         tr("log_gki_extracting_kernel"),
         kernel_zip.display()
-    ));
+    );
     extract_kernel_from_zip(kernel_zip, &kernel_dst, log)?;
 
     if let Some(ver) = extract_linux_version(&kernel_dst) {
-        log.push(format!("[GKI] {}: {ver}", tr("log_gki_replacement_kver")));
+        crate::live!(log, "[GKI] {}: {ver}", tr("log_gki_replacement_kver"));
     } else {
-        log.push(format!("[GKI] {}", tr("log_gki_replacement_kver_missing")));
+        crate::live!(log, "[GKI] {}", tr("log_gki_replacement_kver_missing"));
     }
 
-    log.push(format!("[GKI] {}", tr("log_gki_repack_boot")));
+    crate::live!(log, "[GKI] {}", tr("log_gki_repack_boot"));
     boot::repack(img_name, work_dir)?;
     let new_boot = work_dir.join("new-boot.img");
     if !new_boot.exists() {
@@ -71,7 +72,7 @@ pub fn patch_boot(work_dir: &Path, kernel_zip: &Path, log: &mut Vec<String>) -> 
             "magiskboot repack produced no new-boot.img".into(),
         ));
     }
-    log.push(format!("[GKI] {}", tr("log_gki_patch_complete")));
+    crate::live!(log, "[GKI] {}", tr("log_gki_patch_complete"));
     Ok(new_boot)
 }
 
@@ -145,11 +146,12 @@ fn extract_kernel_from_zip(zip_path: &Path, dst: &Path, log: &mut Vec<String>) -
 
     let mut out = fs::File::create(dst)?;
     out.write_all(&buf)?;
-    log.push(format!(
+    crate::live!(
+        log,
         "[GKI] {} {name} → kernel ({} bytes)",
         tr("log_gki_staged"),
         buf.len()
-    ));
+    );
     Ok(())
 }
 

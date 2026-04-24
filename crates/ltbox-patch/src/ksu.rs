@@ -30,7 +30,7 @@ pub fn patch_init_boot(work_dir: &Path, log: &mut Vec<String>) -> Result<PathBuf
         }
     }
 
-    log.push(format!("[KSU] {}", tr("log_ksu_unpack_initboot")));
+    crate::live!(log, "[KSU] {}", tr("log_ksu_unpack_initboot"));
     boot::unpack(&img_path, work_dir)?;
 
     let ramdisk = work_dir.join("ramdisk.cpio");
@@ -52,13 +52,13 @@ pub fn patch_init_boot(work_dir: &Path, log: &mut Vec<String>) -> Result<PathBuf
     // images have no top-level init, so skip the rename there.
     let has_init = boot::cpio(work_dir, "ramdisk.cpio", &["exists init"])?;
     if has_init == 0 {
-        log.push(format!("[KSU] {}", tr("log_ksu_cpio_mv_init")));
+        crate::live!(log, "[KSU] {}", tr("log_ksu_cpio_mv_init"));
         boot::cpio_checked(work_dir, "ramdisk.cpio", &["mv init init.real"])?;
     } else {
-        log.push(format!("[KSU] {}", tr("log_ksu_no_stock_init")));
+        crate::live!(log, "[KSU] {}", tr("log_ksu_no_stock_init"));
     }
 
-    log.push(format!("[KSU] {}", tr("log_ksu_cpio_add")));
+    crate::live!(log, "[KSU] {}", tr("log_ksu_cpio_add"));
     boot::cpio_checked(work_dir, "ramdisk.cpio", &["add 0755 init init"])?;
     boot::cpio_checked(
         work_dir,
@@ -66,7 +66,7 @@ pub fn patch_init_boot(work_dir: &Path, log: &mut Vec<String>) -> Result<PathBuf
         &["add 0755 kernelsu.ko kernelsu.ko"],
     )?;
 
-    log.push(format!("[KSU] {}", tr("log_ksu_repack_initboot")));
+    crate::live!(log, "[KSU] {}", tr("log_ksu_repack_initboot"));
     boot::repack(img_name, work_dir)?;
 
     let new_boot = work_dir.join("new-boot.img");
@@ -75,6 +75,6 @@ pub fn patch_init_boot(work_dir: &Path, log: &mut Vec<String>) -> Result<PathBuf
             "magiskboot repack produced no new-boot.img".into(),
         ));
     }
-    log.push(format!("[KSU] {}", tr("log_ksu_patch_complete")));
+    crate::live!(log, "[KSU] {}", tr("log_ksu_patch_complete"));
     Ok(new_boot)
 }

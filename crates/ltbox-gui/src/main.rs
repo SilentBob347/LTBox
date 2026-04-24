@@ -4754,6 +4754,16 @@ impl App {
             Message::RootProvider(p) => {
                 self.root.provider = Some(p);
                 self.root.file_path = None;
+                // ReSukiSU has no Stable channel — if the user had Stable
+                // picked before switching to ReSukiSU, force Nightly so the
+                // hidden-Stable version step lands on the sole valid choice
+                // instead of showing an orphan "no selection" state.
+                if p == Provider::ReSukiSU && self.root.version == Some(VerChoice::Stable) {
+                    self.root.version = Some(VerChoice::Nightly);
+                    self.root.nightly_source = None;
+                    self.root.run_id = None;
+                    self.root.run_id_buffer.clear();
+                }
             }
             Message::RootMode(m) => {
                 self.root.mode = Some(m);
@@ -5178,6 +5188,15 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 false
                             };
 
+                            // Wrap the device-interaction phase (phase 1/6 onwards)
+                            // so any error triggers a best-effort EDL → system reset
+                            // before we bubble the error up. Without this, a failure
+                            // mid-pipeline (e.g. patch errors out) leaves the device
+                            // stuck in 9008 mode and the user has to yank the cable
+                            // + battery to recover. `log` / `loader` are captured by
+                            // reference so both the success and failure paths still
+                            // see the accumulated lines.
+                            let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
                             live!(log, "[Root] {}", phase_marker(1, 6, &ll.op_root_phase[0]));
                             transition_to_edl(&ll, &mut log)?;
 
@@ -5348,7 +5367,37 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                 .map_err(|e| format!("Manager APK install after reboot failed: {e}"))?;
                             }
                             live!(log, "[Root] {}", ll.root_completed);
-                            Ok(log)
+                            Ok(())
+                            })();
+                            match device_phase_result {
+                                Ok(()) => Ok(log),
+                                Err(e) => {
+                                    // Best-effort: open a fresh session on the same
+                                    // loader and ask the device to boot. `reset_tolerant`
+                                    // already swallows the post-handoff error some
+                                    // devices return, so this never masks the real
+                                    // error — failures here are only logged.
+                                    let mut reset_log: Vec<String> = Vec::new();
+                                    reset_log.push(format!(
+                                        "[EDL] attempting device reset after error: {e}"
+                                    ));
+                                    if let Ok(mut s) = ltbox_device::edl::EdlSession::open(
+                                        &loader,
+                                        false,
+                                        &mut reset_log,
+                                    ) {
+                                        s.reset_tolerant(&mut reset_log);
+                                    } else {
+                                        reset_log.push(
+                                            "[EDL] reset skipped — could not re-open EDL session".into(),
+                                        );
+                                    }
+                                    for line in reset_log {
+                                        println!("{line}");
+                                    }
+                                    Err(e)
+                                }
+                            }
                             }).and_then(|r| r)
                         }).await.unwrap_or(Err("Task failed".to_string()))
                     },
@@ -9851,6 +9900,15 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
             )
         };
 
+        // ReSukiSU ships nightlies only — hide the Stable card so users
+        // can't pick a channel that has no release assets. Other providers
+        // keep both.
+        let version_row = if self.root.provider == Some(Provider::ReSukiSU) {
+            row![mk(VerChoice::Nightly)].spacing(12)
+        } else {
+            row![mk(VerChoice::Stable), mk(VerChoice::Nightly)].spacing(12)
+        };
+
         let col = column![
             text(self.t("root_version_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -9859,7 +9917,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                 .size(13)
                 .style(muted_style)
                 .center(),
-            row![mk(VerChoice::Stable), mk(VerChoice::Nightly)].spacing(12),
+            version_row,
         ]
         .spacing(14)
         .padding(28)
