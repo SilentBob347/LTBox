@@ -26,18 +26,20 @@ fn resolve_signing_key(
     log: &mut Vec<String>,
 ) -> Result<Option<String>> {
     let Some(sha) = pubkey_sha1 else {
-        log.push(format!(
+        ltbox_core::live!(
+            log,
             "[AVB] {image_name} {}",
             tr("log_avb_unsigned_skip_key")
-        ));
+        );
         return Ok(None);
     };
     if let Some(spec) = key_map::key_spec_for_pubkey(Some(sha)) {
-        log.push(format!(
+        ltbox_core::live!(
+            log,
             "[AVB] {image_name} {} {sha} → {} {spec}",
             tr("log_avb_pubkey"),
             tr("log_avb_bundled")
-        ));
+        );
         return Ok(Some(spec.to_string()));
     }
     Err(LtboxError::Avb(format!(
@@ -146,9 +148,10 @@ fn resolve_nightly_run(
 
     let run_id = match manual_run_id {
         Some(id) => {
-            log.push(format!(
+            ltbox_core::live!(
+                log,
                 "[Nightly] {repo}: validating manual run id {id} against workflow {workflow_file} (branch {branch})"
-            ));
+            );
             if !client.workflow_run_matches(id, workflow_file, Some(branch))? {
                 return Err(LtboxError::Patch(format!(
                     "Manual run id {id} does not match workflow {workflow_file} on branch {branch} of {repo}"
@@ -157,9 +160,10 @@ fn resolve_nightly_run(
             id
         }
         None => {
-            log.push(format!(
+            ltbox_core::live!(
+                log,
                 "[Nightly] {repo}: auto-detecting latest successful run for {workflow_file} (branch {branch})"
-            ));
+            );
             client
                 .latest_successful_run(workflow_file, Some(branch))?
                 .ok_or_else(|| {
@@ -169,7 +173,7 @@ fn resolve_nightly_run(
                 })?
         }
     };
-    log.push(format!("[Nightly] {repo}: using run id {run_id}"));
+    ltbox_core::live!(log, "[Nightly] {repo}: using run id {run_id}");
     Ok((repo, run_id))
 }
 
@@ -310,7 +314,7 @@ pub fn download_latest_magisk_apk(
             lower.ends_with(".apk") && !lower.contains("debug")
         })
         .ok_or_else(|| LtboxError::Download(format!("No release APK on latest {repo}")))?;
-    log.push(format!("[Magisk] Latest release: {tag} — asset {name}"));
+    ltbox_core::live!(log, "[Magisk] Latest release: {tag} — asset {name}");
     download_to_file(&url, dst_path, log)?;
     Ok(tag)
 }
@@ -364,10 +368,7 @@ fn fetch_nightly_apk_outer_zip(
         fs::remove_file(dst_apk).ok();
     }
     fs::rename(&apk_src, dst_apk).or_else(|_| fs::copy(&apk_src, dst_apk).map(|_| ()))?;
-    log.push(format!(
-        "[{log_tag}] staged nightly APK: {}",
-        dst_apk.display()
-    ));
+    ltbox_core::live!(log, "[{log_tag}] staged nightly APK: {}", dst_apk.display());
     Ok(())
 }
 
@@ -410,7 +411,7 @@ pub fn download_magisk_apk_nightly(
                 "{repo} run {run_id}: no release APK artifact (got {artifact_names:?})"
             ))
         })?;
-    log.push(format!("[Magisk] {repo} nightly artifact: {artifact_name}"));
+    ltbox_core::live!(log, "[Magisk] {repo} nightly artifact: {artifact_name}");
     fetch_nightly_apk_outer_zip(
         "Magisk",
         repo,
@@ -441,11 +442,12 @@ fn extract_kpimg_from_apk(
     let size = entry.size();
     let mut out = fs::File::create(&kpimg_dst)?;
     std::io::copy(&mut entry, &mut out)?;
-    log.push(format!(
+    ltbox_core::live!(
+        log,
         "[APatch] extracted assets/kpimg → {} ({} bytes)",
         kpimg_dst.display(),
         size
-    ));
+    );
     Ok(())
 }
 
@@ -467,7 +469,7 @@ pub fn download_apatch_payload(
         .into_iter()
         .find(|(n, _)| n.to_lowercase().ends_with(".apk"))
         .ok_or_else(|| LtboxError::Download(format!("No release APK on latest {repo}")))?;
-    log.push(format!("[APatch] {repo} latest: {tag} — asset {name}"));
+    ltbox_core::live!(log, "[APatch] {repo} latest: {tag} — asset {name}");
 
     let apk_path = work_dir.join("apatch.apk");
     download_to_file(&url, &apk_path, log)?;
@@ -515,7 +517,7 @@ pub fn download_apatch_payload_nightly(
                 "{repo} run {run_id}: no matching artifact for prefix {prefix:?}"
             ))
         })?;
-    log.push(format!("[APatch] {repo} nightly artifact: {artifact_name}"));
+    ltbox_core::live!(log, "[APatch] {repo} nightly artifact: {artifact_name}");
     // Canonical apk path so Stable / Nightly share downstream steps.
     let apk_path = work_dir.join("apatch.apk");
     fetch_nightly_apk_outer_zip(
@@ -571,10 +573,11 @@ fn extract_first_apk_from_zip(
     }
     let mut out = fs::File::create(output_path)?;
     std::io::copy(&mut entry, &mut out)?;
-    log.push(format!(
+    ltbox_core::live!(
+        log,
         "[{log_tag}] extracted manager APK {member_name} -> {}",
         output_path.display()
-    ));
+    );
     Ok(true)
 }
 
@@ -590,10 +593,11 @@ fn stage_manager_from_downloaded_asset(
         .is_some_and(|ext| ext.eq_ignore_ascii_case("apk"))
     {
         copy_apk_to(asset_path, manager_apk)?;
-        log.push(format!(
+        ltbox_core::live!(
+            log,
             "[{log_tag}] staged manager APK: {}",
             manager_apk.display()
-        ));
+        );
         return Ok(());
     }
     if extract_first_apk_from_zip(asset_path, manager_apk, log_tag, log)? {
@@ -620,7 +624,7 @@ fn download_ksu_manager_apk_stable(
     let (tag, assets) = client.latest_release_assets()?;
     let (name, url) = select_manager_asset(&assets, ksu_manager_stable_preferences(provider))
         .ok_or_else(|| LtboxError::Download(format!("No manager APK artifact on latest {repo}")))?;
-    log.push(format!("[KSU] {repo} manager: {tag} -> {name}"));
+    ltbox_core::live!(log, "[KSU] {repo} manager: {tag} -> {name}");
     let asset_path = work_dir.join(&name);
     download_to_file(&url, &asset_path, log)?;
     stage_manager_from_downloaded_asset(&asset_path, manager_apk, "KSU", log)?;
@@ -649,9 +653,10 @@ fn download_ksu_manager_apk_nightly(
                 ))
             },
         )?;
-    log.push(format!(
+    ltbox_core::live!(
+        log,
         "[KSU] {repo} nightly manager artifact: {artifact_name}"
-    ));
+    );
     fetch_nightly_apk_outer_zip(
         "KSU",
         repo,
@@ -683,7 +688,10 @@ pub fn stage_root_manager_apk(
         return if extract_first_apk_from_zip(kernel_zip, &manager_apk, "GKI", log)? {
             Ok(Some(manager_apk))
         } else {
-            log.push("[GKI] No manager APK found in kernel zip; skipping auto-install".into());
+            ltbox_core::live!(
+                log,
+                "[GKI] No manager APK found in kernel zip; skipping auto-install"
+            );
             Ok(None)
         };
     }
@@ -695,10 +703,11 @@ pub fn stage_root_manager_apk(
                     LtboxError::Patch("Magisk forks require a local APK — none supplied".into())
                 })?;
                 copy_apk_to(src, &manager_apk)?;
-                log.push(format!(
+                ltbox_core::live!(
+                    log,
                     "[Magisk] staged fork manager APK: {}",
                     manager_apk.display()
-                ));
+                );
             }
             (_, RootVersion::Stable) => {
                 download_latest_magisk_apk(cfg.provider, &manager_apk, log)?;
@@ -743,10 +752,11 @@ pub fn stage_root_manager_apk(
                 }
             }
             copy_apk_to(&apk_path, &manager_apk)?;
-            log.push(format!(
+            ltbox_core::live!(
+                log,
                 "[APatch] staged manager APK: {}",
                 manager_apk.display()
-            ));
+            );
         }
     }
 
@@ -1177,13 +1187,14 @@ pub fn build_patched_artifacts(
         fs::remove_file(&final_boot).ok();
     }
     fs::rename(&patched_boot, &final_boot)?;
-    log.push(format!(
+    ltbox_core::live!(
+        log,
         "[Root] {} {} {} {}",
         tr("log_root_patched"),
         stock_filename,
         tr("log_root_ready_at"),
         final_boot.display()
-    ));
+    );
 
     // Re-apply AVB footer. Algorithm + rollback index copied from stock to
     // preserve device's rollback state. Signing key via `KEY_MAP` on stock pubkey.
@@ -1196,14 +1207,15 @@ pub fn build_patched_artifacts(
         boot_key.as_deref(),
         Some(stock_info.rollback_index),
     )?;
-    log.push(format!(
+    ltbox_core::live!(
+        log,
         "[AVB] {} {} ({} rollback={}, key={})",
         tr("log_avb_refootered"),
         stock_filename,
         stock_info.algorithm,
         stock_info.rollback_index,
         boot_key.as_deref().unwrap_or("(unsigned)"),
-    ));
+    );
 
     // Rebuild vbmeta with fresh hash descriptor. vbmeta pubkey may differ
     // from boot pubkey — second `KEY_MAP` lookup against the stock vbmeta.
@@ -1223,22 +1235,24 @@ pub fn build_patched_artifacts(
                 key,
                 None,
             )?;
-            log.push(format!(
+            ltbox_core::live!(
+                log,
                 "[AVB] {} {} at {} (key={key})",
                 tr("log_avb_rebuilt_vbmeta"),
                 stock_filename,
                 final_vbmeta.display(),
-            ));
+            );
         }
         None => {
             // Unsigned vbmeta: copy stock through. Stale chain hash is fine
             // since NONE-algorithm bootloaders skip verification.
             fs::copy(&vbmeta_src, &final_vbmeta)?;
-            log.push(format!(
+            ltbox_core::live!(
+                log,
                 "[AVB] {} {}",
                 tr("log_avb_vbmeta_unsigned_copied"),
                 final_vbmeta.display(),
-            ));
+            );
         }
     }
 
