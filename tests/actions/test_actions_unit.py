@@ -24,6 +24,22 @@ def create_xmls(img_dir, names):
         (img_dir / n).touch()
 
 
+def test_decrypt_x_files_formats_image_wait_message(mock_env):
+    img_dir = mock_env["IMAGE_DIR"]
+    (img_dir / "rawprogram1.xml").write_text("<data/>", encoding="utf-8")
+
+    with (
+        patch("ltbox.actions.xml.utils.ui.info") as mock_info,
+        patch("ltbox.actions.xml.utils.ui.get_term_width", return_value=80),
+        patch("ltbox.actions.xml.utils.wait_for_directory"),
+    ):
+        xml_action.decrypt_x_files()
+
+    logged = [call.args[0] for call in mock_info.call_args_list if call.args]
+    assert "[*] Waiting for image..." in logged
+    assert all("{image}" not in message for message in logged)
+
+
 def test_xml_select(mock_env):
     img_dir = mock_env["IMAGE_DIR"]
     files = [

@@ -151,7 +151,7 @@ def ensure_xml_files() -> None:
 def decrypt_x_files() -> None:
     utils.ui.info(get_string("act_start_decrypt_xml"))
 
-    utils.ui.info(get_string("act_wait_image"))
+    utils.ui.info(get_string("act_wait_image").format(image=const.IMAGE_DIR.name))
     prompt = get_string("act_prompt_image")
     utils.wait_for_directory(const.IMAGE_DIR, prompt)
 
