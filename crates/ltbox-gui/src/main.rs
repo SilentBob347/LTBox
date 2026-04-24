@@ -480,12 +480,15 @@ const ADV_SECTIONS: &[AdvSection] = &[
         ],
     },
     AdvSection {
-        title_key: "adv_section_firmware_flashing",
+        title_key: "adv_section_edl_ops",
         items: &[
             AdvAction::ConvertXml,
+            // Per-partition Read / Write paired together (read above
+            // write so users can dump first, then re-flash if needed).
             AdvAction::DumpPartitions,
-            AdvAction::DumpPhysical,
             AdvAction::FlashPartitions,
+            // Whole-LUN dump / flash paired the same way.
+            AdvAction::DumpPhysical,
             AdvAction::FlashPhysical,
         ],
     },
@@ -3397,6 +3400,21 @@ impl App {
         self.busy_view
             .map(|view| self.t(view.label_key()).to_string())
             .unwrap_or_else(|| self.t("status_working").to_string())
+    }
+
+    /// Operation-specific replacement for the default busy-dialog body
+    /// (`progress_dialog_body`). Used for sub-flows where "<op> is in
+    /// progress" reads awkwardly — partition Read / Write should say
+    /// "Reading partition…" / "Writing partition…" directly. Returns
+    /// `None` so the caller falls back to the templated body.
+    fn busy_body_override(&self) -> Option<String> {
+        if self.dump_parts_open {
+            return Some(self.t("busy_partition_read").to_string());
+        }
+        if self.flash_parts_open {
+            return Some(self.t("busy_partition_write").to_string());
+        }
+        None
     }
 
     /// Rebuild the editor from `log_lines` and auto-scroll to the
@@ -7430,9 +7448,10 @@ impl App {
 
     fn busy_progress_dialog(&self) -> Element<'_, Message> {
         let op_name = self.busy_operation_label();
-        let body = self
-            .t("progress_dialog_body")
-            .replace("{operation}", &op_name);
+        let body = self.busy_body_override().unwrap_or_else(|| {
+            self.t("progress_dialog_body")
+                .replace("{operation}", &op_name)
+        });
 
         let spinner: Element<'_, Message> = Spinner::new()
             .width(Length::Fixed(42.0))
@@ -13186,12 +13205,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            section("adv_section_firmware_flashing"),
+            section("adv_section_edl_ops"),
             &[
                 AdvAction::ConvertXml,
                 AdvAction::DumpPartitions,
-                AdvAction::DumpPhysical,
                 AdvAction::FlashPartitions,
+                AdvAction::DumpPhysical,
                 AdvAction::FlashPhysical,
             ]
         );
