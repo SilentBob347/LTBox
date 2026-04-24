@@ -696,9 +696,14 @@ struct RootWizard {
     /// APatch superkey. Secret — never echoed in confirm or any log.
     superkey: Option<String>,
     superkey_popup_open: bool,
-    /// Buffer while the superkey popup is open; moved into `superkey`
-    /// on confirm.
+    /// Buffer for the currently visible field in the superkey popup;
+    /// reset between the first-entry and re-entry stages.
     superkey_buffer: String,
+    /// First-entry value held while the popup waits for the user to
+    /// re-enter their key on the second stage. `None` → still on the
+    /// first-entry stage; `Some(v)` → on the verification stage and
+    /// `superkey_buffer` will be compared against `v` on Confirm.
+    superkey_first_entry: Option<String>,
     /// Nightly ManualInput: committed workflow run ID (1..=12 digits).
     /// Only meaningful when `nightly_source == Some(ManualInput)`.
     run_id: Option<String>,
@@ -4880,9 +4885,14 @@ impl App {
                     return self.update(Message::RootExecStart);
                 }
                 // APatch KPM step: open superkey popup — advance is
-                // gated on a valid commit, not this press.
+                // gated on a valid commit, not this press. Always start
+                // on the first-entry stage; the existing committed key
+                // (if any) isn't pre-filled because the user has to
+                // re-type it twice anyway, which is the whole point of
+                // the verification flow.
                 if self.root.step == 8 {
-                    self.root.superkey_buffer = self.root.superkey.clone().unwrap_or_default();
+                    self.root.superkey_buffer.clear();
+                    self.root.superkey_first_entry = None;
                     self.root.superkey_popup_open = true;
                     return Task::none();
                 }
@@ -4916,21 +4926,52 @@ impl App {
             }
             Message::RootSuperkeyConfirm => {
                 let key = self.root.superkey_buffer.trim().to_string();
-                // Upstream rule: 8–63 alphanumeric.
-                let valid =
-                    (8..=63).contains(&key.len()) && key.chars().all(|c| c.is_ascii_alphanumeric());
-                if !valid {
-                    self.error_msg = Some(self.t("apatch_superkey_invalid").to_string());
-                    return Task::none();
+                match self.root.superkey_first_entry.take() {
+                    None => {
+                        // Stage 1 — first entry. Validate the format
+                        // up-front so the user finds out about a too-short
+                        // / non-alnum key on the first round, not after
+                        // re-typing it. Upstream rule: 8–63 alphanumeric.
+                        let valid = (8..=63).contains(&key.len())
+                            && key.chars().all(|c| c.is_ascii_alphanumeric());
+                        if !valid {
+                            self.error_msg = Some(self.t("apatch_superkey_invalid").to_string());
+                            return Task::none();
+                        }
+                        // Stash the validated first entry, blank the
+                        // field, and stay open for the verification
+                        // round. View flips to the "re-enter" prompt
+                        // because `superkey_first_entry.is_some()`.
+                        self.root.superkey_first_entry = Some(key);
+                        self.root.superkey_buffer.clear();
+                        self.error_msg = None;
+                    }
+                    Some(first) => {
+                        // Stage 2 — verification entry. Mismatch resets
+                        // the whole flow so the user types both rounds
+                        // again from scratch (no "edit second field"
+                        // shortcut, since the typo could be in either).
+                        if key != first {
+                            self.error_msg = Some(self.t("apatch_superkey_mismatch").to_string());
+                            self.root.superkey_buffer.clear();
+                            // `superkey_first_entry` already cleared by
+                            // the `.take()` above — stage flips back to
+                            // first-entry automatically.
+                            return Task::none();
+                        }
+                        self.root.superkey = Some(key);
+                        self.root.superkey_buffer.clear();
+                        self.root.superkey_popup_open = false;
+                        self.error_msg = None;
+                        self.root.next();
+                    }
                 }
-                self.root.superkey = Some(key);
-                self.root.superkey_buffer.clear();
-                self.root.superkey_popup_open = false;
-                self.root.next();
             }
             Message::RootSuperkeyCancel => {
                 self.root.superkey_buffer.clear();
+                self.root.superkey_first_entry = None;
                 self.root.superkey_popup_open = false;
+                self.error_msg = None;
             }
             Message::RootRunIdInput(text) => {
                 // GH Actions run IDs are 10 digits; cap at 12 for headroom.
@@ -9394,9 +9435,25 @@ impl App {
             None => Space::new().height(0).into(),
         };
 
+        // Two-stage flow: first-entry vs verification re-entry. The
+        // title + subtitle swap so the user knows the first Confirm
+        // didn't commit the key yet, plus the password-manager / form
+        // autofill heuristics in the OS see "different" prompts.
+        let on_verify_stage = self.root.superkey_first_entry.is_some();
+        let title_key = if on_verify_stage {
+            "apatch_superkey_verify_title"
+        } else {
+            "apatch_superkey_title"
+        };
+        let subtitle_key = if on_verify_stage {
+            "apatch_superkey_verify_subtitle"
+        } else {
+            "apatch_superkey_subtitle"
+        };
+
         let content = column![
-            text(self.t("apatch_superkey_title").to_string()).size(20),
-            text(self.t("apatch_superkey_subtitle").to_string())
+            text(self.t(title_key).to_string()).size(20),
+            text(self.t(subtitle_key).to_string())
                 .size(13)
                 .style(muted_style),
             input,
