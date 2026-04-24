@@ -269,9 +269,8 @@ pub fn download_latest_magisk_apk(
     dst_path: &Path,
     log: &mut Vec<String>,
 ) -> Result<String> {
-    let repo = provider_repo(provider).ok_or_else(|| {
-        LtboxError::Patch("Magisk forks need a local APK — not yet wired in v3".into())
-    })?;
+    let repo = provider_repo(provider)
+        .ok_or_else(|| LtboxError::Patch("Magisk forks need a local APK for patching".into()))?;
     let client = GitHubClient::new(repo)?;
     let (tag, assets) = client.latest_release_assets()?;
     let (name, url) = assets
@@ -991,9 +990,6 @@ pub fn build_patched_artifacts(
     cfg: &RootPipelineConfig,
     log: &mut Vec<String>,
 ) -> Result<PatchedArtifacts> {
-    // Guard provider/version combos not wired yet.
-    {}
-
     fs::create_dir_all(&cfg.work_dir)?;
     fs::create_dir_all(&cfg.output_dir)?;
 
