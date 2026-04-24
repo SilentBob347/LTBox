@@ -119,7 +119,7 @@
   "dump_parts_loader_desc": "Выберите xbl_s_devprg_ns.melf.",
   "dump_parts_loader_placeholder": "Файл loader не выбран",
   "dump_parts_loader_title": "Выбор EDL-loader",
-  "dump_parts_select_subtitle": "Выберите разделы для дампа. Каждый раздел будет сохранён как <имя>.img в папке вывода.",
+  "dump_parts_select_subtitle": "Выберите разделы для дампа. Каждый будет сохранён как <метка>.img в выбранной папке.",
   "dump_parts_select_title": "Выбор разделов для дампа",
   "dump_parts_step_dump": "Дамп",
   "dump_parts_step_loader": "Loader",

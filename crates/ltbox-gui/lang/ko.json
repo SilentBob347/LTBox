@@ -119,7 +119,7 @@
   "dump_parts_loader_desc": "xbl_s_devprg_ns.melf를 선택하세요.",
   "dump_parts_loader_placeholder": "로더 파일이 선택되지 않음",
   "dump_parts_loader_title": "EDL 로더 선택",
-  "dump_parts_select_subtitle": "덤프할 파티션을 선택하세요. 각 파티션은 출력 폴더에 <이름>.img 로 저장됩니다.",
+  "dump_parts_select_subtitle": "덤프할 파티션을 선택하세요. 지정한 폴더에 <레이블>.img로 저장됩니다.",
   "dump_parts_select_title": "덤프할 파티션 선택",
   "dump_parts_step_dump": "덤프",
   "dump_parts_step_loader": "로더",
