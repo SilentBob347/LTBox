@@ -582,6 +582,18 @@ impl EdlSession {
         Ok(())
     }
 
+    /// Best-effort system reset for end-of-flow cleanup.
+    ///
+    /// v2 called qdl reset with `check=False`; some devices successfully
+    /// reset the USB endpoint while qdl still reports an error. Use this
+    /// after all destructive writes have already completed and the only
+    /// remaining action is booting the device back to system.
+    pub fn reset_tolerant(&mut self, log: &mut Vec<String>) {
+        if let Err(e) = self.reset(log) {
+            log.push(format!("[EDL] Reset command returned after handoff: {e}"));
+        }
+    }
+
     /// Bounce back to Sahara (does NOT boot system). Required after a
     /// dump-only session so the next `open()` gets a fresh Hello —
     /// otherwise Sahara times out. Mirrors v2 qdl-rs default behavior.

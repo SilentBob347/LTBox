@@ -4062,7 +4062,7 @@ impl App {
                                 }
 
                             live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
-                            session.reset(&mut log).map_err(|e| format!("Reset: {e}"))?;
+                            session.reset_tolerant(&mut log);
                             live!(log, "[Flash] {}", ll.flash_completed);
                             Ok(log)
                             }).and_then(|r| r)
@@ -4378,7 +4378,7 @@ impl App {
                                                         log.push(format!(
                                                             "[Rescue] ABORT: model mismatch (device={device_model}, firmware fingerprint={fingerprint})"
                                                         ));
-                                                        let _ = session.reset(&mut log);
+                                                        session.reset_tolerant(&mut log);
                                                         return Err(
                                                             "Boot Recovery: firmware/device model mismatch".into(),
                                                         );
@@ -4568,7 +4568,7 @@ impl App {
                                     }
 
                                     log.push("[Rescue] Resetting device...".to_string());
-                                    let _ = session.reset(&mut log);
+                                    session.reset_tolerant(&mut log);
                                     log.push(
                                         "[Rescue] Boot recovery complete.".to_string(),
                                     );
@@ -5180,7 +5180,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                     backup_dir.display()
                                 );
                             }
-                            session.reset(&mut log).map_err(|e| format!("Reset: {e}"))?;
+                            session.reset_tolerant(&mut log);
                             if !manager_installed_pre_edl {
                                 if let Some(path) = manager_apk.as_ref() {
                                     wait_and_install_root_manager_apk(
@@ -5775,7 +5775,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                                 }
                                             }
                                         }
-                                        session.reset(&mut log).ok();
+                                        session.reset_tolerant(&mut log);
                                     }
                                     AdvAction::FlashPartitions
                                     | AdvAction::DumpPartitions
@@ -6989,7 +6989,7 @@ that contains `xbl_s_devprg_ns.melf` + testkey, then retry."
                                     .map_err(|e| format!("EDL session open: {e}"))?;
                             match target {
                                 RebootTarget::System => {
-                                    session.reset(&mut log).map_err(|e| format!("reset: {e}"))?;
+                                    session.reset_tolerant(&mut log);
                                 }
                                 RebootTarget::Edl => {
                                     session
@@ -11710,7 +11710,7 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
     }
 
     log.push("[FlashParts] Resetting device to system...".to_string());
-    let _ = session.reset(&mut log);
+    session.reset_tolerant(&mut log);
     log.push("[FlashParts] Done.".to_string());
     log
 }
@@ -12006,7 +12006,7 @@ fn dump_parts_execute(
     ));
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
     log.push("[DumpParts] Resetting device to system...".to_string());
-    let _ = session.reset(&mut log);
+    session.reset_tolerant(&mut log);
     // Surface critical-partition failures prominently — region/board state
     // (devinfo/persist) can't be reconstructed from a partial dump and a
     // silent "Done." would hide the hazard.
@@ -12094,7 +12094,7 @@ fn dump_physical_execute(
         "[DumpPhys] {}",
         ltbox_core::i18n::tr("live_dump_phys_resetting_system")
     ));
-    let _ = session.reset(&mut log);
+    session.reset_tolerant(&mut log);
     log.push(format!(
         "[DumpPhys] {}",
         ltbox_core::i18n::tr("live_dump_phys_done")
@@ -12146,7 +12146,7 @@ fn flash_physical_execute(
     }
 
     log.push("[FlashPhys] Resetting device to system...".to_string());
-    let _ = session.reset(&mut log);
+    session.reset_tolerant(&mut log);
     log.push("[FlashPhys] Done.".to_string());
     log
 }
