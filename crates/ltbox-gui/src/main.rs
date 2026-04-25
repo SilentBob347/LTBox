@@ -5264,8 +5264,8 @@ impl App {
 
                             use ltbox_patch::root_pipeline::{
                                 RootFamily, RootPipelineConfig, RootProvider, RootVersion,
-                                build_patched_artifacts, stage_root_manager_apk,
-                                stage_root_payload,
+                                build_patched_artifacts, ensure_nightly_run_id,
+                                stage_root_manager_apk, stage_root_payload,
                             };
 
                             let pipe_family = match family {
@@ -5391,7 +5391,7 @@ impl App {
                                 );
                             }
 
-                            let manager_cfg = RootPipelineConfig {
+                            let mut manager_cfg = RootPipelineConfig {
                                 family: pipe_family,
                                 provider: pipe_provider,
                                 version: pipe_version,
@@ -5422,6 +5422,17 @@ impl App {
                             // from copying the device serial. Single
                             // download burst now, then offline patch.
                             live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
+                            // Pin the nightly workflow run ID once so
+                            // every fetch in this Phase 2 pulls from
+                            // the SAME upstream build. Without this,
+                            // a new workflow landing between the
+                            // ~minute-long manager APK download and
+                            // the .ko/ksuinit fetch would split the
+                            // installed manager APK across two
+                            // different builds.
+                            ensure_nightly_run_id(&mut manager_cfg, &mut log)
+                                .map_err(|e| format!("Nightly run resolve: {e}"))?;
+                            let nightly_run_id = manager_cfg.nightly_run_id;
                             let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
                                 .map_err(|e| format!("Manager APK: {e}"))?;
                             stage_root_payload(&manager_cfg, &mut log)

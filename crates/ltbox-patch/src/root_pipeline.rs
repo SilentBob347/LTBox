@@ -187,6 +187,39 @@ fn resolve_nightly_run(
     Ok((repo, run_id))
 }
 
+/// Resolve the nightly workflow run ID once and cache it back into
+/// `cfg.nightly_run_id`. Called at the start of Phase 2 so every
+/// subsequent fetch (`stage_root_manager_apk` →
+/// `stage_root_payload` → any later headless retry) lines up on the
+/// SAME workflow run.
+///
+/// Without this, each fetch independently called `resolve_nightly_run`
+/// and re-queried "latest successful run". A new run landing between
+/// the manager-APK download (a long ~minutes step) and the
+/// `.ko`+`ksuinit` payload download would split the artifacts across
+/// two different workflow builds — the LKM and ksuinit could come
+/// from a workflow that never even produced the APK we're about to
+/// install.
+///
+/// No-op when:
+/// * Stable channel — no nightly resolution needed.
+/// * `cfg.nightly_run_id` is already `Some(_)` (manual override).
+/// * Provider has no nightly workflow (`MagiskFork`).
+pub fn ensure_nightly_run_id(cfg: &mut RootPipelineConfig, log: &mut Vec<String>) -> Result<()> {
+    if !matches!(cfg.version, RootVersion::Nightly) {
+        return Ok(());
+    }
+    if cfg.nightly_run_id.is_some() {
+        return Ok(());
+    }
+    if matches!(cfg.provider, RootProvider::MagiskFork) {
+        return Ok(());
+    }
+    let (_repo, run_id) = resolve_nightly_run(cfg.provider, None, log)?;
+    cfg.nightly_run_id = Some(run_id);
+    Ok(())
+}
+
 /// Build the `nightly.link` public-mirror URL. Response is always ZIP-wrapped.
 fn nightly_artifact_url(repo: &str, run_id: u64, artifact_name: &str) -> String {
     let suffix = if artifact_name.ends_with(".zip") {
