@@ -3135,7 +3135,11 @@ impl App {
         self.error_msg = None;
         self.op_steps.clear();
         self.current_op_step = 0;
-        let label = format!("START {}", self.t(v.label_key()));
+        let label = format!(
+            "{} {}",
+            self.t("log_separator_start"),
+            self.t(v.label_key())
+        );
         self.log_separator(Some(&label));
     }
 
@@ -3226,8 +3230,8 @@ impl App {
     /// Pairs with `begin_op`. Emits a separator even on partial failure.
     fn end_op(&mut self) {
         let label = match self.busy_view {
-            Some(v) => format!("END   {}", self.t(v.label_key())),
-            None => "END".to_string(),
+            Some(v) => format!("{} {}", self.t("log_separator_end"), self.t(v.label_key())),
+            None => self.t("log_separator_end").to_string(),
         };
         self.log_separator(Some(&label));
         if !self.op_steps.is_empty() {
@@ -7149,10 +7153,12 @@ impl App {
                 self.begin_op(View::Reboot);
                 self.error_msg = None;
                 self.log_push(format!(
-                    "[Reboot] → {} (from {:?})",
-                    self.t(target.label_key()),
-                    conn,
+                    "[Reboot] {}",
+                    self.t("log_reboot_target_from")
+                        .replace("{target}", self.t(target.label_key()))
+                        .replace("{source}", &format!("{conn:?}")),
                 ));
+                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
@@ -7212,7 +7218,7 @@ impl App {
                                     );
                                 }
                             }
-                            ltbox_core::live!(log, "[Reboot] Command sent");
+                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
                             Ok(log)
                         })
                         .await
@@ -7226,7 +7232,10 @@ impl App {
             }
             Message::RebootEdlWithLoader(target, path) => {
                 let Some(loader_input) = path else {
-                    self.log_push("[Reboot] Cancelled — no EDL loader selected".to_string());
+                    self.log_push(format!(
+                        "[Reboot] {}",
+                        self.t("log_reboot_cancelled_no_loader")
+                    ));
                     return Task::none();
                 };
                 // Accept direct loader files. Legacy folder paths from
@@ -7245,10 +7254,12 @@ impl App {
                 self.begin_op(View::Reboot);
                 self.error_msg = None;
                 self.log_push(format!(
-                    "[Reboot] → {} (from EDL, loader={})",
-                    self.t(target.label_key()),
-                    loader.display(),
+                    "[Reboot] {}",
+                    self.t("log_reboot_target_from_edl")
+                        .replace("{target}", self.t(target.label_key()))
+                        .replace("{loader}", &loader.display().to_string()),
                 ));
+                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
@@ -7272,7 +7283,7 @@ impl App {
                                     ));
                                 }
                             }
-                            ltbox_core::live!(log, "[Reboot] Command sent");
+                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
                             Ok(log)
                         })
                         .await

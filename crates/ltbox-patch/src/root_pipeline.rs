@@ -150,7 +150,11 @@ fn resolve_nightly_run(
         Some(id) => {
             ltbox_core::live!(
                 log,
-                "[Nightly] {repo}: validating manual run id {id} against workflow {workflow_file} (branch {branch})"
+                "[Nightly] {repo}: {}",
+                tr("log_nightly_validating_manual")
+                    .replace("{id}", &id.to_string())
+                    .replace("{workflow}", workflow_file)
+                    .replace("{branch}", branch)
             );
             if !client.workflow_run_matches(id, workflow_file, Some(branch))? {
                 return Err(LtboxError::Patch(format!(
@@ -162,7 +166,10 @@ fn resolve_nightly_run(
         None => {
             ltbox_core::live!(
                 log,
-                "[Nightly] {repo}: auto-detecting latest successful run for {workflow_file} (branch {branch})"
+                "[Nightly] {repo}: {}",
+                tr("log_nightly_auto_detect")
+                    .replace("{workflow}", workflow_file)
+                    .replace("{branch}", branch)
             );
             client
                 .latest_successful_run(workflow_file, Some(branch))?
@@ -173,7 +180,11 @@ fn resolve_nightly_run(
                 })?
         }
     };
-    ltbox_core::live!(log, "[Nightly] {repo}: using run id {run_id}");
+    ltbox_core::live!(
+        log,
+        "[Nightly] {repo}: {}",
+        tr("log_nightly_using_run_id").replace("{id}", &run_id.to_string())
+    );
     Ok((repo, run_id))
 }
 
@@ -314,7 +325,13 @@ pub fn download_latest_magisk_apk(
             lower.ends_with(".apk") && !lower.contains("debug")
         })
         .ok_or_else(|| LtboxError::Download(format!("No release APK on latest {repo}")))?;
-    ltbox_core::live!(log, "[Magisk] Latest release: {tag} — asset {name}");
+    ltbox_core::live!(
+        log,
+        "[Magisk] {}",
+        tr("log_release_latest_asset")
+            .replace("{tag}", &tag)
+            .replace("{name}", &name)
+    );
     download_to_file(&url, dst_path, log)?;
     Ok(tag)
 }
@@ -368,7 +385,11 @@ fn fetch_nightly_apk_outer_zip(
         fs::remove_file(dst_apk).ok();
     }
     fs::rename(&apk_src, dst_apk).or_else(|_| fs::copy(&apk_src, dst_apk).map(|_| ()))?;
-    ltbox_core::live!(log, "[{log_tag}] staged nightly APK: {}", dst_apk.display());
+    ltbox_core::live!(
+        log,
+        "[{log_tag}] {}",
+        tr("log_staged_nightly_apk").replace("{path}", &dst_apk.display().to_string())
+    );
     Ok(())
 }
 
@@ -411,7 +432,11 @@ pub fn download_magisk_apk_nightly(
                 "{repo} run {run_id}: no release APK artifact (got {artifact_names:?})"
             ))
         })?;
-    ltbox_core::live!(log, "[Magisk] {repo} nightly artifact: {artifact_name}");
+    ltbox_core::live!(
+        log,
+        "[Magisk] {repo} {}",
+        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
+    );
     fetch_nightly_apk_outer_zip(
         "Magisk",
         repo,
@@ -444,9 +469,10 @@ fn extract_kpimg_from_apk(
     std::io::copy(&mut entry, &mut out)?;
     ltbox_core::live!(
         log,
-        "[APatch] extracted assets/kpimg → {} ({} bytes)",
-        kpimg_dst.display(),
-        size
+        "[APatch] {}",
+        tr("log_apatch_extracted_kpimg")
+            .replace("{path}", &kpimg_dst.display().to_string())
+            .replace("{bytes}", &size.to_string())
     );
     Ok(())
 }
@@ -469,7 +495,13 @@ pub fn download_apatch_payload(
         .into_iter()
         .find(|(n, _)| n.to_lowercase().ends_with(".apk"))
         .ok_or_else(|| LtboxError::Download(format!("No release APK on latest {repo}")))?;
-    ltbox_core::live!(log, "[APatch] {repo} latest: {tag} — asset {name}");
+    ltbox_core::live!(
+        log,
+        "[APatch] {repo} {}",
+        tr("log_release_latest_asset")
+            .replace("{tag}", &tag)
+            .replace("{name}", &name)
+    );
 
     let apk_path = work_dir.join("apatch.apk");
     download_to_file(&url, &apk_path, log)?;
@@ -517,7 +549,11 @@ pub fn download_apatch_payload_nightly(
                 "{repo} run {run_id}: no matching artifact for prefix {prefix:?}"
             ))
         })?;
-    ltbox_core::live!(log, "[APatch] {repo} nightly artifact: {artifact_name}");
+    ltbox_core::live!(
+        log,
+        "[APatch] {repo} {}",
+        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
+    );
     // Canonical apk path so Stable / Nightly share downstream steps.
     let apk_path = work_dir.join("apatch.apk");
     fetch_nightly_apk_outer_zip(
@@ -575,8 +611,10 @@ fn extract_first_apk_from_zip(
     std::io::copy(&mut entry, &mut out)?;
     ltbox_core::live!(
         log,
-        "[{log_tag}] extracted manager APK {member_name} -> {}",
-        output_path.display()
+        "[{log_tag}] {}",
+        tr("log_extracted_manager_apk")
+            .replace("{member}", &member_name)
+            .replace("{path}", &output_path.display().to_string())
     );
     Ok(true)
 }
@@ -595,8 +633,8 @@ fn stage_manager_from_downloaded_asset(
         copy_apk_to(asset_path, manager_apk)?;
         ltbox_core::live!(
             log,
-            "[{log_tag}] staged manager APK: {}",
-            manager_apk.display()
+            "[{log_tag}] {}",
+            tr("log_staged_manager_apk").replace("{path}", &manager_apk.display().to_string())
         );
         return Ok(());
     }
@@ -624,7 +662,13 @@ fn download_ksu_manager_apk_stable(
     let (tag, assets) = client.latest_release_assets()?;
     let (name, url) = select_manager_asset(&assets, ksu_manager_stable_preferences(provider))
         .ok_or_else(|| LtboxError::Download(format!("No manager APK artifact on latest {repo}")))?;
-    ltbox_core::live!(log, "[KSU] {repo} manager: {tag} -> {name}");
+    ltbox_core::live!(
+        log,
+        "[KSU] {repo} {}",
+        tr("log_release_latest_asset")
+            .replace("{tag}", &tag)
+            .replace("{name}", &name)
+    );
     let asset_path = work_dir.join(&name);
     download_to_file(&url, &asset_path, log)?;
     stage_manager_from_downloaded_asset(&asset_path, manager_apk, "KSU", log)?;
@@ -655,7 +699,8 @@ fn download_ksu_manager_apk_nightly(
         )?;
     ltbox_core::live!(
         log,
-        "[KSU] {repo} nightly manager artifact: {artifact_name}"
+        "[KSU] {repo} {}",
+        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
     );
     fetch_nightly_apk_outer_zip(
         "KSU",
@@ -688,10 +733,7 @@ pub fn stage_root_manager_apk(
         return if extract_first_apk_from_zip(kernel_zip, &manager_apk, "GKI", log)? {
             Ok(Some(manager_apk))
         } else {
-            ltbox_core::live!(
-                log,
-                "[GKI] No manager APK found in kernel zip; skipping auto-install"
-            );
+            ltbox_core::live!(log, "[GKI] {}", tr("log_gki_no_manager_apk"));
             Ok(None)
         };
     }
@@ -705,8 +747,9 @@ pub fn stage_root_manager_apk(
                 copy_apk_to(src, &manager_apk)?;
                 ltbox_core::live!(
                     log,
-                    "[Magisk] staged fork manager APK: {}",
-                    manager_apk.display()
+                    "[Magisk] {}",
+                    tr("log_magisk_staged_fork_apk")
+                        .replace("{path}", &manager_apk.display().to_string())
                 );
             }
             (_, RootVersion::Stable) => {
@@ -754,8 +797,8 @@ pub fn stage_root_manager_apk(
             copy_apk_to(&apk_path, &manager_apk)?;
             ltbox_core::live!(
                 log,
-                "[APatch] staged manager APK: {}",
-                manager_apk.display()
+                "[APatch] {}",
+                tr("log_staged_manager_apk").replace("{path}", &manager_apk.display().to_string())
             );
         }
     }
