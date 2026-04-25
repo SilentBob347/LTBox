@@ -1176,7 +1176,12 @@ fn phase_marker<S: AsRef<str>>(phase: usize, total: usize, label: S) -> String {
 
 /// Parse `N/M` out of a log line. Returns `N` (1-indexed).
 /// Shape stays stable across locales as long as a `digit/digit` token
-/// is present in the line.
+/// is present in the line — but rejects fractional pairs like
+/// `12.3/45.6 MB` from downloader progress ticks. Without that gate,
+/// every `5%` progress emit looked like a phase marker and yanked
+/// `current_op_step` to whatever digit landed next to the slash,
+/// making the wizard race through every phase mid-download and snap
+/// back when the next real `Phase N/M` line arrived.
 fn parse_phase_marker(line: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     for slash in 0..bytes.len() {
@@ -1195,6 +1200,15 @@ fn parse_phase_marker(line: &str) -> Option<usize> {
             rhs += 1;
         }
         if rhs == slash + 1 {
+            continue;
+        }
+        // Decimal-point guard: `1.2/3.4 MB` digits-adjacent-to-slash
+        // are fragments of floats, not phase counters. Reject when
+        // either side touches a `.` instead of a separator.
+        if lhs > 0 && bytes[lhs - 1] == b'.' {
+            continue;
+        }
+        if rhs < bytes.len() && bytes[rhs] == b'.' {
             continue;
         }
         return line[lhs..slash].parse::<usize>().ok();
@@ -5195,6 +5209,7 @@ impl App {
                             use ltbox_patch::root_pipeline::{
                                 RootFamily, RootPipelineConfig, RootProvider, RootVersion,
                                 build_patched_artifacts, stage_root_manager_apk,
+                                stage_root_payload,
                             };
 
                             let pipe_family = match family {
@@ -5336,13 +5351,20 @@ impl App {
                                 },
                                 nightly_run_id,
                             };
-                            // Phase 2/7 — Download root files (manager APK +
-                            // for KSU LKM the .ko / ksuinit live in
-                            // build_patched_artifacts a couple phases later,
-                            // but the initial download burst happens here).
+                            // Phase 2/7 — Download EVERY root file before
+                            // EDL: manager APK + per-family payload
+                            // (Magisk APK extract / KSU `.ko`+`init` /
+                            // APatch APK→kpimg). Used to split the .ko +
+                            // ksuinit fetch into Phase 5; that hid a
+                            // multi-second network stall behind a
+                            // "patching" label and blocked the user
+                            // from copying the device serial. Single
+                            // download burst now, then offline patch.
                             live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
                             let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
                                 .map_err(|e| format!("Manager APK: {e}"))?;
+                            stage_root_payload(&manager_cfg, &mut log)
+                                .map_err(|e| format!("Root payload: {e}"))?;
                             let manager_installed_pre_edl = if adb_ready_at_start {
                                 if let Some(path) = manager_apk.as_ref() {
                                     install_root_manager_apk(path, &mut log)?;
@@ -5445,11 +5467,11 @@ impl App {
                                 // the post-patch open gets a fresh handle.
                             }
 
-                            // Phase 5/7 — Patch boot image (was Phase 3/6).
-                            // For KSU LKM this also triggers payload
-                            // (`.ko`+`ksuinit`) download inside
-                            // build_patched_artifacts, plus AVB resign +
-                            // vbmeta rebuild.
+                            // Phase 5/7 — Offline patch + AVB resign +
+                            // vbmeta rebuild. Network downloads moved
+                            // up to Phase 2; this step never touches
+                            // the network so progress now matches the
+                            // "patching" label.
                             live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
 
                             let cfg = RootPipelineConfig {
@@ -5525,7 +5547,22 @@ impl App {
                             Ok(())
                             })();
                             match device_phase_result {
-                                Ok(()) => Ok(log),
+                                Ok(()) => {
+                                    // Success path only: drop the
+                                    // `AppData\Roaming\ltbox\root`
+                                    // staging tree (work_dir + out)
+                                    // so a stale ~30 MB Magisk APK +
+                                    // dumped boot/vbmeta blobs from a
+                                    // previous run don't accumulate
+                                    // on disk indefinitely. On error
+                                    // we KEEP it — having the dumped
+                                    // stock images, downloaded payload
+                                    // and intermediate patched files
+                                    // around makes post-mortem
+                                    // debugging tractable.
+                                    let _ = std::fs::remove_dir_all(&base);
+                                    Ok(log)
+                                }
                                 Err(e) => {
                                     // Best-effort: open a fresh session on the same
                                     // loader and ask the device to boot. `reset_tolerant`
@@ -13188,6 +13225,45 @@ mod tests {
     fn unknown_key_falls_back_to_itself() {
         let t = Translations::load(Language::En);
         assert_eq!(t.t("__no_such_key__"), "__no_such_key__");
+    }
+
+    // ---- parse_phase_marker decimal-point guard ----------------------
+    //
+    // Regression: downloader progress emits e.g.
+    // `[dl] kernelsu.ko [████····]  45% (1.2/2.7 MB, 0.5 MB/s)`.
+    // Old `parse_phase_marker` saw the `2/2` digits adjacent to the
+    // slash and yanked the wizard's `current_op_step` to phase 2 (or
+    // worse for `12.3/45.6 MB` which yields `3/4`). On every 5%
+    // bucket the wizard raced through phases mid-download then
+    // snapped back when the next real `Phase N/M` line arrived.
+    // These tests pin the new decimal-point sidestep.
+
+    #[test]
+    fn phase_marker_real_phase_line_parses() {
+        assert_eq!(parse_phase_marker("[Root] Phase 3/7 — Reboot"), Some(3));
+        assert_eq!(parse_phase_marker("[Root] 단계 5/7 — 부트 패치"), Some(5),);
+    }
+
+    #[test]
+    fn phase_marker_decimal_progress_rejected() {
+        // Both sides surrounded by dots — clear float pair.
+        assert_eq!(
+            parse_phase_marker("[dl] kernelsu.ko 45% (12.3/45.6 MB, 0.5 MB/s)"),
+            None,
+        );
+        // Left side decimal only (`.2` before slash).
+        assert_eq!(
+            parse_phase_marker("[dl] manager.apk 45% (1.2/2.7 MB)"),
+            None,
+        );
+        // Right side decimal only (`5.` after slash digit).
+        assert_eq!(parse_phase_marker("[dl] file 12/5.6 MB"), None,);
+    }
+
+    #[test]
+    fn phase_marker_no_slash_returns_none() {
+        assert_eq!(parse_phase_marker("[Root] Manager APK installed"), None);
+        assert_eq!(parse_phase_marker("[dl] file 45%"), None);
     }
 
     // Wizard state-machine tests ------------------------------------------

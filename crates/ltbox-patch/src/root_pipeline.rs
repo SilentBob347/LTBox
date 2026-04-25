@@ -1132,6 +1132,115 @@ pub fn download_ksu_payload_nightly(
     Ok(run_id)
 }
 
+/// Pre-fetch every per-family root payload into `cfg.work_dir` so the
+/// long network steps live in Phase 2 (before the EDL reboot)
+/// alongside the manager APK download. The GUI calls this back-to-back
+/// with [`stage_root_manager_apk`] before transitioning to EDL —
+/// `build_patched_artifacts` then runs offline.
+///
+/// Idempotent on the per-family payload files we own:
+/// * Magisk: `magisk.apk` + extracted `magiskinit` / `magisk` / etc.
+/// * KSU LKM: `kernelsu.ko` + `init`.
+/// * APatch: handled by [`stage_root_manager_apk`] (downloads the APK
+///   and extracts `kpimg` in one shot), so we no-op here.
+/// * GKI: AnyKernel3 zip is the user's input, no fetch needed.
+pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Result<()> {
+    fs::create_dir_all(&cfg.work_dir)?;
+    if cfg.gki_mode {
+        return Ok(());
+    }
+    match cfg.family {
+        RootFamily::Magisk => {
+            // Skip if already extracted from a prior call.
+            if cfg.work_dir.join("magiskinit").exists() {
+                return Ok(());
+            }
+            let apk_path = cfg.work_dir.join("magisk.apk");
+            let manager_apk = cfg.work_dir.join("manager.apk");
+            // Reuse stage_root_manager_apk's bytes when available
+            // — saves a duplicate ~10 MB fetch in the common path.
+            if !apk_path.exists() {
+                if matches!(cfg.provider, RootProvider::MagiskFork) {
+                    let src = cfg.magisk_forks_apk.as_ref().ok_or_else(|| {
+                        LtboxError::Patch("Magisk forks require a local APK — none supplied".into())
+                    })?;
+                    if !src.exists() {
+                        return Err(LtboxError::Patch(format!(
+                            "Magisk forks APK does not exist: {}",
+                            src.display()
+                        )));
+                    }
+                    fs::copy(src, &apk_path)
+                        .map_err(|e| LtboxError::Patch(format!("stage forks APK: {e}")))?;
+                } else if manager_apk.exists() {
+                    fs::copy(&manager_apk, &apk_path).map_err(|e| {
+                        LtboxError::Patch(format!("magisk.apk copy from manager.apk: {e}"))
+                    })?;
+                } else {
+                    match cfg.version {
+                        RootVersion::Stable => {
+                            download_latest_magisk_apk(cfg.provider, &apk_path, log)?;
+                        }
+                        RootVersion::Nightly => {
+                            download_magisk_apk_nightly(
+                                cfg.provider,
+                                cfg.nightly_run_id,
+                                &cfg.work_dir,
+                                &apk_path,
+                                log,
+                            )?;
+                        }
+                    }
+                }
+            }
+            live!(
+                log,
+                "[Magisk] Extracting payload from APK (magisk, magiskinit, init-ld, stub.apk)"
+            );
+            magisk::extract_apk_payload(&apk_path, &cfg.work_dir)?;
+        }
+        RootFamily::KernelSU => {
+            // Skip if both files already on disk from a prior call.
+            let ko = cfg.work_dir.join("kernelsu.ko");
+            let init = cfg.work_dir.join("init");
+            if ko.exists() && init.exists() {
+                return Ok(());
+            }
+            match cfg.version {
+                RootVersion::Stable => {
+                    live!(log, "[KSU] Fetching latest Stable LKM zip from GitHub…");
+                    download_ksu_payload(
+                        cfg.provider,
+                        cfg.kernel_version.as_deref(),
+                        &cfg.work_dir,
+                        log,
+                    )?;
+                }
+                RootVersion::Nightly => {
+                    live!(
+                        log,
+                        "[KSU] Fetching Nightly payload (run_id={:?})…",
+                        cfg.nightly_run_id
+                    );
+                    download_ksu_payload_nightly(
+                        cfg.provider,
+                        cfg.kernel_version.as_deref(),
+                        cfg.nightly_run_id,
+                        &cfg.work_dir,
+                        log,
+                    )?;
+                }
+            }
+        }
+        RootFamily::APatch => {
+            // stage_root_manager_apk for APatch already downloads the
+            // APK and extracts kpimg via download_apatch_payload — no
+            // additional payload fetch needed here.
+        }
+    }
+    Ok(())
+}
+
 /// Offline pipeline outcome — everything before the EDL flash step.
 pub struct PatchedArtifacts {
     pub patched_boot: PathBuf,
@@ -1172,9 +1281,16 @@ pub fn build_patched_artifacts(
             "work_dir is missing the stock vbmeta.img dump".into(),
         ));
     }
+    // Defensive: GUI Phase 2 prefetches the manager APK + payload
+    // before EDL, but headless callers (and the stable test
+    // surface) shouldn't have to remember the order. Both helpers
+    // are idempotent against already-staged files.
     let staged_manager_apk = cfg.work_dir.join("manager.apk");
     if !cfg.gki_mode && !staged_manager_apk.exists() {
         stage_root_manager_apk(cfg, log)?;
+    }
+    if !cfg.gki_mode {
+        stage_root_payload(cfg, log)?;
     }
 
     let patched_boot = if cfg.gki_mode {
@@ -1187,82 +1303,10 @@ pub fn build_patched_artifacts(
     } else {
         match cfg.family {
             RootFamily::Magisk => {
-                let apk_path = cfg.work_dir.join("magisk.apk");
-                match (cfg.provider, cfg.version) {
-                    (RootProvider::MagiskFork, _) => {
-                        let src = cfg.magisk_forks_apk.as_ref().ok_or_else(|| {
-                            LtboxError::Patch(
-                                "Magisk forks require a local APK — none supplied".into(),
-                            )
-                        })?;
-                        if !src.exists() {
-                            return Err(LtboxError::Patch(format!(
-                                "Magisk forks APK does not exist: {}",
-                                src.display()
-                            )));
-                        }
-                        live!(
-                            log,
-                            "[Magisk] Staging user-supplied forks APK: {}",
-                            src.display()
-                        );
-                        fs::copy(src, &apk_path).map_err(|e| {
-                            LtboxError::Patch(format!("Failed to stage forks APK: {e}"))
-                        })?;
-                    }
-                    (_, RootVersion::Stable) => {
-                        live!(log, "[Magisk] Fetching latest APK from topjohnwu/Magisk…");
-                        download_latest_magisk_apk(cfg.provider, &apk_path, log)?;
-                    }
-                    (_, RootVersion::Nightly) => {
-                        live!(
-                            log,
-                            "[Magisk] Fetching Nightly APK (run_id={:?}) from topjohnwu/Magisk…",
-                            cfg.nightly_run_id
-                        );
-                        download_magisk_apk_nightly(
-                            cfg.provider,
-                            cfg.nightly_run_id,
-                            &cfg.work_dir,
-                            &apk_path,
-                            log,
-                        )?;
-                    }
-                }
-                live!(
-                    log,
-                    "[Magisk] Extracting payload from APK (magisk, magiskinit, init-ld, stub.apk)"
-                );
-                magisk::extract_apk_payload(&apk_path, &cfg.work_dir)?;
                 live!(log, "[Magisk] Patching init_boot.img ramdisk…");
                 magisk::patch_init_boot(&cfg.work_dir, &cfg.preinit_device, log)?
             }
             RootFamily::KernelSU => {
-                match cfg.version {
-                    RootVersion::Stable => {
-                        live!(log, "[KSU] Fetching latest Stable LKM zip from GitHub…");
-                        download_ksu_payload(
-                            cfg.provider,
-                            cfg.kernel_version.as_deref(),
-                            &cfg.work_dir,
-                            log,
-                        )?;
-                    }
-                    RootVersion::Nightly => {
-                        live!(
-                            log,
-                            "[KSU] Fetching Nightly payload (run_id={:?})…",
-                            cfg.nightly_run_id
-                        );
-                        download_ksu_payload_nightly(
-                            cfg.provider,
-                            cfg.kernel_version.as_deref(),
-                            cfg.nightly_run_id,
-                            &cfg.work_dir,
-                            log,
-                        )?;
-                    }
-                }
                 live!(
                     log,
                     "[KSU] Patching init_boot.img — swapping init + staging kernelsu.ko…"
@@ -1270,25 +1314,6 @@ pub fn build_patched_artifacts(
                 ksu::patch_init_boot(&cfg.work_dir, log)?
             }
             RootFamily::APatch => {
-                match cfg.version {
-                    RootVersion::Stable => {
-                        live!(log, "[APatch] Fetching Stable APK + extracting kpimg…");
-                        download_apatch_payload(cfg.provider, &cfg.work_dir, log)?;
-                    }
-                    RootVersion::Nightly => {
-                        live!(
-                            log,
-                            "[APatch] Fetching Nightly artifact (run_id={:?}) + extracting kpimg…",
-                            cfg.nightly_run_id
-                        );
-                        download_apatch_payload_nightly(
-                            cfg.provider,
-                            cfg.nightly_run_id,
-                            &cfg.work_dir,
-                            log,
-                        )?;
-                    }
-                }
                 live!(
                     log,
                     "[APatch] Patching boot.img via kptools-rs (kpm_count={}, superkey_len={})",
