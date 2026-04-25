@@ -221,19 +221,32 @@ mod tests {
     /// pristine stock images. The fix narrows the check to
     /// `preset_offset.is_some()`, the actual patched-state marker.
     ///
-    /// This test pulls the real TB322 stock `boot.img` sitting next to
-    /// the LTBox repo, extracts its kernel, and asserts the patch-info
-    /// parser reports `preset_offset = None`. Gated behind `#[ignore]`
-    /// so CI (which doesn't ship the firmware) skips it; run locally
-    /// with `cargo test -p ltbox-patch -- --ignored tb322`.
+    /// This test asserts the patch-info parser reports
+    /// `preset_offset = None` on a known-pristine boot image. The image
+    /// path is supplied via the `LTBOX_TEST_PRISTINE_BOOT_IMG`
+    /// environment variable so no developer-local path lives in the
+    /// source tree. Gated behind `#[ignore]` so CI (which doesn't ship
+    /// firmware) skips it. Run locally with
+    ///
+    ///     LTBOX_TEST_PRISTINE_BOOT_IMG=/path/to/boot.img \
+    ///         cargo test -p ltbox-patch -- --ignored tb322
+    ///
+    /// (or `set LTBOX_TEST_PRISTINE_BOOT_IMG=...` on Windows cmd, or
+    /// `$env:LTBOX_TEST_PRISTINE_BOOT_IMG="..."` in PowerShell.)
+    /// See `ObsidianVault/05_Agent_Onboarding.md` for the full env-var
+    /// list.
     #[test]
-    #[ignore = "requires D:/Git/Project-LTBOX/TB322_ZUXOS_1.5.10.183/boot.img"]
-    fn tb322_pristine_boot_not_flagged_as_patched() {
-        let boot_img =
-            std::path::PathBuf::from("D:/Git/Project-LTBOX/TB322_ZUXOS_1.5.10.183/boot.img");
+    #[ignore = "needs LTBOX_TEST_PRISTINE_BOOT_IMG=/path/to/boot.img"]
+    fn pristine_boot_not_flagged_as_patched() {
+        let env_key = "LTBOX_TEST_PRISTINE_BOOT_IMG";
+        let Some(boot_img) = std::env::var_os(env_key).map(std::path::PathBuf::from) else {
+            panic!(
+                "{env_key} not set — point it at a known-pristine boot.img and re-run; \
+                 see ObsidianVault/05_Agent_Onboarding.md"
+            );
+        };
         if !boot_img.exists() {
-            eprintln!("skipping — fixture missing: {}", boot_img.display());
-            return;
+            panic!("{env_key} = {} does not exist on disk", boot_img.display());
         }
         let tmp = tempfile::tempdir().unwrap();
         let kernel = tmp.path().join("kernel.ori");
@@ -243,7 +256,7 @@ mod tests {
             kptools::patch::parse_image_patch_info(&bytes).expect("pristine kernel parses cleanly");
         assert!(
             info.preset_offset.is_none(),
-            "pristine TB322 kernel should report preset_offset=None, got {:?}",
+            "pristine kernel should report preset_offset=None, got {:?}",
             info.preset_offset
         );
     }
