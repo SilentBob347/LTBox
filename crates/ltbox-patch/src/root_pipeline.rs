@@ -367,14 +367,14 @@ fn fetch_nightly_apk_outer_zip(
             .map_err(|e| LtboxError::Patch(format!("{repo}: extract nightly zip: {e}")))?;
     }
 
-    let apk_src = fs::read_dir(&staging)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| {
-            p.extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| x.eq_ignore_ascii_case("apk"))
-        })
+    // Walk the extracted artifact recursively — some providers nest
+    // their APK under `<artifact>/manager/`, `<arch>/`, or
+    // `app-release-arm64-v8a/`. Old non-recursive `read_dir` skipped
+    // those and reported "no .apk found after extract".
+    let mut apk_candidates: Vec<PathBuf> = Vec::new();
+    collect_apks_recursive(&staging, &mut apk_candidates);
+    let apk_src = pick_preferred_apk_path(&apk_candidates)
+        .cloned()
         .ok_or_else(|| {
             LtboxError::Patch(format!(
                 "{repo} nightly artifact {artifact_name}: no .apk found after extract"
@@ -578,6 +578,62 @@ fn copy_apk_to(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Recursive .apk hunt — extracted nightly artifacts often nest the
+/// APK inside `<artifact>/manager/` or `arm64-v8a/`. `read_dir` alone
+/// missed those entries and the wizard reported "no .apk found".
+fn collect_apks_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_apks_recursive(&path, out);
+        } else if path
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x.eq_ignore_ascii_case("apk"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// Pick the most-likely-to-install APK from a candidate list. Tier 1
+/// prefers `arm64-v8a` (LTBox-supported devices are arm64); Tier 2
+/// falls back to any non-debug variant; Tier 3 surrenders and returns
+/// whatever's first. Used by both the recursive filesystem path and
+/// the in-zip member-name path so the selection rule is consistent
+/// across the staging shapes the various providers ship.
+fn apk_preference_score(name_lower: &str) -> u8 {
+    if name_lower.contains("arm64-v8a")
+        || name_lower.contains("arm64")
+        || name_lower.contains("v8a")
+    {
+        return 3;
+    }
+    if name_lower.contains("debug") {
+        return 0;
+    }
+    if name_lower.contains("release") {
+        return 2;
+    }
+    1
+}
+
+fn pick_preferred_apk_path(paths: &[PathBuf]) -> Option<&PathBuf> {
+    paths.iter().max_by_key(|p| {
+        let s = p.to_string_lossy().to_lowercase();
+        apk_preference_score(&s)
+    })
+}
+
+fn pick_preferred_apk_name(names: &[String]) -> Option<&String> {
+    names
+        .iter()
+        .max_by_key(|n| apk_preference_score(&n.to_lowercase()))
+}
+
 fn extract_first_apk_from_zip(
     archive_path: &Path,
     output_path: &Path,
@@ -591,11 +647,16 @@ fn extract_first_apk_from_zip(
             archive_path.display()
         ))
     })?;
-    let member_name = archive
+    // Pick `arm64-v8a` over generic / debug / x86 variants when the
+    // container ships multiple split APKs (release ZIPs from KSU
+    // family + ReSukiSU look like that). Falls back to first non-debug
+    // APK, then the first APK at all.
+    let member_names: Vec<String> = archive
         .file_names()
-        .find(|n| n.to_lowercase().ends_with(".apk") && !n.ends_with('/'))
-        .map(|s| s.to_string());
-    let Some(member_name) = member_name else {
+        .filter(|n| n.to_lowercase().ends_with(".apk") && !n.ends_with('/'))
+        .map(|s| s.to_string())
+        .collect();
+    let Some(member_name) = pick_preferred_apk_name(&member_names).cloned() else {
         return Ok(false);
     };
     let mut entry = archive.by_name(&member_name).map_err(|e| {
@@ -1318,9 +1379,71 @@ pub fn build_patched_artifacts(
 #[cfg(test)]
 mod tests {
     use super::{
-        ksu_ko_kver_matches, normalize_ksu_kernel_version, select_ksu_nightly_ko_artifact,
+        apk_preference_score, ksu_ko_kver_matches, normalize_ksu_kernel_version,
+        pick_preferred_apk_name, pick_preferred_apk_path, select_ksu_nightly_ko_artifact,
         select_ksu_release_ko_asset, select_manager_asset,
     };
+    use std::path::PathBuf;
+
+    #[test]
+    fn apk_preference_arm64_v8a_wins() {
+        let names = vec![
+            "app-x86-release.apk".to_string(),
+            "app-arm64-v8a-release.apk".to_string(),
+            "app-armeabi-v7a-release.apk".to_string(),
+        ];
+        assert_eq!(
+            pick_preferred_apk_name(&names).map(|s| s.as_str()),
+            Some("app-arm64-v8a-release.apk")
+        );
+    }
+
+    #[test]
+    fn apk_preference_release_beats_debug() {
+        let names = vec!["app-debug.apk".to_string(), "app-release.apk".to_string()];
+        assert_eq!(
+            pick_preferred_apk_name(&names).map(|s| s.as_str()),
+            Some("app-release.apk")
+        );
+    }
+
+    #[test]
+    fn apk_preference_falls_back_to_first_when_no_hints() {
+        let names = vec!["foo.apk".to_string(), "bar.apk".to_string()];
+        // Both score 1, max_by_key returns the last on ties — accept either
+        // since neither carries an arm64/release/debug hint.
+        let pick = pick_preferred_apk_name(&names).unwrap();
+        assert!(names.contains(pick));
+    }
+
+    #[test]
+    fn apk_preference_no_candidates_returns_none() {
+        let empty: Vec<String> = Vec::new();
+        assert!(pick_preferred_apk_name(&empty).is_none());
+    }
+
+    #[test]
+    fn apk_preference_path_picks_arm64_v8a_in_subdir() {
+        let paths = vec![
+            PathBuf::from("staging/app-debug.apk"),
+            PathBuf::from("staging/manager/arm64-v8a/app-release.apk"),
+            PathBuf::from("staging/manager/x86/app-release.apk"),
+        ];
+        assert_eq!(
+            pick_preferred_apk_path(&paths),
+            Some(&PathBuf::from("staging/manager/arm64-v8a/app-release.apk"))
+        );
+    }
+
+    #[test]
+    fn apk_preference_score_orders_correctly() {
+        assert!(
+            apk_preference_score("app-arm64-v8a-release.apk")
+                > apk_preference_score("app-release.apk")
+        );
+        assert!(apk_preference_score("app-release.apk") > apk_preference_score("app-debug.apk"));
+        assert!(apk_preference_score("app-release.apk") > apk_preference_score("foo.apk"));
+    }
 
     #[test]
     fn exact_major_minor_matches() {
