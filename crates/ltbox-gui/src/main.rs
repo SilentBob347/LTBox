@@ -2440,7 +2440,7 @@ fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
 /// can't carry `self` across thread boundaries.
 #[derive(Debug, Clone)]
 struct LiveLabels {
-    op_root_phase: [String; 6],
+    op_root_phase: [String; 7],
     op_unroot_phase: [String; 3],
     op_flash_phase: [String; 4],
     closing_dump: String,
@@ -3164,7 +3164,11 @@ impl App {
         self.log_separator(Some(&label));
     }
 
-    /// 6-phase Root flow (Phase 1/6 → 6/6).
+    /// 7-phase Root flow (Phase 1/7 → 7/7). Reorganised so the
+    /// long-running download steps surface as their own phases instead
+    /// of hiding under a generic "patch" label, and short tail
+    /// transitions (re-sign, post-flash reboot) ride along with the
+    /// adjacent step they pair with.
     fn derive_root_op_steps(&self) -> Vec<OpStep> {
         [
             "op_root_phase_1",
@@ -3173,6 +3177,7 @@ impl App {
             "op_root_phase_4",
             "op_root_phase_5",
             "op_root_phase_6",
+            "op_root_phase_7",
         ]
         .iter()
         .map(|k| OpStep {
@@ -3206,6 +3211,7 @@ impl App {
                 t("op_root_phase_4"),
                 t("op_root_phase_5"),
                 t("op_root_phase_6"),
+                t("op_root_phase_7"),
             ],
             op_unroot_phase: [
                 t("op_unroot_phase_1"),
@@ -5255,6 +5261,10 @@ impl App {
                             std::fs::create_dir_all(&output_dir)
                                 .map_err(|e| format!("out dir: {e}"))?;
 
+                            // Phase 1/7 — ADB connect + slot/kver detect.
+                            // Front-loaded so the user sees something happen
+                            // before the long manager-APK / payload download.
+                            live!(log, "[Root] {}", phase_marker(1, 7, &ll.op_root_phase[0]));
                             // Must run before EDL — ADB vanishes past 9008.
                             // KernelSU stable picks `.ko` by kernel MAJOR.MINOR.PATCH.
                             let mut slot_suffix = String::new();
@@ -5326,6 +5336,11 @@ impl App {
                                 },
                                 nightly_run_id,
                             };
+                            // Phase 2/7 — Download root files (manager APK +
+                            // for KSU LKM the .ko / ksuinit live in
+                            // build_patched_artifacts a couple phases later,
+                            // but the initial download burst happens here).
+                            live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
                             let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
                                 .map_err(|e| format!("Manager APK: {e}"))?;
                             let manager_installed_pre_edl = if adb_ready_at_start {
@@ -5348,7 +5363,8 @@ impl App {
                             // reference so both the success and failure paths still
                             // see the accumulated lines.
                             let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
-                            live!(log, "[Root] {}", phase_marker(1, 6, &ll.op_root_phase[0]));
+                            // Phase 3/7 — Reboot to EDL (was Phase 1/6).
+                            live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
                             transition_to_edl(&ll, &mut log)?;
 
                             // Partition naming: `boot{_a|_b}` for GKI + APatch
@@ -5381,7 +5397,8 @@ impl App {
                                 vbmeta_primary,
                             );
 
-                            live!(log, "[Root] {}", phase_marker(2, 6, &ll.op_root_phase[1]));
+                            // Phase 4/7 — Read stock images (was Phase 2/6).
+                            live!(log, "[Root] {}", phase_marker(4, 7, &ll.op_root_phase[3]));
                             // Hoisted so Phase 6 can echo the path.
                             let exe_dir = std::env::current_exe()
                                 .ok()
@@ -5428,7 +5445,12 @@ impl App {
                                 // the post-patch open gets a fresh handle.
                             }
 
-                            live!(log, "[Root] {}", phase_marker(3, 6, &ll.op_root_phase[2]));
+                            // Phase 5/7 — Patch boot image (was Phase 3/6).
+                            // For KSU LKM this also triggers payload
+                            // (`.ko`+`ksuinit`) download inside
+                            // build_patched_artifacts, plus AVB resign +
+                            // vbmeta rebuild.
+                            live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
 
                             let cfg = RootPipelineConfig {
                                 family: pipe_family,
@@ -5456,9 +5478,11 @@ impl App {
                             if manager_apk.is_none() {
                                 manager_apk = artifacts.manager_apk.clone();
                             }
-                            live!(log, "[Root] {}", phase_marker(4, 6, &ll.op_root_phase[3]));
-
-                            live!(log, "[Root] {}", phase_marker(5, 6, &ll.op_root_phase[4]));
+                            // Phase 6/7 — Write patched images (was Phase
+                            // 5/6). Old standalone Phase 4 marker dropped
+                            // since there was no real work between it and
+                            // flash open — collapsed into this one phase.
+                            live!(log, "[Root] {}", phase_marker(6, 7, &ll.op_root_phase[5]));
                             let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
                                 .map_err(|e| format!("EDL session (flash): {e}"))?;
                             // Mirror of the equivalent one-shot `qdl-rs
@@ -5474,7 +5498,8 @@ impl App {
                                     .map_err(|e| format!("Flash {vbmeta_primary}: {e}"))?;
                             }
                             println!();
-                            live!(log, "[Root] {}", phase_marker(6, 6, &ll.op_root_phase[5]));
+                            // Phase 7/7 — Reboot to system (was Phase 6/6).
+                            live!(log, "[Root] {}", phase_marker(7, 7, &ll.op_root_phase[6]));
                             // Surface the backup folder before the reset
                             // so the user doesn't have to scroll.
                             if backup_dir.exists() {
