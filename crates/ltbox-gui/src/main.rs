@@ -3409,7 +3409,17 @@ impl App {
     /// progress" reads awkwardly — partition Read / Write should say
     /// "Reading partition…" / "Writing partition…" directly. Returns
     /// `None` so the caller falls back to the templated body.
+    ///
+    /// Gated on `busy_view == Advanced` so a stale `dump_parts_open` /
+    /// `flash_parts_open` flag (the wizards stay mounted under the
+    /// scrim while the op runs and only clear on `start_over`) doesn't
+    /// hijack an unrelated busy dialog — e.g. the EDL → System reboot
+    /// from the Reboot menu was rendering "Reading partition…" because
+    /// the user had a DumpParts session still open underneath.
     fn busy_body_override(&self) -> Option<String> {
+        if self.busy_view != Some(View::Advanced) {
+            return None;
+        }
         if self.dump_parts_open {
             return Some(self.t("busy_partition_read").to_string());
         }
