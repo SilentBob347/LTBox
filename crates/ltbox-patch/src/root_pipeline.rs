@@ -912,12 +912,26 @@ fn select_ksu_release_ko_asset(
 }
 
 fn select_ksu_nightly_ko_artifact(artifact_names: &[String], kver: &str) -> Option<String> {
+    // Nightly artifact naming changed upstream: previous
+    // `<branch>-<kver>_kernelsu.ko` style is gone, current builds emit
+    // `<branch>-<kver>-lkm` (e.g. `android15-6.6-lkm`). Accept either
+    // shape so the path keeps working through the next inevitable
+    // rename, and for the same reason match on `-{kver}-lkm` (with
+    // trailing `-`/end-of-string sentinel) so `6.1` doesn't pull
+    // `6.10`/`6.11`/`6.12`.
     let want = kver.to_lowercase();
+    let lkm_marker = format!("-{want}-lkm");
     artifact_names
         .iter()
         .find(|n| {
             let lower = n.to_lowercase();
-            lower.contains("_kernelsu.ko") && ksu_ko_kver_matches(&lower, &want)
+            // Legacy: "*-{kver}_kernelsu.ko"
+            if lower.contains("_kernelsu.ko") && ksu_ko_kver_matches(&lower, &want) {
+                return true;
+            }
+            // Current: "android<api>-{kver}-lkm" (zip wrapper, real
+            // .ko inside).
+            lower.contains(&lkm_marker)
         })
         .cloned()
 }
@@ -1379,9 +1393,11 @@ pub fn build_patched_artifacts(
 #[cfg(test)]
 mod tests {
     use super::{
-        apk_preference_score, ksu_ko_kver_matches, normalize_ksu_kernel_version,
-        pick_preferred_apk_name, pick_preferred_apk_path, select_ksu_nightly_ko_artifact,
-        select_ksu_release_ko_asset, select_manager_asset,
+        RootProvider, apk_preference_score, download_ksu_manager_apk_nightly,
+        download_ksu_manager_apk_stable, download_ksu_payload, download_ksu_payload_nightly,
+        ksu_ko_kver_matches, normalize_ksu_kernel_version, pick_preferred_apk_name,
+        pick_preferred_apk_path, select_ksu_nightly_ko_artifact, select_ksu_release_ko_asset,
+        select_manager_asset,
     };
     use std::path::PathBuf;
 
@@ -1525,6 +1541,40 @@ mod tests {
     }
 
     #[test]
+    fn ksu_nightly_artifact_selection_picks_new_lkm_naming() {
+        // Real artifact list emitted by 2026 KernelSU / KSU-Next /
+        // SukiSU / ReSukiSU nightlies — bare `<branch>-<kver>-lkm`
+        // wrapper instead of the old `*_kernelsu.ko` filename.
+        let artifacts = vec![
+            "manager".to_string(),
+            "ksud-aarch64-linux-android".to_string(),
+            "android16-6.12-lkm".to_string(),
+            "android15-6.6-lkm".to_string(),
+            "android14-5.15-lkm".to_string(),
+            "android14-6.1-lkm".to_string(),
+            "android13-5.10-lkm".to_string(),
+            "ksuinit".to_string(),
+        ];
+
+        assert_eq!(
+            select_ksu_nightly_ko_artifact(&artifacts, "6.6"),
+            Some("android15-6.6-lkm".to_string())
+        );
+        assert_eq!(
+            select_ksu_nightly_ko_artifact(&artifacts, "5.15"),
+            Some("android14-5.15-lkm".to_string())
+        );
+        // 6.1 must not steal 6.10 / 6.11 / 6.12 — kver match anchors
+        // both sides via the surrounding `-` markers.
+        assert_eq!(
+            select_ksu_nightly_ko_artifact(&artifacts, "6.1"),
+            Some("android14-6.1-lkm".to_string())
+        );
+        // No 4.x in this artifact set.
+        assert_eq!(select_ksu_nightly_ko_artifact(&artifacts, "4.14"), None);
+    }
+
+    #[test]
     fn ksu_manager_asset_selection_prefers_provider_names() {
         let assets = vec![
             (
@@ -1544,5 +1594,242 @@ mod tests {
         let picked = select_manager_asset(&assets, &["manager-spoofed.zip", "manager.zip"])
             .expect("manager asset");
         assert_eq!(picked.0, "manager-spoofed.zip");
+    }
+
+    /// Network-dependent end-to-end probe of every LKM provider's
+    /// manager-APK fetch path (Stable + Nightly auto). Each iteration
+    /// uses an isolated tempdir so failures don't poison subsequent
+    /// runs. Marked `#[ignore]` so CI / `cargo test` skip it; run
+    /// locally with:
+    ///
+    ///     cargo test -p ltbox-patch --lib -- --ignored --nocapture lkm_manager_download_smoke
+    ///
+    /// Pass criteria per provider/channel:
+    /// 1. Function returns `Ok(_)`.
+    /// 2. `manager.apk` exists at the expected path.
+    /// 3. The file is non-empty (full APK download / extraction).
+    #[test]
+    #[ignore = "hits GitHub releases + nightly.link; run manually"]
+    fn lkm_manager_download_smoke() {
+        let providers: &[(RootProvider, &str)] = &[
+            (RootProvider::KernelSU, "tiann/KernelSU"),
+            (RootProvider::KernelSUNext, "KernelSU-Next/KernelSU-Next"),
+            (RootProvider::SukiSU, "SukiSU-Ultra/SukiSU-Ultra"),
+            (RootProvider::ReSukiSU, "ReSukiSU/ReSukiSU"),
+        ];
+
+        let mut report: Vec<(String, String)> = Vec::new();
+
+        for (provider, repo) in providers.iter().copied() {
+            // ----- Stable -----
+            let stable_label = format!("{repo} stable");
+            // ReSukiSU has no Stable releases — expect Err.
+            if matches!(provider, RootProvider::ReSukiSU) {
+                report.push((
+                    stable_label.clone(),
+                    "skipped (no Stable channel)".to_string(),
+                ));
+            } else {
+                let tmp = tempfile::tempdir().expect("tempdir");
+                let manager_apk = tmp.path().join("manager.apk");
+                let mut log = Vec::new();
+                let result =
+                    download_ksu_manager_apk_stable(provider, tmp.path(), &manager_apk, &mut log);
+                let outcome = match result {
+                    Ok(tag) => match (
+                        manager_apk.exists(),
+                        std::fs::metadata(&manager_apk)
+                            .map(|m| m.len())
+                            .unwrap_or(0),
+                    ) {
+                        (true, n) if n > 0 => format!("OK tag={tag} size={n}"),
+                        (true, _) => "FAIL: manager.apk empty".to_string(),
+                        (false, _) => "FAIL: manager.apk missing".to_string(),
+                    },
+                    Err(e) => format!("FAIL: {e}"),
+                };
+                eprintln!("[{stable_label}] {outcome}");
+                report.push((stable_label, outcome));
+            }
+
+            // ----- Nightly auto-detect -----
+            let nightly_label = format!("{repo} nightly");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let manager_apk = tmp.path().join("manager.apk");
+            let mut log = Vec::new();
+            let result = download_ksu_manager_apk_nightly(
+                provider,
+                None,
+                tmp.path(),
+                &manager_apk,
+                &mut log,
+            );
+            let outcome = match result {
+                Ok(run_id) => match (
+                    manager_apk.exists(),
+                    std::fs::metadata(&manager_apk)
+                        .map(|m| m.len())
+                        .unwrap_or(0),
+                ) {
+                    (true, n) if n > 0 => format!("OK run={run_id} size={n}"),
+                    (true, _) => "FAIL: manager.apk empty".to_string(),
+                    (false, _) => "FAIL: manager.apk missing".to_string(),
+                },
+                Err(e) => format!("FAIL: {e}"),
+            };
+            eprintln!("[{nightly_label}] {outcome}");
+            report.push((nightly_label, outcome));
+        }
+
+        eprintln!("\n=== LKM manager-APK download report ===");
+        for (label, outcome) in &report {
+            eprintln!("  {label}: {outcome}");
+        }
+        eprintln!();
+
+        let failures: Vec<&(String, String)> = report
+            .iter()
+            .filter(|(_, o)| o.starts_with("FAIL"))
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} provider/channel combinations failed: {:#?}",
+            failures.len(),
+            failures
+        );
+    }
+
+    /// Network-dependent probe for the full `download_ksu_payload`
+    /// path — `.ko` (kernel module) + `ksuinit` artifact extraction —
+    /// against kernel `6.6` for every KSU-family provider that ships
+    /// release artifacts.
+    ///
+    ///     cargo test -p ltbox-patch --lib -- --ignored --nocapture lkm_payload_download_smoke
+    #[test]
+    #[ignore = "hits GitHub releases + nightly.link; run manually"]
+    fn lkm_payload_download_smoke() {
+        const KVER: &str = "6.6";
+        let providers: &[(RootProvider, &str)] = &[
+            (RootProvider::KernelSU, "tiann/KernelSU"),
+            (RootProvider::KernelSUNext, "KernelSU-Next/KernelSU-Next"),
+            (RootProvider::SukiSU, "SukiSU-Ultra/SukiSU-Ultra"),
+        ];
+
+        let mut report: Vec<(String, String)> = Vec::new();
+
+        for (provider, repo) in providers.iter().copied() {
+            let label = format!("{repo} payload k{KVER}");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut log = Vec::new();
+            let result = download_ksu_payload(provider, Some(KVER), tmp.path(), &mut log);
+            let outcome = match result {
+                Ok(()) => {
+                    let ko = tmp.path().join("kernelsu.ko");
+                    let init = tmp.path().join("init");
+                    let ko_n = std::fs::metadata(&ko).map(|m| m.len()).unwrap_or(0);
+                    let init_n = std::fs::metadata(&init).map(|m| m.len()).unwrap_or(0);
+                    if ko.exists() && ko_n > 0 && init.exists() && init_n > 0 {
+                        format!("OK ko={ko_n} init={init_n}")
+                    } else {
+                        format!(
+                            "FAIL: ko_exists={} ko_size={} init_exists={} init_size={}",
+                            ko.exists(),
+                            ko_n,
+                            init.exists(),
+                            init_n
+                        )
+                    }
+                }
+                Err(e) => format!("FAIL: {e}"),
+            };
+            eprintln!("[{label}] {outcome}");
+            report.push((label, outcome));
+        }
+
+        eprintln!("\n=== LKM payload download report ===");
+        for (label, outcome) in &report {
+            eprintln!("  {label}: {outcome}");
+        }
+        eprintln!();
+
+        let failures: Vec<&(String, String)> = report
+            .iter()
+            .filter(|(_, o)| o.starts_with("FAIL"))
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} provider payloads failed: {:#?}",
+            failures.len(),
+            failures
+        );
+    }
+
+    /// Nightly counterpart to `lkm_payload_download_smoke` — exercises
+    /// `download_ksu_payload_nightly` so the per-kernel `.ko` artifact
+    /// selection + ksuinit extraction get checked against every
+    /// provider's actual nightly run, including ReSukiSU which has no
+    /// Stable channel and is the only path that's actually used in
+    /// production for that fork.
+    ///
+    ///     cargo test -p ltbox-patch --lib -- --ignored --nocapture lkm_payload_nightly_download_smoke
+    #[test]
+    #[ignore = "hits GitHub releases + nightly.link; run manually"]
+    fn lkm_payload_nightly_download_smoke() {
+        const KVER: &str = "6.6";
+        let providers: &[(RootProvider, &str)] = &[
+            (RootProvider::KernelSU, "tiann/KernelSU"),
+            (RootProvider::KernelSUNext, "KernelSU-Next/KernelSU-Next"),
+            (RootProvider::SukiSU, "SukiSU-Ultra/SukiSU-Ultra"),
+            (RootProvider::ReSukiSU, "ReSukiSU/ReSukiSU"),
+        ];
+
+        let mut report: Vec<(String, String)> = Vec::new();
+
+        for (provider, repo) in providers.iter().copied() {
+            let label = format!("{repo} nightly payload k{KVER}");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut log = Vec::new();
+            let result =
+                download_ksu_payload_nightly(provider, Some(KVER), None, tmp.path(), &mut log);
+            let outcome = match result {
+                Ok(run_id) => {
+                    let ko = tmp.path().join("kernelsu.ko");
+                    let init = tmp.path().join("init");
+                    let ko_n = std::fs::metadata(&ko).map(|m| m.len()).unwrap_or(0);
+                    let init_n = std::fs::metadata(&init).map(|m| m.len()).unwrap_or(0);
+                    if ko.exists() && ko_n > 0 && init.exists() && init_n > 0 {
+                        format!("OK run={run_id} ko={ko_n} init={init_n}")
+                    } else {
+                        format!(
+                            "FAIL: ko_exists={} ko_size={} init_exists={} init_size={}",
+                            ko.exists(),
+                            ko_n,
+                            init.exists(),
+                            init_n
+                        )
+                    }
+                }
+                Err(e) => format!("FAIL: {e}"),
+            };
+            eprintln!("[{label}] {outcome}");
+            report.push((label, outcome));
+        }
+
+        eprintln!("\n=== LKM nightly payload download report ===");
+        for (label, outcome) in &report {
+            eprintln!("  {label}: {outcome}");
+        }
+        eprintln!();
+
+        let failures: Vec<&(String, String)> = report
+            .iter()
+            .filter(|(_, o)| o.starts_with("FAIL"))
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} nightly payloads failed: {:#?}",
+            failures.len(),
+            failures
+        );
     }
 }
