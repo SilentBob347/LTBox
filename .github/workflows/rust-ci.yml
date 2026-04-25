@@ -1,5 +1,16 @@
 name: Rust CI
 
+# Ubuntu runners cross-compile every Windows target via cargo-xwin so
+# the Windows-specific msvc-dev-cmd / clang vs clang-cl / link.exe
+# machine-type / LLVM-on-PATH dance from the previous matrix is gone.
+# The only Windows job left is `test` because cross-built .exes can't
+# execute on Linux (Wine is not viable for an iced GUI binary), and
+# the test gate has to actually run the binary.
+#
+# Migration plan if/when a Linux build target is wanted: add a
+# `build-linux-x86_64` job using the same `lint` toolchain — no xwin,
+# just `cargo build --release --target x86_64-unknown-linux-gnu`.
+
 concurrency:
   group: rust-ci-${{ github.ref_name }}
   cancel-in-progress: true
@@ -35,89 +46,123 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # cargo-xwin auto-accepts the Microsoft Software License Terms via
+  # this env var so the install is non-interactive. Same effect as
+  # passing `--accept-license` to every `cargo xwin …` invocation.
+  XWIN_ACCEPT_LICENSE: "1"
 
 jobs:
   fmt-clippy:
     name: fmt + clippy
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install LLVM toolchain
+        # cargo-xwin needs clang-cl + lld-link to drive the cross
+        # MSVC compile that clippy delegates to.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm nasm
+
       - name: Install Rust (toolchain pinned by rust-toolchain.toml)
-        # `toolchain` input intentionally omitted so the action reads
-        # `rust-toolchain.toml` at the repo root and installs the
-        # pinned channel (currently 1.95.0). Hard-coding `stable` here
-        # would silently install a different toolchain than the one
-        # the rest of the pipeline (and contributors' local pre-push
-        # hook) actually compiles against.
-        uses: dtolnay/rust-toolchain@stable
+        # `dtolnay/rust-toolchain` always installs whatever its
+        # `toolchain` input (or `@<ref>`) resolves to AND attaches
+        # `targets:` to THAT toolchain — independent of
+        # `rust-toolchain.toml`. Cargo then switches to the toml's
+        # pinned channel (1.95.0) and finds no targets there.
+        # Skip the action entirely; rustup is preinstalled on
+        # ubuntu-latest, `rustup show` triggers the toml-driven
+        # install, then `component add` / `target add` land on the
+        # active 1.95.0 toolchain.
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Install cargo-xwin
+        uses: taiki-e/install-action@v2
         with:
-          components: rustfmt, clippy
+          tool: cargo-xwin
+
+      - name: Cache xwin SDK
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/cargo-xwin
+          key: xwin-${{ runner.os }}-x86_64-pc-windows-msvc-v1
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: lint
+          key: lint-xwin
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo xwin clippy
+        # Workspace pulls Windows-only crates (`windows-sys`,
+        # `winresource`, `serialport` via libusb1-sys) AND uses
+        # `#[cfg(windows)]` modules unconditionally
+        # (`stdout_tap`, `windows_driver`, …). Linting against the
+        # Linux host fails on libudev-sys + missing `windows::*`
+        # APIs. Target x86_64-pc-windows-msvc through the same
+        # cargo-xwin sysroot the build jobs use so clippy sees the
+        # same world rustc will compile against.
+        run: cargo xwin clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 
-  build:
+  build-windows:
     name: Build ${{ matrix.name }}
     needs: fmt-clippy
-    runs-on: windows-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: win_x86_64
             target: x86_64-pc-windows-msvc
-            msvc_arch: x64
           - name: win_arm64
             target: aarch64-pc-windows-msvc
-            msvc_arch: amd64_arm64
-    defaults:
-      run:
-        shell: pwsh
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up MSVC for ${{ matrix.msvc_arch }}
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc_arch }}
-
-      - name: Prepend x64 LLVM to PATH (aarch64 cross)
-        # `ring`'s build.rs hard-codes the compiler to `clang` for
-        # aarch64-pc-windows-msvc cross builds, bypassing any
-        # `CC_*_pc_windows_msvc` override. msvc-dev-cmd may still put
-        # the ARM64-hosted LLVM shipped with VS in front on PATH,
-        # which the x64 runner cannot execute (OS error 216). Prepend
-        # the x64 LLVM dir so the bare `clang` lookup resolves to the
-        # x64 build.
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        shell: pwsh
+      - name: Install LLVM toolchain
+        # cargo-xwin uses clang-cl + lld-link as the cross MSVC
+        # toolchain. `llvm-rc` (resource compiler) is the
+        # `winresource` build.rs counterpart to MSVC's `rc.exe`.
+        # `nasm` keeps `ring`'s aarch64 cross-build happy.
         run: |
-          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm nasm
 
-      - name: Install Rust toolchain (${{ matrix.target }})
-        # `toolchain` omitted so `rust-toolchain.toml` drives the
-        # channel — `targets` then adds the cross-compile target to
-        # THAT toolchain (not to a separately-installed `stable`),
-        # otherwise cargo can't find `core` for `aarch64-pc-windows-msvc`
-        # because the target sits on the wrong toolchain.
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        # See lint job for the rationale on bypassing
+        # dtolnay/rust-toolchain — same wrong-toolchain attachment
+        # bug applies to the cross target install here.
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cargo-xwin
+        # Pin a known-good release so a surprise upstream behaviour
+        # change can't silently re-break the cross build.
+        uses: taiki-e/install-action@v2
         with:
-          targets: ${{ matrix.target }}
+          tool: cargo-xwin
+
+      - name: Cache xwin SDK
+        # ~1.5 GB of MSVC CRT + Windows SDK headers/libs that
+        # cargo-xwin downloads on first run. Cache key is keyed on
+        # the cargo-xwin version so a tool bump triggers a fresh
+        # SDK pull (xwin manifest format can drift between versions).
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/cargo-xwin
+          key: xwin-${{ runner.os }}-${{ matrix.target }}-v1
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -127,56 +172,65 @@ jobs:
       - name: Resolve release tag or commit
         id: meta
         run: |
-          if ("${{ github.ref }}".StartsWith("refs/tags/")) {
-            $tag = "${{ github.ref_name }}"
-          } else {
-            $short = "${{ github.sha }}".Substring(0, 7)
-            $tag = "$short"
-          }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "is_release=${{ startsWith(github.ref, 'refs/tags/v') }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${GITHUB_SHA:0:7}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "is_release=${{ startsWith(github.ref, 'refs/tags/v') }}" >> "${GITHUB_OUTPUT}"
 
-      - name: cargo build --release
-        # Cross-compile quirks for aarch64-pc-windows-msvc on an x64
-        # runner:
-        # 1. msvc-dev-cmd with `arch: arm64` installs the ARM64-hosted
-        #    MSVC toolchain; `link.exe` then fails machine-type check
-        #    on the x64 runner and PATH falls through to Git Bash's
-        #    coreutils `/usr/bin/link`. Use `amd64_arm64` to get the
-        #    x64-host → arm64-target cross toolchain instead.
-        # 2. msvc-dev-cmd puts the bundled LLVM first on PATH. cc-rs
-        #    would then resolve `clang` against that, but a mismatched
-        #    host `clang.exe` fails with OS error 216 (EXE machine-
-        #    type mismatch). The Prepend x64 LLVM step fixes this.
-        # 3. cc-rs adds MSVC-style flags like `/source-charset:utf-8`
-        #    whenever the target is `*-msvc`. The plain `clang.exe`
-        #    driver is gnu-style and interprets `/…` as a file path,
-        #    so it dies with `no such file or directory`. `clang-cl`
-        #    is the MSVC-compatible driver that accepts those flags.
-        # Point cc-rs at the x64 `clang-cl.exe` that ships in
-        # `C:\Program Files\LLVM\bin` for the aarch64 target only.
+      - name: Install clang shim for ring aarch64 cross
+        # `ring`'s build.rs hardcodes the compiler to bare `clang`
+        # for `aarch64-pc-windows-msvc` and ignores `CC_<target>`
+        # overrides — so xwin's MSVC-style `/imsvc <path>` flags
+        # blow up with `clang: error: no such file or directory:
+        # '/imsvc'` because gnu-driver clang doesn't speak MSVC
+        # syntax. PATH-shim a `clang` wrapper that detects the
+        # aarch64-pc-windows-msvc target on the command line and
+        # flips into `--driver-mode=cl` (i.e. clang-cl behaviour)
+        # for that one case; every other `clang` invocation falls
+        # through to the real binary unchanged.
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          shim_dir="${HOME}/.local/bin/ring-clang-shim"
+          mkdir -p "${shim_dir}"
+          real_clang="$(command -v clang)"
+          cat > "${shim_dir}/clang" <<EOF
+          #!/bin/bash
+          if [[ "\$*" == *"--target=aarch64-pc-windows-msvc"* ]]; then
+            exec "${real_clang}" --driver-mode=cl "\$@"
+          else
+            exec "${real_clang}" "\$@"
+          fi
+          EOF
+          chmod +x "${shim_dir}/clang"
+          echo "${shim_dir}" >> "${GITHUB_PATH}"
+
+      - name: cargo xwin build --release
+        # cargo-xwin wires up the cross sysroot + lld-link + llvm-rc.
+        # CC_/CXX_/AR_ env overrides cover deps that respect cc-rs's
+        # standard env-var lookup; ring needs the PATH shim above.
         env:
-          CC_aarch64_pc_windows_msvc: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'C:\Program Files\LLVM\bin\clang-cl.exe' || '' }}
-        run: cargo build --release --target ${{ matrix.target }} -p ltbox-gui
-
-      - name: cargo test (host arch only)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: cargo test --workspace --target ${{ matrix.target }}
+          CC_aarch64_pc_windows_msvc: clang-cl
+          CXX_aarch64_pc_windows_msvc: clang-cl
+          AR_aarch64_pc_windows_msvc: llvm-lib
+        run: cargo xwin build --release --target ${{ matrix.target }} -p ltbox-gui
 
       - name: Stage artifact
         id: stage
         run: |
-          $tag = "${{ steps.meta.outputs.tag }}"
-          $stageDir = "stage/LTBox-${{ matrix.name }}-$tag"
-          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/ltbox.exe" -Destination $stageDir
-          if (Test-Path "README.md") { Copy-Item "README.md" -Destination $stageDir }
-          if (Test-Path "LICENSE") { Copy-Item "LICENSE" -Destination $stageDir }
-          $zipName = "LTBox-${{ matrix.name }}-$tag.zip"
-          Compress-Archive -Path "$stageDir/*" -DestinationPath $zipName -Force
-          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower()
-          "$hash  $zipName" | Out-File -Encoding ascii "$zipName.sha256"
-          "zip=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          stage_dir="stage/LTBox-${{ matrix.name }}-${tag}"
+          mkdir -p "${stage_dir}"
+          cp "target/${{ matrix.target }}/release/ltbox.exe" "${stage_dir}/"
+          [[ -f README.md ]] && cp README.md "${stage_dir}/"
+          [[ -f LICENSE ]]   && cp LICENSE   "${stage_dir}/"
+          zip_name="LTBox-${{ matrix.name }}-${tag}.zip"
+          (cd "$(dirname "${stage_dir}")" && zip -r "${OLDPWD}/${zip_name}" "$(basename "${stage_dir}")")
+          sha256sum "${zip_name}" | awk '{print $1"  "$2}' > "${zip_name}.sha256"
+          echo "zip=${zip_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -187,9 +241,39 @@ jobs:
             ${{ steps.stage.outputs.zip }}.sha256
           if-no-files-found: error
 
+  test:
+    # Cross-built .exes can't execute on the Linux build runners
+    # (Wine + iced GUI is not a serious testing strategy), so the
+    # unit + integration test gate runs on a real Windows host
+    # against the host architecture only. arm64 lands in the build
+    # matrix above for compile-time validation; runtime coverage is
+    # the x86_64 host's job.
+    name: Test (host x86_64)
+    needs: fmt-clippy
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        # rustup is preinstalled on windows-latest; `rustup show`
+        # triggers the toml-driven 1.95.0 install.
+        run: rustup show
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-windows
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
   release:
     name: Draft GitHub Release
-    needs: build
+    needs: [build-windows, test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
