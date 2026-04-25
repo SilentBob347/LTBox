@@ -1,0 +1,14 @@
+# Pin toolchain so local pre-push clippy matches CI clippy.
+#
+# Rationale: CI's `dtolnay/rust-toolchain@stable` action installs the
+# *latest* stable each run (1.95.0 at the time of writing). Without
+# this pin, contributors on an older `rustup default stable`
+# (e.g. 1.90.0) silently miss new lints — `useless_conversion` on
+# `IntoIterator` args was the first to slip past pre-push and break
+# CI. Cargo respects this file before any `rustup` default, so the
+# toolchain converges across machines without anybody having to
+# `rustup update` manually.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

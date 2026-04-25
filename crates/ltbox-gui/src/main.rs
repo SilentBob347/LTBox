@@ -3144,7 +3144,7 @@ impl App {
         let tail_window = self.log_lines.len().saturating_sub(32);
         seen.extend(self.log_lines[tail_window..].iter().cloned());
         let mut combined: Vec<String> = Vec::with_capacity(total);
-        for line in tap_lines.into_iter().chain(sink_lines.into_iter()) {
+        for line in tap_lines.into_iter().chain(sink_lines) {
             if seen.insert(line.clone()) {
                 combined.push(line);
             }
