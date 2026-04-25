@@ -21,11 +21,11 @@ mod stdout_tap;
 mod theme;
 mod theme_detect;
 
-/// Mirror of `ltbox_core::live!` for callers that haven't switched
-/// over yet — pushes to `$log` AND prints. Adjacent dedup in
-/// `App::log_extend` collapses the live tap copy + final Vec copy on
-/// happy-path flows; on Windows-tap outages (unroot / LKM root) the
-/// Vec path is the only thing that surfaces the lines at all.
+/// Mirror of `ltbox_core::live!` for in-crate call sites that don't
+/// want to import the macro through a `use` chain. Same triple-write
+/// (stdout tap + live_sink + caller Vec). See core doc for the
+/// `*ExecDone` no-`log_extend(lines)` rule that prevents tail
+/// duplication.
 macro_rules! live {
     ($log:expr, $($arg:tt)*) => {{
         let _line = format!($($arg)*);
@@ -2542,12 +2542,17 @@ fn install_root_manager_apk(
     let path = manager_apk.to_string_lossy().to_string();
     live!(
         log,
-        "[Root] Installing manager APK: {}",
-        manager_apk.display()
+        "[Root] {}",
+        ltbox_core::i18n::tr("log_root_installing_manager_apk")
+            .replace("{path}", &manager_apk.display().to_string())
     );
     adb.install(&path)
         .map_err(|e| format!("Manager APK install failed: {e}"))?;
-    live!(log, "[Root] Manager APK installed");
+    live!(
+        log,
+        "[Root] {}",
+        ltbox_core::i18n::tr("log_root_manager_apk_installed")
+    );
     Ok(())
 }
 
@@ -3116,6 +3121,54 @@ impl App {
         self.log_lines.push(s);
         self.trim_log();
         self.log_dirty = true;
+    }
+
+    /// Tap + sink drain shared by `Message::DrainStdoutTap` and
+    /// every `*ExecDone` handler. Pulls third-party `println!` from
+    /// the Windows stdout pipe AND our own `live!` lines from the
+    /// in-process sink, dedupes against the recent log tail (catches
+    /// the tap-late race where a `live!` line lands in the sink at
+    /// tick T and only surfaces in the tap at tick T+1) and
+    /// in-batch (catches the same line landing in BOTH streams at
+    /// the same tick). Returns count of new lines added so callers
+    /// can decide whether to rebuild the editor.
+    fn drain_pending_log_streams(&mut self) -> usize {
+        let tap_lines = stdout_tap::drain();
+        let sink_lines = ltbox_core::live_sink::drain();
+        let total = tap_lines.len() + sink_lines.len();
+        if total == 0 {
+            return 0;
+        }
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(total + 32);
+        let tail_window = self.log_lines.len().saturating_sub(32);
+        seen.extend(self.log_lines[tail_window..].iter().cloned());
+        let mut combined: Vec<String> = Vec::with_capacity(total);
+        for line in tap_lines.into_iter().chain(sink_lines.into_iter()) {
+            if seen.insert(line.clone()) {
+                combined.push(line);
+            }
+        }
+        let added = combined.len();
+        if added > 0 {
+            self.log_extend(combined);
+        }
+        added
+    }
+
+    /// Final flush at `*ExecDone` time. The closure's local Vec is
+    /// dropped — `live!` already pushed every line through the sink
+    /// path (bulk-streamed across the run) and the macro's Vec copy
+    /// is pure dead weight at completion time. Re-appending it via
+    /// `log_extend` doubled the entire transcript on screen; the
+    /// adjacent-tail dedup only collapses the boundary line, not the
+    /// 100+ interior lines.
+    fn flush_exec_done_log(&mut self, _vec_from_closure: Vec<String>) {
+        // `_vec_from_closure` intentionally ignored — see above.
+        // Drain whatever the 500 ms tick missed between the last
+        // `Message::DrainStdoutTap` and the closure's return so the
+        // user sees the closing lines without a tick of latency.
+        self.drain_pending_log_streams();
     }
 
     /// Bulk append; one truncation pass.
@@ -4320,7 +4373,7 @@ impl App {
             Message::FlashExecDone(lines) => {
                 // Extend *before* end_op so the END separator sits
                 // below the backend's detail lines, not above them.
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
                 self.wf_config = WorkflowConfig::default();
             }
@@ -4859,7 +4912,7 @@ impl App {
                 );
             }
             Message::SysExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Root wizard
@@ -5135,7 +5188,10 @@ impl App {
                 let fam_label = family
                     .map(|f| self.t(f.label_key()).to_string())
                     .unwrap_or_else(|| "?".to_string());
-                self.log_push(format!("[Root] Starting: {fam_label}"));
+                self.log_push(format!(
+                    "[Root] {}",
+                    self.t("log_op_starting").replace("{what}", &fam_label)
+                ));
                 // Resolve Magisk preinit device while ADB still exists
                 // — it vanishes past EDL. v2 parity: walk /proc/self/mountinfo
                 // AND gate /data on the device's encryption state, else a
@@ -5262,7 +5318,12 @@ impl App {
                             // Signing key: pipeline resolves via KEY_MAP
                             // + `public_key_sha1`; PEM is `include_str!`'d
                             // in avbtool-rs. No on-disk key consulted here.
-                            ltbox_core::live!(log, "[Root] Loader: {}", loader.display());
+                            ltbox_core::live!(
+                                log,
+                                "[Root] {}",
+                                ltbox_core::i18n::tr("log_root_loader")
+                                    .replace("{path}", &loader.display().to_string())
+                            );
 
                             let base = dirs::data_dir()
                                 .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -5600,7 +5661,7 @@ impl App {
                 );
             }
             Message::RootExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Unroot wizard
@@ -5632,8 +5693,9 @@ impl App {
                 self.op_steps = self.derive_unroot_op_steps();
                 self.error_msg = None;
                 self.log_push(format!(
-                    "[Unroot] Starting: {}",
-                    self.t(unroot_type.label_key())
+                    "[Unroot] {}",
+                    self.t("log_op_starting")
+                        .replace("{what}", self.t(unroot_type.label_key()))
                 ));
                 let ll = self.live_labels();
                 return Task::perform(
@@ -5836,7 +5898,7 @@ impl App {
                 );
             }
             Message::UnrootExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Advanced
@@ -6408,7 +6470,7 @@ impl App {
                 self.adv_confirm = None;
             }
             Message::AdvExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 // Leave adv_wizard / adv_confirm* intact so the exec
                 // screen stays visible with Done/Failed until StartOver.
                 self.end_op();
@@ -6564,20 +6626,7 @@ impl App {
                 // can't collapse. First-occurrence wins, so the tap
                 // ordering (which interleaves third-party output with
                 // ours in real chronological order) is preserved.
-                let tap_lines = stdout_tap::drain();
-                let sink_lines = ltbox_core::live_sink::drain();
-                let total = tap_lines.len() + sink_lines.len();
-                if total > 0 {
-                    let mut seen: std::collections::HashSet<String> =
-                        std::collections::HashSet::with_capacity(total);
-                    let mut combined: Vec<String> = Vec::with_capacity(total);
-                    for line in tap_lines.into_iter().chain(sink_lines.into_iter()) {
-                        if seen.insert(line.clone()) {
-                            combined.push(line);
-                        }
-                    }
-                    self.log_extend(combined);
-                }
+                self.drain_pending_log_streams();
                 // Batched rebuild — at most one cosmic-text reshape per tick.
                 if self.log_dirty {
                     self.rebuild_log_editor();
@@ -6889,7 +6938,7 @@ impl App {
                 );
             }
             Message::FlashPartsScanDone(result) => {
-                self.log_extend(result.logs);
+                self.flush_exec_done_log(result.logs);
                 self.flash_parts.scanning = false;
                 self.flash_parts.rows = result.rows;
                 self.flash_parts.scan_error = result.error.clone();
@@ -6932,7 +6981,7 @@ impl App {
                 );
             }
             Message::FlashPartsExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             Message::DumpPartsSelectLoader => {
@@ -7002,7 +7051,7 @@ impl App {
                 );
             }
             Message::DumpPartsScanDone(result) => {
-                self.log_extend(result.logs);
+                self.flush_exec_done_log(result.logs);
                 self.end_op();
                 self.dump_parts.scanning = false;
                 self.dump_parts.rows = result.rows;
@@ -7057,7 +7106,7 @@ impl App {
                 }
             }
             Message::DumpPartsExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // -- Physical Storage: Dump --------------------------------------
@@ -7136,7 +7185,7 @@ impl App {
                 }
             }
             Message::DumpPhysExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // -- Physical Storage: Flash -------------------------------------
@@ -7217,7 +7266,7 @@ impl App {
                 );
             }
             Message::FlashPhysExecDone(lines) => {
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
                 self.end_op();
             }
             Message::RebootRequest(target) => {
@@ -7405,7 +7454,7 @@ impl App {
             }
             Message::RebootDone(lines) => {
                 self.end_op();
-                self.log_extend(lines);
+                self.flush_exec_done_log(lines);
             }
             Message::InstallDriversDone(result) => {
                 self.installing_drivers = false;
@@ -12449,7 +12498,7 @@ fn wait_for_manual_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
 fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
     ltbox_core::live!(
         log,
-        "[{tag}] $ {}",
+        "[{tag}] {}",
         ltbox_core::i18n::tr("live_cmd_adb_reboot_edl")
     );
     let mut mgr = ltbox_device::adb::AdbManager::new();

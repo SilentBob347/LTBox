@@ -381,7 +381,7 @@ impl EdlSession {
         let mut out_file = std::fs::File::create(output)?;
         ltbox_core::live!(
             log,
-            "[EDL] $ {} {part_name} → {}",
+            "[EDL] {} {part_name} → {}",
             tr("log_edl_dump_cmd"),
             output.display()
         );
@@ -407,7 +407,7 @@ impl EdlSession {
         let mut out_file = std::fs::File::create(output)?;
         ltbox_core::live!(
             log,
-            "[EDL] $ {} {part_name} → {} (LUN {lun}, start {start_sector}, {num_sectors} sectors)",
+            "[EDL] {} {part_name} → {} (LUN {lun}, start {start_sector}, {num_sectors} sectors)",
             tr("log_edl_dump_cmd"),
             output.display()
         );
@@ -440,7 +440,7 @@ impl EdlSession {
         let num_sectors = file_len.div_ceil(sector_size) as usize;
         ltbox_core::live!(
             log,
-            "[EDL] $ {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors, LUN {lun})",
+            "[EDL] {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors, LUN {lun})",
             tr("log_edl_flash_cmd"),
             image.display()
         );
@@ -496,7 +496,7 @@ impl EdlSession {
         let mut out_file = std::fs::File::create(output)?;
         ltbox_core::live!(
             log,
-            "[EDL] $ {}",
+            "[EDL] {}",
             tr("log_edl_dump_lun_cmd").replace(
                 "{lun}",
                 &lun.to_string()
@@ -530,7 +530,7 @@ impl EdlSession {
         let num_sectors = file_len.div_ceil(sector_size) as usize;
         ltbox_core::live!(
             log,
-            "[EDL] $ {}",
+            "[EDL] {}",
             tr("log_edl_flash_lun_cmd").replace(
                 "{lun}",
                 &lun.to_string()
@@ -604,7 +604,7 @@ impl EdlSession {
         let num_sectors = file_len.div_ceil(sector_size) as usize;
         ltbox_core::live!(
             log,
-            "[EDL] $ {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors)",
+            "[EDL] {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors)",
             tr("log_edl_flash_cmd"),
             image.display()
         );
@@ -624,7 +624,7 @@ impl EdlSession {
     }
 
     pub fn reset(&mut self, log: &mut Vec<String>) -> Result<()> {
-        ltbox_core::live!(log, "[EDL] $ {}", tr("log_edl_reset_cmd"));
+        ltbox_core::live!(log, "[EDL] {}", tr("log_edl_reset_cmd"));
         qdl::firehose_reset(&mut self.dev, &FirehoseResetMode::Reset, 2)
             .map_err(|e| EdlError::Session(format!("Reset failed: {e}")))?;
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_reset_initiated"));
@@ -647,7 +647,7 @@ impl EdlSession {
     /// dump-only session so the next `open()` gets a fresh Hello —
     /// otherwise Sahara times out. Mirrors v2 qdl-rs default behavior.
     pub fn reset_to_edl(&mut self, log: &mut Vec<String>) -> Result<()> {
-        ltbox_core::live!(log, "[EDL] $ {}", tr("log_edl_reset_to_edl_cmd"));
+        ltbox_core::live!(log, "[EDL] {}", tr("log_edl_reset_to_edl_cmd"));
         qdl::firehose_reset(&mut self.dev, &FirehoseResetMode::ResetToEdl, 0)
             .map_err(|e| EdlError::Session(format!("reset_to_edl failed: {e}")))?;
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_reset_to_edl_sent"));
@@ -718,7 +718,7 @@ impl EdlSession {
         for xml_path in program_xmls {
             ltbox_core::live!(
                 log,
-                "[EDL] $ {} {}",
+                "[EDL] {} {}",
                 tr("log_edl_flash_cmd"),
                 xml_path.display()
             );
@@ -727,7 +727,7 @@ impl EdlSession {
         for xml_path in patch_xmls {
             ltbox_core::live!(
                 log,
-                "[EDL] $ {}",
+                "[EDL] {}",
                 tr("log_edl_patch_xml_cmd").replace("{path}", &xml_path.display().to_string())
             );
             self.apply_patch_xml(xml_path, log)?;

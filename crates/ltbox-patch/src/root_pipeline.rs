@@ -12,7 +12,6 @@ use fs_err as fs;
 use ltbox_core::downloader::download_to_file;
 use ltbox_core::github::GitHubClient;
 use ltbox_core::i18n::tr;
-use ltbox_core::live;
 use ltbox_core::{LtboxError, Result};
 
 use crate::{avb, gki, key_map, ksu, magisk};
@@ -948,7 +947,11 @@ pub fn download_ksu_payload(
         .ok_or_else(|| LtboxError::Patch(format!("Unknown KSU provider: {provider:?}")))?;
     let client = GitHubClient::new(repo)?;
     let (tag, assets) = client.latest_release_assets()?;
-    live!(log, "[KSU] Latest release: {tag}");
+    ltbox_core::live!(
+        log,
+        "[KSU] {}",
+        tr("log_ksu_latest_release").replace("{tag}", &tag)
+    );
 
     // -------- 1. Per-kernel `.ko` from release assets --------
     // KSU tags assets by kernel branch (`android15-6.6_kernelsu.ko`);
@@ -966,7 +969,11 @@ pub fn download_ksu_payload(
             "No `_kernelsu.ko` release asset on latest {repo} matching kernel `{kver}`."
         ))
     })?;
-    live!(log, "[KSU] Downloading LKM: {ko_name}");
+    ltbox_core::live!(
+        log,
+        "[KSU] {}",
+        tr("log_ksu_downloading_lkm").replace("{name}", &ko_name)
+    );
     fs::create_dir_all(staging_dir)?;
     let ko_path = staging_dir.join("kernelsu.ko");
     download_to_file(&ko_url, &ko_path, log)?;
@@ -995,9 +1002,10 @@ pub fn download_ksu_payload(
         run_id = run_id,
         ksuinit_artifact = ksuinit_artifact,
     );
-    live!(
+    ltbox_core::live!(
         log,
-        "[KSU] Downloading ksuinit artifact: {ksuinit_artifact}"
+        "[KSU] {}",
+        tr("log_ksu_downloading_ksuinit").replace("{name}", &ksuinit_artifact)
     );
     let tmp_zip = staging_dir.join(format!("{ksuinit_artifact}.zip"));
     download_to_file(&nightly_url, &tmp_zip, log)?;
@@ -1026,7 +1034,11 @@ pub fn download_ksu_payload(
     let mut out = fs::File::create(staging_dir.join("init"))?;
     out.write_all(&buf)?;
     let _ = fs::remove_file(&tmp_zip);
-    live!(log, "[KSU] Staged init ({} bytes) + kernelsu.ko", buf.len());
+    ltbox_core::live!(
+        log,
+        "[KSU] {}",
+        tr("log_ksu_staged_init_lkm").replace("{bytes}", &buf.len().to_string())
+    );
     Ok(())
 }
 
@@ -1067,7 +1079,11 @@ pub fn download_ksu_payload_nightly(
             "{repo} run {run_id}: no *_kernelsu.ko artifact matching kernel {kver} (artifacts={artifact_names:?})"
         ))
     })?;
-    live!(log, "[KSU] nightly LKM artifact: {ko_artifact}");
+    ltbox_core::live!(
+        log,
+        "[KSU] {}",
+        tr("log_ksu_nightly_lkm_artifact").replace("{artifact}", &ko_artifact)
+    );
     let ko_zip_path = staging_dir.join("ksu_nightly_lkm.zip");
     let ko_url = nightly_artifact_url(repo, run_id, &ko_artifact);
     download_to_file(&ko_url, &ko_zip_path, log)?;
@@ -1103,7 +1119,11 @@ pub fn download_ksu_payload_nightly(
                 "{repo} run {run_id}: no ksuinit artifact (got {artifact_names:?})"
             ))
         })?;
-    live!(log, "[KSU] nightly ksuinit artifact: {init_artifact}");
+    ltbox_core::live!(
+        log,
+        "[KSU] {}",
+        tr("log_ksu_nightly_ksuinit_artifact").replace("{artifact}", &init_artifact)
+    );
     let init_zip_path = staging_dir.join("ksu_nightly_init.zip");
     let init_url = nightly_artifact_url(repo, run_id, &init_artifact);
     download_to_file(&init_url, &init_zip_path, log)?;
@@ -1128,7 +1148,7 @@ pub fn download_ksu_payload_nightly(
         out.write_all(&buf)?;
     }
     let _ = fs::remove_file(&init_zip_path);
-    live!(log, "[KSU] staged nightly init + kernelsu.ko");
+    ltbox_core::live!(log, "[KSU] {}", tr("log_ksu_staged_nightly_init"));
     Ok(run_id)
 }
 
@@ -1193,10 +1213,7 @@ pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Re
                     }
                 }
             }
-            live!(
-                log,
-                "[Magisk] Extracting payload from APK (magisk, magiskinit, init-ld, stub.apk)"
-            );
+            ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_extracting_payload"));
             magisk::extract_apk_payload(&apk_path, &cfg.work_dir)?;
         }
         RootFamily::KernelSU => {
@@ -1208,7 +1225,7 @@ pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Re
             }
             match cfg.version {
                 RootVersion::Stable => {
-                    live!(log, "[KSU] Fetching latest Stable LKM zip from GitHub…");
+                    ltbox_core::live!(log, "[KSU] {}", tr("log_ksu_fetching_stable"));
                     download_ksu_payload(
                         cfg.provider,
                         cfg.kernel_version.as_deref(),
@@ -1217,10 +1234,11 @@ pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Re
                     )?;
                 }
                 RootVersion::Nightly => {
-                    live!(
+                    ltbox_core::live!(
                         log,
-                        "[KSU] Fetching Nightly payload (run_id={:?})…",
-                        cfg.nightly_run_id
+                        "[KSU] {}",
+                        tr("log_ksu_fetching_nightly")
+                            .replace("{run_id}", &format!("{:?}", cfg.nightly_run_id))
                     );
                     download_ksu_payload_nightly(
                         cfg.provider,
@@ -1298,27 +1316,29 @@ pub fn build_patched_artifacts(
         let kernel_zip = cfg.gki_kernel_zip.as_ref().ok_or_else(|| {
             LtboxError::Patch("GKI mode requires a custom kernel zip — none supplied".into())
         })?;
-        live!(log, "[GKI] Kernel zip: {}", kernel_zip.display());
+        ltbox_core::live!(
+            log,
+            "[GKI] {}",
+            tr("log_gki_kernel_zip").replace("{path}", &kernel_zip.display().to_string())
+        );
         gki::patch_boot(&cfg.work_dir, kernel_zip, log)?
     } else {
         match cfg.family {
             RootFamily::Magisk => {
-                live!(log, "[Magisk] Patching init_boot.img ramdisk…");
+                ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_patching_init_boot"));
                 magisk::patch_init_boot(&cfg.work_dir, &cfg.preinit_device, log)?
             }
             RootFamily::KernelSU => {
-                live!(
-                    log,
-                    "[KSU] Patching init_boot.img — swapping init + staging kernelsu.ko…"
-                );
+                ltbox_core::live!(log, "[KSU] {}", tr("log_ksu_patching_init_boot"));
                 ksu::patch_init_boot(&cfg.work_dir, log)?
             }
             RootFamily::APatch => {
-                live!(
+                ltbox_core::live!(
                     log,
-                    "[APatch] Patching boot.img via kptools-rs (kpm_count={}, superkey_len={})",
-                    cfg.kpm_paths.len(),
-                    cfg.superkey.len()
+                    "[APatch] {}",
+                    tr("log_apatch_patching_boot")
+                        .replace("{kpm_count}", &cfg.kpm_paths.len().to_string())
+                        .replace("{superkey_len}", &cfg.superkey.len().to_string())
                 );
                 crate::apatch::patch_boot(&cfg.work_dir, &cfg.kpm_paths, &cfg.superkey, log)?
             }

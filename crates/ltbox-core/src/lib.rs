@@ -16,19 +16,17 @@ pub mod xml_catalog;
 
 pub use error::{LtboxError, Result};
 
-/// Echo a line to BOTH `println!` (so the GUI's stdout tap can stream
-/// it live) AND the caller's `&mut Vec<String>` log (so the
-/// `*ExecDone` flush still has the full audit trail even when the tap
-/// drops lines or the OS rate-limits the pipe).
+/// Echo a line to `println!` (terminal + GUI stdout-tap), the
+/// [`live_sink`] in-process queue (drained by the GUI subscription),
+/// AND the caller's `&mut Vec<String>` for the rare consumer that
+/// inspects the buffer post-flow (driver installer log, headless
+/// tests, …).
 ///
-/// Earlier revisions only printed and intentionally avoided the push
-/// to dodge "tap-already-rendered" duplicates in the live panel. That
-/// turned out to mask real outages — on Windows GUI subsystem the tap
-/// occasionally lost long stretches of output for unroot / LKM root
-/// flows and the live log went silent end-to-end, leaving the user
-/// staring at a frozen wizard. The dup risk is handled by
-/// `App::log_extend` adjacent-dedup; the resilience win is worth the
-/// trivial double-bookkeeping.
+/// `*ExecDone` handlers that previously fed this Vec straight back
+/// into `App::log_extend` should NOT do so — the sink path already
+/// streamed every line and a second walk re-appends the entire
+/// transcript on top of itself. Drain the sink + tap one final time
+/// instead and discard the Vec.
 ///
 /// Lives in `ltbox-core` so every downstream crate (`ltbox-device`,
 /// `ltbox-patch`, `ltbox-gui`) can emit through the same path without
