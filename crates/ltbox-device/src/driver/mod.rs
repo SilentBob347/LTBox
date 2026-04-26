@@ -11,15 +11,15 @@
 //! | Host    | Module                  | Strategy |
 //! |---------|-------------------------|----------|
 //! | Windows | `driver::windows`       | `pnputil /enum-drivers` + DriverStore probe; install via `pnputil /add-driver` after fetching the latest `qcom-usb-kernel-drivers` release. |
-//! | Linux   | `driver::linux` (stub)  | Returns `NotWindows` for now. Hardware-validated probe (udev rule presence + `/sys/bus/usb/devices` walk for `05c6:9008` + serial-node permission test) lands as part of the L2/L3 hardware testing pass — see `PLAN_Linux_Support.md`. |
+//! | Linux   | `driver::linux` (stub)  | Returns `NotWindows` for now. Hardware-validated probe (udev rule presence + `/sys/bus/usb/devices` walk for `05c6:9008` + serial-node permission test) lands once a Lenovo Qualcomm target is in reach to test against. |
 //! | macOS   | `driver::linux` (reused) | Same `NotWindows` stub; LTBox has no macOS driver story today. |
 //!
 //! The shared `DriverStatus` / `DriverError` / `Result` types live
 //! here so a future Linux variant expansion (`UdevRuleMissing`,
 //! `DevicePresentNoSerialNode`, …) is one enum-arm change instead of
 //! a per-platform shim. Windows + Linux currently produce the same
-//! three variants because GUI behaviour is unchanged from the
-//! pre-rename `windows_driver` module.
+//! three variants — the rename is structural; behaviour is unchanged
+//! from the pre-rename `windows_driver` module.
 
 /// Shape returned by [`check_required_drivers`].
 ///

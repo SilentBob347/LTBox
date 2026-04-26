@@ -14,9 +14,9 @@
 //!
 //! ## Per-OS layout
 //!
-//! Per `PLAN_Linux_Support.md` D6, Windows MAY keep the existing
-//! exe-adjacent layout for continuity with current testers; Linux
-//! and other unixes always go through XDG-style data dirs.
+//! Windows keeps the existing exe-adjacent layout for continuity
+//! with current v3 testers; Linux and other unixes always go
+//! through XDG-style data dirs.
 //!
 //! | OS      | Auto-output / backup root             |
 //! |---------|---------------------------------------|
@@ -92,7 +92,7 @@ mod tests {
 
     /// Sanity: outputs should never land next to a Linux/macOS
     /// installed binary. Windows is allowed to keep exe-adjacent
-    /// layout per D6.
+    /// layout for v3 continuity.
     #[test]
     fn non_windows_outputs_never_exe_adjacent() {
         if cfg!(windows) {

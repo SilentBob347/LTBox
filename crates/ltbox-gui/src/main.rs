@@ -438,8 +438,7 @@ impl AdvAction {
 /// [`ltbox_core::app_paths::auto_output_dir_for`] so AppImage /
 /// distro-installed Linux copies don't try to write next to a
 /// read-only or root-owned executable. Windows path stays
-/// exe-adjacent (`<exe-dir>/output_<slug>`) for v3 continuity per
-/// `PLAN_Linux_Support` D6.
+/// exe-adjacent (`<exe-dir>/output_<slug>`) for v3 continuity.
 fn adv_output_dir(action: AdvAction) -> std::path::PathBuf {
     ltbox_core::app_paths::auto_output_dir_for(action.output_slug())
 }

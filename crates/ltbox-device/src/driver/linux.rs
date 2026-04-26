@@ -3,15 +3,15 @@
 //! Returns `DriverStatus::NotWindows` from every probe so GUI
 //! behaviour matches the pre-rename `windows_driver::*` no-op path.
 //! Real Linux probing — udev rule existence, `/sys/bus/usb/devices`
-//! walk for `05c6:9008`, serial-node permission test — is owed by
-//! the L2/L3 hardware testing pass once a Lenovo target is in
-//! reach. See `PLAN_Linux_Support.md` for the planned variant
-//! expansion (`UdevRuleMissing`, `DevicePresentNoSerialNode`, …).
+//! walk for `05c6:9008`, serial-node permission test — needs a
+//! Lenovo Qualcomm target in reach to validate against, so the
+//! variant expansion (`UdevRuleMissing`, `DevicePresentNoSerialNode`,
+//! …) lands alongside that hardware testing pass.
 //!
 //! `download_and_install` returns `DriverError::NotWindows` because
 //! the Linux flow will not download a driver blob — the user installs
-//! a shipped `misc/udev/51-ltbox-qcom.rules` file via
-//! `pkexec ltbox --install-udev` (planned). Returning Err here keeps
+//! a shipped `misc/udev/51-ltbox-qcom.rules` file via a future
+//! `pkexec ltbox --install-udev` wrapper. Returning Err here keeps
 //! the GUI's install button safe until that pkexec wiring lands.
 
 use super::{DriverError, DriverStatus, Result};

@@ -244,11 +244,10 @@ jobs:
   build-linux:
     name: Build linux_${{ matrix.arch }}
     needs: fmt-clippy
-    # Pinned to ubuntu-22.04 (NOT ubuntu-latest) per PLAN_Linux_Support
-    # decision D1 — AppImage built against the older glibc 2.35 floor
-    # is forward-compatible with newer distros; the reverse is not.
-    # Locking the floor here keeps every Linux artifact self-consistent
-    # with whatever the future L7 packaging job produces.
+    # Pinned to ubuntu-22.04 (NOT ubuntu-latest) so the Linux artifact
+    # inherits the older glibc 2.35 floor — AppImage built against an
+    # older glibc is forward-compatible with newer distros; the
+    # reverse is not. Future packaging jobs share the same base.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     strategy:

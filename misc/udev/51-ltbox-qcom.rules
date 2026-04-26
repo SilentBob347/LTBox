@@ -2,7 +2,7 @@
 # USB devices LTBox needs without requiring root or a sudo helper.
 #
 # Install (manual; the GUI will offer a `pkexec ltbox --install-udev`
-# wrapper once L3 lands):
+# wrapper once the Linux driver flow lands):
 #
 #   sudo cp misc/udev/51-ltbox-qcom.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload
@@ -18,8 +18,7 @@
 # rules (gives LTBox the last word on the matching device).
 #
 # VID/PID list: confirmed-needed entries only; expand once hardware
-# testing under PLAN_Linux_Support phases L2 / L6 surfaces additional
-# Lenovo Fastboot or recovery VIDs.
+# testing surfaces additional Lenovo Fastboot or recovery VIDs.
 
 # ---- Qualcomm 9008 EDL (qdl + `serialport` crate) -----------------
 # USB endpoint — needed for the libusb open path qdl uses for
