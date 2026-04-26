@@ -1,0 +1,48 @@
+# LTBox udev rules — grant the logged-in desktop user access to the
+# USB devices LTBox needs without requiring root or a sudo helper.
+#
+# Install (manual; the GUI will offer a `pkexec ltbox --install-udev`
+# wrapper once L3 lands):
+#
+#   sudo cp misc/udev/51-ltbox-qcom.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger
+#
+# Then replug the device. `TAG+="uaccess"` is the modern systemd
+# mechanism that grants ACL access to the active console user; the
+# `GROUP="plugdev", MODE="0660"` fallback covers older or non-systemd
+# distros where the user has been added to `plugdev` (Debian/Ubuntu
+# default) — Arch users may need to substitute `uucp` for serial.
+#
+# Filename starts with `51-` so it sorts after distro-shipped 50-*
+# rules (gives LTBox the last word on the matching device).
+#
+# VID/PID list: confirmed-needed entries only; expand once hardware
+# testing under PLAN_Linux_Support phases L2 / L6 surfaces additional
+# Lenovo Fastboot or recovery VIDs.
+
+# ---- Qualcomm 9008 EDL (qdl + `serialport` crate) -----------------
+# USB endpoint — needed for the libusb open path qdl uses for
+# Sahara/Firehose framing.
+SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", ATTR{idProduct}=="9008", \
+    TAG+="uaccess", MODE="0660", GROUP="plugdev"
+# Serial node — the `qcserial` in-tree kernel driver exposes
+# `/dev/ttyUSB*` for the same device; `serialport::available_ports()`
+# walks tty.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="05c6", ATTRS{idProduct}=="9008", \
+    TAG+="uaccess", MODE="0660", GROUP="plugdev"
+
+# ---- Google Android composite (ADB Recovery / sideload) -----------
+# Covers AOSP-stock recovery devices that report Google's vendor ID
+# rather than the OEM's. Lenovo stock recovery typically falls under
+# the Lenovo VID below, but custom recoveries (TWRP / OrangeFox) may
+# use 18d1.
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", \
+    TAG+="uaccess", MODE="0660", GROUP="plugdev"
+
+# ---- Lenovo USB (ADB + Fastboot on Lenovo tablets) ----------------
+# Vendor ID 17ef covers the production device states (ADB normal /
+# recovery, Fastboot bootloader) that Lenovo tablet boot stages
+# enumerate as.
+SUBSYSTEM=="usb", ATTR{idVendor}=="17ef", \
+    TAG+="uaccess", MODE="0660", GROUP="plugdev"
