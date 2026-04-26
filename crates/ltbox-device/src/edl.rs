@@ -16,6 +16,36 @@ use qdl::types::{
 const QUALCOMM_VID: u16 = 0x05C6;
 const QUALCOMM_EDL_PID: u16 = 0x9008;
 
+/// Build + send a Firehose `<erase>` XML to the device.
+///
+/// Inlined here instead of calling a `qdl::firehose_erase_storage`
+/// wrapper so the dependency surface stays on the upstream-portable
+/// `qdl::firehose_write_getack` primitive. Mirrors the v2 Python
+/// flow that hand-writes a `FHLoaderErase.xml` and feeds it into
+/// the Firehose pass: same XML payload, same end behaviour.
+fn send_firehose_erase(
+    dev: &mut QdlDevice<dyn QdlReadWrite>,
+    num_sectors: usize,
+    lun: u8,
+    start_sector: &str,
+) -> std::result::Result<(), String> {
+    let sector_size = dev.fh_cfg.storage_sector_size;
+    // Self-closed `<erase>` inside a `<data>` root with the XML
+    // declaration matches what xmltree emits in qdl's internal
+    // `firehose_xml_setup`. Firehose's parser is lenient about
+    // whitespace but strict about attribute names + spelling.
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><data><erase SECTOR_SIZE_IN_BYTES="{sector_size}" num_partition_sectors="{num_sectors}" physical_partition_number="{lun}" start_sector="{start_sector}" /></data>"#
+    );
+    let mut buf = xml.into_bytes();
+    qdl::firehose_write_getack(
+        dev,
+        &mut buf,
+        format!("erase sectors {start_sector}..+{num_sectors}"),
+    )
+    .map_err(|e| format!("{e}"))
+}
+
 const EDL_STABILITY_INTERVAL: Duration = Duration::from_secs(1);
 const EDL_DISCONNECT_OBSERVE: Duration = Duration::from_secs(5);
 const EDL_SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -572,7 +602,7 @@ impl EdlSession {
                         .replace("{sectors}", &num_sectors.to_string())
                 )
         );
-        qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
+        send_firehose_erase(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase {part_name} failed: {e}")))?;
         ltbox_core::live!(
             log,
@@ -744,7 +774,7 @@ impl EdlSession {
     ) -> Result<()> {
         for entry in Self::collect_wipe_erase_plan(program_xmls)? {
             ltbox_core::live!(log, "{}", entry.log_line());
-            qdl::firehose_erase_storage(
+            send_firehose_erase(
                 &mut self.dev,
                 entry.num_sectors,
                 entry.lun,
@@ -917,7 +947,7 @@ impl EdlSession {
                     .replace("{sectors}", &num_sectors.to_string())
             )
         );
-        qdl::firehose_erase_storage(&mut self.dev, num_sectors, lun, start_sector)
+        send_firehose_erase(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase failed: {e}")))?;
         Ok(())
     }
