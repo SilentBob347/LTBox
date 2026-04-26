@@ -479,19 +479,22 @@ fn open_in_file_manager(path: &std::path::Path) -> std::result::Result<(), Strin
         // Try xdg-open first (every desktop ships one); fall back to
         // GNOME's `gio open` which behaves correctly on
         // xdg-portal-only sessions where `xdg-open` itself errors out
-        // mapping `inode/directory`. Capture both errors so the GUI
-        // can show what was tried.
+        // mapping `inode/directory`. Capture the xdg error before
+        // touching `gio` so the match below is exhaustive (compiler
+        // can't see that the early return makes `xdg` provably Err
+        // by this point).
         let xdg = std::process::Command::new("xdg-open").arg(path).spawn();
         if xdg.is_ok() {
             return Ok(());
         }
+        let xdg_err = xdg.expect_err("checked Ok above");
         let gio = std::process::Command::new("gio")
             .arg("open")
             .arg(path)
             .spawn();
-        match (xdg, gio) {
-            (_, Ok(_)) => Ok(()),
-            (Err(xdg_err), Err(gio_err)) => Err(format!(
+        match gio {
+            Ok(_) => Ok(()),
+            Err(gio_err) => Err(format!(
                 "xdg-open {}: {xdg_err}; gio open {}: {gio_err}",
                 path.display(),
                 path.display(),
