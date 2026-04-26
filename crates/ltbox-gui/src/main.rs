@@ -110,7 +110,81 @@ fn warning_style(t: &Theme) -> iced::widget::text::Style {
     }
 }
 
+/// Embedded udev rules — same file shipped under `misc/udev/` so a
+/// distro-installed `ltbox` (or AppImage) can install the rules
+/// without needing the source tree on disk.
+#[cfg(target_os = "linux")]
+const UDEV_RULES_CONTENT: &str = include_str!("../../../misc/udev/51-ltbox-qcom.rules");
+
+#[cfg(target_os = "linux")]
+const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/51-ltbox-qcom.rules";
+
+/// `ltbox --install-udev` entry point: write the bundled rules to
+/// `/etc/udev/rules.d/`, reload udev, trigger it, exit. Designed to
+/// be invoked via `pkexec ltbox --install-udev` from the GUI's
+/// "Install Drivers" action (planned), or by a user manually with
+/// `sudo`. Linux-only — Windows / macOS print a one-line refusal.
+///
+/// Returns `!` so callers can drop straight back into the GUI's
+/// `iced::Result` return without a dummy unit value.
+#[cfg(target_os = "linux")]
+fn install_udev_rules() -> ! {
+    eprintln!("[ltbox] Installing udev rules → {UDEV_RULES_PATH}");
+    if let Err(e) = std::fs::write(UDEV_RULES_PATH, UDEV_RULES_CONTENT) {
+        eprintln!("[ltbox] write {UDEV_RULES_PATH}: {e}");
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "ltbox".into());
+            eprintln!();
+            eprintln!("[ltbox] Permission denied — needs root. Re-run as:");
+            eprintln!("  sudo {exe} --install-udev");
+            eprintln!("  pkexec {exe} --install-udev");
+        }
+        std::process::exit(1);
+    }
+    let reload_ok = std::process::Command::new("udevadm")
+        .args(["control", "--reload"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !reload_ok {
+        eprintln!(
+            "[ltbox] WARNING: `udevadm control --reload` failed (rules still on disk; reboot will pick them up)"
+        );
+    }
+    let trigger_ok = std::process::Command::new("udevadm")
+        .arg("trigger")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !trigger_ok {
+        eprintln!(
+            "[ltbox] WARNING: `udevadm trigger` failed (replug device manually to apply rules)"
+        );
+    }
+    eprintln!();
+    eprintln!(
+        "[ltbox] Done. Replug a connected Qualcomm 9008 / Lenovo USB device for the new ACL grants to take effect."
+    );
+    std::process::exit(0);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_udev_rules() -> ! {
+    eprintln!("[ltbox] --install-udev is Linux-only — udev does not exist on this host.");
+    std::process::exit(1);
+}
+
 fn main() -> iced::Result {
+    // Pre-iced CLI subcommands. Each handler exits the process so
+    // the iced setup path runs only when no subcommand fires. Kept
+    // tiny + dep-free (no `clap`) — there's exactly one flag and it
+    // doesn't need argument parsing beyond presence detection.
+    if std::env::args().any(|a| a == "--install-udev") {
+        install_udev_rules();
+    }
+
     // Single-instance lock via fs2 advisory lock in the system temp
     // dir. Kernel drops the lock on dirty shutdown. Version-agnostic
     // filename so a running v3.0.0 blocks a v3.0.1 during in-place update.
