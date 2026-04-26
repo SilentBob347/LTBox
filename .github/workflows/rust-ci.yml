@@ -244,11 +244,15 @@ jobs:
   build-linux:
     name: Build linux_${{ matrix.arch }}
     needs: fmt-clippy
-    # Pinned to ubuntu-22.04 (NOT ubuntu-latest) so the Linux artifact
-    # inherits the older glibc 2.35 floor — AppImage built against an
-    # older glibc is forward-compatible with newer distros; the
-    # reverse is not. Future packaging jobs share the same base.
-    runs-on: ubuntu-22.04
+    # Each matrix entry pins its runner so the artifact inherits the
+    # older glibc 2.35 floor (ubuntu-22.04 / -arm). AppImage built
+    # against an older glibc is forward-compatible with newer
+    # distros; the reverse is not. Future packaging jobs share the
+    # same base. arm64 leg uses GitHub's native arm64 runner
+    # (ubuntu-22.04-arm) so the build is host-native rather than a
+    # cross-toolchain shim — proves the same code path real arm64
+    # users will exercise without an extra sysroot/cc-rs setup.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -256,6 +260,10 @@ jobs:
         include:
           - arch: x86_64
             target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
 
     steps:
       - uses: actions/checkout@v6
@@ -428,3 +436,5 @@ jobs:
             artifacts/**/LTBox-win_arm64-*.zip.sha256
             artifacts/**/LTBox-linux_x86_64-*.zip
             artifacts/**/LTBox-linux_x86_64-*.zip.sha256
+            artifacts/**/LTBox-linux_arm64-*.zip
+            artifacts/**/LTBox-linux_arm64-*.zip.sha256
