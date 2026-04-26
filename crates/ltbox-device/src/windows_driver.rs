@@ -10,7 +10,13 @@ use std::process::Command;
 
 /// `Command::new` + `CREATE_NO_WINDOW` so `pnputil` does not flash a console.
 fn silent_command(program: &str) -> Command {
+    // `mut` is only consumed inside the windows cfg branch — the
+    // Linux/macOS build sees an immutable binding and would otherwise
+    // trip the `unused_mut` lint under `-D warnings`.
+    #[cfg(windows)]
     let mut cmd = Command::new(program);
+    #[cfg(not(windows))]
+    let cmd = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
