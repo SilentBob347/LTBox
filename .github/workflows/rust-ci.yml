@@ -241,6 +241,94 @@ jobs:
             ${{ steps.stage.outputs.zip }}.sha256
           if-no-files-found: error
 
+  build-linux:
+    name: Build linux_${{ matrix.arch }}
+    needs: fmt-clippy
+    # Pinned to ubuntu-22.04 (NOT ubuntu-latest) per PLAN_Linux_Support
+    # decision D1 — AppImage built against the older glibc 2.35 floor
+    # is forward-compatible with newer distros; the reverse is not.
+    # Locking the floor here keeps every Linux artifact self-consistent
+    # with whatever the future L7 packaging job produces.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install native deps
+        # `serialport` pulls libudev-sys; `qdl-rs` + transitive
+        # libusb1-sys need libusb-1.0-0-dev; iced needs the X11 +
+        # Wayland + xkbcommon + fontconfig stack at link time. The
+        # exact list mirrors what L1's Linux notes call out so README
+        # / package docs can stay in sync with what CI proves green.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libusb-1.0-0-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Resolve release tag or commit
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${GITHUB_SHA:0:7}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }} -p ltbox-gui
+
+      - name: Stage artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          stage_dir="stage/LTBox-linux_${{ matrix.arch }}-${tag}"
+          mkdir -p "${stage_dir}"
+          cp "target/${{ matrix.target }}/release/ltbox" "${stage_dir}/"
+          [[ -f README.md ]] && cp README.md "${stage_dir}/"
+          [[ -f LICENSE ]]   && cp LICENSE   "${stage_dir}/"
+          zip_name="LTBox-linux_${{ matrix.arch }}-${tag}.zip"
+          (cd "$(dirname "${stage_dir}")" && zip -r "${OLDPWD}/${zip_name}" "$(basename "${stage_dir}")")
+          sha256sum "${zip_name}" | awk '{print $1"  "$2}' > "${zip_name}.sha256"
+          echo "zip=${zip_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux_${{ matrix.arch }}-${{ steps.meta.outputs.tag }}
+          path: |
+            ${{ steps.stage.outputs.zip }}
+            ${{ steps.stage.outputs.zip }}.sha256
+          if-no-files-found: error
+
   test:
     # Cross-built .exes can't execute on the Linux build runners
     # (Wine + iced GUI is not a serious testing strategy), so the
@@ -271,9 +359,48 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+  test-linux:
+    # Linux native test gate — distinct from the Windows test job
+    # because conditional deps activate per `cfg(target_os = ...)`.
+    # Same package list as `build-linux` so what CI proves green
+    # locally maps 1:1 to what packagers will need to install.
+    name: Test linux_x86_64
+    needs: fmt-clippy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libusb-1.0-0-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-linux
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
   release:
     name: Draft GitHub Release
-    needs: [build-windows, test]
+    needs: [build-windows, build-linux, test, test-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -300,3 +427,5 @@ jobs:
             artifacts/**/LTBox-win_x86_64-*.zip.sha256
             artifacts/**/LTBox-win_arm64-*.zip
             artifacts/**/LTBox-win_arm64-*.zip.sha256
+            artifacts/**/LTBox-linux_x86_64-*.zip
+            artifacts/**/LTBox-linux_x86_64-*.zip.sha256
