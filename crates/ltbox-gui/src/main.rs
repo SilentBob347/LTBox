@@ -433,35 +433,70 @@ impl AdvAction {
     }
 }
 
-/// Auto-output directory next to `ltbox.exe`. Caller `create_dir_all`s
-/// before writing.
+/// Auto-output directory for an Advanced wizard action. Caller
+/// `create_dir_all`s before writing. Routes through
+/// [`ltbox_core::app_paths::auto_output_dir_for`] so AppImage /
+/// distro-installed Linux copies don't try to write next to a
+/// read-only or root-owned executable. Windows path stays
+/// exe-adjacent (`<exe-dir>/output_<slug>`) for v3 continuity per
+/// `PLAN_Linux_Support` D6.
 fn adv_output_dir(action: AdvAction) -> std::path::PathBuf {
-    let base = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join(format!("output_{}", action.output_slug()))
+    ltbox_core::app_paths::auto_output_dir_for(action.output_slug())
 }
 
-/// Launch the platform file manager on `path`. Best-effort.
-fn open_in_file_manager(path: &std::path::Path) {
+/// Launch the platform file manager on `path`.
+///
+/// Returns `Ok(())` only when a launcher actually accepted the spawn
+/// — previously every error path was a `let _ = …` swallow, which on
+/// Linux meant a missing `xdg-open` (or a desktop session without a
+/// MIME handler for `inode/directory`) silently no-op'd. Caller is
+/// expected to surface the returned error string in the GUI log /
+/// error popup so users know why the "Open Folder" button did
+/// nothing.
+fn open_in_file_manager(path: &std::path::Path) -> std::result::Result<(), String> {
     #[cfg(windows)]
     {
         // `CREATE_NO_WINDOW` hides the transient cmd flash.
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = std::process::Command::new("explorer")
+        std::process::Command::new("explorer")
             .arg(path)
             .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("explorer {}: {e}", path.display()))
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open {}: {e}", path.display()))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        // Try xdg-open first (every desktop ships one); fall back to
+        // GNOME's `gio open` which behaves correctly on
+        // xdg-portal-only sessions where `xdg-open` itself errors out
+        // mapping `inode/directory`. Capture both errors so the GUI
+        // can show what was tried.
+        let xdg = std::process::Command::new("xdg-open").arg(path).spawn();
+        if xdg.is_ok() {
+            return Ok(());
+        }
+        let gio = std::process::Command::new("gio")
+            .arg("open")
+            .arg(path)
+            .spawn();
+        match (xdg, gio) {
+            (_, Ok(_)) => Ok(()),
+            (Err(xdg_err), Err(gio_err)) => Err(format!(
+                "xdg-open {}: {xdg_err}; gio open {}: {gio_err}",
+                path.display(),
+                path.display(),
+            )),
+        }
     }
 }
 struct AdvSection {
@@ -4166,19 +4201,20 @@ impl App {
                                     if let Err(e) = std::fs::create_dir_all(&work_dir) {
                                         return Err(format!("country work dir: {e}"));
                                     }
-                                    // v2 parity: `backup_critical_<ts>/`,
-                                    // dropped next to `ltbox.exe` so the
-                                    // original region images stay available
+                                    // v2 parity: `backup_critical_<ts>/`
+                                    // — original region images held aside
                                     // for manual restore if needed.
+                                    // Routed through `app_paths::backup_dir_for`
+                                    // so non-Windows hosts don't try to
+                                    // write next to a read-only AppImage
+                                    // mount.
                                     let ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_secs())
                                         .unwrap_or(0);
-                                    let exe_dir = std::env::current_exe()
-                                        .ok()
-                                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."));
-                                    let critical_backup = exe_dir.join(format!("backup_critical_{ts}"));
+                                    let critical_backup = ltbox_core::app_paths::backup_dir_for(
+                                        &format!("backup_critical_{ts}"),
+                                    );
                                     std::fs::create_dir_all(&critical_backup)
                                         .map_err(|e| format!("critical backup folder: {e}"))?;
                                     let xml_paths: Vec<&std::path::Path> =
@@ -5494,11 +5530,12 @@ impl App {
                             // Phase 4/7 — Read stock images (was Phase 2/6).
                             live!(log, "[Root] {}", phase_marker(4, 7, &ll.op_root_phase[3]));
                             // Hoisted so Phase 6 can echo the path.
-                            let exe_dir = std::env::current_exe()
-                                .ok()
-                                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                                .unwrap_or_else(|| std::path::PathBuf::from("."));
-                            let backup_dir = exe_dir.join(format!("backup_{base_name}"));
+                            // Routed through `app_paths::backup_dir_for`
+                            // so AppImage / distro Linux installs don't
+                            // try to write next to the executable.
+                            let backup_dir = ltbox_core::app_paths::backup_dir_for(
+                                &format!("backup_{base_name}"),
+                            );
                             {
                                 let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
                                     .map_err(|e| format!("EDL session: {e}"))?;
@@ -6038,8 +6075,14 @@ impl App {
                 self.country_popup_open = true;
             }
             Message::AdvWizOpenOutputFolder => {
-                if let Some(dir) = self.adv_wizard.output_dir.clone() {
-                    open_in_file_manager(&dir);
+                if let Some(dir) = self.adv_wizard.output_dir.clone()
+                    && let Err(err) = open_in_file_manager(&dir)
+                {
+                    // Surface the failed command + path in the log
+                    // so the user can see what was tried — silent
+                    // no-op was the old behaviour and made missing
+                    // xdg-open invisible on Linux.
+                    self.log_push(format!("[GUI] Open Folder failed: {err}"));
                 }
             }
             Message::AdvExec(action) => {
