@@ -36,11 +36,34 @@ LTBox exploits this to enable:
 
 ## 🚀 Quick Start
 
+### Windows
+
 1. Download the [latest release](../../releases/latest) and extract the zip (no spaces or special chars in the path)
 2. Double-click **`ltbox.exe`**
 3. Pick a task from the sidebar and follow the wizard
 
-Windows x86_64 and aarch64 builds are published currently.
+Windows `x86_64` and `arm64` builds are published.
+
+### Linux
+
+1. Install runtime deps (Debian/Ubuntu shown — adapt for your distro):
+   ```bash
+   sudo apt install \
+     libusb-1.0-0 libudev1 \
+     libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+     libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
+     libfontconfig1 \
+     xdg-utils
+   ```
+2. Download the [latest release](../../releases/latest) Linux zip, extract, `chmod +x ltbox`.
+3. Install the udev rules so the desktop session can open the Qualcomm 9008 / Lenovo USB devices without root:
+   ```bash
+   sudo ./ltbox --install-udev
+   ```
+4. **Replug** any connected device.
+5. Run `./ltbox`.
+
+Linux `x86_64` build is published.
 
 ---
 
@@ -95,8 +118,6 @@ Step-by-step manual control over the pipeline:
 | `ltbox-device` | Transport layer — ADB, Fastboot, EDL / QDL, serialport discovery |
 | `ltbox-patch` | Image pipeline — AVB, boot image ramdisk patching, region conversion, rollback, root provider integration |
 | `ltbox-gui` | `iced` desktop app — the `ltbox.exe` binary |
-
-Built and signed in CI via `cargo build --release` on `windows-latest` for both `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets.
 
 ---
 
