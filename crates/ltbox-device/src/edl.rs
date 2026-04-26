@@ -253,11 +253,16 @@ impl EdlSession {
         };
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_uploading"));
+        // Upstream qdl's `sahara_run` takes `&mut [Option<Vec<u8>>]`
+        // so the caller can leave slots empty for absent images
+        // (multi-image cmd-mode callers). LTBox uploads exactly one
+        // loader (the .melf), so a single-element slice with `Some`
+        // is the equivalent of the fork's `&mut [Vec<u8>]` signature.
         qdl::sahara::sahara_run(
             &mut dev,
             qdl::sahara::SaharaMode::WaitingForImage,
             None,
-            &mut [mbn],
+            &mut [Some(mbn)],
             vec![],
             false,
         )
