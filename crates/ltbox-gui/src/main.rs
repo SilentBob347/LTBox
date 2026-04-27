@@ -2522,6 +2522,14 @@ struct AdvWizard {
     file_path: Option<String>,
     file_paths: Vec<String>,
     country: Option<String>,
+    /// User-picked target region for `RegionConvert`. The previous
+    /// behaviour silently flipped to the opposite of whatever the
+    /// vendor_boot scan reported, which gave no UI signal of the
+    /// destination and refused to expose "no-op flip" cases. The
+    /// popup-driven picker writes the explicit target here so the
+    /// confirm step can echo it and the exec path can short-circuit
+    /// when source and target match.
+    region_target: Option<DeviceRegion>,
     /// `{exe_dir}/output_<action>/` — populated on Confirm → Exec.
     /// Read by the Done card's "Open Folder" pill.
     output_dir: Option<std::path::PathBuf>,
@@ -2538,6 +2546,9 @@ impl AdvWizard {
     fn needs_country(&self) -> bool {
         matches!(self.action, Some(AdvAction::PatchDevinfo))
     }
+    fn needs_region_target(&self) -> bool {
+        matches!(self.action, Some(AdvAction::RegionConvert))
+    }
     fn is_image_info(&self) -> bool {
         matches!(self.action, Some(AdvAction::ImageInfo))
     }
@@ -2549,6 +2560,13 @@ impl AdvWizard {
             &[
                 "adv_step_source",
                 "adv_step_country",
+                "flash_step_confirm",
+                "flash_step_flash",
+            ]
+        } else if self.needs_region_target() {
+            &[
+                "adv_step_source",
+                "adv_step_region_target",
                 "flash_step_confirm",
                 "flash_step_flash",
             ]
@@ -2581,6 +2599,9 @@ impl AdvWizard {
         }
         if self.needs_country() && self.step == 1 {
             return self.country.is_some();
+        }
+        if self.needs_region_target() && self.step == 1 {
+            return self.region_target.is_some();
         }
         true
     }
@@ -2914,6 +2935,9 @@ enum Message {
     // Country code popup
     SelectCountry(String),
     DismissCountryPopup,
+    // Region-convert target picker popup
+    SelectRegionTarget(DeviceRegion),
+    DismissRegionTargetPopup,
     // System Update wizard
     SysAction(SysUpdateAction),
     SysNext,
@@ -2968,6 +2992,7 @@ enum Message {
     AdvImageInfoExecStart,
     AdvImageInfoExecDone(Result<String, String>),
     AdvWizOpenCountry,
+    AdvWizOpenRegionTarget,
     AdvWizOpenOutputFolder,
     // System Update execution
     SysExecStart,
@@ -3147,6 +3172,11 @@ struct App {
     /// Routes `SelectCountry` back to the Advanced wizard instead of
     /// the Flash flow when PatchDevinfo opened the popup.
     adv_needs_country: bool,
+    /// Region-convert target picker overlay. Shown when the
+    /// `RegionConvert` wizard reaches step 1 so the user can pick
+    /// PRC or ROW as the destination explicitly instead of relying
+    /// on the prior auto-flip behaviour.
+    region_target_popup_open: bool,
     /// Staging slot for the Reboot confirm popup.
     reboot_confirm_target: Option<RebootTarget>,
     // Device & operation state
@@ -3275,6 +3305,7 @@ impl Default for App {
             wf_config: WorkflowConfig::default(),
             country_popup_open: false,
             adv_needs_country: false,
+            region_target_popup_open: false,
             reboot_confirm_target: None,
             connection: ConnectionStatus::default(),
             device_model: String::new(),
@@ -4627,6 +4658,14 @@ impl App {
                     // Flash wizard — back to Data so user can switch wipe off.
                     self.flash.back();
                 }
+            }
+            // Region-convert target picker popup
+            Message::SelectRegionTarget(target) => {
+                self.region_target_popup_open = false;
+                self.adv_wizard.region_target = Some(target);
+            }
+            Message::DismissRegionTargetPopup => {
+                self.region_target_popup_open = false;
             }
             // System Update wizard
             Message::SysAction(a) => {
@@ -6269,6 +6308,9 @@ impl App {
                 self.adv_needs_country = true;
                 self.country_popup_open = true;
             }
+            Message::AdvWizOpenRegionTarget => {
+                self.region_target_popup_open = true;
+            }
             Message::AdvWizOpenOutputFolder => {
                 if let Some(dir) = self.adv_wizard.output_dir.clone()
                     && let Err(err) = open_in_file_manager(&dir)
@@ -6300,6 +6342,8 @@ impl App {
                     let _conn = self.connection;
                     // PatchDevinfo only — unused otherwise.
                     let adv_country: Option<String> = self.wf_config.country_code.clone();
+                    // RegionConvert only — user-picked target.
+                    let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
                     let output_dir: std::path::PathBuf = self
                         .adv_wizard
                         .output_dir
@@ -6409,8 +6453,20 @@ impl App {
                                         ltbox_core::live!(log, "[Advanced] Use dedicated wizard for partition/physical flash/dump");
                                     }
                                     AdvAction::RegionConvert => {
-                                        // Auto-detect source region (PRC/ROW) and
-                                        // flip to the opposite.
+                                        // Detect source region (PRC/ROW) by
+                                        // scanning for the IROW marker; the
+                                        // user-picked target comes from the
+                                        // wizard's region popup. Skip the
+                                        // patch when source already matches
+                                        // target so the user gets a clear
+                                        // signal instead of a no-op patched
+                                        // file with zero replacements.
+                                        let Some(target_region) = adv_region_target else {
+                                            return Err(
+                                                "No target region selected — pick PRC or ROW in the popup before starting"
+                                                    .into(),
+                                            );
+                                        };
                                         let data = match std::fs::read(input) {
                                             Ok(b) => b,
                                             Err(e) => return Err(format!("Read vendor_boot failed: {e}")),
@@ -6420,12 +6476,27 @@ impl App {
                                         let row_dot = vec![0x2E, 0x52, 0x4F, 0x57]; // ".ROW"
                                         let row_i = vec![0x49, 0x52, 0x4F, 0x57];   // "IROW"
                                         let has_row = data.windows(4).any(|w| w == row_i.as_slice());
-                                        let target = if has_row {
-                                            ltbox_core::live!(log, "[Region] Source detected: ROW — flipping to PRC");
-                                            ltbox_patch::region::RegionTarget::Prc
+                                        let source_region = if has_row {
+                                            DeviceRegion::Row
                                         } else {
-                                            ltbox_core::live!(log, "[Region] Source detected: PRC — flipping to ROW");
-                                            ltbox_patch::region::RegionTarget::Row
+                                            DeviceRegion::Prc
+                                        };
+                                        ltbox_core::live!(
+                                            log,
+                                            "[Region] Source detected: {:?}; target: {:?}",
+                                            source_region,
+                                            target_region
+                                        );
+                                        if source_region == target_region {
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Region] Source already matches target — skipping patch (no output written)"
+                                            );
+                                            return Ok(log);
+                                        }
+                                        let target = match target_region {
+                                            DeviceRegion::Prc => ltbox_patch::region::RegionTarget::Prc,
+                                            DeviceRegion::Row => ltbox_patch::region::RegionTarget::Row,
                                         };
                                         let prc_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
                                             (prc_dot.clone(), row_dot.clone()),
@@ -7854,6 +7925,9 @@ impl App {
         if self.country_popup_open {
             layers.push(self.country_popup_view());
         }
+        if self.region_target_popup_open {
+            layers.push(self.region_target_popup_view());
+        }
         if let Some(t) = self.reboot_confirm_target {
             layers.push(self.reboot_confirm_popup(t));
         }
@@ -7983,6 +8057,101 @@ impl App {
             .spacing(10)
             .padding(20)
             .width(400),
+        )
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container.into()),
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::MD.into(),
+                },
+                shadow: iced::Shadow {
+                    color: with_alpha(p.shadow, 0.3),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            }
+        });
+
+        container(
+            container(popup_content)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+            ..Default::default()
+        })
+        .into()
+    }
+
+    /// PRC / ROW radio popup for the Advanced RegionConvert wizard.
+    /// Smaller than the country popup (only two choices) so the
+    /// content uses M3 radio rows in a fixed-width card.
+    fn region_target_popup_view(&self) -> Element<'_, Message> {
+        let selected = self.adv_wizard.region_target;
+        let mut list = column![].spacing(2);
+        for target in [DeviceRegion::Prc, DeviceRegion::Row] {
+            let is_selected = selected == Some(target);
+            let label = self.t(target.label_key()).to_string();
+            let bg_color = if is_selected {
+                ACCENT
+            } else {
+                iced::Color::TRANSPARENT
+            };
+            let txt_color = if is_selected {
+                iced::Color::WHITE
+            } else {
+                iced::Color::BLACK
+            };
+            list = list.push(
+                button(text(label).size(13).color(txt_color))
+                    .on_press(Message::SelectRegionTarget(target))
+                    .padding([6, 14])
+                    .width(Length::Fill)
+                    .style(move |_t: &Theme, status| {
+                        let hover = matches!(status, button::Status::Hovered);
+                        button::Style {
+                            background: Some(if is_selected {
+                                bg_color.into()
+                            } else if hover {
+                                iced::Color::from_rgba(0.357, 0.388, 0.878, 0.08).into()
+                            } else {
+                                iced::Color::TRANSPARENT.into()
+                            }),
+                            text_color: txt_color,
+                            ..Default::default()
+                        }
+                    }),
+            );
+        }
+
+        let popup_content = container(
+            column![
+                row![
+                    text(self.t("popup_select_region_target").to_string()).size(16),
+                    Space::new().width(Length::Fill),
+                    button(
+                        text(self.t("btn_cancel").to_string())
+                            .size(12)
+                            .style(muted_style)
+                    )
+                    .on_press(Message::DismissRegionTargetPopup)
+                    .padding([4, 12])
+                    .style(neutral_pill_btn_style),
+                ]
+                .align_y(iced::Alignment::Center),
+                widget::rule::horizontal(1),
+                list,
+            ]
+            .spacing(10)
+            .padding(20)
+            .width(320),
         )
         .style(|t: &Theme| {
             let p = pal_of(t);
@@ -10828,6 +10997,7 @@ impl App {
         let step_bar = wizard_step_bar(&step_labels, self.adv_wizard.step);
 
         let needs_country = self.adv_wizard.needs_country();
+        let needs_region_target = self.adv_wizard.needs_region_target();
         let is_confirm = self.adv_wizard.is_confirm_step();
 
         let body: Element<'_, Message> = if is_exec && self.adv_wizard.is_image_info() {
@@ -10838,6 +11008,8 @@ impl App {
             self.adv_wiz_confirm_step()
         } else if needs_country && self.adv_wizard.step == 1 {
             self.adv_wiz_country_step()
+        } else if needs_region_target && self.adv_wizard.step == 1 {
+            self.adv_wiz_region_target_step()
         } else {
             self.adv_wiz_source_step()
         };
@@ -11033,6 +11205,71 @@ impl App {
             .into()
     }
 
+    /// Step 1 for `RegionConvert`: card that opens the target picker
+    /// popup. Mirrors `adv_wiz_country_step` shape so the wizard
+    /// rendering stays consistent with the other "needs option"
+    /// flow (PatchDevinfo).
+    fn adv_wiz_region_target_step(&self) -> Element<'_, Message> {
+        let selected = self.adv_wizard.region_target.is_some();
+        let status = match self.adv_wizard.region_target {
+            Some(target) => self.t(target.label_key()).to_string(),
+            None => self.t("adv_region_target_placeholder").to_string(),
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_pick_region_target").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("adv_region_target_desc").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fixed(280.0))
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(Length::Fixed(280.0))
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .width(Length::Shrink)
+        .on_press(Message::AdvWizOpenRegionTarget)
+        .padding(0)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        });
+        let btn_row = row![
+            Space::new().width(Length::Fill),
+            btn,
+            Space::new().width(Length::Fill),
+        ];
+        let status_color = if selected { GREEN } else { LABEL };
+        let col = column![
+            text(self.t("adv_region_target_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("adv_region_target_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            btn_row,
+            text(status).size(12).color(status_color).center(),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
     /// Confirm step — Next becomes Start.
     fn adv_wiz_confirm_step(&self) -> Element<'_, Message> {
         let action = match self.adv_wizard.action {
@@ -11061,8 +11298,16 @@ impl App {
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
         if self.adv_wizard.needs_country() {
-            let code = self.adv_wizard.country.clone().unwrap_or(dash);
+            let code = self.adv_wizard.country.clone().unwrap_or(dash.clone());
             col = col.push(info_kv_center(self.t("adv_confirm_country"), &code));
+        }
+        if self.adv_wizard.needs_region_target() {
+            let label = self
+                .adv_wizard
+                .region_target
+                .map(|r| self.t(r.label_key()).to_string())
+                .unwrap_or(dash);
+            col = col.push(info_kv_center(self.t("adv_confirm_region_target"), &label));
         }
         container(col)
             .width(Length::Fill)
