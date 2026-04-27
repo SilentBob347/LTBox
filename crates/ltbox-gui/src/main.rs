@@ -4024,14 +4024,25 @@ impl App {
                                 let mut adb = ltbox_device::adb::AdbManager::new();
                                 if adb.check_device().unwrap_or(false) {
                                     if let Err(e) = adb.shell("reboot") {
-                                        ltbox_core::live!(log,
-                                            "[ADB] reboot attempt failed: {e}"
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ADB] {}",
+                                            ltbox_core::i18n::tr("live_adb_reboot_failed")
+                                                .replace("{error}", &e.to_string())
                                         );
                                     } else {
-                                        ltbox_core::live!(log, "[ADB] reboot sent");
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ADB] {}",
+                                            ltbox_core::i18n::tr("live_adb_reboot_sent")
+                                        );
                                     }
                                 } else {
-                                    ltbox_core::live!(log, "[ADB] No ADB device to route reboot through — user must reboot manually");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[ADB] {}",
+                                        ltbox_core::i18n::tr("live_adb_no_reboot_route")
+                                    );
                                 }
                                 return Err("Rollback=ON requires fastboot var access. Device not in fastboot or getvar failed — aborted without flashing.".to_string());
                             }
@@ -4039,16 +4050,31 @@ impl App {
                             // 2. Device detection
                             let skip_adb = conn.skip_adb();
                             if skip_adb {
-                                ltbox_core::live!(log, "[Flash] Device in Fastboot/EDL — skipping ADB step");
+                                ltbox_core::live!(
+                                    log,
+                                    "[Flash] {}",
+                                    ltbox_core::i18n::tr("live_flash_skip_adb")
+                                );
                             } else {
-                                ltbox_core::live!(log, "[ADB] Checking device...");
+                                ltbox_core::live!(
+                                    log,
+                                    "[ADB] {}",
+                                    ltbox_core::i18n::tr("live_adb_checking_device")
+                                );
                                 let mut adb = ltbox_device::adb::AdbManager::new();
                                 if adb.check_device().unwrap_or(false) {
-                                    ltbox_core::live!(log, "[ADB] Device connected");
-                                    let slot = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
-                                    ltbox_core::live!(log, "[ADB] Active slot: {slot}");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[ADB] {}",
+                                        ltbox_core::i18n::tr("live_adb_device_connected")
+                                    );
+                                    let _slot = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
                                 } else {
-                                    ltbox_core::live!(log, "[ADB] No device — proceeding without ADB info");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[ADB] {}",
+                                        ltbox_core::i18n::tr("live_adb_no_device_info")
+                                    );
                                 }
                             }
 
@@ -4059,9 +4085,32 @@ impl App {
                             let has_vendor_boot = vendor_boot.exists();
                             let has_vbmeta = vbmeta.exists();
                             let has_boot = boot.exists();
-                            ltbox_core::live!(log, "[Flash] vendor_boot.img: {}", if has_vendor_boot { "found" } else { "not found" });
-                            ltbox_core::live!(log, "[Flash] vbmeta.img: {}", if has_vbmeta { "found" } else { "not found" });
-                            ltbox_core::live!(log, "[Flash] boot.img: {}", if has_boot { "found" } else { "not found" });
+                            let found = ltbox_core::i18n::tr("live_status_found");
+                            let not_found = ltbox_core::i18n::tr("live_status_not_found");
+                            ltbox_core::live!(
+                                log,
+                                "[Flash] {}",
+                                ltbox_core::i18n::tr("live_flash_vendor_boot_status").replace(
+                                    "{status}",
+                                    if has_vendor_boot { &found } else { &not_found }
+                                )
+                            );
+                            ltbox_core::live!(
+                                log,
+                                "[Flash] {}",
+                                ltbox_core::i18n::tr("live_flash_vbmeta_status").replace(
+                                    "{status}",
+                                    if has_vbmeta { &found } else { &not_found }
+                                )
+                            );
+                            ltbox_core::live!(
+                                log,
+                                "[Flash] {}",
+                                ltbox_core::i18n::tr("live_flash_boot_status").replace(
+                                    "{status}",
+                                    if has_boot { &found } else { &not_found }
+                                )
+                            );
 
                             // Count .x and .xml files
                             let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
@@ -4074,41 +4123,82 @@ impl App {
                                         && p.file_name().map(|n| n.to_string_lossy().starts_with("rawprogram")).unwrap_or(false)
                                 }).unwrap_or(false)
                             }).count()).unwrap_or(0);
-                            ltbox_core::live!(log, "[Flash] .x files: {x_count}, rawprogram XML: {xml_count}");
+                            ltbox_core::live!(
+                                log,
+                                "[Flash] {}",
+                                ltbox_core::i18n::tr("live_flash_files_count")
+                                    .replace("{x_count}", &x_count.to_string())
+                                    .replace("{xml_count}", &xml_count.to_string())
+                            );
 
                             // 4. Region conversion
                             if cfg.modify_region {
                                 if has_vendor_boot && has_vbmeta {
-                                    ltbox_core::live!(log, "[Region] Region modification: ON");
-                                    ltbox_core::live!(log, "[Region] vendor_boot + vbmeta patching ready");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Region] {}",
+                                        ltbox_core::i18n::tr("live_region_on")
+                                    );
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Region] {}",
+                                        ltbox_core::i18n::tr("live_region_ready")
+                                    );
                                 } else {
-                                    ltbox_core::live!(log, "[Region] WARNING: vendor_boot.img or vbmeta.img missing — region patch skipped");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Region] {}",
+                                        ltbox_core::i18n::tr("live_region_missing_skip")
+                                    );
                                 }
                             } else {
-                                ltbox_core::live!(log, "[Region] Region modification: OFF");
+                                ltbox_core::live!(
+                                    log,
+                                    "[Region] {}",
+                                    ltbox_core::i18n::tr("live_region_off")
+                                );
                             }
 
                             // 5. ARB detection
-                            ltbox_core::live!(log, "[ARB] Modify Rollback Index: {}", rb_label_for_log);
                             ltbox_core::live!(
                                 log,
-                                "[ARB] Device rollback index: {}",
-                                device_rollback_index
-                                    .map(|v| v.to_string())
-                                    .unwrap_or_else(|| "(none / no ARB committed)".to_string())
+                                "[ARB] {}",
+                                ltbox_core::i18n::tr("live_arb_modify").replace("{value}", &rb_label_for_log)
+                            );
+                            let device_idx_str = device_rollback_index
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| ltbox_core::i18n::tr("live_arb_device_index_none"));
+                            ltbox_core::live!(
+                                log,
+                                "[ARB] {}",
+                                ltbox_core::i18n::tr("live_arb_device_index")
+                                    .replace("{index}", &device_idx_str)
                             );
                             if has_boot {
-                                ltbox_core::live!(log, "[ARB] $ analyze_rollback boot.img");
+                                ltbox_core::live!(
+                                    log,
+                                    "[ARB] {}",
+                                    ltbox_core::i18n::tr("live_arb_analyze_boot")
+                                );
                                 match ltbox_patch::rollback::analyze_rollback_with_mode(
                                     &boot,
                                     device_rollback_index,
                                     rb_mode,
                                 ) {
-                                    Ok(info) => ltbox_core::live!(log,
-                                        "[ARB] boot.img rollback index: {}, needs_patch: {} (mode={:?})",
-                                        info.image_index, info.needs_patch, rb_mode
+                                    Ok(info) => ltbox_core::live!(
+                                        log,
+                                        "[ARB] {}",
+                                        ltbox_core::i18n::tr("live_arb_boot_index_result")
+                                            .replace("{index}", &info.image_index.to_string())
+                                            .replace("{needs}", &info.needs_patch.to_string())
+                                            .replace("{mode}", &format!("{:?}", rb_mode))
                                     ),
-                                    Err(e) => ltbox_core::live!(log, "[ARB] boot.img analysis failed: {e}"),
+                                    Err(e) => ltbox_core::live!(
+                                        log,
+                                        "[ARB] {}",
+                                        ltbox_core::i18n::tr("live_arb_boot_analysis_failed")
+                                            .replace("{error}", &e.to_string())
+                                    ),
                                 }
                             }
                             // v2 parity: `check_image_folder_arb` —
@@ -4116,20 +4206,42 @@ impl App {
 
                             // 6. XML
                             if x_count > 0 {
-                                ltbox_core::live!(log, "[XML] {x_count} encrypted .x file(s) — decryption will be performed");
+                                ltbox_core::live!(
+                                    log,
+                                    "[XML] {}",
+                                    ltbox_core::i18n::tr("live_xml_decrypt_pending")
+                                        .replace("{count}", &x_count.to_string())
+                                );
                             }
                             if !cfg.wipe && xml_count > 0 {
-                                ltbox_core::live!(log, "[XML] Keep data mode — userdata/metadata will be excluded");
+                                ltbox_core::live!(
+                                    log,
+                                    "[XML] {}",
+                                    ltbox_core::i18n::tr("live_xml_keep_excludes")
+                                );
                             }
 
                             // 7. Country code
                             if cfg.wipe {
-                                ltbox_core::live!(log, "[Flash] Data mode: WIPE");
+                                ltbox_core::live!(
+                                    log,
+                                    "[Flash] {}",
+                                    ltbox_core::i18n::tr("live_flash_data_mode_wipe")
+                                );
                                 if let Some(cc) = &cfg.country_code {
-                                    ltbox_core::live!(log, "[Flash] Country code: {cc} — devinfo/persist will be patched");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Flash] {}",
+                                        ltbox_core::i18n::tr("live_flash_country_devinfo")
+                                            .replace("{code}", cc)
+                                    );
                                 }
                             } else {
-                                ltbox_core::live!(log, "[Flash] Data mode: KEEP");
+                                ltbox_core::live!(
+                                    log,
+                                    "[Flash] {}",
+                                    ltbox_core::i18n::tr("live_flash_data_mode_keep")
+                                );
                             }
 
                             // 8. EDL flash
@@ -4138,7 +4250,11 @@ impl App {
                             let loader = match loader {
                                 Some(l) => l,
                                 None => {
-                                    ltbox_core::live!(log, "[EDL] xbl_s_devprg_ns.melf not found in firmware folder");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[EDL] {}",
+                                        ltbox_core::i18n::tr("live_edl_loader_missing")
+                                    );
                                     return Ok(log);
                                 }
                             };
@@ -4331,15 +4447,27 @@ impl App {
                                                 )
                                                 .map_err(|e| format!("patch {log_name}: {e}"))
                                             } else {
-                                                ltbox_core::live!(log,
-                                                    "[ARB] {log_name}: no signing key (pubkey {:?} unknown + no testkey) — skipping",
-                                                    analysis.image_info.public_key_sha1
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_no_signing_key")
+                                                        .replace("{name}", log_name)
+                                                        .replace(
+                                                            "{key}",
+                                                            &format!("{:?}", analysis.image_info.public_key_sha1),
+                                                        )
                                                 );
                                                 continue;
                                             }
                                         };
                                         if let Err(e) = patch_result {
-                                            ltbox_core::live!(log, "[ARB] {log_name} patch failed: {e}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[ARB] {}",
+                                                ltbox_core::i18n::tr("live_arb_patch_failed")
+                                                    .replace("{name}", log_name)
+                                                    .replace("{error}", &e.to_string())
+                                            );
                                             continue;
                                         }
 
@@ -4463,7 +4591,13 @@ impl App {
                                     for label in ["devinfo", "persist"] {
                                         let Ok(rec) = catalog.require(label, &[]) else {
                                             let reason = "partition not in rawprogram";
-                                            ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", reason)
+                                            );
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         };
@@ -4487,7 +4621,13 @@ impl App {
                                             .unwrap_or(0);
                                         if n == 0 {
                                             let reason = "num_sectors=0";
-                                            ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", reason)
+                                            );
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         }
@@ -4505,7 +4645,13 @@ impl App {
                                             label, &dump_path, lun, start, n, &mut log,
                                         ) {
                                             let reason = format!("dump failed: {e}");
-                                            ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", &reason)
+                                            );
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         }
@@ -4516,7 +4662,13 @@ impl App {
                                             critical_backup.join(format!("{label}.img")),
                                         ) {
                                             let reason = format!("backup failed: {e}");
-                                            ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", &reason)
+                                            );
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         }
@@ -4527,14 +4679,26 @@ impl App {
                                             Ok(c) => c,
                                             Err(e) => {
                                                 let reason = format!("detect failed: {e}");
-                                                ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                                ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", &reason)
+                                            );
                                                 country_progress.mark_failed(label, reason);
                                                 None
                                             }
                                         };
                                         let Some(old_code) = detected else {
                                             let reason = "no known code detected";
-                                            ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", reason)
+                                            );
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         };
@@ -4563,8 +4727,12 @@ impl App {
                                                     rec.start_sector.as_deref().unwrap_or("0"),
                                                     &mut log,
                                                 ) {
-                                                    ltbox_core::live!(log,
-                                                        "[Country] flash {label} failed: {e}"
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Country] {}",
+                                                        ltbox_core::i18n::tr("live_country_flash_failed")
+                                                            .replace("{label}", label)
+                                                            .replace("{error}", &e.to_string())
                                                     );
                                                     country_progress.mark_failed(
                                                         label,
@@ -4581,25 +4749,46 @@ impl App {
                                                 }
                                             }
                                             Ok(false) if old_code == target_code => {
-                                                ltbox_core::live!(log,
-                                                    "[Country] {label}: already {target_code}"
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Country] {}",
+                                                    ltbox_core::i18n::tr("live_country_partition_already")
+                                                        .replace("{label}", label)
+                                                        .replace("{target}", target_code)
                                                 );
                                                 country_progress.mark_flashed(label);
                                             }
                                             Ok(false) => {
                                                 let reason = "no replacements";
-                                                ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                                ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", reason)
+                                            );
                                                 country_progress.mark_failed(label, reason);
                                             }
                                             Err(e) => {
                                                 let reason = format!("patch failed: {e}");
-                                                ltbox_core::live!(log, "[Country] {label}: {reason}");
+                                                ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                    .replace("{label}", label)
+                                                    .replace("{reason}", &reason)
+                                            );
                                                 country_progress.mark_failed(label, reason);
                                             }
                                         }
                                     }
                                     if let Err(e) = country_progress.finish() {
-                                        ltbox_core::live!(log, "[Country] {e}");
+                                        ltbox_core::live!(
+                                            log,
+                                            "[Country] {}",
+                                            ltbox_core::i18n::tr("live_country_error")
+                                                .replace("{error}", &e)
+                                        );
                                         return Err(e);
                                     }
                                     // Surface the backup location once
@@ -4759,11 +4948,19 @@ impl App {
                         tokio::task::spawn_blocking(move || {
                             let mut log = Vec::new();
                             let mut adb = ltbox_device::adb::AdbManager::new();
-                            ltbox_core::live!(log, "[ADB] Checking device...");
+                            ltbox_core::live!(
+                                log,
+                                "[ADB] {}",
+                                ltbox_core::i18n::tr("live_adb_checking_device")
+                            );
                             if !adb.check_device().unwrap_or(false) {
                                 return Err("No ADB device connected".to_string());
                             }
-                            ltbox_core::live!(log, "[ADB] Device connected");
+                            ltbox_core::live!(
+                                log,
+                                "[ADB] {}",
+                                ltbox_core::i18n::tr("live_adb_device_connected")
+                            );
                             let packages = [
                                 "com.lenovo.ota",
                                 "com.tblenovo.lenovowhatsnew",
@@ -4787,12 +4984,21 @@ impl App {
                                         let cmd = format!("pm uninstall -k --user 0 {pkg}");
                                         ltbox_core::live!(log, "[ADB] $ {cmd}");
                                         match adb.shell(&cmd) {
-                                            Ok(out) if out.contains("Success") => ltbox_core::live!(log, "[ADB] Uninstalled {pkg}"),
+                                            Ok(out) if out.contains("Success") => ltbox_core::live!(
+                                                log,
+                                                "[ADB] {}",
+                                                ltbox_core::i18n::tr("live_adb_uninstalled")
+                                                    .replace("{package}", pkg)
+                                            ),
                                             Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
                                             Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
                                         }
                                     }
-                                    ltbox_core::live!(log, "[SysUpdate] System updates disabled");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[SysUpdate] {}",
+                                        ltbox_core::i18n::tr("live_sysupdate_disabled")
+                                    );
                                     Ok(log)
                                 }
                                 SysUpdateAction::Enable => {
@@ -4804,12 +5010,21 @@ impl App {
                                         let cmd = format!("cmd package install-existing {pkg}");
                                         ltbox_core::live!(log, "[ADB] $ {cmd}");
                                         match adb.shell(&cmd) {
-                                            Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(log, "[ADB] Reinstalled {pkg}"),
+                                            Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(
+                                                log,
+                                                "[ADB] {}",
+                                                ltbox_core::i18n::tr("live_adb_reinstalled")
+                                                    .replace("{package}", pkg)
+                                            ),
                                             Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
                                             Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
                                         }
                                     }
-                                    ltbox_core::live!(log, "[SysUpdate] System updates re-enabled");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[SysUpdate] {}",
+                                        ltbox_core::i18n::tr("live_sysupdate_enabled")
+                                    );
                                     Ok(log)
                                 }
                                 SysUpdateAction::Rescue => {
@@ -4853,7 +5068,12 @@ impl App {
                                         .parent()
                                         .map(std::path::Path::to_path_buf)
                                         .unwrap_or_else(|| std::path::PathBuf::from("."));
-                                    ltbox_core::live!(log, "[Rescue] Loader: {}", loader.display());
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_loader")
+                                            .replace("{path}", &loader.display().to_string())
+                                    );
                                     ltbox_core::live!(log,
                                         "[Rescue] Target region: {}",
                                         match region {
@@ -4880,10 +5100,18 @@ impl App {
                                         work_dir.display()
                                     );
 
-                                    ltbox_core::live!(log, "[Rescue] Transitioning to EDL...");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_transitioning")
+                                    );
                                     let _ = adb.reboot("edl");
                                     std::thread::sleep(std::time::Duration::from_secs(5));
-                                    ltbox_core::live!(log, "[EDL] Waiting for device...");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[EDL] {}",
+                                        ltbox_core::i18n::tr("live_edl_waiting_device")
+                                    );
                                     ltbox_device::edl::wait_for_device()
                                         .map_err(|e| format!("EDL not found: {e}"))?;
 
@@ -5105,16 +5333,23 @@ impl App {
                                             ) {
                                                 Ok(i) => i,
                                                 Err(e) => {
-                                                    ltbox_core::live!(log,
-                                                        "[Rescue] Slot {slot}: vbmeta inspect failed: {e}"
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_vbmeta_inspect_failed")
+                                                            .replace("{slot}", slot)
+                                                            .replace("{error}", &e.to_string())
                                                     );
                                                     continue;
                                                 }
                                             };
                                         let Some(vbm_key) = key_spec.clone() else {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: no testkey (testkey_rsa{{2048,4096}}.pem) under {} — cannot re-sign vbmeta",
-                                                loader_dir.display()
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_no_testkey")
+                                                    .replace("{slot}", slot)
+                                                    .replace("{path}", &loader_dir.display().to_string())
                                             );
                                             continue;
                                         };
@@ -5166,9 +5401,17 @@ impl App {
                                         }
                                     }
 
-                                    ltbox_core::live!(log, "[Rescue] Resetting device...");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_resetting")
+                                    );
                                     session.reset_tolerant(&mut log);
-                                    ltbox_core::live!(log, "[Rescue] Boot recovery complete.");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_complete")
+                                    );
                                     Ok(log)
                                 }
                             }
@@ -6401,7 +6644,12 @@ impl App {
                                             let output = output_dir.join(stem).with_extension("xml");
                                             ltbox_core::live!(log, "[Crypto] $ decrypt_file {} → {}", src.display(), output.display());
                                             match ltbox_core::crypto::decrypt_file(&src, &output) {
-                                                Ok(size) => ltbox_core::live!(log, "[Crypto] Decrypted {size} bytes"),
+                                                Ok(size) => ltbox_core::live!(
+                                                    log,
+                                                    "[Crypto] {}",
+                                                    ltbox_core::i18n::tr("live_crypto_decrypted")
+                                                        .replace("{bytes}", &size.to_string())
+                                                ),
                                                 Err(e) => return Err(format!("Decryption failed: {e}")),
                                             }
                                         }
@@ -6425,10 +6673,14 @@ impl App {
                                             };
                                         ltbox_core::live!(
                                             log,
-                                            "[AVB] Device rollback index: {}",
-                                            device_index
-                                                .map(|v| v.to_string())
-                                                .unwrap_or_else(|| "(none / fastboot unavailable)".to_string())
+                                            "[AVB] {}",
+                                            ltbox_core::i18n::tr("live_avb_device_rollback_index")
+                                                .replace(
+                                                    "{value}",
+                                                    &device_index.map(|v| v.to_string()).unwrap_or_else(|| {
+                                                        ltbox_core::i18n::tr("live_avb_device_index_unavailable")
+                                                    }),
+                                                )
                                         );
                                         ltbox_core::live!(log, "[AVB] $ analyze_rollback {}", input.display());
                                         match ltbox_patch::rollback::analyze_rollback_with_mode(
@@ -6437,10 +6689,17 @@ impl App {
                                             ltbox_patch::rollback::RollbackMode::Auto,
                                         ) {
                                             Ok(info) => {
-                                                ltbox_core::live!(log, "[AVB] Image rollback index: {}", info.image_index);
-                                                ltbox_core::live!(log,
-                                                    "[AVB] Needs patch (AUTO mode): {}",
-                                                    info.needs_patch
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[AVB] {}",
+                                                    ltbox_core::i18n::tr("live_avb_image_rollback_index")
+                                                        .replace("{index}", &info.image_index.to_string())
+                                                );
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[AVB] {}",
+                                                    ltbox_core::i18n::tr("live_avb_needs_patch")
+                                                        .replace("{needs}", &info.needs_patch.to_string())
                                                 );
                                             }
                                             Err(e) => return Err(format!("ARB analysis failed: {e}")),
@@ -6450,7 +6709,11 @@ impl App {
                                     | AdvAction::DumpPartitions
                                     | AdvAction::FlashPhysical
                                     | AdvAction::DumpPhysical => {
-                                        ltbox_core::live!(log, "[Advanced] Use dedicated wizard for partition/physical flash/dump");
+                                        ltbox_core::live!(
+                                            log,
+                                            "[Advanced] {}",
+                                            ltbox_core::i18n::tr("live_advanced_use_dedicated")
+                                        );
                                     }
                                     AdvAction::RegionConvert => {
                                         // Detect source region (PRC/ROW) by
@@ -6483,14 +6746,16 @@ impl App {
                                         };
                                         ltbox_core::live!(
                                             log,
-                                            "[Region] Source detected: {:?}; target: {:?}",
-                                            source_region,
-                                            target_region
+                                            "[Region] {}",
+                                            ltbox_core::i18n::tr("live_region_source_target")
+                                                .replace("{source}", &format!("{:?}", source_region))
+                                                .replace("{target}", &format!("{:?}", target_region))
                                         );
                                         if source_region == target_region {
                                             ltbox_core::live!(
                                                 log,
-                                                "[Region] Source already matches target — skipping patch (no output written)"
+                                                "[Region] {}",
+                                                ltbox_core::i18n::tr("live_region_source_matches_target")
                                             );
                                             return Ok(log);
                                         }
@@ -6509,7 +6774,13 @@ impl App {
                                         let stem = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                                         let output = output_dir.join(format!("{stem}.patched.img"));
                                         match ltbox_patch::region::patch_vendor_boot(input, &output, target, &prc_patterns, &row_patterns) {
-                                            Ok(n) => ltbox_core::live!(log, "[Region] Patched {n} occurrences → {}", output.display()),
+                                            Ok(n) => ltbox_core::live!(
+                                                log,
+                                                "[Region] {}",
+                                                ltbox_core::i18n::tr("live_region_patched")
+                                                    .replace("{count}", &n.to_string())
+                                                    .replace("{path}", &output.display().to_string())
+                                            ),
                                             Err(e) => return Err(format!("Region patch failed: {e}")),
                                         }
                                     }
@@ -6546,22 +6817,39 @@ impl App {
                                         for name in ["devinfo.img", "persist.img"] {
                                             let src = input.join(name);
                                             if !src.exists() {
-                                                ltbox_core::live!(log,
-                                                    "[Country] {name} not present in folder — skipping"
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Country] {}",
+                                                    ltbox_core::i18n::tr("live_country_name_missing")
+                                                        .replace("{name}", name)
                                                 );
                                                 continue;
                                             }
                                             any_found = true;
-                                            ltbox_core::live!(log, "[Country] Processing {}", src.display());
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_processing")
+                                                    .replace("{path}", &src.display().to_string())
+                                            );
                                             let detected = ltbox_patch::region::detect_country_code(&src, KNOWN)
                                                 .map_err(|e| format!("Country detect failed on {name}: {e}"))?;
                                             let Some(old_code) = detected else {
-                                                ltbox_core::live!(log,
-                                                    "[Country] {name}: no known code detected — skipping"
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Country] {}",
+                                                    ltbox_core::i18n::tr("live_country_no_code_detected")
+                                                        .replace("{name}", name)
                                                 );
                                                 continue;
                                             };
-                                            ltbox_core::live!(log, "[Country] {name} detected: {old_code}");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_detected")
+                                                    .replace("{name}", name)
+                                                    .replace("{old_code}", &old_code)
+                                            );
                                             let stem = std::path::Path::new(name)
                                                 .file_stem()
                                                 .map(|s| s.to_string_lossy().to_string())
@@ -6570,14 +6858,22 @@ impl App {
                                             let output = output_dir.join(format!("{stem}_modified.img"));
                                             match ltbox_patch::region::patch_country_code(&src, &output, &old_code, new_code, EU) {
                                                 Ok(true) => {
-                                                    ltbox_core::live!(log,
-                                                        "[Country] {name}: {old_code} → {new_code} written to {}",
-                                                        output.display()
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Country] {}",
+                                                        ltbox_core::i18n::tr("live_country_written")
+                                                            .replace("{name}", name)
+                                                            .replace("{old_code}", &old_code)
+                                                            .replace("{new_code}", new_code)
+                                                            .replace("{path}", &output.display().to_string())
                                                     );
                                                     any_written = true;
                                                 }
-                                                Ok(false) => ltbox_core::live!(log,
-                                                    "[Country] {name}: no replacements made"
+                                                Ok(false) => ltbox_core::live!(
+                                                    log,
+                                                    "[Country] {}",
+                                                    ltbox_core::i18n::tr("live_country_no_replacements")
+                                                        .replace("{name}", name)
                                                 ),
                                                 Err(e) => return Err(format!(
                                                     "Country patch failed on {name}: {e}"
@@ -6591,7 +6887,11 @@ impl App {
                                             ));
                                         }
                                         if !any_written {
-                                            ltbox_core::live!(log, "[Country] No files modified — country code already matches or not detected");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Country] {}",
+                                                ltbox_core::i18n::tr("live_country_already_matches")
+                                            );
                                         }
                                     }
                                     AdvAction::PatchArb => {
@@ -6617,10 +6917,15 @@ impl App {
                                         let target = device_index.unwrap_or(0);
                                         ltbox_core::live!(
                                             log,
-                                            "[ARB] Device rollback index: {} (target = {target})",
-                                            device_index
-                                                .map(|v| v.to_string())
-                                                .unwrap_or_else(|| "(none / fastboot unavailable, defaulting to 0)".to_string())
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_arb_device_index_with_target")
+                                                .replace(
+                                                    "{index}",
+                                                    &device_index.map(|v| v.to_string()).unwrap_or_else(|| {
+                                                        ltbox_core::i18n::tr("live_arb_device_index_none_default")
+                                                    }),
+                                                )
+                                                .replace("{target}", &target.to_string())
                                         );
 
                                         // Patch one file; vbmeta vs chained by filename.
@@ -6650,14 +6955,28 @@ impl App {
                                                         path.display()
                                                     ));
                                                 };
-                                                ltbox_core::live!(log, "[ARB] Using key: {}", k.display());
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_using_key")
+                                                        .replace("{path}", &k.display().to_string())
+                                                );
                                                 ltbox_patch::rollback::patch_vbmeta_rollback(path, &output, target, k)
                                                     .map_err(|e| format!("vbmeta ARB patch failed: {e}"))
                                             } else {
                                                 if let Some(k) = &key {
-                                                    ltbox_core::live!(log, "[ARB] Using key: {}", k.display());
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_using_key")
+                                                            .replace("{path}", &k.display().to_string())
+                                                    );
                                                 } else {
-                                                    ltbox_core::live!(log, "[ARB] No testkey — add_hash_footer fallback");
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_no_testkey_fallback")
+                                                    );
                                                 }
                                                 ltbox_patch::rollback::patch_chained_image(path, &output, target, key.as_deref())
                                                     .map_err(|e| format!("chained ARB patch failed: {e}"))
@@ -6681,12 +7000,19 @@ impl App {
                                         for cand in sibling_candidates {
                                             let sibling = parent.join(format!("{cand}.img"));
                                             if sibling.exists() {
-                                                ltbox_core::live!(log,
-                                                    "[ARB] Auto-pairing sibling {}",
-                                                    sibling.display()
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_auto_pair_sibling")
+                                                        .replace("{path}", &sibling.display().to_string())
                                                 );
                                                 if let Err(e) = patch_one(&sibling, &mut log) {
-                                                    ltbox_core::live!(log, "[ARB] sibling skipped: {e}");
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_sibling_skipped")
+                                                            .replace("{error}", &e.to_string())
+                                                    );
                                                 }
                                                 break;
                                             }
@@ -6729,7 +7055,11 @@ impl App {
                                             }
                                         }
                                         if chained.is_empty() {
-                                            ltbox_core::live!(log, "[AVB] No chained images (dtbo/init_boot/vendor_boot/boot) found next to vbmeta — falling back to simple re-sign");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[AVB] {}",
+                                                ltbox_core::i18n::tr("live_avb_no_chained_fallback")
+                                            );
                                             let key_spec = key.display().to_string();
                                             if let Err(e) = ltbox_patch::avb::resign_image(
                                                 input,
@@ -6769,14 +7099,21 @@ impl App {
                                             ) {
                                                 return Err(format!("Rebuild vbmeta failed: {e}"));
                                             }
-                                            ltbox_core::live!(log,
-                                                "[AVB] Rebuilt vbmeta written to {}",
-                                                output.display()
+                                            ltbox_core::live!(
+                                                log,
+                                                "[AVB] {}",
+                                                ltbox_core::i18n::tr("live_avb_rebuilt_written")
+                                                    .replace("{path}", &output.display().to_string())
                                             );
                                         }
                                     }
                                 }
-                                ltbox_core::live!(log, "[Advanced] {} completed", action_label);
+                                ltbox_core::live!(
+                                    log,
+                                    "[Advanced] {}",
+                                    ltbox_core::i18n::tr("live_advanced_completed")
+                                        .replace("{action}", &action_label)
+                                );
                                 Ok(log)
                                 }).and_then(|r| r)
                             }).await.unwrap_or(Err("Task failed".to_string()))
@@ -7164,7 +7501,12 @@ impl App {
                             match ltbox_device::driver::download_and_install(&mut log) {
                                 Ok(()) => Ok(log),
                                 Err(e) => {
-                                    ltbox_core::live!(log, "[Driver] Failed: {e}");
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Driver] {}",
+                                        ltbox_core::i18n::tr("live_driver_failed")
+                                            .replace("{error}", &e.to_string())
+                                    );
                                     Err(format!("{e}"))
                                 }
                             }
@@ -12829,7 +13171,12 @@ fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsSc
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(log, "[FlashParts] EDL session open failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[FlashParts] {}",
+                ltbox_core::i18n::tr("live_flashparts_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            );
             return FlashPartsScanResult {
                 logs: log,
                 rows: Vec::new(),
@@ -12841,7 +13188,12 @@ fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsSc
     let parts = match session.scan_partitions(0..=5, &mut log) {
         Ok(p) => p,
         Err(e) => {
-            ltbox_core::live!(log, "[FlashParts] scan failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[FlashParts] {}",
+                ltbox_core::i18n::tr("live_flashparts_scan_failed")
+                    .replace("{error}", &e.to_string())
+            );
             let _ = session.reset_to_edl(&mut log);
             return FlashPartsScanResult {
                 logs: log,
@@ -12865,13 +13217,18 @@ fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsSc
         .collect();
 
     if let Err(e) = session.reset_to_edl(&mut log) {
-        ltbox_core::live!(log, "[FlashParts] reset_to_edl after scan failed: {e}");
+        ltbox_core::live!(
+            log,
+            "[FlashParts] {}",
+            ltbox_core::i18n::tr("live_flashparts_reset_failed").replace("{error}", &e.to_string())
+        );
     }
 
     ltbox_core::live!(
         log,
-        "[FlashParts] Scan complete — {} partitions",
-        rows.len()
+        "[FlashParts] {}",
+        ltbox_core::i18n::tr("live_dumpparts_scan_complete")
+            .replace("{count}", &rows.len().to_string())
     );
     FlashPartsScanResult {
         logs: log,
@@ -12889,7 +13246,12 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(log, "[FlashParts] EDL session open failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[FlashParts] {}",
+                ltbox_core::i18n::tr("live_flashparts_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            );
             return log;
         }
     };
@@ -12898,27 +13260,36 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
         match row.state {
             FlashRowState::Flash => {
                 let Some(path) = row.file_path.as_ref() else {
-                    ltbox_core::live!(log, "[FlashParts] Skipping {}: no file selected", row.label);
+                    ltbox_core::live!(
+                        log,
+                        "[FlashParts] {}",
+                        ltbox_core::i18n::tr("live_flashparts_skipping")
+                            .replace("{label}", &row.label)
+                    );
                     continue;
                 };
                 let img = std::path::Path::new(path);
                 if !img.exists() {
                     ltbox_core::live!(
                         log,
-                        "[FlashParts] Skipping {}: image {} missing",
-                        row.label,
-                        path
+                        "[FlashParts] {}",
+                        ltbox_core::i18n::tr("live_flashparts_skipping_missing")
+                            .replace("{label}", &row.label)
+                            .replace("{path}", path)
                     );
                     continue;
                 }
+                let file_name = img
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
                 ltbox_core::live!(
                     log,
-                    "[FlashParts] Flashing {} ← {} (LUN {})",
-                    row.label,
-                    img.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.clone()),
-                    row.lun
+                    "[FlashParts] {}",
+                    ltbox_core::i18n::tr("live_flashparts_flashing")
+                        .replace("{label}", &row.label)
+                        .replace("{file}", &file_name)
+                        .replace("{lun}", &row.lun.to_string())
                 );
                 if let Err(e) = session.flash_partition_at(
                     &row.label,
@@ -12927,16 +13298,23 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
                     &row.start_sector.to_string(),
                     &mut log,
                 ) {
-                    ltbox_core::live!(log, "[FlashParts] {} failed: {e}", row.label);
+                    ltbox_core::live!(
+                        log,
+                        "[FlashParts] {}",
+                        ltbox_core::i18n::tr("live_flashparts_part_failed")
+                            .replace("{label}", &row.label)
+                            .replace("{error}", &e.to_string())
+                    );
                 }
             }
             FlashRowState::Erase => {
                 ltbox_core::live!(
                     log,
-                    "[FlashParts] Erasing {} (LUN {}, {} sectors)",
-                    row.label,
-                    row.lun,
-                    row.num_sectors
+                    "[FlashParts] {}",
+                    ltbox_core::i18n::tr("live_flashparts_erasing")
+                        .replace("{label}", &row.label)
+                        .replace("{lun}", &row.lun.to_string())
+                        .replace("{sectors}", &row.num_sectors.to_string())
                 );
                 if let Err(e) = session.erase_partition_at(
                     &row.label,
@@ -12945,16 +13323,30 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
                     row.num_sectors as usize,
                     &mut log,
                 ) {
-                    ltbox_core::live!(log, "[FlashParts] erase {} failed: {e}", row.label);
+                    ltbox_core::live!(
+                        log,
+                        "[FlashParts] {}",
+                        ltbox_core::i18n::tr("live_flashparts_erase_failed")
+                            .replace("{label}", &row.label)
+                            .replace("{error}", &e.to_string())
+                    );
                 }
             }
             FlashRowState::Unchecked => {}
         }
     }
 
-    ltbox_core::live!(log, "[FlashParts] Resetting device to system...");
+    ltbox_core::live!(
+        log,
+        "[FlashParts] {}",
+        ltbox_core::i18n::tr("live_flashparts_resetting")
+    );
     session.reset_tolerant(&mut log);
-    ltbox_core::live!(log, "[FlashParts] Done.");
+    ltbox_core::live!(
+        log,
+        "[FlashParts] {}",
+        ltbox_core::i18n::tr("live_flashparts_done")
+    );
     log
 }
 
@@ -12974,7 +13366,11 @@ fn wait_for_edl_ready(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
             Ok(())
         }
         Err(e) => {
-            ltbox_core::live!(log, "[{tag}] EDL not found: {e}");
+            ltbox_core::live!(
+                log,
+                "[{tag}] {}",
+                ltbox_core::i18n::tr("live_edl_not_found").replace("{error}", &e.to_string())
+            );
             Err(())
         }
     }
@@ -13122,7 +13518,12 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(log, "[DumpParts] EDL session open failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[DumpParts] {}",
+                ltbox_core::i18n::tr("live_dumpparts_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            );
             return DumpPartsScanResult {
                 logs: log,
                 rows: Vec::new(),
@@ -13134,7 +13535,12 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
     let parts = match session.scan_partitions(0..=5, &mut log) {
         Ok(p) => p,
         Err(e) => {
-            ltbox_core::live!(log, "[DumpParts] scan failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[DumpParts] {}",
+                ltbox_core::i18n::tr("live_dumpparts_scan_failed")
+                    .replace("{error}", &e.to_string())
+            );
             let _ = session.reset_to_edl(&mut log);
             return DumpPartsScanResult {
                 logs: log,
@@ -13159,10 +13565,19 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
     // Bounce back to Sahara so the next `open()` on the dump pass gets
     // a fresh Hello. Without this Sahara times out.
     if let Err(e) = session.reset_to_edl(&mut log) {
-        ltbox_core::live!(log, "[DumpParts] reset_to_edl after scan failed: {e}");
+        ltbox_core::live!(
+            log,
+            "[DumpParts] {}",
+            ltbox_core::i18n::tr("live_dumpparts_reset_failed").replace("{error}", &e.to_string())
+        );
     }
 
-    ltbox_core::live!(log, "[DumpParts] Scan complete — {} partitions", rows.len());
+    ltbox_core::live!(
+        log,
+        "[DumpParts] {}",
+        ltbox_core::i18n::tr("live_dumpparts_scan_complete")
+            .replace("{count}", &rows.len().to_string())
+    );
     DumpPartsScanResult {
         logs: log,
         rows,
@@ -13257,7 +13672,12 @@ fn dump_parts_execute(
     let mut log = Vec::new();
     let out_dir = std::path::PathBuf::from(&output_folder);
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        ltbox_core::live!(log, "[DumpParts] create output folder failed: {e}");
+        ltbox_core::live!(
+            log,
+            "[DumpParts] {}",
+            ltbox_core::i18n::tr("live_dumpparts_create_output_failed")
+                .replace("{error}", &e.to_string())
+        );
         return log;
     }
 
@@ -13266,7 +13686,12 @@ fn dump_parts_execute(
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(log, "[DumpParts] EDL session open failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[DumpParts] {}",
+                ltbox_core::i18n::tr("live_dumpparts_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            );
             return log;
         }
     };
@@ -13276,11 +13701,12 @@ fn dump_parts_execute(
         let out_path = out_dir.join(format!("{}.img", row.label));
         ltbox_core::live!(
             log,
-            "[DumpParts] Dumping {} → {} (LUN {}, {} bytes)",
-            row.label,
-            out_path.display(),
-            row.lun,
-            row.size_bytes
+            "[DumpParts] {}",
+            ltbox_core::i18n::tr("live_dumpparts_dumping")
+                .replace("{label}", &row.label)
+                .replace("{path}", &out_path.display().to_string())
+                .replace("{lun}", &row.lun.to_string())
+                .replace("{bytes}", &row.size_bytes.to_string())
         );
         if let Err(e) = session.dump_partition_at(
             &row.label,
@@ -13290,7 +13716,13 @@ fn dump_parts_execute(
             row.num_sectors as usize,
             &mut log,
         ) {
-            ltbox_core::live!(log, "[DumpParts] {} failed: {e}", row.label);
+            ltbox_core::live!(
+                log,
+                "[DumpParts] {}",
+                ltbox_core::i18n::tr("live_dumpparts_part_failed")
+                    .replace("{label}", &row.label)
+                    .replace("{error}", &e.to_string())
+            );
             if is_critical_dump_label(&row.label) {
                 critical_failures.push(row.label.clone());
             }
@@ -13299,11 +13731,16 @@ fn dump_parts_execute(
 
     ltbox_core::live!(
         log,
-        "[DumpParts] Stabilizing USB endpoint ({}s)...",
-        EDL_POST_DUMP_STABILIZE.as_secs()
+        "[DumpParts] {}",
+        ltbox_core::i18n::tr("live_dumpparts_stabilizing")
+            .replace("{seconds}", &EDL_POST_DUMP_STABILIZE.as_secs().to_string())
     );
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
-    ltbox_core::live!(log, "[DumpParts] Resetting device to system...");
+    ltbox_core::live!(
+        log,
+        "[DumpParts] {}",
+        ltbox_core::i18n::tr("live_dumpparts_resetting")
+    );
     session.reset_tolerant(&mut log);
     // Surface critical-partition failures prominently — region/board state
     // (devinfo/persist) can't be reconstructed from a partial dump and a
@@ -13311,11 +13748,16 @@ fn dump_parts_execute(
     if !critical_failures.is_empty() {
         ltbox_core::live!(
             log,
-            "[DumpParts] CRITICAL: failed to dump {} — output folder is incomplete, do NOT use for rescue/flash workflows",
-            critical_failures.join(", ")
+            "[DumpParts] {}",
+            ltbox_core::i18n::tr("live_dumpparts_critical_failure")
+                .replace("{labels}", &critical_failures.join(", "))
         );
     }
-    ltbox_core::live!(log, "[DumpParts] Done.");
+    ltbox_core::live!(
+        log,
+        "[DumpParts] {}",
+        ltbox_core::i18n::tr("live_dumpparts_done")
+    );
     log
 }
 
@@ -13369,11 +13811,9 @@ fn dump_physical_execute(
         ltbox_core::live!(
             log,
             "[DumpPhys] {}",
-            ltbox_core::i18n::tr("live_dump_phys_dumping_lun").replace(
-                "{lun}",
-                &lun.to_string()
-                    .replace("{path}", &out_path.display().to_string())
-            )
+            ltbox_core::i18n::tr("live_dump_phys_dumping_lun")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &out_path.display().to_string())
         );
         flush_worker_logs(&mut log);
         if let Err(e) = session.dump_physical_storage(*lun, &out_path, &mut log) {
@@ -13381,7 +13821,8 @@ fn dump_physical_execute(
                 log,
                 "[DumpPhys] {}",
                 ltbox_core::i18n::tr("live_dump_phys_lun_failed")
-                    .replace("{lun}", &lun.to_string().replace("{error}", &e.to_string()))
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{error}", &e.to_string())
             );
         }
         flush_worker_logs(&mut log);
@@ -13427,7 +13868,12 @@ fn flash_physical_execute(
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(log, "[FlashPhys] EDL session open failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[FlashPhys] {}",
+                ltbox_core::i18n::tr("live_flashphys_edl_open_failed")
+                    .replace("{error}", &e.to_string())
+            );
             return log;
         }
     };
@@ -13437,26 +13883,46 @@ fn flash_physical_execute(
         if !img.exists() {
             ltbox_core::live!(
                 log,
-                "[FlashPhys] Skipping LUN {lun}: image {} missing",
-                path
+                "[FlashPhys] {}",
+                ltbox_core::i18n::tr("live_flashphys_skipping_missing")
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{path}", path)
             );
             continue;
         }
+        let file_name = img
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
         ltbox_core::live!(
             log,
-            "[FlashPhys] Flashing LUN {lun} ← {}",
-            img.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.clone()),
+            "[FlashPhys] {}",
+            ltbox_core::i18n::tr("live_flashphys_flashing")
+                .replace("{lun}", &lun.to_string())
+                .replace("{file}", &file_name)
         );
         if let Err(e) = session.flash_physical_storage(*lun, img, &mut log) {
-            ltbox_core::live!(log, "[FlashPhys] LUN {lun} failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[FlashPhys] {}",
+                ltbox_core::i18n::tr("live_flashphys_lun_failed")
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{error}", &e.to_string())
+            );
         }
     }
 
-    ltbox_core::live!(log, "[FlashPhys] Resetting device to system...");
+    ltbox_core::live!(
+        log,
+        "[FlashPhys] {}",
+        ltbox_core::i18n::tr("live_flashphys_resetting")
+    );
     session.reset_tolerant(&mut log);
-    ltbox_core::live!(log, "[FlashPhys] Done.");
+    ltbox_core::live!(
+        log,
+        "[FlashPhys] {}",
+        ltbox_core::i18n::tr("live_flashphys_done")
+    );
     log
 }
 
