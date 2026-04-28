@@ -617,19 +617,25 @@ def _resolve_persist_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
     raw_unsparse0 = const.IMAGE_DIR / "rawprogram_unsparse0.xml"
     raw_unsparse0_half = const.IMAGE_DIR / "rawprogram_unsparse0-half.xml"
 
-    excluded_names = {
+    persist_xml_names = {
         persist_write_xml.name,
         persist_save_xml.name,
         persist_save_ota_xml.name,
         raw_unsparse0.name,
         raw_unsparse0_half.name,
     }
-    raw_xmls = [x for x in raw_xmls if x.name not in excluded_names]
+    raw_xmls = [x for x in raw_xmls if x.name not in persist_xml_names]
 
     has_patched_persist = (const.OUTPUT_DP_DIR / "persist.img").exists()
     if persist_write_xml.exists() and has_patched_persist and not skip_dp:
         utils.ui.echo(get_string("act_use_patched_persist"))
         raw_xmls.append(persist_write_xml)
+    elif has_patched_persist and not skip_dp:
+        raise FileNotFoundError(
+            get_string("act_warn_partition_xml_missing").format(
+                name=persist_write_xml.name, partition="persist"
+            )
+        )
     elif persist_save_ota_xml.exists():
         utils.ui.echo(get_string("act_skip_persist_flash"))
         raw_xmls.append(persist_save_ota_xml)
@@ -649,16 +655,32 @@ def _resolve_persist_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
 def _resolve_devinfo_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
     devinfo_write_xml = const.IMAGE_DIR / "rawprogram4_write_devinfo.xml"
     devinfo_original_xml = const.IMAGE_DIR / "rawprogram4.xml"
+    devinfo_unsparse_xml = const.IMAGE_DIR / "rawprogram_unsparse4.xml"
     has_patched_devinfo = (const.OUTPUT_DP_DIR / "devinfo.img").exists()
+
+    devinfo_xml_names = {
+        devinfo_write_xml.name,
+        devinfo_original_xml.name,
+        devinfo_unsparse_xml.name,
+    }
+    raw_xmls = [x for x in raw_xmls if x.name not in devinfo_xml_names]
 
     if devinfo_write_xml.exists() and has_patched_devinfo and not skip_dp:
         utils.ui.echo(get_string("act_use_patched_devinfo"))
-        raw_xmls = [x for x in raw_xmls if x.name != devinfo_original_xml.name]
         raw_xmls.append(devinfo_write_xml)
+    elif has_patched_devinfo and not skip_dp:
+        raise FileNotFoundError(
+            get_string("act_warn_partition_xml_missing").format(
+                name=devinfo_write_xml.name, partition="devinfo"
+            )
+        )
+    elif devinfo_original_xml.exists():
+        raw_xmls.append(devinfo_original_xml)
+    elif devinfo_unsparse_xml.exists():
+        raw_xmls.append(devinfo_unsparse_xml)
     else:
         if devinfo_write_xml.exists():
             utils.ui.echo(get_string("act_skip_devinfo_flash"))
-            raw_xmls = [x for x in raw_xmls if x.name != devinfo_write_xml.name]
 
     return raw_xmls
 
@@ -666,25 +688,30 @@ def _resolve_devinfo_xml(raw_xmls: List[Path], skip_dp: bool) -> List[Path]:
 _DP_FILENAMES = {"persist.img", "devinfo.img"}
 
 
-def _verify_no_dp_filenames(raw_xmls: List[Path]) -> None:
-    """Warn if any selected rawprogram XML references persist.img or devinfo.img.
+def _verify_dp_filename_usage(raw_xmls: List[Path], skip_dp: bool) -> None:
+    allowed_filenames: Set[str] = set()
+    if not skip_dp:
+        for filename in _DP_FILENAMES:
+            if (const.OUTPUT_DP_DIR / filename).exists():
+                allowed_filenames.add(filename)
 
-    Called when skip_dp is True to catch accidental inclusion of DP images
-    in the flash plan.
-    """
     for xml_path in raw_xmls:
         try:
             tree = ET.parse(xml_path)
-            for prog in tree.getroot().findall("program"):
-                fname = prog.get("filename", "").strip()
-                if fname.lower() in _DP_FILENAMES:
-                    utils.ui.warn(
-                        get_string("act_warn_dp_in_xml").format(
-                            filename=fname, xml=xml_path.name
-                        )
-                    )
         except ET.ParseError:
-            pass
+            continue
+
+        for prog in tree.getroot().findall("program"):
+            fname = prog.get("filename", "").strip().lower()
+            if fname not in _DP_FILENAMES:
+                continue
+            if fname in allowed_filenames:
+                continue
+            raise RuntimeError(
+                get_string("act_warn_dp_in_xml").format(
+                    filename=fname, xml=xml_path.name
+                )
+            )
 
 
 def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
@@ -703,8 +730,7 @@ def _select_flash_xmls(skip_dp: bool = False) -> Tuple[List[Path], List[Path]]:
     raw_xmls = _resolve_devinfo_xml(raw_xmls, skip_dp)
     raw_xmls.sort(key=lambda x: x.name)
 
-    if skip_dp:
-        _verify_no_dp_filenames(raw_xmls)
+    _verify_dp_filename_usage(raw_xmls, skip_dp)
 
     if not raw_xmls or not patch_xmls:
         utils.ui.echo(
