@@ -339,7 +339,8 @@ impl EdlSession {
                         log,
                         "[EDL] {}",
                         tr("log_edl_lun_gpt_read_failed")
-                            .replace("{lun}", &lun.to_string().replace("{error}", &e.to_string()))
+                            .replace("{lun}", &lun.to_string())
+                            .replace("{error}", &e.to_string())
                     );
                 }
             }
@@ -509,10 +510,9 @@ impl EdlSession {
         ltbox_core::live!(
             log,
             "[EDL] {}",
-            tr("log_edl_lun_total_sectors").replace(
-                "{lun}",
-                &lun.to_string().replace("{total}", &total.to_string())
-            )
+            tr("log_edl_lun_total_sectors")
+                .replace("{lun}", &lun.to_string())
+                .replace("{total}", &total.to_string())
         );
         Ok(total)
     }
@@ -760,10 +760,16 @@ impl EdlSession {
             self.flash_one_rawprogram(xml_path, wipe, log)?;
         }
         for xml_path in patch_xmls {
+            // Show file name only — the full disk path was noisy and added
+            // nothing the user couldn't already see in the firmware folder.
+            let display_name = xml_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| xml_path.display().to_string());
             ltbox_core::live!(
                 log,
                 "[EDL] {}",
-                tr("log_edl_patch_xml_cmd").replace("{path}", &xml_path.display().to_string())
+                tr("log_edl_patch_xml_cmd").replace("{path}", &display_name)
             );
             self.apply_patch_xml(xml_path, log)?;
         }
@@ -983,14 +989,12 @@ impl EdlSession {
             ltbox_core::live!(
                 log,
                 "[EDL] {}",
-                tr("log_edl_patch_lun_cmd").replace(
-                    "{lun}",
-                    &lun.to_string()
-                        .replace("{start}", start_sector)
-                        .replace("{offset}", &byte_off.to_string())
-                        .replace("{bytes}", &size.to_string())
-                        .replace("{value}", value)
-                )
+                tr("log_edl_patch_lun_cmd")
+                    .replace("{lun}", &lun.to_string())
+                    .replace("{start}", start_sector)
+                    .replace("{offset}", &byte_off.to_string())
+                    .replace("{bytes}", &size.to_string())
+                    .replace("{value}", value)
             );
             qdl::firehose_patch(
                 &mut self.dev,
