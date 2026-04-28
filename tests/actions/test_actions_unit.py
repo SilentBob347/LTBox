@@ -532,7 +532,7 @@ def test_process_boot_image_avb_erases_footer_before_adding(tmp_path):
     )
 
 
-def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
+def test_rebuild_vbmeta_with_single_image_uses_make_vbmeta(tmp_path):
     output_path = tmp_path / "vbmeta.out.img"
     original_vbmeta = tmp_path / "vbmeta.img"
     original_vbmeta.write_bytes(b"vbmeta")
@@ -571,21 +571,23 @@ def test_rebuild_vbmeta_with_single_image_uses_descriptor_update(tmp_path):
         )
 
     mock_run.assert_called_once_with(
-        "update_partition_descriptor",
-        "--image",
-        original_vbmeta,
-        "--partition_image",
-        partition_image,
+        "make_vbmeta_image",
         "--output",
         output_path,
         "--key",
         key_file,
         "--algorithm",
         "SHA256_RSA4096",
-        "--rollback_index",
-        "0",
+        "--padding_size",
+        "8192",
         "--flags",
         "0",
+        "--rollback_index",
+        "0",
+        "--include_descriptors_from_image",
+        original_vbmeta,
+        "--include_descriptors_from_image",
+        partition_image,
     )
 
 
@@ -685,21 +687,23 @@ def test_rebuild_vbmeta_with_override_key_skips_pubkey_validation(tmp_path):
         )
 
     mock_run.assert_called_once_with(
-        "update_partition_descriptor",
-        "--image",
-        original_vbmeta,
-        "--partition_image",
-        partition_image,
+        "make_vbmeta_image",
         "--output",
         output_path,
         "--key",
         key_file,
         "--algorithm",
         "SHA256_RSA4096",
-        "--rollback_index",
-        "7",
+        "--padding_size",
+        "8192",
         "--flags",
         "0",
+        "--rollback_index",
+        "7",
+        "--include_descriptors_from_image",
+        original_vbmeta,
+        "--include_descriptors_from_image",
+        partition_image,
     )
 
 

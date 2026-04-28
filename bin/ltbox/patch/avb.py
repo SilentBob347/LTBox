@@ -534,34 +534,6 @@ def resign_avb_image(
     _run_avbtool(*cmd)
 
 
-def _update_vbmeta_partition_descriptor(
-    output_path: Path,
-    original_vbmeta_path: Path,
-    partition_image: Path,
-    key_file: Path,
-    algorithm: str,
-    rollback_index: str,
-    flags: str,
-) -> None:
-    _run_avbtool(
-        "update_partition_descriptor",
-        "--image",
-        original_vbmeta_path,
-        "--partition_image",
-        partition_image,
-        "--output",
-        output_path,
-        "--key",
-        key_file,
-        "--algorithm",
-        algorithm,
-        "--rollback_index",
-        rollback_index,
-        "--flags",
-        flags,
-    )
-
-
 def patch_chained_image_rollback(
     image_name: str,
     current_rb_index: int,
@@ -801,25 +773,6 @@ def rebuild_vbmeta_with_chained_images(
     flags_str = str(parsed_vbmeta.header.flags)
 
     utils.ui.info(get_string("act_remaking_vbmeta"))
-
-    if len(chained_images) == 1:
-        try:
-            _update_vbmeta_partition_descriptor(
-                output_path=output_path,
-                original_vbmeta_path=original_vbmeta_path,
-                partition_image=chained_images[0],
-                key_file=resolved_key_file,
-                algorithm=resolved_algorithm,
-                rollback_index=rollback_str,
-                flags=flags_str,
-            )
-            return
-        except Exception as e:
-            utils.ui.warn(
-                f"update_partition_descriptor failed for "
-                f"{chained_images[0].name}, falling back to "
-                f"make_vbmeta_image: {e}"
-            )
 
     cmd: List[Any] = [
         "make_vbmeta_image",
