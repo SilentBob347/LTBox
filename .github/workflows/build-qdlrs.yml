@@ -3,10 +3,12 @@ name: Build qdl-rs
 on:
   push:
     paths:
+      - '.gitmodules'
       - 'vendor/qdlrs/**'
       - '.github/workflows/build-qdlrs.yml'
   pull_request:
     paths:
+      - '.gitmodules'
       - 'vendor/qdlrs/**'
       - '.github/workflows/build-qdlrs.yml'
   workflow_call:
