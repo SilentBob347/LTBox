@@ -1036,16 +1036,149 @@ where
     }
 }
 
-/// Collect `rawprogram*.xml` and `patch*.xml` from `dir`. Drops v2 filter
-/// targets (WIPE/BLANK variants, `rawprogram0.xml` GPT programmer).
-/// Returns `(raw_xmls, patch_xmls)` sorted.
-pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawprogramFamily {
+    Other,
+    Persist,
+    Devinfo,
+}
+
+fn rawprogram_family(name_lower: &str) -> RawprogramFamily {
+    match name_lower {
+        "rawprogram_unsparse0.xml"
+        | "rawprogram_unsparse0-half.xml"
+        | "rawprogram_write_persist_unsparse0.xml"
+        | "rawprogram_save_persist_unsparse0.xml"
+        | "rawprogram_save_persist_ota_unsparse0.xml" => RawprogramFamily::Persist,
+        "rawprogram4.xml" | "rawprogram4_write_devinfo.xml" | "rawprogram_unsparse4.xml" => {
+            RawprogramFamily::Devinfo
+        }
+        _ => RawprogramFamily::Other,
+    }
+}
+
+fn filename_rank(path: &Path, preferred: &[&str]) -> usize {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    preferred
+        .iter()
+        .position(|candidate| name == *candidate)
+        .unwrap_or(preferred.len())
+}
+
+fn select_one_by_name_priority(mut paths: Vec<PathBuf>, preferred: &[&str]) -> Option<PathBuf> {
+    paths.sort_by(|a, b| {
+        filename_rank(a, preferred)
+            .cmp(&filename_rank(b, preferred))
+            .then_with(|| a.file_name().cmp(&b.file_name()))
+    });
+    paths.into_iter().next()
+}
+
+fn select_persist_xml(paths: Vec<PathBuf>, allow_dp_filenames: bool) -> Option<PathBuf> {
+    if allow_dp_filenames {
+        select_one_by_name_priority(
+            paths,
+            &[
+                "rawprogram_write_persist_unsparse0.xml",
+                "rawprogram_unsparse0.xml",
+                "rawprogram_save_persist_ota_unsparse0.xml",
+                "rawprogram_save_persist_unsparse0.xml",
+                "rawprogram_unsparse0-half.xml",
+            ],
+        )
+    } else {
+        select_one_by_name_priority(
+            paths,
+            &[
+                "rawprogram_save_persist_ota_unsparse0.xml",
+                "rawprogram_save_persist_unsparse0.xml",
+                "rawprogram_unsparse0-half.xml",
+                "rawprogram_unsparse0.xml",
+                "rawprogram_write_persist_unsparse0.xml",
+            ],
+        )
+    }
+}
+
+fn select_devinfo_xml(paths: Vec<PathBuf>, allow_dp_filenames: bool) -> Option<PathBuf> {
+    if allow_dp_filenames {
+        select_one_by_name_priority(
+            paths,
+            &[
+                "rawprogram4_write_devinfo.xml",
+                "rawprogram4.xml",
+                "rawprogram_unsparse4.xml",
+            ],
+        )
+    } else {
+        select_one_by_name_priority(
+            paths,
+            &[
+                "rawprogram4.xml",
+                "rawprogram_unsparse4.xml",
+                "rawprogram4_write_devinfo.xml",
+            ],
+        )
+    }
+}
+
+fn validate_dp_filename_usage(raw_xmls: &[PathBuf], allow_dp_filenames: bool) -> Result<()> {
+    for xml_path in raw_xmls {
+        let xml_content = std::fs::read_to_string(xml_path)?;
+        let doc = roxmltree::Document::parse(&xml_content).map_err(|e| {
+            EdlError::Session(format!("XML parse error in {}: {e}", xml_path.display()))
+        })?;
+        let xml_dir = xml_path.parent().unwrap_or(Path::new("."));
+        for node in doc.descendants() {
+            if !node.tag_name().name().eq_ignore_ascii_case("program") {
+                continue;
+            }
+            let filename = node.attribute("filename").unwrap_or("").trim();
+            let lower = filename.to_ascii_lowercase();
+            if lower != "persist.img" && lower != "devinfo.img" {
+                continue;
+            }
+            if !allow_dp_filenames {
+                return Err(EdlError::Session(format!(
+                    "{} references {filename}, but devinfo/persist image flashing is disabled",
+                    xml_path.display()
+                )));
+            }
+            let image_path = xml_dir.join(filename);
+            if !image_path.exists() {
+                return Err(EdlError::Session(format!(
+                    "{} references {filename}, but {} is missing",
+                    xml_path.display(),
+                    image_path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Collect `rawprogram*.xml` and `patch*.xml` from `dir` for firmware
+/// flashing. Drops v2 filter targets (WIPE/BLANK variants,
+/// `rawprogram0.xml` GPT programmer) and treats devinfo/persist XML
+/// variants as mutually exclusive families.
+///
+/// `allow_dp_filenames=false` is the normal v3 firmware path: country-code
+/// images are dumped, patched, and flashed explicitly after rawprogram
+/// flashing, so a selected rawprogram must not reference `persist.img` or
+/// `devinfo.img`.
+pub fn collect_firmware_xmls_for_flash(
+    dir: &Path,
+    allow_dp_filenames: bool,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut raw_xmls = Vec::new();
     let mut patch_xmls = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return (raw_xmls, patch_xmls),
-    };
+    let mut persist_xmls = Vec::new();
+    let mut devinfo_xmls = Vec::new();
+    let entries = std::fs::read_dir(dir)?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -1065,15 +1198,34 @@ pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
             if name == "rawprogram0.xml" {
                 continue;
             }
-            raw_xmls.push(path);
+            match rawprogram_family(&lower) {
+                RawprogramFamily::Other => raw_xmls.push(path),
+                RawprogramFamily::Persist => persist_xmls.push(path),
+                RawprogramFamily::Devinfo => devinfo_xmls.push(path),
+            }
         } else if lower.starts_with("patch") {
             patch_xmls.push(path);
         }
     }
 
+    if let Some(path) = select_persist_xml(persist_xmls, allow_dp_filenames) {
+        raw_xmls.push(path);
+    }
+    if let Some(path) = select_devinfo_xml(devinfo_xmls, allow_dp_filenames) {
+        raw_xmls.push(path);
+    }
+
     raw_xmls.sort();
     patch_xmls.sort();
-    (raw_xmls, patch_xmls)
+    validate_dp_filename_usage(&raw_xmls, allow_dp_filenames)?;
+    Ok((raw_xmls, patch_xmls))
+}
+
+/// Back-compatible XML collection for read-only catalog lookups. Firmware
+/// flashing should call [`collect_firmware_xmls_for_flash`] so unsafe
+/// devinfo/persist references surface as errors.
+pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    collect_firmware_xmls_for_flash(dir, false).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1101,6 +1253,46 @@ mod tests {
         fn path(&self) -> PathBuf {
             self.0.clone()
         }
+    }
+
+    struct TempFirmwareDir(PathBuf);
+
+    impl TempFirmwareDir {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("ltbox-edl-fw-{}-{nonce}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("create temp firmware dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write(&self, name: &str, contents: &str) {
+            std::fs::write(self.0.join(name), contents).expect("write temp firmware file");
+        }
+
+        fn write_bytes(&self, name: &str, contents: &[u8]) {
+            std::fs::write(self.0.join(name), contents).expect("write temp firmware image");
+        }
+    }
+
+    impl Drop for TempFirmwareDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn xml_names(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect()
     }
 
     impl Drop for TempXml {
@@ -1217,5 +1409,148 @@ mod tests {
             plan[2].log_line_with_template(template),
             "[EDL] erase userdata_b (LUN 3, start 65536, 8192 sectors)"
         );
+    }
+
+    #[test]
+    fn collect_firmware_xmls_chooses_safe_dp_variants_once() {
+        let fw = TempFirmwareDir::new();
+        fw.write("rawprogram1.xml", "<data/>");
+        fw.write(
+            "rawprogram_unsparse0.xml",
+            r#"<data><program label="persist" filename="persist.img" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram_unsparse0-half.xml",
+            r#"<data><program label="persist" filename="" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram4.xml",
+            r#"<data><program label="devinfo" filename="" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram4_write_devinfo.xml",
+            r#"<data><program label="devinfo" filename="devinfo.img" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write("patch0.xml", "<data/>");
+
+        let (raw, patch) =
+            collect_firmware_xmls_for_flash(fw.path(), false).expect("collect safe XMLs");
+        let names = xml_names(&raw);
+
+        assert!(names.contains(&"rawprogram1.xml".to_string()));
+        assert!(names.contains(&"rawprogram_unsparse0-half.xml".to_string()));
+        assert!(names.contains(&"rawprogram4.xml".to_string()));
+        assert!(!names.contains(&"rawprogram_unsparse0.xml".to_string()));
+        assert!(!names.contains(&"rawprogram4_write_devinfo.xml".to_string()));
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+        assert_eq!(xml_names(&patch), vec!["patch0.xml".to_string()]);
+    }
+
+    #[test]
+    fn collect_firmware_xmls_allows_dp_xmls_when_images_exist() {
+        let fw = TempFirmwareDir::new();
+        fw.write("rawprogram1.xml", "<data/>");
+        fw.write(
+            "rawprogram_save_persist_unsparse0.xml",
+            r#"<data><program label="persist" filename="" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram_write_persist_unsparse0.xml",
+            r#"<data><program label="persist" filename="persist.img" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram4.xml",
+            r#"<data><program label="devinfo" filename="" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write(
+            "rawprogram4_write_devinfo.xml",
+            r#"<data><program label="devinfo" filename="devinfo.img" num_partition_sectors="1"/></data>"#,
+        );
+        fw.write_bytes("persist.img", b"persist");
+        fw.write_bytes("devinfo.img", b"devinfo");
+
+        let (raw, _) = collect_firmware_xmls_for_flash(fw.path(), true).expect("collect DP XMLs");
+        let names = xml_names(&raw);
+
+        assert!(names.contains(&"rawprogram_write_persist_unsparse0.xml".to_string()));
+        assert!(names.contains(&"rawprogram4_write_devinfo.xml".to_string()));
+        assert!(!names.contains(&"rawprogram_save_persist_unsparse0.xml".to_string()));
+        assert!(!names.contains(&"rawprogram4.xml".to_string()));
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+    }
+
+    #[test]
+    fn collect_firmware_xmls_rejects_disabled_dp_references() {
+        let fw = TempFirmwareDir::new();
+        fw.write(
+            "rawprogram_unsparse0.xml",
+            r#"<data><program label="persist" filename="persist.img" num_partition_sectors="1"/></data>"#,
+        );
+
+        let err = collect_firmware_xmls_for_flash(fw.path(), false)
+            .expect_err("persist.img should be rejected");
+        assert!(err.to_string().contains("persist.img"));
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[test]
+    fn collect_firmware_xmls_rejects_allowed_dp_when_image_missing() {
+        let fw = TempFirmwareDir::new();
+        fw.write(
+            "rawprogram_write_persist_unsparse0.xml",
+            r#"<data><program label="persist" filename="persist.img" num_partition_sectors="1"/></data>"#,
+        );
+
+        let err = collect_firmware_xmls_for_flash(fw.path(), true)
+            .expect_err("persist.img image should be required");
+        assert!(err.to_string().contains("persist.img"));
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn real_firmware_xml_matrix_when_available() {
+        let Some(dir) = std::env::var_os("LTBOX_REAL_FIRMWARE_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        if !dir.join("rawprogram_unsparse0-half.xml").exists() {
+            return;
+        }
+
+        let (raw, patch) =
+            collect_firmware_xmls_for_flash(&dir, false).expect("collect real safe XMLs");
+        let names = xml_names(&raw);
+
+        assert!(names.contains(&"rawprogram_unsparse0-half.xml".to_string()));
+        assert!(!names.contains(&"rawprogram_unsparse0.xml".to_string()));
+        assert!(names.contains(&"rawprogram4.xml".to_string()));
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+        assert!(!patch.is_empty());
+
+        let wipe_plan = EdlSession::collect_wipe_erase_plan(&raw).expect("collect wipe plan");
+        assert_eq!(
+            wipe_plan
+                .iter()
+                .filter(|entry| entry.label == "metadata")
+                .count(),
+            7
+        );
+        assert_eq!(
+            wipe_plan
+                .iter()
+                .filter(|entry| entry.label == "userdata")
+                .count(),
+            10
+        );
+        assert!(wipe_plan.iter().any(|entry| entry.label == "frp"));
     }
 }

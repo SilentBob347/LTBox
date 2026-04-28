@@ -4270,7 +4270,8 @@ impl App {
                             // sector / num_sectors / LUN come from the
                             // catalog (no slot guessing).
                             let (raw_xmls, patch_xmls) =
-                                ltbox_device::edl::collect_firmware_xmls(fw_dir);
+                                ltbox_device::edl::collect_firmware_xmls_for_flash(fw_dir, false)
+                                    .map_err(|e| format!("Firmware XML selection failed: {e}"))?;
                             if raw_xmls.is_empty() {
                                 return Err(format!(
                                     "No flashable rawprogram*.xml found in {fw_folder}"
