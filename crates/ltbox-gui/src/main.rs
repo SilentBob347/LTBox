@@ -1563,6 +1563,12 @@ struct WorkflowConfig {
     modify_rollback: RollbackSetting,
     wipe: bool,
     country_code: Option<String>,
+    /// Country-code patching toggle. Wizard sets `false` when user picks
+    /// "Do not change" in the country popup so the exec phase skips the
+    /// devinfo/persist patch entirely (no dump, no flash). `country_code`
+    /// stays `None` in that case — the flag distinguishes "explicitly
+    /// skipped" from "popup not reached yet".
+    modify_country_code: bool,
 }
 
 struct CountryEntry {
@@ -2934,6 +2940,11 @@ enum Message {
     FlashExecDone(Vec<String>),
     // Country code popup
     SelectCountry(String),
+    /// Flash wizard only: user picked "Do not change" in country popup.
+    /// Closes popup, marks `modify_country_code = false`, leaves wizard on
+    /// the current step. Advanced wizard ignores this message — its
+    /// PatchDevinfo path needs an explicit target code.
+    SkipCountryPatch,
     DismissCountryPopup,
     // Region-convert target picker popup
     SelectRegionTarget(DeviceRegion),
@@ -3931,6 +3942,7 @@ impl App {
                         },
                         wipe: self.flash.data_mode == Some(DataMode::Wipe),
                         country_code: None,
+                        modify_country_code: true,
                     };
                     if self.wf_config.wipe {
                         self.flash.next();
@@ -3947,6 +3959,9 @@ impl App {
             Message::FlashBack => {
                 if self.flash.step == 4 {
                     self.wf_config.country_code = None;
+                    // Re-arm country patching so the popup's "Do not change"
+                    // selection doesn't survive a Back→Next round trip.
+                    self.wf_config.modify_country_code = true;
                 }
                 self.flash.back();
             }
@@ -4234,6 +4249,12 @@ impl App {
                                         "[Flash] {}",
                                         ltbox_core::i18n::tr("live_flash_country_devinfo")
                                             .replace("{code}", cc)
+                                    );
+                                } else if !cfg.modify_country_code {
+                                    ltbox_core::live!(
+                                        log,
+                                        "[Flash] {}",
+                                        ltbox_core::i18n::tr("live_flash_country_skip")
                                     );
                                 }
                             } else {
@@ -4538,8 +4559,12 @@ impl App {
                             // `patch_country_codes`. v2 rewrote
                             // `filename=` in the XML; v3 post-patches
                             // instead so the user's firmware folder
-                            // stays untouched on disk.
+                            // stays untouched on disk. `modify_country_code`
+                            // gate honors the popup's "Do not change"
+                            // choice — when off, no dump, no flash, the
+                            // device's existing devinfo/persist stay put.
                             if cfg.wipe
+                                && cfg.modify_country_code
                                 && let Some(target_code) = cfg.country_code.as_deref() {
                                     live!(
                                         log,
@@ -4838,6 +4863,18 @@ impl App {
                 } else {
                     // Flash wizard: `wf_config` is source of truth.
                     self.wf_config.country_code = Some(code);
+                }
+            }
+            Message::SkipCountryPatch => {
+                // Flash wizard only — Advanced PatchDevinfo always needs a
+                // target code, so the popup hides this option there. Leaving
+                // `country_code = None` makes the exec gate skip the patch
+                // automatically; `modify_country_code = false` keeps the
+                // confirm screen honest about the user's choice.
+                self.country_popup_open = false;
+                if !self.adv_needs_country {
+                    self.wf_config.modify_country_code = false;
+                    self.wf_config.country_code = None;
                 }
             }
             Message::DismissCountryPopup => {
@@ -8343,6 +8380,48 @@ impl App {
     fn country_popup_view(&self) -> Element<'_, Message> {
         let mut list = column![].spacing(2);
         let selected_code = self.country_popup_selected_code();
+        // Flash wizard only — hide "Do not change" from the Advanced
+        // PatchDevinfo flow because that action requires a concrete target
+        // code to write into devinfo/persist.
+        if !self.adv_needs_country {
+            let skipped =
+                !self.wf_config.modify_country_code && self.wf_config.country_code.is_none();
+            let skip_bg = if skipped {
+                ACCENT
+            } else {
+                iced::Color::TRANSPARENT
+            };
+            let skip_txt = if skipped {
+                iced::Color::WHITE
+            } else {
+                iced::Color::BLACK
+            };
+            list = list.push(
+                button(
+                    text(self.t("popup_country_do_not_change").to_string())
+                        .size(13)
+                        .color(skip_txt),
+                )
+                .on_press(Message::SkipCountryPatch)
+                .padding([6, 14])
+                .width(Length::Fill)
+                .style(move |_t: &Theme, status| {
+                    let hover = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: Some(if skipped {
+                            skip_bg.into()
+                        } else if hover {
+                            iced::Color::from_rgba(0.357, 0.388, 0.878, 0.08).into()
+                        } else {
+                            iced::Color::TRANSPARENT.into()
+                        }),
+                        text_color: skip_txt,
+                        ..Default::default()
+                    }
+                }),
+            );
+            list = list.push(widget::rule::horizontal(1));
+        }
         for entry in COUNTRY_CODES {
             let code = entry.code.to_string();
             let selected = selected_code == Some(entry.code);
@@ -9354,6 +9433,13 @@ impl App {
                 .map(|e| format!("{} — {}", e.code, e.name))
                 .unwrap_or_else(|| cc.clone());
             col = col.push(info_kv_center(self.t("popup_select_country"), &label));
+        } else if self.wf_config.wipe && !self.wf_config.modify_country_code {
+            // User picked "Do not change" — mirror the popup choice on the
+            // confirm summary so the user sees country patching is off.
+            col = col.push(info_kv_center(
+                self.t("popup_select_country"),
+                self.t("flash_confirm_country_skip"),
+            ));
         }
         let folder_owned = self
             .flash
