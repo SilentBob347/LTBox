@@ -4190,11 +4190,9 @@ impl App {
                                     .replace("{index}", &device_idx_str)
                             );
                             if has_boot {
-                                ltbox_core::live!(
-                                    log,
-                                    "[ARB] {}",
-                                    ltbox_core::i18n::tr("live_arb_analyze_boot")
-                                );
+                                // Pre-result "Analyzing …" line dropped — analysis is
+                                // synchronous and the result line ("boot.img rollback
+                                // index: …") fires immediately after.
                                 match ltbox_patch::rollback::analyze_rollback_with_mode(
                                     &boot,
                                     device_rollback_index,
@@ -5006,22 +5004,18 @@ impl App {
                             ];
                             match action {
                                 SysUpdateAction::Disable => {
-                                    let cmd = "settings put global ota_disable_automatic_update 1";
-                                    ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                    adb.shell(cmd).map_err(|e| e.to_string())?;
-
-                                    let cmd = "settings put secure lenovo_ota_new_version_found 0";
-                                    ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                    adb.shell(cmd).map_err(|e| e.to_string())?;
+                                    // Command echoes (`$ settings put …` / `$ pm clear …`)
+                                    // were noise — the user only needs to see the outcome
+                                    // (Uninstalled / Reinstalled / failure). Suppressed.
+                                    adb.shell("settings put global ota_disable_automatic_update 1")
+                                        .map_err(|e| e.to_string())?;
+                                    adb.shell("settings put secure lenovo_ota_new_version_found 0")
+                                        .map_err(|e| e.to_string())?;
 
                                     for pkg in &packages {
-                                        let cmd = format!("pm clear {pkg}");
-                                        ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                        let _ = adb.shell(&cmd);
+                                        let _ = adb.shell(&format!("pm clear {pkg}"));
 
-                                        let cmd = format!("pm uninstall -k --user 0 {pkg}");
-                                        ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                        match adb.shell(&cmd) {
+                                        match adb.shell(&format!("pm uninstall -k --user 0 {pkg}")) {
                                             Ok(out) if out.contains("Success") => ltbox_core::live!(
                                                 log,
                                                 "[ADB] {}",
@@ -5040,14 +5034,12 @@ impl App {
                                     Ok(log)
                                 }
                                 SysUpdateAction::Enable => {
-                                    let cmd = "settings put global ota_disable_automatic_update 0";
-                                    ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                    adb.shell(cmd).map_err(|e| e.to_string())?;
+                                    // Command echoes suppressed — same rationale as Disable.
+                                    adb.shell("settings put global ota_disable_automatic_update 0")
+                                        .map_err(|e| e.to_string())?;
 
                                     for pkg in &packages {
-                                        let cmd = format!("cmd package install-existing {pkg}");
-                                        ltbox_core::live!(log, "[ADB] $ {cmd}");
-                                        match adb.shell(&cmd) {
+                                        match adb.shell(&format!("cmd package install-existing {pkg}")) {
                                             Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(
                                                 log,
                                                 "[ADB] {}",
@@ -6680,7 +6672,6 @@ impl App {
                                         for src in entries {
                                             let stem = src.file_stem().unwrap_or_default();
                                             let output = output_dir.join(stem).with_extension("xml");
-                                            ltbox_core::live!(log, "[Crypto] $ decrypt_file {} → {}", src.display(), output.display());
                                             match ltbox_core::crypto::decrypt_file(&src, &output) {
                                                 Ok(size) => ltbox_core::live!(
                                                     log,
@@ -6720,7 +6711,6 @@ impl App {
                                                     }),
                                                 )
                                         );
-                                        ltbox_core::live!(log, "[AVB] $ analyze_rollback {}", input.display());
                                         match ltbox_patch::rollback::analyze_rollback_with_mode(
                                             input,
                                             device_index,
@@ -6980,12 +6970,6 @@ impl App {
                                             let output = output_dir_ref.join(format!("{stem}.arb{target}.img"));
                                             let lower = stem.to_ascii_lowercase();
                                             let is_vbmeta = lower.starts_with("vbmeta");
-                                            ltbox_core::live!(log,
-                                                "[ARB] $ {} {} → {}",
-                                                if is_vbmeta { "patch_vbmeta_rollback" } else { "patch_chained_image" },
-                                                path.display(),
-                                                output.display()
-                                            );
                                             if is_vbmeta {
                                                 let Some(k) = key.as_deref() else {
                                                     return Err(format!(
@@ -8034,7 +8018,6 @@ impl App {
                                         RebootTarget::Bootloader => "bootloader",
                                         RebootTarget::Edl => "edl",
                                     };
-                                    ltbox_core::live!(log, "[ADB] $ reboot {arg}");
                                     if let Err(e) = adb.reboot(arg) {
                                         return Err(format!("ADB reboot failed: {e}"));
                                     }
@@ -8044,11 +8027,9 @@ impl App {
                                         .map_err(|e| format!("Fastboot open: {e}"))?;
                                     match t {
                                         RebootTarget::System => {
-                                            ltbox_core::live!(log, "[Fastboot] $ reboot");
                                             dev.reboot().map_err(|e| format!("reboot: {e}"))?;
                                         }
                                         RebootTarget::Bootloader => {
-                                            ltbox_core::live!(log, "[Fastboot] $ reboot-bootloader");
                                             dev.reboot_bootloader().map_err(|e| format!("reboot-bootloader: {e}"))?;
                                         }
                                         RebootTarget::Edl => {
@@ -13468,11 +13449,8 @@ fn wait_for_manual_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
 }
 
 fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
-    ltbox_core::live!(
-        log,
-        "[{tag}] {}",
-        ltbox_core::i18n::tr("live_cmd_adb_reboot_edl")
-    );
+    // Command echo (`adb reboot edl`) suppressed — the user only sees the
+    // outcome (waiting / reached EDL / failure).
     let mut mgr = ltbox_device::adb::AdbManager::new();
     // `AdbManager::reboot` requires a preselected serial. Since
     // `check_device` now accepts only `Device` state, use
@@ -13524,11 +13502,8 @@ fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
 }
 
 fn fastboot_continue_then_adb_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
-    ltbox_core::live!(
-        log,
-        "[{tag}] $ {}",
-        ltbox_core::i18n::tr("live_cmd_fastboot_continue")
-    );
+    // Command echo (`fastboot continue`) suppressed — failure path still
+    // logs the precise error.
     match ltbox_device::fastboot::FastbootDevice::open() {
         Ok(mut dev) => {
             if let Err(e) = dev.continue_boot() {
