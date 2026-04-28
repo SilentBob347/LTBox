@@ -132,6 +132,17 @@ pub fn rebuild_vbmeta_with_chained_images(
         algorithm,
     )
     .map_err(|e| LtboxError::Avb(format!("rebuild_vbmeta_image: {e}")))?;
+    preserve_original_vbmeta_size(output_path, original_vbmeta_path)?;
+    Ok(())
+}
+
+fn preserve_original_vbmeta_size(output_path: &Path, original_vbmeta_path: &Path) -> Result<()> {
+    let original_size = fs::metadata(original_vbmeta_path)?.len();
+    let output_size = fs::metadata(output_path)?.len();
+    if output_size < original_size {
+        let file = fs::OpenOptions::new().write(true).open(output_path)?;
+        file.set_len(original_size)?;
+    }
     Ok(())
 }
 
@@ -197,6 +208,7 @@ pub fn add_hash_footer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{key_map, region};
 
     #[test]
     fn image_info_report_accepts_non_avb_img() {
@@ -214,5 +226,116 @@ mod tests {
     fn image_info_report_requires_selection() {
         let err = image_info_report(&[]).unwrap_err().to_string();
         assert!(err.contains("No image files selected"));
+    }
+
+    #[test]
+    fn preserve_original_vbmeta_size_pads_short_rebuild_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = tmp.path().join("vbmeta.img");
+        let output = tmp.path().join("vbmeta.rebuilt.img");
+        fs::write(&original, vec![0u8; 8192]).unwrap();
+        fs::write(&output, vec![1u8; 4096]).unwrap();
+
+        preserve_original_vbmeta_size(&output, &original).unwrap();
+
+        assert_eq!(fs::metadata(&output).unwrap().len(), 8192);
+        let data = fs::read(&output).unwrap();
+        assert!(data[..4096].iter().all(|b| *b == 1));
+        assert!(data[4096..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn preserve_original_vbmeta_size_never_truncates_larger_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = tmp.path().join("vbmeta.img");
+        let output = tmp.path().join("vbmeta.rebuilt.img");
+        fs::write(&original, vec![0u8; 4096]).unwrap();
+        fs::write(&output, vec![1u8; 8192]).unwrap();
+
+        preserve_original_vbmeta_size(&output, &original).unwrap();
+
+        assert_eq!(fs::metadata(&output).unwrap().len(), 8192);
+    }
+
+    #[test]
+    fn real_firmware_avb_matrix_when_available() {
+        let Some(dir) = std::env::var_os("LTBOX_REAL_FIRMWARE_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let original_vbmeta = dir.join("vbmeta.img");
+        let original_vendor_boot = dir.join("vendor_boot.img");
+        let original_boot = dir.join("boot.img");
+        let original_vbmeta_system = dir.join("vbmeta_system.img");
+        if !original_vbmeta.exists()
+            || !original_vendor_boot.exists()
+            || !original_boot.exists()
+            || !original_vbmeta_system.exists()
+        {
+            return;
+        }
+
+        for target_rollback in [None, Some(1_800_000_000u64)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let vbmeta = tmp.path().join("vbmeta.img");
+            let vendor_boot = tmp.path().join("vendor_boot.img");
+            let patched_vendor_boot = tmp.path().join("vendor_boot.patched.img");
+            let rebuilt_vbmeta = tmp.path().join("vbmeta.rebuilt.img");
+            let boot = tmp.path().join("boot.img");
+            let vbmeta_system = tmp.path().join("vbmeta_system.img");
+            fs::copy(&original_vbmeta, &vbmeta).unwrap();
+            fs::copy(&original_vendor_boot, &vendor_boot).unwrap();
+            fs::copy(&original_boot, &boot).unwrap();
+            fs::copy(&original_vbmeta_system, &vbmeta_system).unwrap();
+
+            for image in [&boot, &vbmeta_system] {
+                let info = extract_image_avb_info(image).unwrap();
+                if let Some(target) = target_rollback {
+                    let key_spec = key_map::key_spec_for_pubkey(info.public_key_sha1.as_deref())
+                        .expect("real fixture rollback key should be known");
+                    resign_image(image, key_spec, &info.algorithm, Some(target)).unwrap();
+                    assert_eq!(
+                        extract_image_avb_info(image).unwrap().rollback_index,
+                        target
+                    );
+                } else {
+                    assert_eq!(
+                        extract_image_avb_info(image).unwrap().rollback_index,
+                        info.rollback_index
+                    );
+                }
+            }
+
+            let vendor_boot_info = extract_image_avb_info(&vendor_boot).unwrap();
+            let replaced = region::patch_vendor_boot(
+                &vendor_boot,
+                &patched_vendor_boot,
+                region::RegionTarget::Prc,
+                &[],
+                &[(b".ROW".to_vec(), b".PRC".to_vec())],
+            )
+            .unwrap();
+            assert!(replaced > 0);
+            add_hash_footer(&patched_vendor_boot, &vendor_boot_info, None, None).unwrap();
+
+            let vbmeta_info = extract_image_avb_info(&vbmeta).unwrap();
+            let key_spec = key_map::key_spec_for_pubkey(vbmeta_info.public_key_sha1.as_deref())
+                .expect("real fixture vbmeta key should be known");
+            rebuild_vbmeta_with_chained_images(
+                &rebuilt_vbmeta,
+                &vbmeta,
+                &[patched_vendor_boot.as_path()],
+                key_spec,
+                Some(&vbmeta_info.algorithm),
+            )
+            .unwrap();
+
+            assert_eq!(
+                fs::metadata(&rebuilt_vbmeta).unwrap().len(),
+                fs::metadata(&vbmeta).unwrap().len()
+            );
+            let report = image_info_report(&[rebuilt_vbmeta]).unwrap();
+            assert!(report.contains("vendor_boot"));
+        }
     }
 }
