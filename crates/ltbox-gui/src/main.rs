@@ -905,6 +905,38 @@ impl NightlySource {
     }
 }
 
+/// Linear-step wizard contract. Wizards whose `next` / `back` simply
+/// walk a 0..step_count range share `reset` / `next` / `back` /
+/// `is_in_exec` via this trait's default impls; only `step`,
+/// `step_mut`, `step_count`, and `can_next` need per-impl bodies.
+///
+/// Not implemented for `RootWizard` because its non-linear step
+/// numbering (steps skip around depending on family/mode) requires
+/// custom navigation logic.
+trait Wizard: Default {
+    fn step(&self) -> usize;
+    fn step_mut(&mut self) -> &mut usize;
+    fn step_count(&self) -> usize;
+    fn can_next(&self) -> bool;
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn next(&mut self) {
+        if self.step() < self.step_count() - 1 {
+            *self.step_mut() += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step() > 0 {
+            *self.step_mut() -= 1;
+        }
+    }
+    fn is_in_exec(&self) -> bool {
+        self.step() == self.step_count() - 1
+    }
+}
+
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
 // Mode auto-skips for non-KSU. GKI: steps 3/4 collapse into a kernel
@@ -1995,22 +2027,15 @@ const UNROOT_STEPS: &[&str] = &[
     "unroot_step_restore",
 ];
 
-impl UnrootWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
+impl Wizard for UnrootWizard {
+    fn step(&self) -> usize {
+        self.step
     }
-    fn is_in_exec(&self) -> bool {
-        self.step == UNROOT_STEPS.len() - 1
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
     }
-    fn next(&mut self) {
-        if self.step < UNROOT_STEPS.len() - 1 {
-            self.step += 1;
-        }
-    }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
+    fn step_count(&self) -> usize {
+        UNROOT_STEPS.len()
     }
     fn can_next(&self) -> bool {
         match self.step {
@@ -2086,22 +2111,15 @@ const FLASH_STEPS: &[&str] = &[
     "flash_step_flash",
 ];
 
-impl FlashWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
+impl Wizard for FlashWizard {
+    fn step(&self) -> usize {
+        self.step
     }
-    fn is_in_exec(&self) -> bool {
-        self.step == FLASH_STEPS.len() - 1
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
     }
-    fn next(&mut self) {
-        if self.step < FLASH_STEPS.len() - 1 {
-            self.step += 1;
-        }
-    }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
+    fn step_count(&self) -> usize {
+        FLASH_STEPS.len()
     }
     fn can_next(&self) -> bool {
         match self.step {
@@ -2192,9 +2210,6 @@ const SYSUPDATE_STEPS_RESCUE: &[&str] = &[
 ];
 
 impl SysUpdateWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
     /// Rescue gets an extra Folder step — distinct step list keeps the
     /// other actions (Disable/Enable) on their short 3-step flow.
     fn steps(&self) -> &'static [&'static str] {
@@ -2207,18 +2222,17 @@ impl SysUpdateWizard {
     fn is_rescue(&self) -> bool {
         matches!(self.action, Some(SysUpdateAction::Rescue))
     }
-    fn is_in_exec(&self) -> bool {
-        self.step == self.steps().len() - 1
+}
+
+impl Wizard for SysUpdateWizard {
+    fn step(&self) -> usize {
+        self.step
     }
-    fn next(&mut self) {
-        if self.step < self.steps().len() - 1 {
-            self.step += 1;
-        }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
     }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
+    fn step_count(&self) -> usize {
+        self.steps().len()
     }
     fn can_next(&self) -> bool {
         if self.is_rescue() {
@@ -2298,18 +2312,28 @@ const FLASH_PARTS_STEPS: &[&str] = &[
 ];
 
 impl FlashPartsWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
+    fn active_rows(&self) -> Vec<FlashPartRow> {
+        self.rows
+            .iter()
+            .filter(|r| match r.state {
+                FlashRowState::Flash => r.file_path.is_some(),
+                FlashRowState::Erase => true,
+                FlashRowState::Unchecked => false,
+            })
+            .cloned()
+            .collect()
     }
-    fn next(&mut self) {
-        if self.step < FLASH_PARTS_STEPS.len() - 1 {
-            self.step += 1;
-        }
+}
+
+impl Wizard for FlashPartsWizard {
+    fn step(&self) -> usize {
+        self.step
     }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        FLASH_PARTS_STEPS.len()
     }
     fn can_next(&self) -> bool {
         match self.step {
@@ -2322,17 +2346,6 @@ impl FlashPartsWizard {
             2 => true,
             _ => false,
         }
-    }
-    fn active_rows(&self) -> Vec<FlashPartRow> {
-        self.rows
-            .iter()
-            .filter(|r| match r.state {
-                FlashRowState::Flash => r.file_path.is_some(),
-                FlashRowState::Erase => true,
-                FlashRowState::Unchecked => false,
-            })
-            .cloned()
-            .collect()
     }
 }
 
@@ -2472,18 +2485,29 @@ const FLASH_PHYS_STEPS: &[&str] = &[
 ];
 
 impl FlashPhysWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
+    /// (LUN, file_path) pairs for every selected, file-bound row.
+    fn active_pairs(&self) -> Vec<(u8, String)> {
+        (0..PHYS_LUN_COUNT)
+            .filter_map(|i| {
+                if self.selected[i] {
+                    self.file_paths[i].clone().map(|p| (i as u8, p))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
-    fn next(&mut self) {
-        if self.step < FLASH_PHYS_STEPS.len() - 1 {
-            self.step += 1;
-        }
+}
+
+impl Wizard for FlashPhysWizard {
+    fn step(&self) -> usize {
+        self.step
     }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        FLASH_PHYS_STEPS.len()
     }
     fn can_next(&self) -> bool {
         match self.step {
@@ -2501,18 +2525,6 @@ impl FlashPhysWizard {
             2 => true,
             _ => false,
         }
-    }
-    /// (LUN, file_path) pairs for every selected, file-bound row.
-    fn active_pairs(&self) -> Vec<(u8, String)> {
-        (0..PHYS_LUN_COUNT)
-            .filter_map(|i| {
-                if self.selected[i] {
-                    self.file_paths[i].clone().map(|p| (i as u8, p))
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 }
 
@@ -2558,9 +2570,6 @@ struct AdvWizard {
 }
 
 impl AdvWizard {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
     fn open(&mut self, a: AdvAction) {
         *self = Self::default();
         self.action = Some(a);
@@ -2599,18 +2608,20 @@ impl AdvWizard {
     fn exec_step(&self) -> usize {
         self.steps().len() - 1
     }
-    fn next(&mut self) {
-        if self.step < self.exec_step() {
-            self.step += 1;
-        }
-    }
-    fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-        }
-    }
     fn is_confirm_step(&self) -> bool {
         !self.is_image_info() && self.step + 1 == self.exec_step()
+    }
+}
+
+impl Wizard for AdvWizard {
+    fn step(&self) -> usize {
+        self.step
+    }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        self.steps().len()
     }
     fn can_next(&self) -> bool {
         if self.step == 0 {
@@ -2627,6 +2638,9 @@ impl AdvWizard {
         }
         true
     }
+}
+
+impl AdvWizard {
     /// Folder-vs-file dispatch for Browse on step 0.
     fn is_folder_op(&self) -> bool {
         matches!(
