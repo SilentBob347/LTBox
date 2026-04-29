@@ -8866,12 +8866,10 @@ impl App {
         };
         let _log_preview_len = self.log_lines.len();
 
-        let mut content = column![
-            text(self.t("dash_title").to_string()).size(theme::text_size::TITLE_LARGE),
-            widget::rule::horizontal(1),
-        ]
-        .spacing(14)
-        .width(Length::Fill);
+        // Title + divider dropped — sidebar already labels the active view,
+        // so the duplicate header was eating vertical space without telling
+        // the user anything new.
+        let mut content = column![].spacing(14).width(Length::Fill);
 
         // Unauthorized ADB wins over the platform warning — empty
         // `ro.boot.hardware` otherwise reads as "unsupported platform".

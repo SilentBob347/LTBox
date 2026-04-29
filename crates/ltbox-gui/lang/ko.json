@@ -115,7 +115,6 @@
   "dash_log": "로그",
   "dash_no_operation": "진행 중인 작업 없음",
   "dash_operation_in_progress": "작업 진행 중...",
-  "dash_title": "대시보드",
   "dash_unsupported_platform": "지원되지 않는 플랫폼입니다 — 대부분의 기능을 사용할 수 없습니다. LTBox는 퀄컴 기기에서만 동작합니다.",
   "datamode_keep": "데이터 유지",
   "datamode_keep_desc": "metadata, userdata 파티션을 유지",

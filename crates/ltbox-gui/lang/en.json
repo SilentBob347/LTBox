@@ -115,7 +115,6 @@
   "dash_log": "Log",
   "dash_no_operation": "No operation in progress.",
   "dash_operation_in_progress": "Operation in progress...",
-  "dash_title": "Dashboard",
   "dash_unsupported_platform": "Unsupported platform — most operations are disabled. LTBox requires a Qualcomm device.",
   "datamode_keep": "Keep Data",
   "datamode_keep_desc": "Preserve metadata and userdata partitions",

@@ -115,7 +115,6 @@
   "dash_log": "日志",
   "dash_no_operation": "无正在进行的操作。",
   "dash_operation_in_progress": "操作进行中...",
-  "dash_title": "仪表盘",
   "dash_unsupported_platform": "不支持的平台 — 大部分操作已禁用。LTBox 仅支持 Qualcomm 设备。",
   "datamode_keep": "保留数据",
   "datamode_keep_desc": "保留 metadata 与 userdata 分区",
