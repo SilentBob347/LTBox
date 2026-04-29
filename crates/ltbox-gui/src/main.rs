@@ -110,28 +110,18 @@ fn warning_style(t: &Theme) -> iced::widget::text::Style {
     }
 }
 
-/// Reverse-DNS application identifier. Pushed into iced
-/// `Settings::id` so winit can hand it to the windowing system as
-/// the Wayland `app_id` / X11 `WM_CLASS`. The shipped `.desktop`
-/// file's `StartupWMClass=` line uses the same string so the
-/// running window binds to the launcher entry instead of falling
-/// back to the bare binary name.
+/// Reverse-DNS app id. Becomes Wayland `app_id` / X11 `WM_CLASS` via
+/// iced `Settings::id`; matches the shipped `.desktop`'s
+/// `StartupWMClass=` so the window binds to the launcher entry.
 const APP_ID: &str = "io.github.miner7222.LTBox";
 
-/// Repo coordinates for the in-app update banner. Hard-coded because
-/// the upstream is the project itself — there is no scenario where we
-/// want LTBox to "check the user's fork" by default. The Releases tab
-/// URL the green sidebar pill links to is derived from this.
+/// Upstream repo for the sidebar update pill.
 const UPDATE_REPO: &str = "miner7222/LTBox";
 
-/// Background probe wired into `App::new`. Reads the running build's
-/// version (`CARGO_PKG_VERSION`), walks GitHub's `/releases?per_page=100`,
-/// and returns the newest non-draft / non-prerelease release whose semver
-/// is **strictly greater** than the running build. Returns `None` when:
-///   * the running build is already at-or-ahead of the latest stable,
-///   * the repo has no stable releases yet (only prereleases),
-///   * the network call or JSON parse failed (no banner spam on offline
-///     boots — the dashboard renders identically).
+/// Background probe for the sidebar update pill. Walks
+/// `/releases?per_page=100`, returns the latest non-draft /
+/// non-prerelease whose semver beats `CARGO_PKG_VERSION`. `None` on
+/// network/parse failure or already-current — pill stays hidden.
 ///
 /// Runs synchronously on a `spawn_blocking` worker so the async runtime
 /// stays free; the result lands as `Message::UpdateCheckDone`.
@@ -147,20 +137,14 @@ fn check_for_update() -> Option<ltbox_core::github::StableRelease> {
     }
 }
 
-/// Embedded udev rules — same file shipped under `misc/udev/` so a
-/// distro-installed `ltbox` (or AppImage) can install the rules
-/// without needing the source tree on disk.
+/// Embedded udev rules — installable from binary without source tree.
 #[cfg(target_os = "linux")]
 const UDEV_RULES_CONTENT: &str = include_str!("../../../misc/udev/51-ltbox-qcom.rules");
 
 #[cfg(target_os = "linux")]
 const UDEV_RULES_PATH: &str = "/etc/udev/rules.d/51-ltbox-qcom.rules";
 
-/// Embedded `.desktop` file template + scalable SVG icon shipped
-/// under `misc/desktop/` and `assets/icon_source.svg`. Same
-/// install-from-binary contract as the udev rules: the user runs
-/// `ltbox --install-desktop` and the GNOME / KDE app menu picks
-/// up LTBox without an external package step.
+/// Embedded `.desktop` template — installable via `--install-desktop`.
 #[cfg(target_os = "linux")]
 const DESKTOP_FILE_TEMPLATE: &str =
     include_str!("../../../misc/desktop/io.github.miner7222.LTBox.desktop");
@@ -168,14 +152,9 @@ const DESKTOP_FILE_TEMPLATE: &str =
 #[cfg(target_os = "linux")]
 const APP_ICON_SVG: &str = include_str!("../assets/icon_source.svg");
 
-/// `ltbox --install-udev` entry point: write the bundled rules to
-/// `/etc/udev/rules.d/`, reload udev, trigger it, exit. Designed to
-/// be invoked via `pkexec ltbox --install-udev` from the GUI's
-/// "Install Drivers" action (planned), or by a user manually with
-/// `sudo`. Linux-only — Windows / macOS print a one-line refusal.
-///
-/// Returns `!` so callers can drop straight back into the GUI's
-/// `iced::Result` return without a dummy unit value.
+/// `ltbox --install-udev` entry point. Writes bundled rules, reloads
+/// udev, triggers it, exits. Linux-only — invoke via `sudo` or
+/// `pkexec`. Windows / macOS print a one-line refusal.
 #[cfg(target_os = "linux")]
 fn install_udev_rules() -> ! {
     eprintln!("[ltbox] Installing udev rules → {UDEV_RULES_PATH}");
@@ -225,20 +204,11 @@ fn install_udev_rules() -> ! {
     std::process::exit(1);
 }
 
-/// `ltbox --install-desktop` entry point. Linux only.
-///
-/// Drops the bundled `.desktop` file + scalable SVG icon under the
-/// user's `$XDG_DATA_HOME` (defaults to `~/.local/share`), then
-/// best-efforts the desktop / icon caches so the LTBox entry shows
-/// in the GNOME / KDE app menu without a logout. No root required —
-/// per-user install only. Mirrors `--install-udev`'s shape: write
-/// → refresh → exit.
-///
-/// Exec line in the bundled template uses a placeholder
-/// (`__LTBOX_EXEC__`) that we substitute at install time with the
-/// absolute path of `current_exe()`. Avoids relying on `ltbox`
-/// being on PATH — a tarball-extracted binary still works because
-/// the launcher will spawn the exact file the user installed from.
+/// `ltbox --install-desktop` entry point. Linux only. Per-user install
+/// under `$XDG_DATA_HOME` (default `~/.local/share`); refreshes desktop
+/// + icon caches. The `__LTBOX_EXEC__` placeholder in the bundled
+/// `.desktop` is substituted with `current_exe()` at install time so a
+/// tarball-extracted binary works without being on PATH.
 #[cfg(target_os = "linux")]
 fn install_desktop_file() -> ! {
     use std::fs;
@@ -2651,12 +2621,9 @@ impl AdvWizard {
     fn is_folder_op(&self) -> bool {
         matches!(
             self.action,
-            // v2 parity: PatchDevinfo folder carries both devinfo.img
-            // + persist.img - country code lives in both partitions.
-            Some(AdvAction::PatchDevinfo)
-                // Encrypted rawprogram - user picks the folder holding
-                // the `*.x` payload pack; exec iterates and decrypts each.
-                | Some(AdvAction::ConvertXml)
+            // PatchDevinfo: folder holds devinfo.img + persist.img.
+            // ConvertXml: folder holds the encrypted `*.x` pack.
+            Some(AdvAction::PatchDevinfo) | Some(AdvAction::ConvertXml)
         )
     }
     /// Extension whitelist for `rfd::AsyncFileDialog::add_filter`.
@@ -4402,8 +4369,7 @@ impl App {
                                     ),
                                 }
                             }
-                            // v2 parity: `check_image_folder_arb` —
-                            // diagnostic only, no mutation of flash plan.
+                            // ARB analysis above is diagnostic only — flash plan unchanged.
 
                             // 6. XML
                             if x_count > 0 {
@@ -4472,10 +4438,8 @@ impl App {
                             let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
                                 .map_err(|e| format!("EDL session: {e}"))?;
 
-                            // v2 parity: `flash_rawprogram` — drive off
-                            // `rawprogram*.xml` + `patch*.xml` so start
-                            // sector / num_sectors / LUN come from the
-                            // catalog (no slot guessing).
+                            // Full-firmware flash: rawprogram + patch XMLs
+                            // drive every program node (no slot guessing).
                             let (raw_xmls, patch_xmls) =
                                 ltbox_device::edl::collect_firmware_xmls_for_flash(fw_dir, false)
                                     .map_err(|e| format!("Firmware XML selection failed: {e}"))?;
@@ -4484,22 +4448,17 @@ impl App {
                                     "No flashable rawprogram*.xml found in {fw_folder}"
                                 ));
                             }
-                            // v2 parity: `patch_anti_rollback`. Patched
-                            // copies written to `arb_work_dir`, flashed
-                            // *after* rawprogram — avoids mutating the
-                            // user's firmware folder on disk.
-                            //
-                            // Replaces the v3.0.0-beta.1 `XmlCatalog`-driven
-                            // lookup with a hardcoded partition table — boot
-                            // + vbmeta_system live on fixed LUNs across every
-                            // supported Lenovo device, the on-disk filename
-                            // is always `<base>.img`, and start sector comes
-                            // from the device's GPT via `flash_partition_by_name`.
-                            // No more rawprogram parse for ARB prep.
+                            // ARB-patched copies are flashed *after* rawprogram
+                            // so the user's firmware folder stays untouched.
+                            // LUN comes from the hardcoded map; start sector
+                            // resolves through GPT-by-name in
+                            // `flash_partition`. Slot `_a` matches the prior
+                            // first-hit `catalog.require(..._a, ..._b, …)`
+                            // semantics — overwrites A on top of the
+                            // full-firmware flash that already wrote both.
                             let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
                                 Vec::new();
                             if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
-                                // Per-run scratch dir; cleaned on entry.
                                 let arb_work_dir = dirs::data_dir()
                                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                                     .join("ltbox")
@@ -4508,13 +4467,7 @@ impl App {
                                 std::fs::create_dir_all(&arb_work_dir)
                                     .map_err(|e| format!("arb work dir: {e}"))?;
 
-                                // (canonical base, on-disk filename, slot
-                                // label written back). Slot `_a` matches
-                                // the v2 `catalog.require(..._a, ..._b, …)`
-                                // first-hit semantics: the ARB-patched copy
-                                // overwrites slot A only, on top of the
-                                // full-firmware flash that already wrote
-                                // both slots from rawprogram.
+                                // (base, on-disk filename, slot label)
                                 let label_pairs: &[(&str, &str, &str)] = &[
                                     ("boot", "boot.img", "boot_a"),
                                     (
@@ -4724,14 +4677,10 @@ impl App {
                                 }
                             }
 
-                            // v2 parity: `_patch_devinfo` +
-                            // `patch_country_codes`. v2 rewrote
-                            // `filename=` in the XML; v3 post-patches
-                            // instead so the user's firmware folder
-                            // stays untouched on disk. `modify_country_code`
-                            // gate honors the popup's "Do not change"
-                            // choice — when off, no dump, no flash, the
-                            // device's existing devinfo/persist stay put.
+                            // Country code patch: dump → patch → flash devinfo
+                            // + persist. Skipped when the popup's "Do not
+                            // change" was chosen (`modify_country_code` off)
+                            // so the device's existing region images stay put.
                             if cfg.wipe
                                 && cfg.modify_country_code
                                 && let Some(target_code) = cfg.country_code.as_deref() {
@@ -4749,13 +4698,11 @@ impl App {
                                     if let Err(e) = std::fs::create_dir_all(&work_dir) {
                                         return Err(format!("country work dir: {e}"));
                                     }
-                                    // v2 parity: `backup_critical_<ts>/`
-                                    // — original region images held aside
-                                    // for manual restore if needed.
-                                    // Routed through `app_paths::backup_dir_for`
-                                    // so non-Windows hosts don't try to
-                                    // write next to a read-only AppImage
-                                    // mount.
+                                    // Critical-image backup: original region
+                                    // partitions held aside for manual restore.
+                                    // `app_paths::backup_dir_for` keeps writes
+                                    // off the read-only AppImage mount on
+                                    // non-Windows hosts.
                                     let ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_secs())
@@ -5911,11 +5858,10 @@ impl App {
                     "[Root] {}",
                     self.t("log_op_starting").replace("{what}", &fam_label)
                 ));
-                // Resolve Magisk preinit device while ADB still exists
-                // — it vanishes past EDL. v2 parity: walk /proc/self/mountinfo
-                // AND gate /data on the device's encryption state, else a
-                // metadata-encrypted device lands preinit on userdata and
-                // boot-loops after the first wipe cycle.
+                // Resolve Magisk preinit device via /proc/self/mountinfo
+                // before ADB vanishes past EDL. Gates /data on the device's
+                // encryption state — metadata-encrypted devices land preinit
+                // on userdata otherwise and boot-loop after first wipe.
                 let preinit_device: String = if matches!(family, Some(Family::Magisk))
                     && matches!(
                         self.connection,
@@ -6240,8 +6186,7 @@ impl App {
                                     .map_err(|e| format!("Dump {boot_primary}: {e}"))?;
                                 session.dump_partition(&vbmeta_primary, &dumped_vbmeta, 0, ROOT_PARTITIONS_LUN, &mut log)
                                     .map_err(|e| format!("Dump {vbmeta_primary}: {e}"))?;
-                                // v2 parity: `BACKUP_BOOT_DIR`. Dropped next
-                                // to `ltbox.exe` for the v3 Unroot flow.
+                                // Dump backup next to `ltbox.exe` for Unroot.
                                 let _ = std::fs::create_dir_all(&backup_dir);
                                 let _ = std::fs::copy(&dumped_boot, backup_dir.join(boot_out));
                                 let _ = std::fs::copy(&dumped_vbmeta, backup_dir.join("vbmeta.img"));
@@ -6858,9 +6803,8 @@ impl App {
                                         }
                                     }
                                     AdvAction::DetectArb => {
-                                        // v2 parity: `compute_device_rollback_index`.
-                                        // Hardcoded 0 misreports every already-flashed
-                                        // ARB device as "needs patch".
+                                        // Hardcoded 0 would misreport already-flashed
+                                        // ARB devices as "needs patch".
                                         let device_index: Option<u64> =
                                             match ltbox_device::fastboot::FastbootDevice::open() {
                                                 Ok(mut dev) => dev
@@ -6987,9 +6931,9 @@ impl App {
                                         }
                                     }
                                     AdvAction::PatchDevinfo => {
-                                        // v2 parity: country code lives in BOTH
-                                        // devinfo.img + persist.img. Picker is
-                                        // a folder (at least one must exist).
+                                        // Country code lives in both devinfo.img
+                                        // + persist.img — folder picker, at
+                                        // least one must exist.
                                         const KNOWN: &[&str] = &[
                                             "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL",
                                             "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "GR",
@@ -7097,12 +7041,9 @@ impl App {
                                         }
                                     }
                                     AdvAction::PatchArb => {
-                                        // v2 parity: `patch_anti_rollback`.
-                                        // vbmeta* → `patch_vbmeta_rollback`
-                                        // (key required). Else →
-                                        // `patch_chained_image` (NONE →
-                                        // `add_hash_footer` fallback).
-                                        // Auto-pairs the sibling.
+                                        // vbmeta* → `patch_vbmeta_rollback` (key required).
+                                        // Else → `patch_chained_image` (NONE algorithm
+                                        // falls back to `add_hash_footer`). Auto-pairs sibling.
                                         let device_index: Option<u64> =
                                             match ltbox_device::fastboot::FastbootDevice::open() {
                                                 Ok(mut dev) => dev
@@ -7215,8 +7156,7 @@ impl App {
                                         }
                                     }
                                     AdvAction::RebuildVbmeta => {
-                                        // v2 parity: `rebuild_vbmeta_with_chained_images`.
-                                        // `resign_image` alone is wrong — chain
+                                        // `resign_image` alone won't work — chain
                                         // hashes go stale once dtbo / init_boot /
                                         // vendor_boot move.
                                         let key = find_testkey(input).ok_or_else(|| {
