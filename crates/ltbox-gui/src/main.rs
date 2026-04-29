@@ -578,7 +578,7 @@ impl AdvAction {
             Self::ImageInfo => "adv_src_image_info",
             Self::PatchDevinfo => "adv_src_patch_devinfo",
             Self::DetectArb => "adv_src_detect_arb",
-            Self::PatchArb => "adv_src_patch_arb",
+            Self::PatchArb => "adv_src_patch_arb_folder",
             Self::ConvertXml => "adv_src_convert_xml",
             Self::DumpPartitions => "adv_src_dump_partitions",
             Self::DumpPhysical => "adv_src_dump_physical",
@@ -595,7 +595,7 @@ impl AdvAction {
             Self::ImageInfo => "image_info",
             Self::PatchDevinfo => "patch_devinfo",
             Self::DetectArb => "detect_arb",
-            Self::PatchArb => "patch_arb",
+            Self::PatchArb => "rb",
             Self::ConvertXml => "convert_xml",
             Self::DumpPartitions => "dump_partitions",
             Self::DumpPhysical => "dump_physical",
@@ -2648,6 +2648,37 @@ fn parts_sort_header(
         .into()
 }
 
+/// Format a unix timestamp (seconds) as `YYYY-MM-DD HH:MM:SS UTC`.
+/// Pure stdlib — chrono is intentionally not pulled into the GUI just
+/// for one popup label. Uses Howard Hinnant's civil-from-days
+/// algorithm so the proleptic Gregorian conversion stays correct
+/// across leap years and century boundaries without a calendar table.
+fn format_unix_timestamp_utc(ts: u64) -> String {
+    let days = (ts / 86_400) as i64;
+    let rem = (ts % 86_400) as u32;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
+}
+
+/// Howard Hinnant `civil_from_days`: (days since 1970-01-01) →
+/// `(year, month, day)` in the proleptic Gregorian calendar.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 /// Human-readable auto-unit byte formatter (B/KB/MB/GB).
 fn format_bytes_auto(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -2687,6 +2718,19 @@ struct AdvWizard {
     /// `{exe_dir}/output_<action>/` — populated on Confirm → Exec.
     /// Read by the Done card's "Open Folder" pill.
     output_dir: Option<std::path::PathBuf>,
+    /// PatchArb only: live-typing buffer for the unix-timestamp popup.
+    /// Cleared on cancel / commit. The `arb_index_committed` slot is
+    /// the canonical post-popup value.
+    arb_index_buffer: String,
+    /// PatchArb only: committed target rollback index (unix timestamp,
+    /// 10 digits). `Some(_)` after the popup OK closes; gates `Next` on
+    /// the inspect step and feeds the Confirm summary + exec.
+    arb_index_committed: Option<u64>,
+    /// PatchArb only: original rollback indices read from the picked
+    /// firmware folder's `boot.img` + `vbmeta_system.img`. `Some` after
+    /// the Source-step Next succeeds; gates `Next` on the inspect step.
+    /// Carries `(boot_rollback, vbmeta_rollback)`.
+    arb_inspect: Option<(u64, u64)>,
 }
 
 impl AdvWizard {
@@ -2718,6 +2762,13 @@ impl AdvWizard {
             &[
                 "adv_step_source",
                 "adv_step_region_target",
+                "flash_step_confirm",
+                "flash_step_flash",
+            ]
+        } else if matches!(self.action, Some(AdvAction::PatchArb)) {
+            &[
+                "adv_step_source",
+                "adv_step_arb_inspect",
                 "flash_step_confirm",
                 "flash_step_flash",
             ]
@@ -2756,6 +2807,12 @@ impl Wizard for AdvWizard {
         if self.needs_region_target() && self.step == 1 {
             return self.region_target.is_some();
         }
+        // PatchArb inspect step (step 1) requires the inspect read to
+        // have completed successfully before the user can advance into
+        // the timestamp popup → confirm step.
+        if matches!(self.action, Some(AdvAction::PatchArb)) && self.step == 1 {
+            return self.arb_inspect.is_some();
+        }
         true
     }
 }
@@ -2767,7 +2824,7 @@ impl AdvWizard {
             self.action,
             // PatchDevinfo: folder holds devinfo.img + persist.img.
             // ConvertXml: folder holds the encrypted `*.x` pack.
-            Some(AdvAction::PatchDevinfo) | Some(AdvAction::ConvertXml)
+            Some(AdvAction::PatchDevinfo) | Some(AdvAction::ConvertXml) | Some(AdvAction::PatchArb)
         )
     }
     /// Extension whitelist for `rfd::AsyncFileDialog::add_filter`.
@@ -2777,7 +2834,6 @@ impl AdvWizard {
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::DetectArb)
-            | Some(AdvAction::PatchArb)
             | Some(AdvAction::RebuildVbmeta) => ("Android partition image (*.img)", &["img"]),
             _ => ("", &[]),
         }
@@ -2796,12 +2852,13 @@ impl AdvWizard {
         match self.action {
             // Source folders (existing payloads).
             Some(AdvAction::ConvertXml) => PickerKind::EncryptedRawprogramFolder,
-            Some(AdvAction::PatchDevinfo) => PickerKind::QfilFirmwareFolder,
+            Some(AdvAction::PatchDevinfo) | Some(AdvAction::PatchArb) => {
+                PickerKind::QfilFirmwareFolder
+            }
             // File-picking actions - all share the unified File bucket.
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::DetectArb)
-            | Some(AdvAction::PatchArb)
             | Some(AdvAction::RebuildVbmeta) => PickerKind::File,
             // Remaining actions don't open a Browse dialog on step 0
             // (DumpPartitions/DumpPhysical/Flash* have dedicated wizards);
@@ -2821,7 +2878,8 @@ impl AdvWizard {
             Some(AdvAction::PatchDevinfo) => "picker_target_devinfo_persist_folder",
             Some(AdvAction::RegionConvert) => "picker_target_vendor_boot_img",
             Some(AdvAction::ImageInfo) => "picker_target_avb_images",
-            Some(AdvAction::DetectArb) | Some(AdvAction::PatchArb) => "picker_target_arb_img",
+            Some(AdvAction::DetectArb) => "picker_target_arb_img",
+            Some(AdvAction::PatchArb) => "picker_target_arb_folder",
             Some(AdvAction::RebuildVbmeta) => "picker_target_vbmeta_img",
             _ => "picker_target_file",
         }
@@ -3260,6 +3318,14 @@ enum AdvMsg {
     AdvWizOpenCountry,
     AdvWizOpenRegionTarget,
     AdvWizOpenOutputFolder,
+    /// PatchArb timestamp popup: live-typing input.
+    AdvWizArbIndexInput(String),
+    /// PatchArb timestamp popup: OK pressed (only valid when the buffer
+    /// is exactly 10 digits — UI gates this).
+    AdvWizArbIndexConfirm,
+    /// PatchArb timestamp popup: cancel — closes the popup, clears the
+    /// buffer, leaves the wizard on the source step.
+    AdvWizArbIndexCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -3502,6 +3568,10 @@ struct App {
     /// state))` → popup open for `serial`; state tracks the in-flight
     /// fetch result so the popup can render a spinner / error / table.
     device_info_popup: Option<(String, DeviceInfoState)>,
+    /// PatchArb wizard's unix-timestamp input popup. `true` while the
+    /// modal is on screen between picking the firmware folder and the
+    /// Confirm step.
+    arb_index_popup_open: bool,
     // Device portrait derived at view time via `device_portrait()`.
     platform_supported: Option<bool>,
     busy: bool,
@@ -3646,6 +3716,7 @@ impl Default for App {
             device_serial: String::new(),
             device_info_cache: std::collections::HashMap::new(),
             device_info_popup: None,
+            arb_index_popup_open: false,
             platform_supported: None,
             busy: false,
             busy_view: None,
@@ -6918,6 +6989,59 @@ impl App {
                     self.adv_wizard.next();
                     return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
                 }
+                // PatchArb: source step Next reads the AVB rollback
+                // indices from the picked folder + advances to the
+                // inspect step. Inspect step Next opens the timestamp
+                // popup; the popup OK is what advances to the confirm
+                // step.
+                if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb)) {
+                    if self.adv_wizard.step == 0 {
+                        let Some(folder) = self.adv_wizard.file_path.clone() else {
+                            return Task::none();
+                        };
+                        let dir = std::path::PathBuf::from(&folder);
+                        let boot = dir.join("boot.img");
+                        let vbmeta = dir.join("vbmeta_system.img");
+                        if !boot.is_file() {
+                            self.error_msg = Some(format!("Missing boot.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        if !vbmeta.is_file() {
+                            self.error_msg =
+                                Some(format!("Missing vbmeta_system.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        let boot_info = match ltbox_patch::avb::extract_image_avb_info(&boot) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg = Some(format!("boot.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        let vbmeta_info = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg =
+                                    Some(format!("vbmeta_system.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        self.adv_wizard.arb_inspect =
+                            Some((boot_info.rollback_index, vbmeta_info.rollback_index));
+                        self.error_msg = None;
+                        self.adv_wizard.next();
+                        return Task::none();
+                    }
+                    if self.adv_wizard.step == 1 {
+                        self.adv_wizard.arb_index_buffer = self
+                            .adv_wizard
+                            .arb_index_committed
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
+                        self.arb_index_popup_open = true;
+                        return Task::none();
+                    }
+                }
                 if self.adv_wizard.is_confirm_step() {
                     let Some(action) = self.adv_wizard.action else {
                         return Task::none();
@@ -7017,6 +7141,30 @@ impl App {
                     self.log_push(format!("[GUI] Open Folder failed: {err}"));
                 }
             }
+            Message::Adv(AdvMsg::AdvWizArbIndexInput(s)) => {
+                // Strip non-digits + cap at 10 chars so paste-of-garbage
+                // can't smuggle a longer / non-numeric value past the UI.
+                let cleaned: String = s.chars().filter(|c| c.is_ascii_digit()).take(10).collect();
+                self.adv_wizard.arb_index_buffer = cleaned;
+            }
+            Message::Adv(AdvMsg::AdvWizArbIndexConfirm) => {
+                let buf = self.adv_wizard.arb_index_buffer.clone();
+                if buf.len() != 10 {
+                    return Task::none();
+                }
+                let Ok(parsed) = buf.parse::<u64>() else {
+                    return Task::none();
+                };
+                self.adv_wizard.arb_index_committed = Some(parsed);
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+                // Advance to Confirm.
+                self.adv_wizard.next();
+            }
+            Message::Adv(AdvMsg::AdvWizArbIndexCancel) => {
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+            }
             Message::Adv(AdvMsg::AdvExec(action)) => {
                 // Picker ran in AdvConfirm; replay the saved path.
                 let Some(path) = self.adv_confirm_path.clone() else {
@@ -7040,6 +7188,8 @@ impl App {
                         self.wf_config.country_action.target().map(str::to_string);
                     // RegionConvert only — user-picked target.
                     let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
+                    // PatchArb only — committed unix-timestamp index.
+                    let adv_arb_index: Option<u64> = self.adv_wizard.arb_index_committed;
                     let output_dir: std::path::PathBuf = self
                         .adv_wizard
                         .output_dir
@@ -7345,119 +7495,86 @@ impl App {
                                         }
                                     }
                                     AdvAction::PatchArb => {
-                                        // vbmeta* → `patch_vbmeta_rollback` (key required).
-                                        // Else → `patch_chained_image` (NONE algorithm
-                                        // falls back to `add_hash_footer`). Auto-pairs sibling.
-                                        let device_index: Option<u64> =
-                                            match ltbox_device::fastboot::FastbootDevice::open() {
-                                                Ok(mut dev) => dev
-                                                    .get_all_vars()
-                                                    .ok()
-                                                    .map(|v| {
-                                                        ltbox_patch::rollback::compute_device_rollback_index(
-                                                            &v.rollback_indices,
-                                                        )
-                                                    })
-                                                    .unwrap_or(None),
-                                                Err(_) => None,
-                                            };
-                                        let target = device_index.unwrap_or(0);
+                                        // `input` is now the firmware folder; the user-picked
+                                        // target rollback index lives on the wizard.
+                                        let target = adv_arb_index.ok_or_else(|| {
+                                            "Patch Rollback Index: missing target index".to_string()
+                                        })?;
+                                        let boot = input.join("boot.img");
+                                        let vbmeta = input.join("vbmeta_system.img");
+                                        if !boot.is_file() {
+                                            return Err(format!(
+                                                "Missing boot.img in {}",
+                                                input.display()
+                                            ));
+                                        }
+                                        if !vbmeta.is_file() {
+                                            return Err(format!(
+                                                "Missing vbmeta_system.img in {}",
+                                                input.display()
+                                            ));
+                                        }
+                                        // Allow only the two whitelisted testkeys; reject
+                                        // anything else (custom RSA, non-PEM, missing).
+                                        let key = find_testkey(&boot).ok_or_else(|| {
+                                            "Patch Rollback Index: needs testkey_rsa2048.pem or testkey_rsa4096.pem next to the firmware (or in ./keys/)".to_string()
+                                        })?;
                                         ltbox_core::live!(
                                             log,
                                             "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_arb_device_index_with_target")
-                                                .replace(
-                                                    "{index}",
-                                                    &device_index.map(|v| v.to_string()).unwrap_or_else(|| {
-                                                        ltbox_core::i18n::tr("live_arb_device_index_none_default")
-                                                    }),
-                                                )
-                                                .replace("{target}", &target.to_string())
+                                            ltbox_core::i18n::tr("live_arb_using_key")
+                                                .replace("{path}", &key.display().to_string())
                                         );
-
-                                        // Patch one file; vbmeta vs chained by filename.
-                                        let output_dir_ref = output_dir.clone();
-                                        let patch_one = move |
-                                            path: &std::path::Path,
-                                            log: &mut Vec<String>,
-                                        | -> std::result::Result<(), String> {
-                                            let key = find_testkey(path);
-                                            let stem = path
-                                                .file_stem()
-                                                .map(|s| s.to_string_lossy().to_string())
-                                                .unwrap_or_default();
-                                            let output = output_dir_ref.join(format!("{stem}.arb{target}.img"));
-                                            let lower = stem.to_ascii_lowercase();
-                                            let is_vbmeta = lower.starts_with("vbmeta");
-                                            if is_vbmeta {
-                                                let Some(k) = key.as_deref() else {
-                                                    return Err(format!(
-                                                        "vbmeta patch needs a testkey next to {} or in ./keys/",
-                                                        path.display()
-                                                    ));
-                                                };
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[ARB] {}",
-                                                    ltbox_core::i18n::tr("live_arb_using_key")
-                                                        .replace("{path}", &k.display().to_string())
-                                                );
-                                                ltbox_patch::rollback::patch_vbmeta_rollback(path, &output, target, k)
-                                                    .map_err(|e| format!("vbmeta ARB patch failed: {e}"))
-                                            } else {
-                                                if let Some(k) = &key {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[ARB] {}",
-                                                        ltbox_core::i18n::tr("live_arb_using_key")
-                                                            .replace("{path}", &k.display().to_string())
-                                                    );
-                                                } else {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[ARB] {}",
-                                                        ltbox_core::i18n::tr("live_arb_no_testkey_fallback")
-                                                    );
-                                                }
-                                                ltbox_patch::rollback::patch_chained_image(path, &output, target, key.as_deref())
-                                                    .map_err(|e| format!("chained ARB patch failed: {e}"))
-                                            }
-                                        };
-
-                                        // Primary + sibling auto-pair.
-                                        patch_one(input, &mut log)?;
-                                        let lower_stem = input
-                                            .file_stem()
-                                            .and_then(|s| s.to_str())
-                                            .map(|s| s.to_ascii_lowercase())
-                                            .unwrap_or_default();
-                                        let sibling_candidates: &[&str] = if lower_stem.starts_with("boot") {
-                                            &["vbmeta_system", "vbmeta_system_a", "vbmeta_system_b"]
-                                        } else if lower_stem.starts_with("vbmeta_system") {
-                                            &["boot", "boot_a", "boot_b"]
-                                        } else {
-                                            &[]
-                                        };
-                                        for cand in sibling_candidates {
-                                            let sibling = parent.join(format!("{cand}.img"));
-                                            if sibling.exists() {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[ARB] {}",
-                                                    ltbox_core::i18n::tr("live_arb_auto_pair_sibling")
-                                                        .replace("{path}", &sibling.display().to_string())
-                                                );
-                                                if let Err(e) = patch_one(&sibling, &mut log) {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[ARB] {}",
-                                                        ltbox_core::i18n::tr("live_arb_sibling_skipped")
-                                                            .replace("{error}", &e.to_string())
-                                                    );
-                                                }
-                                                break;
-                                            }
+                                        // Read original rollback indices first; abort on
+                                        // 0 / 1 for either image (both are invalid stock
+                                        // baselines per the user spec).
+                                        let boot_info = ltbox_patch::avb::extract_image_avb_info(&boot)
+                                            .map_err(|e| format!("boot.img inspect failed: {e}"))?;
+                                        let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(&vbmeta)
+                                            .map_err(|e| format!("vbmeta_system.img inspect failed: {e}"))?;
+                                        if boot_info.rollback_index <= 1 {
+                                            return Err(format!(
+                                                "boot.img rollback index is {} — refusing to patch",
+                                                boot_info.rollback_index
+                                            ));
                                         }
+                                        if vbmeta_info.rollback_index <= 1 {
+                                            return Err(format!(
+                                                "vbmeta_system.img rollback index is {} — refusing to patch",
+                                                vbmeta_info.rollback_index
+                                            ));
+                                        }
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ARB] boot.img rollback {} → {target}",
+                                            boot_info.rollback_index
+                                        );
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ARB] vbmeta_system.img rollback {} → {target}",
+                                            vbmeta_info.rollback_index
+                                        );
+                                        let boot_out = output_dir.join("boot.img");
+                                        let vbmeta_out = output_dir.join("vbmeta_system.img");
+                                        ltbox_patch::rollback::patch_chained_image(
+                                            &boot,
+                                            &boot_out,
+                                            target,
+                                            Some(&key),
+                                        )
+                                        .map_err(|e| format!("boot ARB patch failed: {e}"))?;
+                                        ltbox_patch::rollback::patch_vbmeta_rollback(
+                                            &vbmeta,
+                                            &vbmeta_out,
+                                            target,
+                                            &key,
+                                        )
+                                        .map_err(|e| format!("vbmeta_system ARB patch failed: {e}"))?;
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ARB] Output folder: {}",
+                                            output_dir.display()
+                                        );
                                     }
                                     AdvAction::RebuildVbmeta => {
                                         // `resign_image` alone won't work — chain
@@ -8773,6 +8890,9 @@ impl App {
         if self.device_info_popup.is_some() {
             layers.push(self.device_info_popup_view());
         }
+        if self.arb_index_popup_open {
+            layers.push(self.arb_index_popup_view());
+        }
 
         if layers.len() == 1 {
             layers.into_iter().next().unwrap()
@@ -8924,6 +9044,80 @@ impl App {
         .spacing(12)
         .padding(20)
         .width(640);
+
+        m3_dialog(content.into())
+    }
+
+    /// PatchArb timestamp popup. Reads `adv_wizard.arb_index_buffer`
+    /// for the in-flight typing and renders the UTC representation in
+    /// real time once the buffer hits exactly 10 digits. OK is enabled
+    /// only on a 10-digit buffer that parses to a `u64`.
+    fn arb_index_popup_view(&self) -> Element<'_, Message> {
+        let buf = self.adv_wizard.arb_index_buffer.clone();
+        let valid = buf.len() == 10 && buf.parse::<u64>().is_ok();
+
+        // UTC preview only when the buffer is exactly 10 digits, so
+        // shrinking the value (e.g. backspacing while editing) makes
+        // the preview disappear instead of jumping to a stale time.
+        let utc_preview: Element<'_, Message> = if valid {
+            let ts: u64 = buf.parse().unwrap_or(0);
+            let formatted = format_unix_timestamp_utc(ts);
+            text(formatted)
+                .size(13)
+                .color(iced::Color::from_rgb(0.4, 0.7, 0.4))
+                .into()
+        } else {
+            // Keep a fixed-height placeholder so the layout doesn't
+            // jump when the preview appears / disappears.
+            container(text("").size(13)).height(20).into()
+        };
+
+        let title = text(self.t("arb_index_popup_title").to_string())
+            .size(theme::text_size::WIZARD_STEP_TITLE);
+        let subtitle = text(self.t("arb_index_popup_subtitle").to_string())
+            .size(12)
+            .style(muted_style);
+
+        let input = iced::widget::text_input(
+            self.t("arb_index_popup_placeholder"),
+            &self.adv_wizard.arb_index_buffer,
+        )
+        .on_input(|s| Message::Adv(AdvMsg::AdvWizArbIndexInput(s)))
+        .on_submit(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
+        .padding([8, 12])
+        .size(14)
+        .width(Length::Fill);
+
+        let cancel_btn = button(text(self.t("btn_cancel").to_string()).size(13))
+            .on_press(Message::Adv(AdvMsg::AdvWizArbIndexCancel))
+            .padding([8, 18])
+            .style(md_text_btn_style);
+        let ok_btn_inner = text(self.t("btn_ok").to_string())
+            .size(13)
+            .color(iced::Color::WHITE);
+        let ok_btn = if valid {
+            button(ok_btn_inner)
+                .on_press(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
+                .padding([8, 18])
+                .style(md_filled_btn_style)
+        } else {
+            button(ok_btn_inner)
+                .padding([8, 18])
+                .style(md_filled_btn_style)
+        };
+
+        let content = column![
+            title,
+            subtitle,
+            utc_preview,
+            input,
+            iced::widget::row![Space::new().width(Length::Fill), cancel_btn, ok_btn]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12)
+        .padding(20)
+        .width(420);
 
         m3_dialog(content.into())
     }
@@ -12240,6 +12434,10 @@ impl App {
             self.adv_wiz_country_step()
         } else if needs_region_target && self.adv_wizard.step == 1 {
             self.adv_wiz_region_target_step()
+        } else if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb))
+            && self.adv_wizard.step == 1
+        {
+            self.adv_wiz_arb_inspect_step()
         } else {
             self.adv_wiz_source_step()
         };
@@ -12500,6 +12698,50 @@ impl App {
             .into()
     }
 
+    /// PatchArb inspect step — render boot.img + vbmeta_system.img
+    /// rollback indices (decimal + UTC) read from the picked folder so
+    /// the user can sanity-check the source before opening the
+    /// timestamp popup. Next on this step opens the popup.
+    fn adv_wiz_arb_inspect_step(&self) -> Element<'_, Message> {
+        let (boot_idx, vbmeta_idx) = self.adv_wizard.arb_inspect.unwrap_or((0, 0));
+        let mk_row = |label_key: &'static str, idx: u64| -> Element<'_, Message> {
+            let utc = format_unix_timestamp_utc(idx);
+            iced::widget::row![
+                text(self.t(label_key).to_string())
+                    .size(13)
+                    .style(muted_style)
+                    .width(220),
+                text(idx.to_string()).size(13).width(140),
+                text(utc).size(12).style(muted_style),
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center)
+            .into()
+        };
+        let col = column![
+            text(self.t("adv_arb_inspect_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("adv_arb_inspect_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            Space::new().height(8),
+            mk_row("adv_arb_inspect_boot", boot_idx),
+            mk_row("adv_arb_inspect_vbmeta", vbmeta_idx),
+        ]
+        .spacing(8)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
     /// Confirm step — Next becomes Start.
     fn adv_wiz_confirm_step(&self) -> Element<'_, Message> {
         let action = match self.adv_wizard.action {
@@ -12538,6 +12780,25 @@ impl App {
                 .map(|r| self.t(r.label_key()).to_string())
                 .unwrap_or(dash);
             col = col.push(info_kv_center(self.t("adv_confirm_region_target"), &label));
+        }
+        if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb))
+            && let Some(idx) = self.adv_wizard.arb_index_committed
+        {
+            let utc = format_unix_timestamp_utc(idx);
+            col = col.push(info_kv_center(
+                self.t("adv_confirm_arb_index"),
+                &format!("{idx}  ({utc})"),
+            ));
+            if let Some((boot_idx, vbmeta_idx)) = self.adv_wizard.arb_inspect {
+                col = col.push(info_kv_center(
+                    self.t("adv_arb_inspect_boot"),
+                    &format!("{boot_idx} → {idx}"),
+                ));
+                col = col.push(info_kv_center(
+                    self.t("adv_arb_inspect_vbmeta"),
+                    &format!("{vbmeta_idx} → {idx}"),
+                ));
+            }
         }
         container(scrollable(col).height(Length::Fill).width(Length::Fill))
             .width(Length::Fill)
