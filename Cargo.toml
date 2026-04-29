@@ -84,7 +84,8 @@ iced_aw = { version = "0.14", default-features = false, features = ["badge", "ca
 rfd = "0.17"
 dirs = "6"
 fs2 = "0.4"
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Registry"] }
+dark-light = "2"
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 noto-fonts-dl = { version = "0.1", features = ["ko", "zh"] }
 winresource = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
