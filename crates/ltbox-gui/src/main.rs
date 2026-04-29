@@ -2927,6 +2927,30 @@ fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
     pickers::FilePickSpec::single(target_i18n_key).with_filter("EDL loader (.melf)", &["melf"])
 }
 
+/// Wrap a heavy blocking flow as a `Task<Message>`. Runs `f` on the
+/// 64 MiB heavy-task pool via `spawn_blocking + run_heavy`, then sends
+/// the result through `done`. Both `run_heavy` panics and the
+/// `spawn_blocking` JoinError collapse to a single error string passed
+/// to `fallback`, so callers no longer hand-write the two-level
+/// `unwrap_or_else` chain.
+fn task_heavy<T, F, G>(f: F, done: fn(T) -> Message, fallback: G) -> Task<Message>
+where
+    F: FnOnce() -> T + Send + 'static,
+    G: FnOnce(String) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    Task::perform(
+        async move {
+            match tokio::task::spawn_blocking(move || ltbox_core::runtime::run_heavy(f)).await {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => fallback(e),
+                Err(_) => fallback("task panicked".to_string()),
+            }
+        },
+        done,
+    )
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     // Window controls
@@ -7760,24 +7784,14 @@ impl App {
                 let conn = self.connection;
                 self.log_lines
                     .push("[FlashParts] Scanning partitions...".to_string());
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || flash_parts_scan(conn, loader))
-                                .unwrap_or_else(|e| FlashPartsScanResult {
-                                    logs: vec![format!("[FlashParts] heavy thread error: {e}")],
-                                    rows: Vec::new(),
-                                    error: Some(e.to_string()),
-                                })
-                        })
-                        .await
-                        .unwrap_or_else(|_| FlashPartsScanResult {
-                            logs: vec!["[FlashParts] scan task panicked".to_string()],
-                            rows: Vec::new(),
-                            error: Some("scan task panicked".to_string()),
-                        })
-                    },
+                return task_heavy(
+                    move || flash_parts_scan(conn, loader),
                     Message::FlashPartsScanDone,
+                    |e| FlashPartsScanResult {
+                        logs: vec![format!("[FlashParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
                 );
             }
             Message::FlashPartsScanDone(result) => {
@@ -7807,20 +7821,10 @@ impl App {
                 self.log_lines.push(format!(
                     "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
                 ));
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || {
-                                flash_parts_execute(loader, rows)
-                            })
-                            .unwrap_or_else(|e| {
-                                vec![format!("[FlashParts] heavy thread error: {e}")]
-                            })
-                        })
-                        .await
-                        .unwrap_or_else(|_| vec!["[FlashParts] task panicked".to_string()])
-                    },
+                return task_heavy(
+                    move || flash_parts_execute(loader, rows),
                     Message::FlashPartsExecDone,
+                    |e| vec![format!("[FlashParts] {e}")],
                 );
             }
             Message::FlashPartsExecDone(lines) => {
@@ -7869,24 +7873,14 @@ impl App {
                 let conn = self.connection;
                 self.log_lines
                     .push("[DumpParts] Scanning partition tables...".to_string());
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || dump_parts_scan(conn, loader))
-                                .unwrap_or_else(|e| DumpPartsScanResult {
-                                    logs: vec![format!("[DumpParts] heavy thread error: {e}")],
-                                    rows: Vec::new(),
-                                    error: Some(e.to_string()),
-                                })
-                        })
-                        .await
-                        .unwrap_or_else(|_| DumpPartsScanResult {
-                            logs: vec!["[DumpParts] task panicked".to_string()],
-                            rows: Vec::new(),
-                            error: Some("task panicked".to_string()),
-                        })
-                    },
+                return task_heavy(
+                    move || dump_parts_scan(conn, loader),
                     Message::DumpPartsScanDone,
+                    |e| DumpPartsScanResult {
+                        logs: vec![format!("[DumpParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
                 );
             }
             Message::DumpPartsScanDone(result) => {
@@ -7927,20 +7921,10 @@ impl App {
                         rows.len(),
                         folder
                     ));
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                ltbox_core::runtime::run_heavy(move || {
-                                    dump_parts_execute(loader, folder, rows)
-                                })
-                                .unwrap_or_else(|e| {
-                                    vec![format!("[DumpParts] heavy thread error: {e}")]
-                                })
-                            })
-                            .await
-                            .unwrap_or_else(|_| vec!["[DumpParts] task panicked".to_string()])
-                        },
+                    return task_heavy(
+                        move || dump_parts_execute(loader, folder, rows),
                         Message::DumpPartsExecDone,
+                        |e| vec![format!("[DumpParts] {e}")],
                     );
                 }
             }
@@ -8006,20 +7990,10 @@ impl App {
                             .replace("{count}", &luns.len().to_string())
                             .replace("{path}", &folder)
                     ));
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                ltbox_core::runtime::run_heavy(move || {
-                                    dump_physical_execute(conn, loader, folder, luns)
-                                })
-                                .unwrap_or_else(|e| {
-                                    vec![format!("[DumpPhys] heavy thread error: {e}")]
-                                })
-                            })
-                            .await
-                            .unwrap_or_else(|_| vec!["[DumpPhys] task panicked".to_string()])
-                        },
+                    return task_heavy(
+                        move || dump_physical_execute(conn, loader, folder, luns),
                         Message::DumpPhysExecDone,
+                        |e| vec![format!("[DumpPhys] {e}")],
                     );
                 }
             }
@@ -8087,20 +8061,10 @@ impl App {
                 let pairs = self.flash_phys.active_pairs();
                 self.log_lines
                     .push(format!("[FlashPhys] Flashing {} LUN(s)", pairs.len()));
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || {
-                                flash_physical_execute(conn, loader, pairs)
-                            })
-                            .unwrap_or_else(|e| {
-                                vec![format!("[FlashPhys] heavy thread error: {e}")]
-                            })
-                        })
-                        .await
-                        .unwrap_or_else(|_| vec!["[FlashPhys] task panicked".to_string()])
-                    },
+                return task_heavy(
+                    move || flash_physical_execute(conn, loader, pairs),
                     Message::FlashPhysExecDone,
+                    |e| vec![format!("[FlashPhys] {e}")],
                 );
             }
             Message::FlashPhysExecDone(lines) => {
