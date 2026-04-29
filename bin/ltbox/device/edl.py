@@ -90,7 +90,7 @@ class EdlManager(BaseDeviceManager):
             timeout=timeout,
         )
 
-    def _ensure_edl_port(self, port: str, timeout: float = 45.0) -> str:
+    def _ensure_edl_port(self, port: str, timeout: float = 90.0) -> str:
         """Wait for a stable EDL port to appear after a qdl-rs reset.
 
         qdl-rs resets the device to EDL after each operation. The old COM
@@ -98,13 +98,26 @@ class EdlManager(BaseDeviceManager):
         port may flap while Windows re-enumerates. Two phases:
 
         1. If a port is visible right after the grace period, watch up to
-           5s for it to disconnect. If it stays, it is not a stale remnant
-           and we trust it.
+           15s for it to disconnect. If it stays, it is not a stale
+           remnant and we trust it.
         2. Otherwise, poll until the same port is observed on two
            consecutive checks (1s apart) — that is the new stable port.
 
         Raises DeviceCommandError on timeout so callers never spawn
         qdl-rs against a vanished COM device.
+
+        ## Why these magic numbers
+
+        * Default `timeout` is 90s (was 45s). After a large-partition
+          read (e.g. boot ≈ 96 MiB) the post-reset USB re-enumeration
+          on slower host stacks can exceed 45s, which would otherwise
+          stall the next per-partition dump call. 90s leaves headroom
+          without making the no-device case feel unbounded.
+        * Disconnect-watch window is 15s (was 5s). The old port handle
+          has been observed to linger 6–10s before USB tear-down on
+          some hosts; the previous 5s window returned the stale port
+          early and tripped qdl-rs on a COM device about to vanish.
+          15s clears the observed maximum with a small margin.
         """
         deadline = time.monotonic() + timeout
         # Grace period for the reset cycle to begin tearing down the port.
@@ -112,7 +125,7 @@ class EdlManager(BaseDeviceManager):
 
         initial = find_edl_port()
         if initial is not None:
-            disconnect_deadline = min(deadline, time.monotonic() + 5.0)
+            disconnect_deadline = min(deadline, time.monotonic() + 15.0)
             saw_disconnect = False
             while time.monotonic() < disconnect_deadline:
                 time.sleep(1.0)
