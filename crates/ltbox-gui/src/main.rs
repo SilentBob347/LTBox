@@ -21,21 +21,9 @@ mod stdout_tap;
 mod theme;
 mod theme_detect;
 
-/// Mirror of `ltbox_core::live!` for in-crate call sites that don't
-/// want to import the macro through a `use` chain. Same triple-write
-/// (stdout tap + live_sink + caller Vec). See core doc for the
-/// `*ExecDone` no-`log_extend(lines)` rule that prevents tail
-/// duplication.
-macro_rules! live {
-    ($log:expr, $($arg:tt)*) => {{
-        let _line = format!($($arg)*);
-        println!("{}", _line);
-        ltbox_core::live_sink::push(_line.clone());
-        $log.push(_line);
-    }};
-}
-
 use std::collections::HashMap;
+
+use ltbox_core::live;
 
 use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Subscription, Task, Theme};
