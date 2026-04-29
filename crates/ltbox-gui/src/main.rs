@@ -10713,8 +10713,9 @@ impl App {
                 )
                 .padding(0)
                 .width(Length::Fill)
-                .style(|_t: &Theme, _s| button::Style {
+                .style(|t: &Theme, _s| button::Style {
                     background: None,
+                    text_color: pal_of(t).on_surface,
                     ..Default::default()
                 }),
             );
@@ -11954,8 +11955,9 @@ impl App {
             .padding(0)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_t: &Theme, _s| button::Style {
+            .style(|t: &Theme, _s| button::Style {
                 background: None,
+                text_color: pal_of(t).on_surface,
                 ..Default::default()
             })
             .into()
@@ -12676,8 +12678,9 @@ impl App {
         .width(Length::Shrink)
         .on_press(Message::Adv(AdvMsg::AdvWizBrowse))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         // Shrink-wrap the 280 px card so the hit area stays tight.
@@ -12762,8 +12765,9 @@ impl App {
         .width(Length::Shrink)
         .on_press(Message::Adv(AdvMsg::AdvWizOpenCountry))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let btn_row = row![
@@ -12827,8 +12831,9 @@ impl App {
         .width(Length::Shrink)
         .on_press(Message::Adv(AdvMsg::AdvWizOpenRegionTarget))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let btn_row = row![
@@ -13141,8 +13146,9 @@ impl App {
         )
         .on_press(Message::FlashParts(FlashPartsMsg::FlashPartsSelectLoader))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let status_color = if self.flash_parts.scan_error.is_some() {
@@ -13508,8 +13514,9 @@ impl App {
         )
         .on_press(Message::DumpParts(DumpPartsMsg::DumpPartsSelectLoader))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let status_color = if self.dump_parts.scan_error.is_some() {
@@ -13726,8 +13733,9 @@ impl App {
         )
         .on_press(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectLoader))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let status_color = if self.dump_phys.loader_error.is_some() {
@@ -13888,8 +13896,9 @@ impl App {
         )
         .on_press(Message::FlashPhys(FlashPhysMsg::FlashPhysSelectLoader))
         .padding(0)
-        .style(|_t: &Theme, _s| button::Style {
+        .style(|t: &Theme, _s| button::Style {
             background: None,
+            text_color: pal_of(t).on_surface,
             ..Default::default()
         });
         let status_color = if self.flash_phys.loader_error.is_some() {
@@ -14115,8 +14124,9 @@ impl App {
                     .padding(0)
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .style(|_t: &Theme, _s| button::Style {
+                    .style(|t: &Theme, _s| button::Style {
                         background: None,
+                        text_color: pal_of(t).on_surface,
                         ..Default::default()
                     })
                     .into()
