@@ -3773,9 +3773,13 @@ impl App {
 
     /// Operation-specific replacement for the default busy-dialog body
     /// (`progress_dialog_body`). Used for sub-flows where "<op> is in
-    /// progress" reads awkwardly — partition Read / Write should say
-    /// "Reading partition…" / "Writing partition…" directly. Returns
-    /// `None` so the caller falls back to the templated body.
+    /// progress" reads awkwardly — the four Advanced partition / physical
+    /// flows (DumpParts, FlashParts, DumpPhys, FlashPhys) all show their
+    /// busy dialog only during the reboot → loader-upload → GPT-scan
+    /// preamble, so the unified "Reading partition info…" line is the
+    /// honest description regardless of which one of the four the user
+    /// kicked off. Returns `None` so the caller falls back to the
+    /// templated body for everything else.
     ///
     /// Gated on `busy_view == Advanced` so a stale `dump_parts_open` /
     /// `flash_parts_open` flag (the wizards stay mounted under the
@@ -3787,11 +3791,12 @@ impl App {
         if self.busy_view != Some(View::Advanced) {
             return None;
         }
-        if self.dump_parts_open {
-            return Some(self.t("busy_partition_read").to_string());
-        }
-        if self.flash_parts_open {
-            return Some(self.t("busy_partition_write").to_string());
+        if self.dump_parts_open
+            || self.flash_parts_open
+            || self.dump_phys_open
+            || self.flash_phys_open
+        {
+            return Some(self.t("busy_partition_scan").to_string());
         }
         None
     }
