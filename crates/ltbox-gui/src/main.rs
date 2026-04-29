@@ -4005,32 +4005,36 @@ impl App {
 
     /// Apply the resolved default loader to whichever advanced-wizard
     /// loader-step is currently open. Pre-fills the wizard's `loader_path`
-    /// **and** advances the wizard from step 0 (Loader) to step 1 (the
-    /// next decision step) so the user doesn't see a redundant loader
-    /// picker on every entry. Called from `AdvConfirm` after a wizard's
-    /// `_open` flag flips.
+    /// and either advances directly to the Select step (DumpPhys /
+    /// FlashPhys — no scan needed) or fires the GPT scan (FlashParts /
+    /// DumpParts — Select step requires populated rows). Called from
+    /// `AdvConfirm` after a wizard's `_open` flag flips.
     ///
-    /// No-op when the default loader is unset or the file is missing —
-    /// the caller's existing flow then surfaces the loader step as
-    /// before.
-    fn apply_default_loader_to_advanced_wizard(&mut self) {
+    /// Returns `Task::none()` when the default loader is unset or the
+    /// file is missing — the caller's existing flow then surfaces the
+    /// loader step as before.
+    fn apply_default_loader_to_advanced_wizard(&mut self) -> Task<Message> {
         let Some(path) = self.resolved_default_loader() else {
-            return;
+            return Task::none();
         };
         if self.advanced_wizard_open.is_flash_parts() {
+            // Leave step at 0 (Loader); FlashPartsScanDone advances to
+            // Select on success, so jumping past step 0 here would
+            // double-advance past Select.
             self.flash_parts.loader_path = Some(path);
-            // FlashPartsWizard step layout: 0 = Loader, 1 = Select.
-            self.flash_parts.step = 1;
+            return self.update(Message::FlashParts(FlashPartsMsg::FlashPartsScanStart));
         } else if self.advanced_wizard_open.is_dump_parts() {
             self.dump_parts.loader_path = Some(path);
-            self.dump_parts.step = 1;
+            return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsScanStart));
         } else if self.advanced_wizard_open.is_dump_phys() {
+            // Whole-LUN — no scan. Skip to Select directly.
             self.dump_phys.loader_path = Some(path);
             self.dump_phys.step = 1;
         } else if self.advanced_wizard_open.is_flash_phys() {
             self.flash_phys.loader_path = Some(path);
             self.flash_phys.step = 1;
         }
+        Task::none()
     }
 
     /// Pre-flight check for the loader path captured by every EDL-using
@@ -6700,19 +6704,19 @@ impl App {
                 if matches!(a, AdvAction::FlashPartitions) {
                     self.flash_parts.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::FlashParts;
-                    self.apply_default_loader_to_advanced_wizard();
+                    return self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::DumpPartitions) {
                     self.dump_parts.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::DumpParts;
-                    self.apply_default_loader_to_advanced_wizard();
+                    return self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::DumpPhysical) {
                     self.dump_phys.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::DumpPhys;
-                    self.apply_default_loader_to_advanced_wizard();
+                    return self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::FlashPhysical) {
                     self.flash_phys.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::FlashPhys;
-                    self.apply_default_loader_to_advanced_wizard();
+                    return self.apply_default_loader_to_advanced_wizard();
                 } else {
                     return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
                 }
