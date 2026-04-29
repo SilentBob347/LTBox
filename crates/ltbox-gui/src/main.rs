@@ -4893,35 +4893,24 @@ impl App {
                                             continue;
                                         };
 
-                                        // Signing-key resolution: bundled KEY_MAP
-                                        // via pubkey_sha1 → filesystem fallback.
-                                        // NONE algorithm routes through
-                                        // `patch_chained_image`'s `add_hash_footer`.
+                                        // Signing-key resolution: only the two stock
+                                        // testkeys embedded in avbtool-rs. Any image
+                                        // signed by an unknown pubkey is skipped.
                                         let key_from_map = ltbox_patch::key_map::key_spec_for_pubkey(
                                             analysis.image_info.public_key_sha1.as_deref(),
                                         );
-                                        let fallback_key = find_edl_loader(fw_dir)
-                                            .as_deref()
-                                            .and_then(|_| find_testkey(fw_dir));
 
                                         let patched = arb_work_dir.join(format!("{log_name}.arb.img"));
                                         let is_vbmeta = log_name.starts_with("vbmeta");
                                         let patch_result = if is_vbmeta {
                                             // vbmeta always resigns (no add_hash_footer).
-                                            let key_spec = key_from_map
-                                                .map(std::string::ToString::to_string)
-                                                .or_else(|| {
-                                                    fallback_key
-                                                        .as_deref()
-                                                        .map(|p| p.display().to_string())
-                                                });
-                                            match key_spec {
+                                            match key_from_map {
                                                 Some(spec) => {
                                                     std::fs::copy(&source, &patched)
                                                         .map_err(|e| format!("copy vbmeta: {e}"))?;
                                                     ltbox_patch::avb::resign_image(
                                                         &patched,
-                                                        &spec,
+                                                        spec,
                                                         &analysis.image_info.algorithm,
                                                         Some(target),
                                                     )
@@ -4929,58 +4918,47 @@ impl App {
                                                 }
                                                 None => {
                                                     ltbox_core::live!(log,
-                                                        "[ARB] {log_name}: no signing key (pubkey {:?} unknown + no testkey) — skipping",
+                                                        "[ARB] {log_name}: pubkey {:?} not in testkey map — skipping",
                                                         analysis.image_info.public_key_sha1
                                                     );
                                                     continue;
                                                 }
                                             }
+                                        } else if analysis.image_info.algorithm == "NONE" {
+                                            // NONE algorithm: add_hash_footer accepts
+                                            // an Option<&str> spec; pass map result
+                                            // (None is fine).
+                                            std::fs::copy(&source, &patched)
+                                                .map_err(|e| format!("copy chained: {e}"))?;
+                                            ltbox_patch::avb::add_hash_footer(
+                                                &patched,
+                                                &analysis.image_info,
+                                                key_from_map,
+                                                Some(target),
+                                            )
+                                            .map_err(|e| format!("patch {log_name}: {e}"))
+                                        } else if let Some(spec) = key_from_map {
+                                            std::fs::copy(&source, &patched)
+                                                .map_err(|e| format!("copy chained: {e}"))?;
+                                            ltbox_patch::avb::resign_image(
+                                                &patched,
+                                                spec,
+                                                &analysis.image_info.algorithm,
+                                                Some(target),
+                                            )
+                                            .map_err(|e| format!("resign {log_name}: {e}"))
                                         } else {
-                                            // Chained: testkey path for
-                                            // `patch_chained_image`; bundled
-                                            // pubkey routes through
-                                            // `avb::resign_image` (can't
-                                            // express the embedded PEM as a
-                                            // path without materialising it).
-                                            if analysis.image_info.algorithm == "NONE" {
-                                                ltbox_patch::rollback::patch_chained_image(
-                                                    &source,
-                                                    &patched,
-                                                    target,
-                                                    fallback_key.as_deref(),
-                                                )
-                                                .map_err(|e| format!("patch {log_name}: {e}"))
-                                            } else if let Some(spec) = key_from_map {
-                                                std::fs::copy(&source, &patched)
-                                                    .map_err(|e| format!("copy chained: {e}"))?;
-                                                ltbox_patch::avb::resign_image(
-                                                    &patched,
-                                                    spec,
-                                                    &analysis.image_info.algorithm,
-                                                    Some(target),
-                                                )
-                                                .map_err(|e| format!("resign {log_name}: {e}"))
-                                            } else if fallback_key.is_some() {
-                                                ltbox_patch::rollback::patch_chained_image(
-                                                    &source,
-                                                    &patched,
-                                                    target,
-                                                    fallback_key.as_deref(),
-                                                )
-                                                .map_err(|e| format!("patch {log_name}: {e}"))
-                                            } else {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[ARB] {}",
-                                                    ltbox_core::i18n::tr("live_arb_no_signing_key")
-                                                        .replace("{name}", log_name)
-                                                        .replace(
-                                                            "{key}",
-                                                            &format!("{:?}", analysis.image_info.public_key_sha1),
-                                                        )
-                                                );
-                                                continue;
-                                            }
+                                            ltbox_core::live!(
+                                                log,
+                                                "[ARB] {}",
+                                                ltbox_core::i18n::tr("live_arb_no_signing_key")
+                                                    .replace("{name}", log_name)
+                                                    .replace(
+                                                        "{key}",
+                                                        &format!("{:?}", analysis.image_info.public_key_sha1),
+                                                    )
+                                            );
+                                            continue;
                                         };
                                         if let Err(e) = patch_result {
                                             ltbox_core::live!(
@@ -5721,15 +5699,6 @@ impl App {
                                         (row_i.clone(), prc_i.clone()),
                                     ];
 
-                                    // testkey resolution — search the
-                                    // loader's own directory and one level
-                                    // up, since users typically drop the
-                                    // loader next to a `keys/testkey_*.pem`
-                                    // sidecar from a v2 bundle.
-                                    let testkey = find_testkey(&loader_dir).or_else(|| {
-                                        loader_dir.parent().and_then(find_testkey)
-                                    });
-
                                     let mut flash_plan: Vec<(String, std::path::PathBuf)> =
                                         Vec::new();
                                     for slot in &slots {
@@ -5796,13 +5765,15 @@ impl App {
                                                     continue;
                                                 }
                                             };
-                                        let key_spec = testkey
-                                            .as_deref()
-                                            .map(|p| p.display().to_string());
+                                        // Only the two stock testkeys embedded in
+                                        // avbtool-rs are supported.
+                                        let vb_key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
+                                            vb_info.public_key_sha1.as_deref(),
+                                        );
                                         if let Err(e) = ltbox_patch::avb::add_hash_footer(
                                             &vb_patched,
                                             &vb_info,
-                                            key_spec.as_deref(),
+                                            vb_key_spec,
                                             None,
                                         ) {
                                             ltbox_core::live!(log,
@@ -5831,7 +5802,10 @@ impl App {
                                                     continue;
                                                 }
                                             };
-                                        let Some(vbm_key) = key_spec.clone() else {
+                                        let Some(vbm_key) = ltbox_patch::key_map::key_spec_for_pubkey(
+                                            vbm_info.public_key_sha1.as_deref(),
+                                        )
+                                        else {
                                             ltbox_core::live!(
                                                 log,
                                                 "[Rescue] {}",
@@ -5850,7 +5824,7 @@ impl App {
                                                 &vbm_rebuilt,
                                                 &vbm_src.2,
                                                 &chained,
-                                                &vbm_key,
+                                                vbm_key,
                                                 Some(vbm_info.algorithm.as_str()),
                                             )
                                         {
@@ -7495,7 +7469,7 @@ impl App {
                                         }
                                     }
                                     AdvAction::PatchArb => {
-                                        // `input` is now the firmware folder; the user-picked
+                                        // `input` is the firmware folder; user-picked
                                         // target rollback index lives on the wizard.
                                         let target = adv_arb_index.ok_or_else(|| {
                                             "Patch Rollback Index: missing target index".to_string()
@@ -7514,20 +7488,8 @@ impl App {
                                                 input.display()
                                             ));
                                         }
-                                        // Allow only the two whitelisted testkeys; reject
-                                        // anything else (custom RSA, non-PEM, missing).
-                                        let key = find_testkey(&boot).ok_or_else(|| {
-                                            "Patch Rollback Index: needs testkey_rsa2048.pem or testkey_rsa4096.pem next to the firmware (or in ./keys/)".to_string()
-                                        })?;
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_arb_using_key")
-                                                .replace("{path}", &key.display().to_string())
-                                        );
-                                        // Read original rollback indices first; abort on
-                                        // 0 / 1 for either image (both are invalid stock
-                                        // baselines per the user spec).
+                                        // Read AVB info first so the abort guards (rollback
+                                        // == 0 / 1) trip before any signing-key work runs.
                                         let boot_info = ltbox_patch::avb::extract_image_avb_info(&boot)
                                             .map_err(|e| format!("boot.img inspect failed: {e}"))?;
                                         let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(&vbmeta)
@@ -7544,6 +7506,31 @@ impl App {
                                                 vbmeta_info.rollback_index
                                             ));
                                         }
+                                        // Signing key resolution: only the two stock
+                                        // testkeys embedded in avbtool-rs are supported.
+                                        // Anything else aborts — user-supplied PEMs are
+                                        // intentionally not consulted.
+                                        let resolve_key = |info: &ltbox_patch::avb::AvbImageInfo,
+                                                           label: &str|
+                                         -> std::result::Result<&'static str, String> {
+                                            ltbox_patch::key_map::key_spec_for_pubkey(
+                                                info.public_key_sha1.as_deref(),
+                                            )
+                                            .ok_or_else(|| {
+                                                format!(
+                                                    "{label}: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
+                                                    info.public_key_sha1
+                                                )
+                                            })
+                                        };
+                                        let boot_key = resolve_key(&boot_info, "boot.img")?;
+                                        let vbmeta_key =
+                                            resolve_key(&vbmeta_info, "vbmeta_system.img")?;
+                                        ltbox_core::live!(log, "[ARB] boot.img signing key: {boot_key}");
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ARB] vbmeta_system.img signing key: {vbmeta_key}"
+                                        );
                                         ltbox_core::live!(
                                             log,
                                             "[ARB] boot.img rollback {} → {target}",
@@ -7556,20 +7543,36 @@ impl App {
                                         );
                                         let boot_out = output_dir.join("boot.img");
                                         let vbmeta_out = output_dir.join("vbmeta_system.img");
-                                        ltbox_patch::rollback::patch_chained_image(
-                                            &boot,
-                                            &boot_out,
-                                            target,
-                                            Some(&key),
-                                        )
-                                        .map_err(|e| format!("boot ARB patch failed: {e}"))?;
-                                        ltbox_patch::rollback::patch_vbmeta_rollback(
-                                            &vbmeta,
+                                        // boot.img: NONE → add_hash_footer; signed → resign.
+                                        std::fs::copy(&boot, &boot_out)
+                                            .map_err(|e| format!("copy boot.img: {e}"))?;
+                                        if boot_info.algorithm == "NONE" {
+                                            ltbox_patch::avb::add_hash_footer(
+                                                &boot_out,
+                                                &boot_info,
+                                                Some(boot_key),
+                                                Some(target),
+                                            )
+                                            .map_err(|e| format!("boot ARB add_hash_footer failed: {e}"))?;
+                                        } else {
+                                            ltbox_patch::avb::resign_image(
+                                                &boot_out,
+                                                boot_key,
+                                                &boot_info.algorithm,
+                                                Some(target),
+                                            )
+                                            .map_err(|e| format!("boot ARB resign failed: {e}"))?;
+                                        }
+                                        // vbmeta_system.img: always resign (chains require sig).
+                                        std::fs::copy(&vbmeta, &vbmeta_out)
+                                            .map_err(|e| format!("copy vbmeta_system.img: {e}"))?;
+                                        ltbox_patch::avb::resign_image(
                                             &vbmeta_out,
-                                            target,
-                                            &key,
+                                            vbmeta_key,
+                                            &vbmeta_info.algorithm,
+                                            Some(target),
                                         )
-                                        .map_err(|e| format!("vbmeta_system ARB patch failed: {e}"))?;
+                                        .map_err(|e| format!("vbmeta_system ARB resign failed: {e}"))?;
                                         ltbox_core::live!(
                                             log,
                                             "[ARB] Output folder: {}",
@@ -7580,14 +7583,22 @@ impl App {
                                         // `resign_image` alone won't work — chain
                                         // hashes go stale once dtbo / init_boot /
                                         // vendor_boot move.
-                                        let key = find_testkey(input).ok_or_else(|| {
-                                            "Rebuild vbmeta: no testkey_rsa4096.pem / testkey_rsa2048.pem found next to the image (checked folder + ./keys/)".to_string()
-                                        })?;
                                         let info = ltbox_patch::avb::extract_image_avb_info(input)
                                             .map_err(|e| format!("VBMeta inspect failed: {e}"))?;
+                                        // Only the two stock testkeys embedded in
+                                        // avbtool-rs are supported.
+                                        let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
+                                            info.public_key_sha1.as_deref(),
+                                        )
+                                        .ok_or_else(|| {
+                                            format!(
+                                                "Rebuild vbmeta: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
+                                                info.public_key_sha1
+                                            )
+                                        })?;
                                         let alg: Option<&str> = if info.algorithm == "NONE" {
-                                            // NONE → pick by key filename.
-                                            Some(if key.to_string_lossy().contains("2048") {
+                                            // NONE → infer from the resolved key spec.
+                                            Some(if key_spec.contains("2048") {
                                                 "SHA256_RSA2048"
                                             } else {
                                                 "SHA256_RSA4096"
@@ -7617,10 +7628,9 @@ impl App {
                                                 "[AVB] {}",
                                                 ltbox_core::i18n::tr("live_avb_no_chained_fallback")
                                             );
-                                            let key_spec = key.display().to_string();
                                             if let Err(e) = ltbox_patch::avb::resign_image(
                                                 input,
-                                                &key_spec,
+                                                key_spec,
                                                 alg.unwrap_or("SHA256_RSA4096"),
                                                 Some(info.rollback_index),
                                             ) {
@@ -7642,16 +7652,14 @@ impl App {
                                             );
                                             ltbox_core::live!(
                                                 log,
-                                                "[AVB] key={} algorithm={}",
-                                                key.display(),
+                                                "[AVB] key={key_spec} algorithm={}",
                                                 alg.unwrap_or("(from original vbmeta)"),
                                             );
-                                            let key_spec = key.display().to_string();
                                             if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
                                                 &output,
                                                 input,
                                                 &chained_refs,
-                                                &key_spec,
+                                                key_spec,
                                                 alg,
                                             ) {
                                                 return Err(format!("Rebuild vbmeta failed: {e}"));
@@ -15162,23 +15170,6 @@ fn flash_physical_execute(
 }
 
 /// Locate a testkey PEM. Checks the image's folder, then `./keys/`.
-/// Matches `testkey_rsa4096.pem` or `testkey_rsa2048.pem`.
-fn find_testkey(image: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dir = image.parent()?;
-    let candidates = ["testkey_rsa4096.pem", "testkey_rsa2048.pem"];
-    for name in candidates {
-        let p = dir.join(name);
-        if p.exists() {
-            return Some(p);
-        }
-        let kp = dir.join("keys").join(name);
-        if kp.exists() {
-            return Some(kp);
-        }
-    }
-    None
-}
-
 fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let candidate = dir.join("xbl_s_devprg_ns.melf");
     if candidate.exists() {
