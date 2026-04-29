@@ -2295,6 +2295,21 @@ struct FlashPartRow {
     state: FlashRowState,
 }
 
+/// Column the partition table is currently sorted by. Header click
+/// fires `*SortBy(col)`; clicking the active column toggles direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PartsSortColumn {
+    #[default]
+    Lun,
+    Label,
+    Start,
+    Size,
+    /// File-path column — only meaningful for FlashParts; DumpParts has
+    /// no file-path column so this variant is never produced from its
+    /// header buttons.
+    File,
+}
+
 #[derive(Default)]
 struct FlashPartsWizard {
     step: usize, // 0=Loader, 1=Select, 2=Confirm, 3=Exec
@@ -2302,6 +2317,11 @@ struct FlashPartsWizard {
     rows: Vec<FlashPartRow>,
     scanning: bool,
     scan_error: Option<String>,
+    sort_col: PartsSortColumn,
+    /// `true` → descending. Default `false` (ascending) on first scan
+    /// so initial layout matches the device's GPT order well enough
+    /// for LUN-then-label browsing.
+    sort_desc: bool,
 }
 
 const FLASH_PARTS_STEPS: &[&str] = &[
@@ -2322,6 +2342,45 @@ impl FlashPartsWizard {
             })
             .cloned()
             .collect()
+    }
+
+    /// Stable-sort `rows` by current `sort_col` / `sort_desc`. Tie-break
+    /// on (lun, label) so identical primary keys land in a deterministic
+    /// order.
+    fn apply_sort(&mut self) {
+        let col = self.sort_col;
+        let desc = self.sort_desc;
+        self.rows.sort_by(|a, b| {
+            let ord = match col {
+                PartsSortColumn::Lun => a.lun.cmp(&b.lun),
+                // ASCII byte order — uppercase (A-Z, 0x41-0x5A) sorts
+                // before lowercase (a-z, 0x61-0x7A) by user request.
+                PartsSortColumn::Label => a.label.cmp(&b.label),
+                PartsSortColumn::Start => a.start_sector.cmp(&b.start_sector),
+                PartsSortColumn::Size => a.size_bytes.cmp(&b.size_bytes),
+                PartsSortColumn::File => a
+                    .file_path
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.file_path.as_deref().unwrap_or("")),
+            };
+            let ord = ord
+                .then_with(|| a.lun.cmp(&b.lun))
+                .then_with(|| a.label.cmp(&b.label));
+            if desc { ord.reverse() } else { ord }
+        });
+    }
+
+    /// Header click: toggle direction on the active column, otherwise
+    /// switch to the new column ascending.
+    fn toggle_sort(&mut self, col: PartsSortColumn) {
+        if self.sort_col == col {
+            self.sort_desc = !self.sort_desc;
+        } else {
+            self.sort_col = col;
+            self.sort_desc = false;
+        }
+        self.apply_sort();
     }
 }
 
@@ -2388,6 +2447,8 @@ struct DumpPartsWizard {
     output_dir: Option<String>,
     scanning: bool,
     scan_error: Option<String>,
+    sort_col: PartsSortColumn,
+    sort_desc: bool,
 }
 
 const DUMP_PARTS_STEPS: &[&str] = &[
@@ -2414,6 +2475,37 @@ impl DumpPartsWizard {
     }
     fn selected_rows(&self) -> Vec<DumpPartRow> {
         self.rows.iter().filter(|r| r.selected).cloned().collect()
+    }
+
+    fn apply_sort(&mut self) {
+        let col = self.sort_col;
+        let desc = self.sort_desc;
+        self.rows.sort_by(|a, b| {
+            let ord = match col {
+                PartsSortColumn::Lun => a.lun.cmp(&b.lun),
+                // ASCII byte order — uppercase (A-Z, 0x41-0x5A) sorts
+                // before lowercase (a-z, 0x61-0x7A) by user request.
+                PartsSortColumn::Label => a.label.cmp(&b.label),
+                PartsSortColumn::Start => a.start_sector.cmp(&b.start_sector),
+                PartsSortColumn::Size => a.size_bytes.cmp(&b.size_bytes),
+                // DumpParts has no file column; behave as Lun fallback.
+                PartsSortColumn::File => a.lun.cmp(&b.lun),
+            };
+            let ord = ord
+                .then_with(|| a.lun.cmp(&b.lun))
+                .then_with(|| a.label.cmp(&b.label));
+            if desc { ord.reverse() } else { ord }
+        });
+    }
+
+    fn toggle_sort(&mut self, col: PartsSortColumn) {
+        if self.sort_col == col {
+            self.sort_desc = !self.sort_desc;
+        } else {
+            self.sort_col = col;
+            self.sort_desc = false;
+        }
+        self.apply_sort();
     }
 }
 
@@ -2526,6 +2618,34 @@ impl Wizard for FlashPhysWizard {
             _ => false,
         }
     }
+}
+
+/// Sortable header cell for the FlashParts / DumpParts partition table.
+/// Renders `label` followed by either ▲/▼ (active sort, direction
+/// reflects `desc`) or ⇅ (sortable but inactive). Click fires `msg`.
+/// Transparent button so the cell reads as text first.
+fn parts_sort_header(
+    label: String,
+    is_active: bool,
+    desc: bool,
+    width: Length,
+    msg: Message,
+) -> Element<'static, Message> {
+    let arrow = if is_active {
+        if desc { " ▼" } else { " ▲" }
+    } else {
+        " ⇅"
+    };
+    let lbl = format!("{label}{arrow}");
+    button(text(lbl).size(11).style(muted_style))
+        .padding(0)
+        .width(width)
+        .style(|_t: &Theme, _s| button::Style {
+            background: None,
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
 }
 
 /// Human-readable auto-unit byte formatter (B/KB/MB/GB).
@@ -3127,6 +3247,8 @@ enum FlashPartsMsg {
     FlashPartsScanDone(FlashPartsScanResult),
     FlashPartsExecStart,
     FlashPartsExecDone(Vec<String>),
+    /// Header click in the Select-step table.
+    FlashPartsSortBy(PartsSortColumn),
 }
 
 #[derive(Debug, Clone)]
@@ -3143,6 +3265,8 @@ enum DumpPartsMsg {
     DumpPartsSelectFolder,
     DumpPartsFolderChosen(Option<String>),
     DumpPartsExecDone(Vec<String>),
+    /// Header click in the Select-step table.
+    DumpPartsSortBy(PartsSortColumn),
 }
 
 #[derive(Debug, Clone)]
@@ -7876,11 +8000,15 @@ impl App {
                 self.flush_exec_done_log(result.logs);
                 self.flash_parts.scanning = false;
                 self.flash_parts.rows = result.rows;
+                self.flash_parts.apply_sort();
                 self.flash_parts.scan_error = result.error.clone();
                 self.end_op();
                 if result.error.is_none() && !self.flash_parts.rows.is_empty() {
                     self.flash_parts.next(); // → Select
                 }
+            }
+            Message::FlashParts(FlashPartsMsg::FlashPartsSortBy(col)) => {
+                self.flash_parts.toggle_sort(col);
             }
             Message::FlashParts(FlashPartsMsg::FlashPartsExecStart) => {
                 self.flash_parts.next(); // advance to Exec screen
@@ -7968,6 +8096,7 @@ impl App {
                 self.end_op();
                 self.dump_parts.scanning = false;
                 self.dump_parts.rows = result.rows;
+                self.dump_parts.apply_sort();
                 if let Some(err) = result.error {
                     self.dump_parts.scan_error = Some(err);
                 } else if self.dump_parts.rows.is_empty() {
@@ -7976,6 +8105,9 @@ impl App {
                 } else {
                     self.dump_parts.step = 1;
                 }
+            }
+            Message::DumpParts(DumpPartsMsg::DumpPartsSortBy(col)) => {
+                self.dump_parts.toggle_sort(col);
             }
             Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder) => {
                 // Dump destination, not a firmware source — goes to the
@@ -12375,28 +12507,46 @@ impl App {
     }
 
     fn flash_parts_select_step(&self) -> Element<'_, Message> {
+        let active = self.flash_parts.sort_col;
+        let desc = self.flash_parts.sort_desc;
+        let mk_msg = |c: PartsSortColumn| Message::FlashParts(FlashPartsMsg::FlashPartsSortBy(c));
         let header = row![
             text(" ").size(11).width(32), // checkbox col
-            text(self.t("flash_parts_col_lun").to_string())
-                .size(11)
-                .width(50)
-                .style(muted_style),
-            text(self.t("flash_parts_col_label").to_string())
-                .size(11)
-                .width(Length::FillPortion(3))
-                .style(muted_style),
-            text(self.t("flash_parts_col_start").to_string())
-                .size(11)
-                .width(Length::FillPortion(2))
-                .style(muted_style),
-            text(self.t("dump_parts_col_size").to_string())
-                .size(11)
-                .width(Length::FillPortion(2))
-                .style(muted_style),
-            text(self.t("flash_parts_col_file").to_string())
-                .size(11)
-                .width(Length::FillPortion(3))
-                .style(muted_style),
+            parts_sort_header(
+                self.t("flash_parts_col_lun").to_string(),
+                active == PartsSortColumn::Lun,
+                desc,
+                Length::Fixed(50.0),
+                mk_msg(PartsSortColumn::Lun),
+            ),
+            parts_sort_header(
+                self.t("flash_parts_col_label").to_string(),
+                active == PartsSortColumn::Label,
+                desc,
+                Length::FillPortion(3),
+                mk_msg(PartsSortColumn::Label),
+            ),
+            parts_sort_header(
+                self.t("flash_parts_col_start").to_string(),
+                active == PartsSortColumn::Start,
+                desc,
+                Length::FillPortion(2),
+                mk_msg(PartsSortColumn::Start),
+            ),
+            parts_sort_header(
+                self.t("dump_parts_col_size").to_string(),
+                active == PartsSortColumn::Size,
+                desc,
+                Length::FillPortion(2),
+                mk_msg(PartsSortColumn::Size),
+            ),
+            parts_sort_header(
+                self.t("flash_parts_col_file").to_string(),
+                active == PartsSortColumn::File,
+                desc,
+                Length::FillPortion(3),
+                mk_msg(PartsSortColumn::File),
+            ),
         ]
         .spacing(8)
         .padding([6, 10])
@@ -12449,10 +12599,28 @@ impl App {
             .padding([4, 10])
             .align_y(iced::Alignment::Center);
 
-            // Whole row is a double-click target for the file picker.
-            let clickable = iced::widget::mouse_area(data_row).on_double_click(
-                Message::FlashParts(FlashPartsMsg::FlashPartsPickRowFile(idx)),
+            // Tint the whole row by its tri-state so flash/erase pop
+            // visually; light/dark both pull from the M3 container roles.
+            let row_state = r.state;
+            let tinted = container(data_row).width(Length::Fill).style(
+                move |t: &Theme| -> container::Style {
+                    let p = pal_of(t);
+                    let bg = match row_state {
+                        FlashRowState::Flash => Some(p.primary_container),
+                        FlashRowState::Erase => Some(p.error_container),
+                        FlashRowState::Unchecked => None,
+                    };
+                    container::Style {
+                        background: bg.map(iced::Background::Color),
+                        ..Default::default()
+                    }
+                },
             );
+
+            // Whole row is a double-click target for the file picker.
+            let clickable = iced::widget::mouse_area(tinted).on_double_click(Message::FlashParts(
+                FlashPartsMsg::FlashPartsPickRowFile(idx),
+            ));
             list = list.push(clickable);
         }
 
@@ -12687,24 +12855,39 @@ impl App {
     }
 
     fn dump_parts_select_step(&self) -> Element<'_, Message> {
+        let active = self.dump_parts.sort_col;
+        let desc = self.dump_parts.sort_desc;
+        let mk_msg = |c: PartsSortColumn| Message::DumpParts(DumpPartsMsg::DumpPartsSortBy(c));
         let header = row![
             text(" ").size(11).width(32),
-            text(self.t("flash_parts_col_lun").to_string())
-                .size(11)
-                .width(50)
-                .style(muted_style),
-            text(self.t("flash_parts_col_label").to_string())
-                .size(11)
-                .width(Length::FillPortion(3))
-                .style(muted_style),
-            text(self.t("flash_parts_col_start").to_string())
-                .size(11)
-                .width(Length::FillPortion(2))
-                .style(muted_style),
-            text(self.t("dump_parts_col_size").to_string())
-                .size(11)
-                .width(Length::FillPortion(2))
-                .style(muted_style),
+            parts_sort_header(
+                self.t("flash_parts_col_lun").to_string(),
+                active == PartsSortColumn::Lun,
+                desc,
+                Length::Fixed(50.0),
+                mk_msg(PartsSortColumn::Lun),
+            ),
+            parts_sort_header(
+                self.t("flash_parts_col_label").to_string(),
+                active == PartsSortColumn::Label,
+                desc,
+                Length::FillPortion(3),
+                mk_msg(PartsSortColumn::Label),
+            ),
+            parts_sort_header(
+                self.t("flash_parts_col_start").to_string(),
+                active == PartsSortColumn::Start,
+                desc,
+                Length::FillPortion(2),
+                mk_msg(PartsSortColumn::Start),
+            ),
+            parts_sort_header(
+                self.t("dump_parts_col_size").to_string(),
+                active == PartsSortColumn::Size,
+                desc,
+                Length::FillPortion(2),
+                mk_msg(PartsSortColumn::Size),
+            ),
         ]
         .spacing(8)
         .padding([6, 10])
@@ -12730,7 +12913,22 @@ impl App {
             .spacing(8)
             .padding([4, 10])
             .align_y(iced::Alignment::Center);
-            list = list.push(data_row);
+            // Tint selected rows so the dump set is visible at a glance.
+            let selected = row.selected;
+            let tinted = container(data_row).width(Length::Fill).style(
+                move |t: &Theme| -> container::Style {
+                    let p = pal_of(t);
+                    container::Style {
+                        background: if selected {
+                            Some(iced::Background::Color(p.primary_container))
+                        } else {
+                            None
+                        },
+                        ..Default::default()
+                    }
+                },
+            );
+            list = list.push(tinted);
         }
 
         let scrolled = scrollable(list).height(Length::Fill).width(Length::Fill);
