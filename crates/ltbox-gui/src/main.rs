@@ -2967,27 +2967,61 @@ where
 
 #[derive(Debug, Clone)]
 enum Message {
-    // Window controls
+    Navigate(View),
+    SetTheme(ThemeChoice),
+    ToggleLogPopup(bool),
+    SelectCountry(String),
+    SkipCountryPatch,
+    DismissCountryPopup,
+    SelectRegionTarget(DeviceRegion),
+    DismissRegionTargetPopup,
+    FileSelected(Option<String>),
+    FolderSelected(Option<String>),
+    RecentFilePicked(PickerTarget, String),
+    RecentFolderPicked(PickerTarget, String),
+    NoticeRecentMissing(bool),
+    OperationError(String),
+    DismissError,
+    StartOver,
+    PollDevice,
+    DevicePolled(DevicePollResult),
+    DriverCheckDone(ltbox_device::driver::DriverStatus),
+    InstallDrivers,
+    InstallDriversDone(Result<Vec<String>, String>),
+    UpdateCheckDone(Option<ltbox_core::github::StableRelease>),
+    OpenUpdateUrl,
+    DrainStdoutTap,
+    LogEditorAction(iced::widget::text_editor::Action),
+    ImageInfoLogEditorAction(iced::widget::text_editor::Action),
+    SaveLog,
+    SaveLogPath(Option<std::path::PathBuf>),
+    Window(WindowMsg),
+    Flash(FlashMsg),
+    Root(RootMsg),
+    Unroot(UnrootMsg),
+    Sys(SysMsg),
+    Adv(AdvMsg),
+    FlashParts(FlashPartsMsg),
+    DumpParts(DumpPartsMsg),
+    DumpPhys(DumpPhysMsg),
+    FlashPhys(FlashPhysMsg),
+    Reboot(RebootMsg),
+    Settings(SettingsMsg),
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum WindowMsg {
     WindowIdReceived(Option<iced::window::Id>),
     WindowDrag,
     WindowMinimize,
     WindowToggleMaximize,
     WindowClose,
-    // Navigation
-    Navigate(View),
-    SetTheme(ThemeChoice),
-    /// Show/hide the full-log modal on exec-step views.
-    ToggleLogPopup(bool),
-    // Settings
-    SetLanguage(Language),
-    /// Settings → Default EDL loader: open the file picker.
-    SettingsPickDefaultLoader,
-    /// Settings → Default EDL loader: result of the file picker.
-    /// `Some(path)` stores + persists; `None` is a cancel and is a no-op.
-    SettingsDefaultLoaderChosen(Option<String>),
-    /// Settings → Default EDL loader: clear the stored path.
-    SettingsClearDefaultLoader,
-    // Flash wizard
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum FlashMsg {
     FlashRegion(DeviceRegion),
     FlashTarget(FlashTarget),
     FlashDataMode(DataMode),
@@ -2996,22 +3030,11 @@ enum Message {
     FlashSelectFolder,
     FlashExecStart,
     FlashExecDone(Vec<String>),
-    // Country code popup
-    SelectCountry(String),
-    /// Flash wizard only: user picked "Do not change" in country popup.
-    /// Sets `country_action = Skip`, closes popup, leaves wizard on the
-    /// current step. Advanced wizard ignores this — its PatchDevinfo path
-    /// needs an explicit target code.
-    SkipCountryPatch,
-    DismissCountryPopup,
-    // Region-convert target picker popup
-    SelectRegionTarget(DeviceRegion),
-    DismissRegionTargetPopup,
-    // System Update wizard
-    SysAction(SysUpdateAction),
-    SysNext,
-    SysBack,
-    // Root wizard
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum RootMsg {
     RootFamily(Family),
     RootProvider(Provider),
     RootMode(RootMode),
@@ -3021,25 +3044,25 @@ enum Message {
     RootSelectFolder,
     RootNext,
     RootBack,
-    /// APatch: open multi-select `.kpm` file dialog.
     RootSelectKpm,
     RootKpmSelected(Option<Vec<String>>),
     RootKpmRemove(String),
     RootSuperkeyInput(String),
-    /// Commit superkey + advance to Folder.
     RootSuperkeyConfirm,
     RootSuperkeyCancel,
     RootRunIdInput(String),
     RootRunIdConfirm,
-    /// Cancel the run-ID popup and roll back NightlySource so the
-    /// user can't end up half-confirmed.
     RootRunIdCancel,
     RootKernelVersionInput(String),
     RootKernelVersionConfirm,
     RootKernelVersionCancel,
     RootExecStart,
     RootExecDone(Vec<String>),
-    // Unroot wizard
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum UnrootMsg {
     SetUnrootType(UnrootType),
     UnrootSelectFolder,
     UnrootSelectLoader,
@@ -3048,12 +3071,29 @@ enum Message {
     UnrootBack,
     UnrootExecStart,
     UnrootExecDone(Vec<String>),
-    // Advanced
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum SysMsg {
+    SysAction(SysUpdateAction),
+    SysNext,
+    SysBack,
+    SysExecStart,
+    SysExecDone(Vec<String>),
+    SysRescueSelectFolder,
+    SysRescueFolderChosen(Option<String>),
+    SysRescueRegion(RescueRegion),
+    SysRescueRegionPopupDismiss,
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum AdvMsg {
     AdvConfirm(AdvAction),
     AdvExec(AdvAction),
     AdvExecDone(Vec<String>),
     AdvFileSelected(AdvAction, Option<String>),
-    // Advanced wizard: browse → [country] → confirm → exec.
     AdvWizOpen(AdvAction),
     AdvWizBack,
     AdvWizNext,
@@ -3065,42 +3105,11 @@ enum Message {
     AdvWizOpenCountry,
     AdvWizOpenRegionTarget,
     AdvWizOpenOutputFolder,
-    // System Update execution
-    SysExecStart,
-    SysExecDone(Vec<String>),
-    /// Rescue flow: folder picker → region popup → exec.
-    SysRescueSelectFolder,
-    SysRescueFolderChosen(Option<String>),
-    SysRescueRegion(RescueRegion),
-    SysRescueRegionPopupDismiss,
-    FileSelected(Option<String>),
-    FolderSelected(Option<String>),
-    /// Recent-chip click — routes like the picker messages, no dialog.
-    RecentFilePicked(PickerTarget, String),
-    RecentFolderPicked(PickerTarget, String),
-    /// Click on a recents chip whose backing path no longer exists.
-    /// `true` → file picker, `false` → folder picker; the handler picks
-    /// the matching i18n key (`recent_missing_file` / `recent_missing_folder`).
-    NoticeRecentMissing(bool),
-    OperationError(String),
-    DismissError,
-    /// Reset the current wizard — fired by the "Start Over" pill.
-    StartOver,
-    // Device polling
-    PollDevice,
-    DevicePolled(DevicePollResult),
-    // Windows driver detection / auto-install
-    DriverCheckDone(ltbox_device::driver::DriverStatus),
-    InstallDrivers,
-    InstallDriversDone(Result<Vec<String>, String>),
-    // GitHub release update probe — fires once at startup, fills the
-    // sidebar "Update available" pill on the dashboard.
-    UpdateCheckDone(Option<ltbox_core::github::StableRelease>),
-    /// Open the cached release page in the user's default browser.
-    /// Triggered by clicking the "Update available" sidebar pill.
-    OpenUpdateUrl,
-    // Advanced → Flash Partitions wizard (loader-only: scan GPT, pick
-    // per-row images via double-click, tri-state flash/erase).
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum FlashPartsMsg {
     FlashPartsSelectLoader,
     FlashPartsLoaderChosen(Option<String>),
     FlashPartsToggleRow(usize),
@@ -3113,6 +3122,11 @@ enum Message {
     FlashPartsScanDone(FlashPartsScanResult),
     FlashPartsExecStart,
     FlashPartsExecDone(Vec<String>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum DumpPartsMsg {
     DumpPartsSelectLoader,
     DumpPartsLoaderChosen(Option<String>),
     DumpPartsToggleRow(usize),
@@ -3124,7 +3138,11 @@ enum Message {
     DumpPartsSelectFolder,
     DumpPartsFolderChosen(Option<String>),
     DumpPartsExecDone(Vec<String>),
-    // Advanced → Physical Storage wizards (whole-LUN, no GPT scan).
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum DumpPhysMsg {
     DumpPhysSelectLoader,
     DumpPhysLoaderChosen(Option<String>),
     DumpPhysToggleRow(usize),
@@ -3134,6 +3152,11 @@ enum Message {
     DumpPhysSelectFolder,
     DumpPhysFolderChosen(Option<String>),
     DumpPhysExecDone(Vec<String>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum FlashPhysMsg {
     FlashPhysSelectLoader,
     FlashPhysLoaderChosen(Option<String>),
     FlashPhysToggleRow(usize),
@@ -3144,21 +3167,26 @@ enum Message {
     FlashPhysClose,
     FlashPhysExecStart,
     FlashPhysExecDone(Vec<String>),
-    // Reboot: RebootRequest stages a target; popup resolves to
-    // RebootConfirm / RebootDismiss.
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum RebootMsg {
     RebootRequest(RebootTarget),
     RebootConfirm,
     RebootDismiss,
     RebootTo(RebootTarget),
-    /// Result of the EDL loader picker; `Some(path)` triggers the
-    /// EDL reset via `EdlSession::open` + reset / reset_to_edl.
     RebootEdlWithLoader(RebootTarget, Option<String>),
     RebootDone(Vec<String>),
-    DrainStdoutTap,
-    LogEditorAction(iced::widget::text_editor::Action),
-    ImageInfoLogEditorAction(iced::widget::text_editor::Action),
-    SaveLog,
-    SaveLogPath(Option<std::path::PathBuf>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+enum SettingsMsg {
+    SetLanguage(Language),
+    SettingsPickDefaultLoader,
+    SettingsDefaultLoaderChosen(Option<String>),
+    SettingsClearDefaultLoader,
 }
 
 // =========================================================================
@@ -3469,7 +3497,8 @@ impl Default for App {
 impl App {
     fn new() -> (Self, Task<Message>) {
         // Window-id + driver check + update check all fire in parallel.
-        let win = iced::window::latest().map(Message::WindowIdReceived);
+        let win =
+            iced::window::latest().map(|__v| Message::Window(WindowMsg::WindowIdReceived(__v)));
         let driver_check = Task::perform(
             async {
                 tokio::task::spawn_blocking(ltbox_device::driver::check_required_drivers)
@@ -4088,23 +4117,23 @@ impl App {
     fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
             // Window controls
-            Message::WindowIdReceived(id) => self.window_id = id,
-            Message::WindowDrag => {
+            Message::Window(WindowMsg::WindowIdReceived(id)) => self.window_id = id,
+            Message::Window(WindowMsg::WindowDrag) => {
                 if let Some(id) = self.window_id {
                     return iced::window::drag(id);
                 }
             }
-            Message::WindowMinimize => {
+            Message::Window(WindowMsg::WindowMinimize) => {
                 if let Some(id) = self.window_id {
                     return iced::window::minimize(id, true);
                 }
             }
-            Message::WindowToggleMaximize => {
+            Message::Window(WindowMsg::WindowToggleMaximize) => {
                 if let Some(id) = self.window_id {
                     return iced::window::toggle_maximize(id);
                 }
             }
-            Message::WindowClose => {
+            Message::Window(WindowMsg::WindowClose) => {
                 if let Some(id) = self.window_id {
                     return iced::window::close(id);
                 }
@@ -4149,36 +4178,34 @@ impl App {
                 self.log_popup_open = open;
             }
             // Settings
-            Message::SetLanguage(l) => {
+            Message::Settings(SettingsMsg::SetLanguage(l)) => {
                 self.settings.language = l;
                 self.translations = Translations::load(l);
                 install_core_translator(l);
                 self.persist_settings();
             }
-            Message::SettingsPickDefaultLoader => {
+            Message::Settings(SettingsMsg::SettingsPickDefaultLoader) => {
                 let spec = loader_file_spec("picker_target_edl_loader");
-                return pickers::pick_file_for(
-                    spec,
-                    &self.recent_paths,
-                    Message::SettingsDefaultLoaderChosen,
-                );
+                return pickers::pick_file_for(spec, &self.recent_paths, |__v| {
+                    Message::Settings(SettingsMsg::SettingsDefaultLoaderChosen(__v))
+                });
             }
-            Message::SettingsDefaultLoaderChosen(path) => {
+            Message::Settings(SettingsMsg::SettingsDefaultLoaderChosen(path)) => {
                 if let Some(p) = path {
                     self.remember_recent(pickers::PickerKind::File, &p);
                     self.default_loader_path = Some(p);
                     self.persist_settings();
                 }
             }
-            Message::SettingsClearDefaultLoader => {
+            Message::Settings(SettingsMsg::SettingsClearDefaultLoader) => {
                 self.default_loader_path = None;
                 self.persist_settings();
             }
             // Flash wizard
-            Message::FlashRegion(r) => self.flash.device_region = Some(r),
-            Message::FlashTarget(t) => self.flash.target = Some(t),
-            Message::FlashDataMode(m) => self.flash.data_mode = Some(m),
-            Message::FlashNext => {
+            Message::Flash(FlashMsg::FlashRegion(r)) => self.flash.device_region = Some(r),
+            Message::Flash(FlashMsg::FlashTarget(t)) => self.flash.target = Some(t),
+            Message::Flash(FlashMsg::FlashDataMode(m)) => self.flash.data_mode = Some(m),
+            Message::Flash(FlashMsg::FlashNext) => {
                 // Data step → build WorkflowConfig; wipe opens country popup.
                 if self.flash.step == 2 {
                     self.wf_config = WorkflowConfig {
@@ -4199,11 +4226,11 @@ impl App {
                 }
                 if self.flash.step == 4 {
                     self.flash.next();
-                    return self.update(Message::FlashExecStart);
+                    return self.update(Message::Flash(FlashMsg::FlashExecStart));
                 }
                 self.flash.next();
             }
-            Message::FlashBack => {
+            Message::Flash(FlashMsg::FlashBack) => {
                 if self.flash.step == 4 {
                     // Re-arm country patching so the popup's "Do not change"
                     // selection doesn't survive a Back→Next round trip.
@@ -4211,7 +4238,7 @@ impl App {
                 }
                 self.flash.back();
             }
-            Message::FlashSelectFolder => {
+            Message::Flash(FlashMsg::FlashSelectFolder) => {
                 self.picker_target = PickerTarget::FlashFolder;
                 return pick_folder_task(
                     pickers::PickerKind::QfilFirmwareFolder,
@@ -4219,7 +4246,7 @@ impl App {
                     Message::FolderSelected,
                 );
             }
-            Message::FlashExecStart => {
+            Message::Flash(FlashMsg::FlashExecStart) => {
                 self.begin_op(View::Flash);
                 self.op_steps = self.derive_flash_op_steps();
                 self.error_msg = None;
@@ -5015,12 +5042,12 @@ impl App {
                         }).await.unwrap_or(Err("Task failed".to_string()))
                     },
                     |result| match result {
-                        Ok(lines) => Message::FlashExecDone(lines),
+                        Ok(lines) => Message::Flash(FlashMsg::FlashExecDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::FlashExecDone(lines) => {
+            Message::Flash(FlashMsg::FlashExecDone(lines)) => {
                 // Extend *before* end_op so the END separator sits
                 // below the backend's detail lines, not above them.
                 self.flush_exec_done_log(lines);
@@ -5067,7 +5094,7 @@ impl App {
                 self.region_target_popup_open = false;
             }
             // System Update wizard
-            Message::SysAction(a) => {
+            Message::Sys(SysMsg::SysAction(a)) => {
                 // Switching action resets Rescue-specific state so a stale
                 // folder/region can't leak into a fresh flow.
                 self.sysupdate.action = Some(a);
@@ -5075,7 +5102,7 @@ impl App {
                 self.sysupdate.rescue_region = None;
                 self.sysupdate.rescue_region_popup_open = false;
             }
-            Message::SysNext => {
+            Message::Sys(SysMsg::SysNext) => {
                 // Rescue flow: Action(0) → Folder(1) → Confirm(2) → Exec(3).
                 // Gate: popping the region popup between Folder and Confirm.
                 if self.sysupdate.is_rescue() {
@@ -5085,29 +5112,31 @@ impl App {
                     }
                     if self.sysupdate.step == 2 {
                         self.sysupdate.next();
-                        return self.update(Message::SysExecStart);
+                        return self.update(Message::Sys(SysMsg::SysExecStart));
                     }
                     self.sysupdate.next();
                 } else {
                     // Disable/Enable: Action(0) → Confirm(1) → Exec(2).
                     if self.sysupdate.step == 1 {
                         self.sysupdate.next();
-                        return self.update(Message::SysExecStart);
+                        return self.update(Message::Sys(SysMsg::SysExecStart));
                     }
                     self.sysupdate.next();
                 }
             }
-            Message::SysBack => self.sysupdate.back(),
-            Message::SysRescueSelectFolder => {
+            Message::Sys(SysMsg::SysBack) => self.sysupdate.back(),
+            Message::Sys(SysMsg::SysRescueSelectFolder) => {
                 // Rescue dump+flash resolves vendor_boot / vbmeta against
                 // the device's on-storage GPT (LUN 0), so the wizard only
                 // needs the EDL loader binary — `rawprogram*.xml` was
                 // never read in this path. File picker with the standard
                 // loader extension filter, recents shared with the rest
                 // of the loader pickers via the File bucket.
-                return self.pick_loader_with_default(Message::SysRescueFolderChosen);
+                return self.pick_loader_with_default(|__v| {
+                    Message::Sys(SysMsg::SysRescueFolderChosen(__v))
+                });
             }
-            Message::SysRescueFolderChosen(path) => {
+            Message::Sys(SysMsg::SysRescueFolderChosen(path)) => {
                 if let Some(p) = path {
                     self.remember_recent(pickers::PickerKind::File, &p);
                     self.sysupdate.rescue_folder = Some(p);
@@ -5117,7 +5146,7 @@ impl App {
                     self.sysupdate.rescue_region = None;
                 }
             }
-            Message::SysRescueRegion(r) => {
+            Message::Sys(SysMsg::SysRescueRegion(r)) => {
                 self.sysupdate.rescue_region = Some(r);
                 self.sysupdate.rescue_region_popup_open = false;
                 // Auto-advance out of Folder step into Confirm — picking
@@ -5126,10 +5155,10 @@ impl App {
                     self.sysupdate.next();
                 }
             }
-            Message::SysRescueRegionPopupDismiss => {
+            Message::Sys(SysMsg::SysRescueRegionPopupDismiss) => {
                 self.sysupdate.rescue_region_popup_open = false;
             }
-            Message::SysExecStart => {
+            Message::Sys(SysMsg::SysExecStart) => {
                 let Some(action) = self.sysupdate.action else {
                     return Task::none();
                 };
@@ -5622,24 +5651,24 @@ impl App {
                         }).await.unwrap_or(Err("Task failed".to_string()))
                     },
                     |result| match result {
-                        Ok(lines) => Message::SysExecDone(lines),
+                        Ok(lines) => Message::Sys(SysMsg::SysExecDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::SysExecDone(lines) => {
+            Message::Sys(SysMsg::SysExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Root wizard
-            Message::RootFamily(f) => {
+            Message::Root(RootMsg::RootFamily(f)) => {
                 self.root.family = Some(f);
                 self.root.provider = None;
                 self.root.mode = None;
                 self.root.file_path = None;
                 self.root.kernel_version = None;
             }
-            Message::RootProvider(p) => {
+            Message::Root(RootMsg::RootProvider(p)) => {
                 self.root.provider = Some(p);
                 self.root.file_path = None;
                 // ReSukiSU has no Stable channel — if the user had Stable
@@ -5653,18 +5682,18 @@ impl App {
                     self.root.run_id_buffer.clear();
                 }
             }
-            Message::RootMode(m) => {
+            Message::Root(RootMsg::RootMode(m)) => {
                 self.root.mode = Some(m);
                 self.root.file_path = None;
                 self.root.kernel_version = None;
             }
-            Message::RootVersion(v) => {
+            Message::Root(RootMsg::RootVersion(v)) => {
                 self.root.version = Some(v);
                 self.root.nightly_source = None;
                 self.root.run_id = None;
                 self.root.run_id_buffer.clear();
             }
-            Message::RootNightlySource(s) => {
+            Message::Root(RootMsg::RootNightlySource(s)) => {
                 self.root.nightly_source = Some(s);
                 match s {
                     NightlySource::AutoDetect => {
@@ -5679,7 +5708,7 @@ impl App {
                     }
                 }
             }
-            Message::RootSelectFile => {
+            Message::Root(RootMsg::RootSelectFile) => {
                 self.picker_target = PickerTarget::RootFile;
                 let spec = if self.root.is_gki() {
                     pickers::FilePickSpec::single("picker_target_kernelsu_zip")
@@ -5690,7 +5719,7 @@ impl App {
                 };
                 return pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected);
             }
-            Message::RootSelectFolder => {
+            Message::Root(RootMsg::RootSelectFolder) => {
                 // Name kept for backwards compat with existing view code;
                 // the picker is now a single-file dialog for the EDL
                 // loader (`.melf`) since root no longer needs a full
@@ -5710,7 +5739,7 @@ impl App {
                     Message::FileSelected,
                 );
             }
-            Message::RootNext => {
+            Message::Root(RootMsg::RootNext) => {
                 if self.root.step == 6 {
                     if self.root.needs_ksu_lkm_kernel_version() {
                         let detected = {
@@ -5733,7 +5762,7 @@ impl App {
                         }
                     }
                     self.root.next();
-                    return self.update(Message::RootExecStart);
+                    return self.update(Message::Root(RootMsg::RootExecStart));
                 }
                 // APatch KPM step: open superkey popup — advance is
                 // gated on a valid commit, not this press. Always start
@@ -5762,15 +5791,17 @@ impl App {
                     self.root.next();
                 }
             }
-            Message::RootBack => self.root.back(),
-            Message::RootSelectKpm => {
+            Message::Root(RootMsg::RootBack) => self.root.back(),
+            Message::Root(RootMsg::RootSelectKpm) => {
                 // Multi-select; paths merge-dedup into the list so
                 // the user can Browse multiple times.
                 let spec = pickers::FilePickSpec::multi("picker_target_kpm_modules")
                     .with_filter("KPM modules", &["kpm"]);
-                return pickers::pick_files_for(spec, &self.recent_paths, Message::RootKpmSelected);
+                return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
+                    Message::Root(RootMsg::RootKpmSelected(__v))
+                });
             }
-            Message::RootKpmSelected(paths) => {
+            Message::Root(RootMsg::RootKpmSelected(paths)) => {
                 if let Some(paths) = paths {
                     if let Some(first) = paths.first() {
                         self.remember_recent(pickers::PickerKind::File, first);
@@ -5782,13 +5813,13 @@ impl App {
                     }
                 }
             }
-            Message::RootKpmRemove(path) => {
+            Message::Root(RootMsg::RootKpmRemove(path)) => {
                 self.root.kpm_paths.retain(|p| p != &path);
             }
-            Message::RootSuperkeyInput(text) => {
+            Message::Root(RootMsg::RootSuperkeyInput(text)) => {
                 self.root.superkey_buffer = text;
             }
-            Message::RootSuperkeyConfirm => {
+            Message::Root(RootMsg::RootSuperkeyConfirm) => {
                 let key = self.root.superkey_buffer.trim().to_string();
                 match self.root.superkey_first_entry.take() {
                     None => {
@@ -5831,13 +5862,13 @@ impl App {
                     }
                 }
             }
-            Message::RootSuperkeyCancel => {
+            Message::Root(RootMsg::RootSuperkeyCancel) => {
                 self.root.superkey_buffer.clear();
                 self.root.superkey_first_entry = None;
                 self.root.superkey_popup_open = false;
                 self.error_msg = None;
             }
-            Message::RootRunIdInput(text) => {
+            Message::Root(RootMsg::RootRunIdInput(text)) => {
                 // GH Actions run IDs are 10 digits; cap at 12 for headroom.
                 let filtered: String = text
                     .chars()
@@ -5846,7 +5877,7 @@ impl App {
                     .collect();
                 self.root.run_id_buffer = filtered;
             }
-            Message::RootRunIdConfirm => {
+            Message::Root(RootMsg::RootRunIdConfirm) => {
                 let id = self.root.run_id_buffer.trim().to_string();
                 if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
                     self.error_msg = Some(self.t("nightly_manual_invalid").to_string());
@@ -5856,7 +5887,7 @@ impl App {
                 self.root.run_id_popup_open = false;
                 self.error_msg = None;
             }
-            Message::RootRunIdCancel => {
+            Message::Root(RootMsg::RootRunIdCancel) => {
                 self.root.run_id_buffer.clear();
                 self.root.run_id_popup_open = false;
                 // Roll back NightlySource so the step gate forces a re-pick.
@@ -5864,7 +5895,7 @@ impl App {
                     self.root.nightly_source = None;
                 }
             }
-            Message::RootKernelVersionInput(text) => {
+            Message::Root(RootMsg::RootKernelVersionInput(text)) => {
                 let filtered: String = text
                     .chars()
                     .filter(|c| c.is_ascii_digit() || *c == '.')
@@ -5872,7 +5903,7 @@ impl App {
                     .collect();
                 self.root.kernel_version_buffer = filtered;
             }
-            Message::RootKernelVersionConfirm => {
+            Message::Root(RootMsg::RootKernelVersionConfirm) => {
                 let input = self.root.kernel_version_buffer.trim();
                 let Some(kv) = ltbox_patch::root_pipeline::normalize_ksu_kernel_version(input)
                 else {
@@ -5885,14 +5916,14 @@ impl App {
                 self.error_msg = None;
                 if self.root.step == 6 {
                     self.root.next();
-                    return self.update(Message::RootExecStart);
+                    return self.update(Message::Root(RootMsg::RootExecStart));
                 }
             }
-            Message::RootKernelVersionCancel => {
+            Message::Root(RootMsg::RootKernelVersionCancel) => {
                 self.root.kernel_version_buffer.clear();
                 self.root.kernel_version_popup_open = false;
             }
-            Message::RootExecStart => {
+            Message::Root(RootMsg::RootExecStart) => {
                 if self
                     .validate_loader_path(&self.root.folder_path.clone())
                     .is_err()
@@ -6410,18 +6441,18 @@ impl App {
                         }).await.unwrap_or(Err("Task failed".to_string()))
                     },
                     |result| match result {
-                        Ok(lines) => Message::RootExecDone(lines),
+                        Ok(lines) => Message::Root(RootMsg::RootExecDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::RootExecDone(lines) => {
+            Message::Root(RootMsg::RootExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Unroot wizard
-            Message::SetUnrootType(t) => self.unroot.unroot_type = Some(t),
-            Message::UnrootSelectFolder => {
+            Message::Unroot(UnrootMsg::SetUnrootType(t)) => self.unroot.unroot_type = Some(t),
+            Message::Unroot(UnrootMsg::UnrootSelectFolder) => {
                 self.picker_target = PickerTarget::UnrootFolder;
                 return pick_folder_task(
                     pickers::PickerKind::QfilFirmwareFolder,
@@ -6429,24 +6460,26 @@ impl App {
                     Message::FolderSelected,
                 );
             }
-            Message::UnrootSelectLoader => {
-                return self.pick_loader_with_default(Message::UnrootLoaderChosen);
+            Message::Unroot(UnrootMsg::UnrootSelectLoader) => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::Unroot(UnrootMsg::UnrootLoaderChosen(__v))
+                });
             }
-            Message::UnrootLoaderChosen(path) => {
+            Message::Unroot(UnrootMsg::UnrootLoaderChosen(path)) => {
                 if let Some(p) = path {
                     self.remember_recent(pickers::PickerKind::File, &p);
                     self.unroot.loader_path = Some(p);
                 }
             }
-            Message::UnrootNext => {
+            Message::Unroot(UnrootMsg::UnrootNext) => {
                 if self.unroot.step == 2 {
                     self.unroot.next();
-                    return self.update(Message::UnrootExecStart);
+                    return self.update(Message::Unroot(UnrootMsg::UnrootExecStart));
                 }
                 self.unroot.next();
             }
-            Message::UnrootBack => self.unroot.back(),
-            Message::UnrootExecStart => {
+            Message::Unroot(UnrootMsg::UnrootBack) => self.unroot.back(),
+            Message::Unroot(UnrootMsg::UnrootExecStart) => {
                 let Some(unroot_type) = self.unroot.unroot_type else {
                     return Task::none();
                 };
@@ -6622,17 +6655,17 @@ impl App {
                         .unwrap_or(Err("Task failed".to_string()))
                     },
                     |result| match result {
-                        Ok(lines) => Message::UnrootExecDone(lines),
+                        Ok(lines) => Message::Unroot(UnrootMsg::UnrootExecDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::UnrootExecDone(lines) => {
+            Message::Unroot(UnrootMsg::UnrootExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // Advanced
-            Message::AdvConfirm(a) => {
+            Message::Adv(AdvMsg::AdvConfirm(a)) => {
                 // Flash/Dump Partitions + Physical Storage preempt the
                 // grid with their own dedicated wizards. After the
                 // wizard's `_open` flag flips, pull in the Settings
@@ -6658,17 +6691,17 @@ impl App {
                     self.advanced_wizard_open = AdvancedWizardOpen::FlashPhys;
                     self.apply_default_loader_to_advanced_wizard();
                 } else {
-                    return self.update(Message::AdvWizOpen(a));
+                    return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
                 }
             }
-            Message::AdvWizOpen(a) => {
+            Message::Adv(AdvMsg::AdvWizOpen(a)) => {
                 self.adv_wizard.open(a);
                 // Mirror into legacy fields so AdvFileSelected /
                 // AdvExecDone keep working unchanged.
                 self.adv_confirm = Some(a);
                 self.adv_confirm_path = None;
             }
-            Message::AdvWizBack => {
+            Message::Adv(AdvMsg::AdvWizBack) => {
                 if self.adv_wizard.step == 0 {
                     // Back on step 0 closes the wizard.
                     self.adv_wizard.reset();
@@ -6678,10 +6711,10 @@ impl App {
                     self.adv_wizard.back();
                 }
             }
-            Message::AdvWizNext => {
+            Message::Adv(AdvMsg::AdvWizNext) => {
                 if self.adv_wizard.is_image_info() && self.adv_wizard.step == 0 {
                     self.adv_wizard.next();
-                    return self.update(Message::AdvImageInfoExecStart);
+                    return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
                 }
                 if self.adv_wizard.is_confirm_step() {
                     let Some(action) = self.adv_wizard.action else {
@@ -6701,24 +6734,24 @@ impl App {
                         self.adv_wizard.output_dir = None;
                     }
                     self.adv_wizard.next();
-                    return self.update(Message::AdvExec(action));
+                    return self.update(Message::Adv(AdvMsg::AdvExec(action)));
                 }
                 self.adv_wizard.next();
             }
-            Message::AdvWizBrowse => {
+            Message::Adv(AdvMsg::AdvWizBrowse) => {
                 if self.adv_wizard.is_image_info() {
                     let spec =
                         pickers::FilePickSpec::multi(self.adv_wizard.picker_target_i18n_key())
                             .with_filter("Android image (*.img)", &["img"]);
-                    return pickers::pick_files_for(
-                        spec,
-                        &self.recent_paths,
-                        Message::AdvWizBrowseManyDone,
-                    );
+                    return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseManyDone(__v))
+                    });
                 }
                 let kind = self.adv_wizard.picker_kind();
                 if kind.is_folder() {
-                    return pick_folder_task(kind, &self.recent_paths, Message::AdvWizBrowseDone);
+                    return pick_folder_task(kind, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                    });
                 }
                 let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
                 let target_key = self.adv_wizard.picker_target_i18n_key();
@@ -6726,9 +6759,11 @@ impl App {
                 if !filter_exts.is_empty() {
                     spec = spec.with_filter(filter_label, filter_exts);
                 }
-                return pickers::pick_file_for(spec, &self.recent_paths, Message::AdvWizBrowseDone);
+                return pickers::pick_file_for(spec, &self.recent_paths, |__v| {
+                    Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                });
             }
-            Message::AdvWizBrowseDone(path) => {
+            Message::Adv(AdvMsg::AdvWizBrowseDone(path)) => {
                 if let Some(p) = path {
                     if std::path::Path::new(&p).exists() {
                         // Kind is derived from the action (folder ops →
@@ -6741,7 +6776,7 @@ impl App {
                     self.adv_wizard.file_path = Some(p);
                 }
             }
-            Message::AdvWizBrowseManyDone(paths) => {
+            Message::Adv(AdvMsg::AdvWizBrowseManyDone(paths)) => {
                 if let Some(paths) = paths {
                     let paths: Vec<String> = paths
                         .into_iter()
@@ -6762,14 +6797,14 @@ impl App {
                     self.adv_wizard.file_path = None;
                 }
             }
-            Message::AdvWizOpenCountry => {
+            Message::Adv(AdvMsg::AdvWizOpenCountry) => {
                 self.adv_needs_country = true;
                 self.country_popup_open = true;
             }
-            Message::AdvWizOpenRegionTarget => {
+            Message::Adv(AdvMsg::AdvWizOpenRegionTarget) => {
                 self.region_target_popup_open = true;
             }
-            Message::AdvWizOpenOutputFolder => {
+            Message::Adv(AdvMsg::AdvWizOpenOutputFolder) => {
                 if let Some(dir) = self.adv_wizard.output_dir.clone()
                     && let Err(err) = open_in_file_manager(&dir)
                 {
@@ -6780,15 +6815,15 @@ impl App {
                     self.log_push(format!("[GUI] Open Folder failed: {err}"));
                 }
             }
-            Message::AdvExec(action) => {
+            Message::Adv(AdvMsg::AdvExec(action)) => {
                 // Picker ran in AdvConfirm; replay the saved path.
                 let Some(path) = self.adv_confirm_path.clone() else {
                     self.adv_confirm = None;
                     return Task::none();
                 };
-                return self.update(Message::AdvFileSelected(action, Some(path)));
+                return self.update(Message::Adv(AdvMsg::AdvFileSelected(action, Some(path))));
             }
-            Message::AdvFileSelected(action, path) => {
+            Message::Adv(AdvMsg::AdvFileSelected(action, path)) => {
                 if let Some(input_path) = path {
                     // See AdvWizBrowseDone — trust the action's kind over
                     // the runtime is_dir() probe.
@@ -7322,20 +7357,20 @@ impl App {
                             }).await.unwrap_or(Err("Task failed".to_string()))
                         },
                         |result| match result {
-                            Ok(lines) => Message::AdvExecDone(lines),
+                            Ok(lines) => Message::Adv(AdvMsg::AdvExecDone(lines)),
                             Err(e) => Message::OperationError(e),
                         },
                     );
                 }
                 self.adv_confirm = None;
             }
-            Message::AdvExecDone(lines) => {
+            Message::Adv(AdvMsg::AdvExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 // Leave adv_wizard / adv_confirm* intact so the exec
                 // screen stays visible with Done/Failed until StartOver.
                 self.end_op();
             }
-            Message::AdvImageInfoExecStart => {
+            Message::Adv(AdvMsg::AdvImageInfoExecStart) => {
                 let paths: Vec<std::path::PathBuf> = self
                     .adv_wizard
                     .file_paths
@@ -7359,10 +7394,10 @@ impl App {
                         .await
                         .unwrap_or_else(|e| Err(format!("Task failed: {e}")))
                     },
-                    Message::AdvImageInfoExecDone,
+                    |__v| Message::Adv(AdvMsg::AdvImageInfoExecDone(__v)),
                 );
             }
-            Message::AdvImageInfoExecDone(result) => {
+            Message::Adv(AdvMsg::AdvImageInfoExecDone(result)) => {
                 self.end_silent_op();
                 match result {
                     Ok(report) => {
@@ -7736,10 +7771,12 @@ impl App {
                     Message::InstallDriversDone,
                 );
             }
-            Message::FlashPartsSelectLoader => {
-                return self.pick_loader_with_default(Message::FlashPartsLoaderChosen);
+            Message::FlashParts(FlashPartsMsg::FlashPartsSelectLoader) => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(__v))
+                });
             }
-            Message::FlashPartsLoaderChosen(path) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(path)) => {
                 if let Some(p) = path {
                     match self.resolve_loader_input(&p) {
                         Ok(loader) => {
@@ -7750,19 +7787,19 @@ impl App {
                     }
                 }
             }
-            Message::FlashPartsToggleRow(idx) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx)) => {
                 if let Some(row) = self.flash_parts.rows.get_mut(idx) {
                     row.state = row.state.cycle();
                 }
             }
-            Message::FlashPartsPickRowFile(idx) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsPickRowFile(idx)) => {
                 let spec = pickers::FilePickSpec::single("picker_target_partition_image")
                     .with_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"]);
                 return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
-                    Message::FlashPartsRowFileChosen(idx, path)
+                    Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path))
                 });
             }
-            Message::FlashPartsRowFileChosen(idx, path) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path)) => {
                 if let Some(p) = path {
                     self.remember_recent(pickers::PickerKind::File, &p);
                     if let Some(row) = self.flash_parts.rows.get_mut(idx) {
@@ -7773,18 +7810,18 @@ impl App {
                     }
                 }
             }
-            Message::FlashPartsNext => match self.flash_parts.step {
-                0 => return self.update(Message::FlashPartsScanStart),
+            Message::FlashParts(FlashPartsMsg::FlashPartsNext) => match self.flash_parts.step {
+                0 => return self.update(Message::FlashParts(FlashPartsMsg::FlashPartsScanStart)),
                 1 => self.flash_parts.next(), // → Confirm
-                2 => return self.update(Message::FlashPartsExecStart),
+                2 => return self.update(Message::FlashParts(FlashPartsMsg::FlashPartsExecStart)),
                 _ => {}
             },
-            Message::FlashPartsBack => self.flash_parts.back(),
-            Message::FlashPartsClose => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsBack) => self.flash_parts.back(),
+            Message::FlashParts(FlashPartsMsg::FlashPartsClose) => {
                 self.advanced_wizard_open = AdvancedWizardOpen::None;
                 self.flash_parts.reset();
             }
-            Message::FlashPartsScanStart => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsScanStart) => {
                 let loader = match self.validate_loader_path(&self.flash_parts.loader_path.clone())
                 {
                     Ok(p) => p,
@@ -7800,7 +7837,7 @@ impl App {
                     .push("[FlashParts] Scanning partitions...".to_string());
                 return task_heavy(
                     move || flash_parts_scan(conn, loader),
-                    Message::FlashPartsScanDone,
+                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(__v)),
                     |e| FlashPartsScanResult {
                         logs: vec![format!("[FlashParts] {e}")],
                         rows: Vec::new(),
@@ -7808,7 +7845,7 @@ impl App {
                     },
                 );
             }
-            Message::FlashPartsScanDone(result) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(result)) => {
                 self.flush_exec_done_log(result.logs);
                 self.flash_parts.scanning = false;
                 self.flash_parts.rows = result.rows;
@@ -7818,7 +7855,7 @@ impl App {
                     self.flash_parts.next(); // → Select
                 }
             }
-            Message::FlashPartsExecStart => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsExecStart) => {
                 self.flash_parts.next(); // advance to Exec screen
                 self.begin_op(View::Flash);
                 self.error_msg = None;
@@ -7837,18 +7874,20 @@ impl App {
                 ));
                 return task_heavy(
                     move || flash_parts_execute(loader, rows),
-                    Message::FlashPartsExecDone,
+                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(__v)),
                     |e| vec![format!("[FlashParts] {e}")],
                 );
             }
-            Message::FlashPartsExecDone(lines) => {
+            Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
-            Message::DumpPartsSelectLoader => {
-                return self.pick_loader_with_default(Message::DumpPartsLoaderChosen);
+            Message::DumpParts(DumpPartsMsg::DumpPartsSelectLoader) => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(__v))
+                });
             }
-            Message::DumpPartsLoaderChosen(path) => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(path)) => {
                 if let Some(p) = path {
                     match self.resolve_loader_input(&p) {
                         Ok(loader) => {
@@ -7859,22 +7898,22 @@ impl App {
                     }
                 }
             }
-            Message::DumpPartsToggleRow(idx) => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsToggleRow(idx)) => {
                 if let Some(row) = self.dump_parts.rows.get_mut(idx) {
                     row.selected = !row.selected;
                 }
             }
-            Message::DumpPartsNext => match self.dump_parts.step {
-                0 => return self.update(Message::DumpPartsScanStart),
-                1 => return self.update(Message::DumpPartsSelectFolder),
+            Message::DumpParts(DumpPartsMsg::DumpPartsNext) => match self.dump_parts.step {
+                0 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsScanStart)),
+                1 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder)),
                 _ => {}
             },
-            Message::DumpPartsBack => self.dump_parts.back(),
-            Message::DumpPartsClose => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsBack) => self.dump_parts.back(),
+            Message::DumpParts(DumpPartsMsg::DumpPartsClose) => {
                 self.advanced_wizard_open = AdvancedWizardOpen::None;
                 self.dump_parts.reset();
             }
-            Message::DumpPartsScanStart => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsScanStart) => {
                 let loader = match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
                     Ok(p) => p,
                     Err(()) => return Task::none(),
@@ -7889,7 +7928,7 @@ impl App {
                     .push("[DumpParts] Scanning partition tables...".to_string());
                 return task_heavy(
                     move || dump_parts_scan(conn, loader),
-                    Message::DumpPartsScanDone,
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(__v)),
                     |e| DumpPartsScanResult {
                         logs: vec![format!("[DumpParts] {e}")],
                         rows: Vec::new(),
@@ -7897,7 +7936,7 @@ impl App {
                     },
                 );
             }
-            Message::DumpPartsScanDone(result) => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(result)) => {
                 self.flush_exec_done_log(result.logs);
                 self.end_op();
                 self.dump_parts.scanning = false;
@@ -7911,17 +7950,17 @@ impl App {
                     self.dump_parts.step = 1;
                 }
             }
-            Message::DumpPartsSelectFolder => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder) => {
                 // Dump destination, not a firmware source — goes to the
                 // `OutputFolder` bucket so the MRU list doesn't mix input
                 // firmware dirs with output dump dirs.
                 return pick_folder_task(
                     pickers::PickerKind::OutputFolder,
                     &self.recent_paths,
-                    Message::DumpPartsFolderChosen,
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(__v)),
                 );
             }
-            Message::DumpPartsFolderChosen(path) => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(path)) => {
                 if let Some(folder) = path {
                     self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_parts.output_dir = Some(folder.clone());
@@ -7937,20 +7976,22 @@ impl App {
                     ));
                     return task_heavy(
                         move || dump_parts_execute(loader, folder, rows),
-                        Message::DumpPartsExecDone,
+                        |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
                         |e| vec![format!("[DumpParts] {e}")],
                     );
                 }
             }
-            Message::DumpPartsExecDone(lines) => {
+            Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // -- Physical Storage: Dump --------------------------------------
-            Message::DumpPhysSelectLoader => {
-                return self.pick_loader_with_default(Message::DumpPhysLoaderChosen);
+            Message::DumpPhys(DumpPhysMsg::DumpPhysSelectLoader) => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(__v))
+                });
             }
-            Message::DumpPhysLoaderChosen(path) => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(path)) => {
                 if let Some(p) = path {
                     match self.resolve_loader_input(&p) {
                         Ok(loader) => {
@@ -7961,30 +8002,30 @@ impl App {
                     }
                 }
             }
-            Message::DumpPhysToggleRow(idx) => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysToggleRow(idx)) => {
                 if let Some(slot) = self.dump_phys.selected.get_mut(idx) {
                     *slot = !*slot;
                 }
             }
-            Message::DumpPhysNext => match self.dump_phys.step {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysNext) => match self.dump_phys.step {
                 0 => self.dump_phys.step = 1, // loader → select
-                1 => return self.update(Message::DumpPhysSelectFolder),
+                1 => return self.update(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder)),
                 _ => {}
             },
-            Message::DumpPhysBack => self.dump_phys.back(),
-            Message::DumpPhysClose => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysBack) => self.dump_phys.back(),
+            Message::DumpPhys(DumpPhysMsg::DumpPhysClose) => {
                 self.advanced_wizard_open = AdvancedWizardOpen::None;
                 self.dump_phys.reset();
             }
-            Message::DumpPhysSelectFolder => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder) => {
                 // Dump destination — see DumpPartsSelectFolder.
                 return pick_folder_task(
                     pickers::PickerKind::OutputFolder,
                     &self.recent_paths,
-                    Message::DumpPhysFolderChosen,
+                    |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(__v)),
                 );
             }
-            Message::DumpPhysFolderChosen(path) => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(path)) => {
                 if let Some(folder) = path {
                     let loader =
                         match self.validate_loader_path(&self.dump_phys.loader_path.clone()) {
@@ -8006,20 +8047,22 @@ impl App {
                     ));
                     return task_heavy(
                         move || dump_physical_execute(conn, loader, folder, luns),
-                        Message::DumpPhysExecDone,
+                        |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
                         |e| vec![format!("[DumpPhys] {e}")],
                     );
                 }
             }
-            Message::DumpPhysExecDone(lines) => {
+            Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
             // -- Physical Storage: Flash -------------------------------------
-            Message::FlashPhysSelectLoader => {
-                return self.pick_loader_with_default(Message::FlashPhysLoaderChosen);
+            Message::FlashPhys(FlashPhysMsg::FlashPhysSelectLoader) => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(__v))
+                });
             }
-            Message::FlashPhysLoaderChosen(path) => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(path)) => {
                 if let Some(p) = path {
                     match self.resolve_loader_input(&p) {
                         Ok(loader) => {
@@ -8030,19 +8073,19 @@ impl App {
                     }
                 }
             }
-            Message::FlashPhysToggleRow(idx) => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysToggleRow(idx)) => {
                 if let Some(slot) = self.flash_phys.selected.get_mut(idx) {
                     *slot = !*slot;
                 }
             }
-            Message::FlashPhysPickRowFile(idx) => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysPickRowFile(idx)) => {
                 let spec = pickers::FilePickSpec::single("picker_target_storage_image")
                     .with_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"]);
                 return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
-                    Message::FlashPhysRowFileChosen(idx, path)
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path))
                 });
             }
-            Message::FlashPhysRowFileChosen(idx, path) => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path)) => {
                 if idx < PHYS_LUN_COUNT
                     && let Some(p) = path
                 {
@@ -8052,18 +8095,18 @@ impl App {
                     self.flash_phys.selected[idx] = true;
                 }
             }
-            Message::FlashPhysNext => match self.flash_phys.step {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysNext) => match self.flash_phys.step {
                 0 => self.flash_phys.step = 1,
                 1 => self.flash_phys.next(), // → Confirm
-                2 => return self.update(Message::FlashPhysExecStart),
+                2 => return self.update(Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart)),
                 _ => {}
             },
-            Message::FlashPhysBack => self.flash_phys.back(),
-            Message::FlashPhysClose => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysBack) => self.flash_phys.back(),
+            Message::FlashPhys(FlashPhysMsg::FlashPhysClose) => {
                 self.advanced_wizard_open = AdvancedWizardOpen::None;
                 self.flash_phys.reset();
             }
-            Message::FlashPhysExecStart => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart) => {
                 let loader = match self.validate_loader_path(&self.flash_phys.loader_path.clone()) {
                     Ok(p) => p,
                     Err(()) => return Task::none(),
@@ -8077,15 +8120,15 @@ impl App {
                     .push(format!("[FlashPhys] Flashing {} LUN(s)", pairs.len()));
                 return task_heavy(
                     move || flash_physical_execute(conn, loader, pairs),
-                    Message::FlashPhysExecDone,
+                    |__v| Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(__v)),
                     |e| vec![format!("[FlashPhys] {e}")],
                 );
             }
-            Message::FlashPhysExecDone(lines) => {
+            Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(lines)) => {
                 self.flush_exec_done_log(lines);
                 self.end_op();
             }
-            Message::RebootRequest(target) => {
+            Message::Reboot(RebootMsg::RebootRequest(target)) => {
                 if self.busy {
                     return Task::none();
                 }
@@ -8098,15 +8141,15 @@ impl App {
                 }
                 self.reboot_confirm_target = Some(target);
             }
-            Message::RebootDismiss => {
+            Message::Reboot(RebootMsg::RebootDismiss) => {
                 self.reboot_confirm_target = None;
             }
-            Message::RebootConfirm => {
+            Message::Reboot(RebootMsg::RebootConfirm) => {
                 if let Some(t) = self.reboot_confirm_target.take() {
-                    return self.update(Message::RebootTo(t));
+                    return self.update(Message::Reboot(RebootMsg::RebootTo(t)));
                 }
             }
-            Message::RebootTo(target) => {
+            Message::Reboot(RebootMsg::RebootTo(target)) => {
                 if self.busy {
                     return Task::none();
                 }
@@ -8118,7 +8161,7 @@ impl App {
                 // EDL needs a Firehose loader before Power(reset).
                 if matches!(conn, ConnectionStatus::Edl) {
                     return self.pick_loader_with_default(move |path| {
-                        Message::RebootEdlWithLoader(target, path)
+                        Message::Reboot(RebootMsg::RebootEdlWithLoader(target, path))
                     });
                 }
                 self.begin_op(View::Reboot);
@@ -8193,12 +8236,12 @@ impl App {
                         .unwrap_or_else(|_| Err("Task failed".to_string()))
                     },
                     |r| match r {
-                        Ok(lines) => Message::RebootDone(lines),
+                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::RebootEdlWithLoader(target, path) => {
+            Message::Reboot(RebootMsg::RebootEdlWithLoader(target, path)) => {
                 let Some(loader_input) = path else {
                     self.log_push(format!(
                         "[Reboot] {}",
@@ -8258,12 +8301,12 @@ impl App {
                         .unwrap_or_else(|_| Err("Task failed".to_string()))
                     },
                     |r| match r {
-                        Ok(lines) => Message::RebootDone(lines),
+                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
                         Err(e) => Message::OperationError(e),
                     },
                 );
             }
-            Message::RebootDone(lines) => {
+            Message::Reboot(RebootMsg::RebootDone(lines)) => {
                 self.end_op();
                 self.flush_exec_done_log(lines);
             }
@@ -8313,8 +8356,8 @@ impl App {
         .width(Length::Fill);
 
         let drag_area = iced::widget::mouse_area(title_content)
-            .on_press(Message::WindowDrag)
-            .on_double_click(Message::WindowToggleMaximize);
+            .on_press(Message::Window(WindowMsg::WindowDrag))
+            .on_double_click(Message::Window(WindowMsg::WindowToggleMaximize));
 
         let btn_w = 46;
         let btn_h = 32;
@@ -8328,7 +8371,7 @@ impl App {
             .center_x(btn_w)
             .center_y(btn_h),
         )
-        .on_press(Message::WindowMinimize)
+        .on_press(Message::Window(WindowMsg::WindowMinimize))
         .padding(0)
         .style(|_t: &Theme, status| {
             let hover = matches!(status, button::Status::Hovered);
@@ -8351,7 +8394,7 @@ impl App {
             .center_x(btn_w)
             .center_y(btn_h),
         )
-        .on_press(Message::WindowToggleMaximize)
+        .on_press(Message::Window(WindowMsg::WindowToggleMaximize))
         .padding(0)
         .style(|_t: &Theme, status| {
             let hover = matches!(status, button::Status::Hovered);
@@ -8374,7 +8417,7 @@ impl App {
             .center_x(btn_w)
             .center_y(btn_h),
         )
-        .on_press(Message::WindowClose)
+        .on_press(Message::Window(WindowMsg::WindowClose))
         .padding(0)
         .style(|_t: &Theme, status| {
             let hover = matches!(status, button::Status::Hovered);
@@ -9313,7 +9356,7 @@ impl App {
                         .find(|l| l.label() == selected)
                         .copied()
                         .unwrap_or(Language::En);
-                    Message::SetLanguage(l)
+                    Message::Settings(SettingsMsg::SetLanguage(l))
                 },
             )
             .width(160),
@@ -9389,7 +9432,7 @@ impl App {
 
         let mut default_loader_actions = row![
             button(text(self.t("settings_default_loader_browse").to_string()).size(13))
-                .on_press(Message::SettingsPickDefaultLoader)
+                .on_press(Message::Settings(SettingsMsg::SettingsPickDefaultLoader))
                 .padding([6, 14])
                 .style(neutral_pill_btn_style),
         ]
@@ -9398,7 +9441,7 @@ impl App {
         if self.default_loader_path.is_some() {
             default_loader_actions = default_loader_actions.push(
                 button(text(self.t("settings_default_loader_clear").to_string()).size(13))
-                    .on_press(Message::SettingsClearDefaultLoader)
+                    .on_press(Message::Settings(SettingsMsg::SettingsClearDefaultLoader))
                     .padding([6, 14])
                     .style(neutral_pill_btn_style),
             );
@@ -9490,8 +9533,8 @@ impl App {
                 &label_owned,
                 can,
                 self.t("btn_back"),
-                Message::FlashBack,
-                Message::FlashNext,
+                Message::Flash(FlashMsg::FlashBack),
+                Message::Flash(FlashMsg::FlashNext),
             )
         } else {
             container(text("")).into()
@@ -9519,14 +9562,14 @@ impl App {
                     self.t("region_prc"),
                     self.t("region_prc_name"),
                     self.flash.device_region == Some(DeviceRegion::Prc),
-                    Message::FlashRegion(DeviceRegion::Prc)
+                    Message::Flash(FlashMsg::FlashRegion(DeviceRegion::Prc))
                 ),
                 icon_option_card_sub(
                     row_icon,
                     self.t("region_row"),
                     self.t("region_row_name"),
                     self.flash.device_region == Some(DeviceRegion::Row),
-                    Message::FlashRegion(DeviceRegion::Row)
+                    Message::Flash(FlashMsg::FlashRegion(DeviceRegion::Row))
                 ),
             ]
             .spacing(12),
@@ -9560,14 +9603,14 @@ impl App {
                     self.t(FlashTarget::OtherRegion.label_key()),
                     self.t("flashtarget_other_desc"),
                     self.flash.target == Some(FlashTarget::OtherRegion),
-                    Message::FlashTarget(FlashTarget::OtherRegion)
+                    Message::Flash(FlashMsg::FlashTarget(FlashTarget::OtherRegion))
                 ),
                 icon_option_card_sub(
                     device,
                     self.t(FlashTarget::SameRegion.label_key()),
                     self.t("flashtarget_same_desc"),
                     self.flash.target == Some(FlashTarget::SameRegion),
-                    Message::FlashTarget(FlashTarget::SameRegion)
+                    Message::Flash(FlashMsg::FlashTarget(FlashTarget::SameRegion))
                 ),
             ]
             .spacing(12),
@@ -9601,14 +9644,14 @@ impl App {
                     self.t(DataMode::Keep.label_key()),
                     self.t("datamode_keep_desc"),
                     self.flash.data_mode == Some(DataMode::Keep),
-                    Message::FlashDataMode(DataMode::Keep)
+                    Message::Flash(FlashMsg::FlashDataMode(DataMode::Keep))
                 ),
                 icon_option_card_sub(
                     wipe,
                     self.t(DataMode::Wipe.label_key()),
                     self.t("datamode_wipe_desc"),
                     self.flash.data_mode == Some(DataMode::Wipe),
-                    Message::FlashDataMode(DataMode::Wipe)
+                    Message::Flash(FlashMsg::FlashDataMode(DataMode::Wipe))
                 ),
             ]
             .spacing(12),
@@ -9651,7 +9694,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::FlashSelectFolder)
+        .on_press(Message::Flash(FlashMsg::FlashSelectFolder))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -9831,8 +9874,8 @@ impl App {
                 &label_owned,
                 can,
                 self.t("btn_back"),
-                Message::SysBack,
-                Message::SysNext,
+                Message::Sys(SysMsg::SysBack),
+                Message::Sys(SysMsg::SysNext),
             )
         } else {
             container(text("")).into()
@@ -9859,14 +9902,14 @@ impl App {
                 self.t(SysUpdateAction::Disable.label_key()),
                 self.t(SysUpdateAction::Disable.desc_key()),
                 self.sysupdate.action == Some(SysUpdateAction::Disable),
-                Message::SysAction(SysUpdateAction::Disable),
+                Message::Sys(SysMsg::SysAction(SysUpdateAction::Disable)),
             ),
             icon_option_card_sub(
                 on_icon,
                 self.t(SysUpdateAction::Enable.label_key()),
                 self.t(SysUpdateAction::Enable.desc_key()),
                 self.sysupdate.action == Some(SysUpdateAction::Enable),
-                Message::SysAction(SysUpdateAction::Enable),
+                Message::Sys(SysMsg::SysAction(SysUpdateAction::Enable)),
             ),
         ]
         .spacing(12);
@@ -9918,7 +9961,7 @@ impl App {
                 self.t(SysUpdateAction::Rescue.label_key()),
                 self.t(SysUpdateAction::Rescue.desc_key()),
                 self.sysupdate.action == Some(SysUpdateAction::Rescue),
-                Message::SysAction(SysUpdateAction::Rescue),
+                Message::Sys(SysMsg::SysAction(SysUpdateAction::Rescue)),
             ));
         }
         let col = column![
@@ -10020,7 +10063,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::SysRescueSelectFolder)
+        .on_press(Message::Sys(SysMsg::SysRescueSelectFolder))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -10032,7 +10075,7 @@ impl App {
         // dialog itself accepts.
         let chips = self.recent_file_chips(
             &["melf"],
-            |p| Message::SysRescueFolderChosen(Some(p)),
+            |p| Message::Sys(SysMsg::SysRescueFolderChosen(Some(p))),
             "picker_recents",
         );
         let col = column![
@@ -10075,7 +10118,7 @@ impl App {
                 ]
                 .spacing(4),
             )
-            .on_press(Message::SysRescueRegion(region))
+            .on_press(Message::Sys(SysMsg::SysRescueRegion(region)))
             .padding([10, 16])
             .width(Length::Fill)
             .style(move |t: &Theme, status| {
@@ -10114,7 +10157,7 @@ impl App {
                             .size(12)
                             .style(muted_style)
                     )
-                    .on_press(Message::SysRescueRegionPopupDismiss)
+                    .on_press(Message::Sys(SysMsg::SysRescueRegionPopupDismiss))
                     .padding([4, 12])
                     .style(neutral_pill_btn_style),
                 ]
@@ -10330,7 +10373,7 @@ impl App {
                     .style(muted_style)
                     .center(),
             )
-            .on_press(Message::AdvWizOpenOutputFolder)
+            .on_press(Message::Adv(AdvMsg::AdvWizOpenOutputFolder))
             .padding([4, 12])
             .style(pill_style);
             button_row = button_row.push(open_btn);
@@ -10479,8 +10522,8 @@ impl App {
                 &label_owned,
                 can,
                 self.t("btn_back"),
-                Message::UnrootBack,
-                Message::UnrootNext,
+                Message::Unroot(UnrootMsg::UnrootBack),
+                Message::Unroot(UnrootMsg::UnrootNext),
             )
         } else {
             container(text("")).into()
@@ -10511,14 +10554,14 @@ impl App {
                     self.t(UnrootType::MagiskLkm.label_key()),
                     self.t(UnrootType::MagiskLkm.desc_key()),
                     self.unroot.unroot_type == Some(UnrootType::MagiskLkm),
-                    Message::SetUnrootType(UnrootType::MagiskLkm)
+                    Message::Unroot(UnrootMsg::SetUnrootType(UnrootType::MagiskLkm))
                 ),
                 icon_option_card_sub(
                     gki_icon,
                     self.t(UnrootType::APatchGki.label_key()),
                     self.t(UnrootType::APatchGki.desc_key()),
                     self.unroot.unroot_type == Some(UnrootType::APatchGki),
-                    Message::SetUnrootType(UnrootType::APatchGki)
+                    Message::Unroot(UnrootMsg::SetUnrootType(UnrootType::APatchGki))
                 ),
             ]
             .spacing(12),
@@ -10563,7 +10606,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::UnrootSelectFolder)
+        .on_press(Message::Unroot(UnrootMsg::UnrootSelectFolder))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -10623,7 +10666,7 @@ impl App {
                 .width(280)
                 .style(move |t: &Theme| sel_card_style(t, false)),
             )
-            .on_press(Message::UnrootSelectLoader)
+            .on_press(Message::Unroot(UnrootMsg::UnrootSelectLoader))
             .padding(0)
             .style(|t: &Theme, _s| button::Style {
                 background: None,
@@ -10761,7 +10804,7 @@ impl App {
             .width(280)
             .style(|t: &Theme| sel_card_style(t, !self.root.kpm_paths.is_empty())),
         )
-        .on_press(Message::RootSelectKpm)
+        .on_press(Message::Root(RootMsg::RootSelectKpm))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -10778,7 +10821,7 @@ impl App {
             let p_copy = path.clone();
             let remove = button(text("−").size(14))
                 .padding([2, 10])
-                .on_press(Message::RootKpmRemove(p_copy))
+                .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)))
                 .style(|t: &Theme, _s| {
                     let p = pal_of(t);
                     button::Style {
@@ -10830,8 +10873,8 @@ impl App {
             self.t("apatch_superkey_placeholder"),
             &self.root.superkey_buffer,
         )
-        .on_input(Message::RootSuperkeyInput)
-        .on_submit(Message::RootSuperkeyConfirm)
+        .on_input(|__v| Message::Root(RootMsg::RootSuperkeyInput(__v)))
+        .on_submit(Message::Root(RootMsg::RootSuperkeyConfirm))
         .secure(true)
         .padding([10, 12])
         .width(Length::Fill)
@@ -10895,11 +10938,11 @@ impl App {
             row![
                 Space::new().width(Length::Fill),
                 button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::RootSuperkeyCancel)
+                    .on_press(Message::Root(RootMsg::RootSuperkeyCancel))
                     .padding([8, 18])
                     .style(md_text_btn_style),
                 button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::RootSuperkeyConfirm)
+                    .on_press(Message::Root(RootMsg::RootSuperkeyConfirm))
                     .padding([8, 18])
                     .style(md_filled_btn_style),
             ]
@@ -10919,8 +10962,8 @@ impl App {
             self.t("nightly_manual_placeholder"),
             &self.root.run_id_buffer,
         )
-        .on_input(Message::RootRunIdInput)
-        .on_submit(Message::RootRunIdConfirm)
+        .on_input(|__v| Message::Root(RootMsg::RootRunIdInput(__v)))
+        .on_submit(Message::Root(RootMsg::RootRunIdConfirm))
         .padding([10, 12])
         .width(Length::Fill)
         .style(|t: &Theme, status| {
@@ -10967,11 +11010,11 @@ impl App {
             row![
                 Space::new().width(Length::Fill),
                 button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::RootRunIdCancel)
+                    .on_press(Message::Root(RootMsg::RootRunIdCancel))
                     .padding([8, 18])
                     .style(md_text_btn_style),
                 button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::RootRunIdConfirm)
+                    .on_press(Message::Root(RootMsg::RootRunIdConfirm))
                     .padding([8, 18])
                     .style(md_filled_btn_style),
             ]
@@ -10990,8 +11033,8 @@ impl App {
             self.t("root_kernel_version_placeholder"),
             &self.root.kernel_version_buffer,
         )
-        .on_input(Message::RootKernelVersionInput)
-        .on_submit(Message::RootKernelVersionConfirm)
+        .on_input(|__v| Message::Root(RootMsg::RootKernelVersionInput(__v)))
+        .on_submit(Message::Root(RootMsg::RootKernelVersionConfirm))
         .padding([10, 12])
         .width(Length::Fill)
         .style(|t: &Theme, status| {
@@ -11038,11 +11081,11 @@ impl App {
             row![
                 Space::new().width(Length::Fill),
                 button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::RootKernelVersionCancel)
+                    .on_press(Message::Root(RootMsg::RootKernelVersionCancel))
                     .padding([8, 18])
                     .style(md_text_btn_style),
                 button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::RootKernelVersionConfirm)
+                    .on_press(Message::Root(RootMsg::RootKernelVersionConfirm))
                     .padding([8, 18])
                     .style(md_filled_btn_style),
             ]
@@ -11063,7 +11106,7 @@ impl App {
                 self.t(f.label_key()),
                 self.t(f.desc_key()),
                 self.root.family == Some(f),
-                Message::RootFamily(f),
+                Message::Root(RootMsg::RootFamily(f)),
             )
         };
 
@@ -11105,7 +11148,7 @@ impl App {
                 self.t(p.label_key()),
                 sub,
                 selected,
-                Message::RootProvider(p),
+                Message::Root(RootMsg::RootProvider(p)),
             )
         };
 
@@ -11144,7 +11187,7 @@ impl App {
                     .center_y(Length::Fill)
                     .style(move |t: &Theme| sel_card_style(t, selected)),
             )
-            .on_press(Message::RootProvider(p))
+            .on_press(Message::Root(RootMsg::RootProvider(p)))
             .padding(0)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -11246,7 +11289,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::RootSelectFile)
+        .on_press(Message::Root(RootMsg::RootSelectFile))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -11418,7 +11461,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::RootSelectFolder)
+        .on_press(Message::Root(RootMsg::RootSelectFolder))
         .padding(0)
         .style(|t: &Theme, _s| button::Style {
             background: None,
@@ -11485,14 +11528,14 @@ impl App {
                     self.t(RootMode::Lkm.label_key()),
                     self.t(RootMode::Lkm.desc_key()),
                     self.root.mode == Some(RootMode::Lkm),
-                    Message::RootMode(RootMode::Lkm),
+                    Message::Root(RootMsg::RootMode(RootMode::Lkm)),
                 ),
                 icon_option_card_sub(
                     RootMode::Gki.icon(),
                     self.t(RootMode::Gki.label_key()),
                     self.t(RootMode::Gki.desc_key()),
                     self.root.mode == Some(RootMode::Gki),
-                    Message::RootMode(RootMode::Gki),
+                    Message::Root(RootMsg::RootMode(RootMode::Gki)),
                 ),
             ]
             .spacing(12),
@@ -11516,7 +11559,7 @@ impl App {
                 self.t(choice.label_key()),
                 self.t(choice.desc_key()),
                 self.root.version == Some(choice),
-                Message::RootVersion(choice),
+                Message::Root(RootMsg::RootVersion(choice)),
             )
         };
 
@@ -11558,7 +11601,7 @@ impl App {
                 self.t(src.label_key()),
                 self.t(src.desc_key()),
                 self.root.nightly_source == Some(src),
-                Message::RootNightlySource(src),
+                Message::Root(RootMsg::RootNightlySource(src)),
             )
         };
 
@@ -11569,7 +11612,9 @@ impl App {
                     let label = self.t("nightly_manual_committed").replace("{id}", id);
                     button(text(label).size(13).style(on_surface_style))
                         .padding([8, 14])
-                        .on_press(Message::RootNightlySource(NightlySource::ManualInput))
+                        .on_press(Message::Root(RootMsg::RootNightlySource(
+                            NightlySource::ManualInput,
+                        )))
                         .style(|t: &Theme, status| {
                             let p = pal_of(t);
                             let bg_a = match status {
@@ -11806,8 +11851,8 @@ impl App {
                 &label,
                 can,
                 self.t("btn_back"),
-                Message::AdvWizBack,
-                Message::AdvWizNext,
+                Message::Adv(AdvMsg::AdvWizBack),
+                Message::Adv(AdvMsg::AdvWizNext),
             )
         };
 
@@ -11862,7 +11907,7 @@ impl App {
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
         .width(Length::Shrink)
-        .on_press(Message::AdvWizBrowse)
+        .on_press(Message::Adv(AdvMsg::AdvWizBrowse))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -11878,7 +11923,7 @@ impl App {
         let chips: Element<'_, Message> = if self.adv_wizard.is_image_info() {
             self.recent_file_chips(
                 &["img"],
-                |p| Message::AdvWizBrowseManyDone(Some(vec![p])),
+                |p| Message::Adv(AdvMsg::AdvWizBrowseManyDone(Some(vec![p]))),
                 "picker_recents",
             )
         } else {
@@ -11886,7 +11931,7 @@ impl App {
             if kind.is_folder() {
                 self.recent_chips(
                     self.recent_paths.recent(kind.storage_key()),
-                    |p| Message::AdvWizBrowseDone(Some(p)),
+                    |p| Message::Adv(AdvMsg::AdvWizBrowseDone(Some(p))),
                     "picker_recents",
                     false,
                 )
@@ -11894,7 +11939,7 @@ impl App {
                 let (_, exts) = self.adv_wizard.accepted_exts();
                 self.recent_file_chips(
                     exts,
-                    |p| Message::AdvWizBrowseDone(Some(p)),
+                    |p| Message::Adv(AdvMsg::AdvWizBrowseDone(Some(p))),
                     "picker_recents",
                 )
             }
@@ -11948,7 +11993,7 @@ impl App {
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
         .width(Length::Shrink)
-        .on_press(Message::AdvWizOpenCountry)
+        .on_press(Message::Adv(AdvMsg::AdvWizOpenCountry))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12013,7 +12058,7 @@ impl App {
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
         .width(Length::Shrink)
-        .on_press(Message::AdvWizOpenRegionTarget)
+        .on_press(Message::Adv(AdvMsg::AdvWizOpenRegionTarget))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12222,11 +12267,11 @@ impl App {
                 can,
                 self.t("btn_back"),
                 if self.flash_parts.step == 0 {
-                    Message::FlashPartsClose
+                    Message::FlashParts(FlashPartsMsg::FlashPartsClose)
                 } else {
-                    Message::FlashPartsBack
+                    Message::FlashParts(FlashPartsMsg::FlashPartsBack)
                 },
-                Message::FlashPartsNext,
+                Message::FlashParts(FlashPartsMsg::FlashPartsNext),
             )
         } else {
             container(text("")).into()
@@ -12264,7 +12309,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::FlashPartsSelectLoader)
+        .on_press(Message::FlashParts(FlashPartsMsg::FlashPartsSelectLoader))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12279,7 +12324,7 @@ impl App {
         };
         let chips = self.recent_file_chips(
             &["melf"],
-            |p| Message::FlashPartsLoaderChosen(Some(p)),
+            |p| Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(Some(p))),
             "picker_recents",
         );
         let col = column![
@@ -12343,7 +12388,7 @@ impl App {
             };
             let marker_btn = button(container(marker).width(32).center_x(Length::Fill))
                 .padding(0)
-                .on_press(Message::FlashPartsToggleRow(idx))
+                .on_press(Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx)))
                 .style(|_t: &Theme, _s| button::Style {
                     background: None,
                     ..Default::default()
@@ -12378,8 +12423,9 @@ impl App {
             .align_y(iced::Alignment::Center);
 
             // Whole row is a double-click target for the file picker.
-            let clickable = iced::widget::mouse_area(data_row)
-                .on_double_click(Message::FlashPartsPickRowFile(idx));
+            let clickable = iced::widget::mouse_area(data_row).on_double_click(
+                Message::FlashParts(FlashPartsMsg::FlashPartsPickRowFile(idx)),
+            );
             list = list.push(clickable);
         }
 
@@ -12533,11 +12579,11 @@ impl App {
                 can,
                 self.t("btn_back"),
                 if self.dump_parts.step == 0 {
-                    Message::DumpPartsClose
+                    Message::DumpParts(DumpPartsMsg::DumpPartsClose)
                 } else {
-                    Message::DumpPartsBack
+                    Message::DumpParts(DumpPartsMsg::DumpPartsBack)
                 },
-                Message::DumpPartsNext,
+                Message::DumpParts(DumpPartsMsg::DumpPartsNext),
             )
         } else {
             container(text("")).into()
@@ -12575,7 +12621,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::DumpPartsSelectLoader)
+        .on_press(Message::DumpParts(DumpPartsMsg::DumpPartsSelectLoader))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12590,7 +12636,7 @@ impl App {
         };
         let chips = self.recent_file_chips(
             &["melf"],
-            |p| Message::DumpPartsLoaderChosen(Some(p)),
+            |p| Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(Some(p))),
             "picker_recents",
         );
         let col = column![
@@ -12640,7 +12686,7 @@ impl App {
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
         for (idx, row) in self.dump_parts.rows.iter().enumerate() {
             let cb = iced::widget::checkbox(row.selected)
-                .on_toggle(move |_| Message::DumpPartsToggleRow(idx));
+                .on_toggle(move |_| Message::DumpParts(DumpPartsMsg::DumpPartsToggleRow(idx)));
             let data_row = iced::widget::row![
                 container(cb).width(32),
                 text(row.lun.to_string()).size(12).width(50),
@@ -12713,11 +12759,11 @@ impl App {
                 can,
                 self.t("btn_back"),
                 if self.dump_phys.step == 0 {
-                    Message::DumpPhysClose
+                    Message::DumpPhys(DumpPhysMsg::DumpPhysClose)
                 } else {
-                    Message::DumpPhysBack
+                    Message::DumpPhys(DumpPhysMsg::DumpPhysBack)
                 },
-                Message::DumpPhysNext,
+                Message::DumpPhys(DumpPhysMsg::DumpPhysNext),
             )
         } else {
             container(text("")).into()
@@ -12755,7 +12801,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::DumpPhysSelectLoader)
+        .on_press(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectLoader))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12770,7 +12816,7 @@ impl App {
         };
         let chips = self.recent_file_chips(
             &["melf"],
-            |p| Message::DumpPhysLoaderChosen(Some(p)),
+            |p| Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(Some(p))),
             "picker_recents",
         );
         let col = column![
@@ -12808,8 +12854,8 @@ impl App {
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
         for idx in 0..PHYS_LUN_COUNT {
             let checked = self.dump_phys.selected[idx];
-            let cb =
-                iced::widget::checkbox(checked).on_toggle(move |_| Message::DumpPhysToggleRow(idx));
+            let cb = iced::widget::checkbox(checked)
+                .on_toggle(move |_| Message::DumpPhys(DumpPhysMsg::DumpPhysToggleRow(idx)));
             let data_row = iced::widget::row![
                 container(cb).width(32),
                 text(format!("LUN {idx}")).size(12).width(Length::Fill),
@@ -12875,11 +12921,11 @@ impl App {
                 can,
                 self.t("btn_back"),
                 if self.flash_phys.step == 0 {
-                    Message::FlashPhysClose
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysClose)
                 } else {
-                    Message::FlashPhysBack
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysBack)
                 },
-                Message::FlashPhysNext,
+                Message::FlashPhys(FlashPhysMsg::FlashPhysNext),
             )
         } else {
             container(text("")).into()
@@ -12917,7 +12963,7 @@ impl App {
             .width(280)
             .style(move |t: &Theme| sel_card_style(t, selected)),
         )
-        .on_press(Message::FlashPhysSelectLoader)
+        .on_press(Message::FlashPhys(FlashPhysMsg::FlashPhysSelectLoader))
         .padding(0)
         .style(|_t: &Theme, _s| button::Style {
             background: None,
@@ -12932,7 +12978,7 @@ impl App {
         };
         let chips = self.recent_file_chips(
             &["melf"],
-            |p| Message::FlashPhysLoaderChosen(Some(p)),
+            |p| Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(Some(p))),
             "picker_recents",
         );
         let col = column![
@@ -12975,7 +13021,7 @@ impl App {
         for idx in 0..PHYS_LUN_COUNT {
             let checked = self.flash_phys.selected[idx];
             let cb = iced::widget::checkbox(checked)
-                .on_toggle(move |_| Message::FlashPhysToggleRow(idx));
+                .on_toggle(move |_| Message::FlashPhys(FlashPhysMsg::FlashPhysToggleRow(idx)));
 
             let file_disp = self.flash_phys.file_paths[idx]
                 .as_ref()
@@ -12999,7 +13045,7 @@ impl App {
             .align_y(iced::Alignment::Center);
 
             let clickable = iced::widget::mouse_area(data_row)
-                .on_double_click(Message::FlashPhysPickRowFile(idx));
+                .on_double_click(Message::FlashPhys(FlashPhysMsg::FlashPhysPickRowFile(idx)));
             list = list.push(clickable);
         }
 
@@ -13142,7 +13188,7 @@ impl App {
                 });
             let btn: Element<'_, Message> = if available {
                 button(card_inner)
-                    .on_press(Message::RebootRequest(target))
+                    .on_press(Message::Reboot(RebootMsg::RebootRequest(target)))
                     .padding(0)
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -13185,7 +13231,7 @@ impl App {
                         .size(13)
                         .style(muted_style)
                 )
-                .on_press(Message::RebootDismiss)
+                .on_press(Message::Reboot(RebootMsg::RebootDismiss))
                 .padding([8, 18])
                 .style(|t: &Theme, _s| {
                     let p = pal_of(t);
@@ -13200,7 +13246,7 @@ impl App {
                     }
                 }),
                 button(text(self.t("btn_reboot_confirm").to_string()).size(13))
-                    .on_press(Message::RebootConfirm)
+                    .on_press(Message::Reboot(RebootMsg::RebootConfirm))
                     .padding([8, 18])
                     .style(md_filled_btn_style),
             ]
@@ -13341,7 +13387,7 @@ fn wizard_nav<'a>(
     if can_back {
         r = r.push(
             button(text(back_label.to_string()).size(13))
-                .on_press(Message::RootBack)
+                .on_press(Message::Root(RootMsg::RootBack))
                 .padding([10, 20])
                 .style(md_text_btn_style),
         );
@@ -13354,7 +13400,7 @@ fn wizard_nav<'a>(
         .style(md_filled_btn_style);
 
     r = r.push(if can_next {
-        next_btn.on_press(Message::RootNext)
+        next_btn.on_press(Message::Root(RootMsg::RootNext))
     } else {
         next_btn
     });
@@ -13564,7 +13610,7 @@ fn adv_grid_btn<'a>(item: AdvAction, label: &str) -> Element<'a, Message> {
     });
 
     button(content)
-        .on_press(Message::AdvConfirm(item))
+        .on_press(Message::Adv(AdvMsg::AdvConfirm(item)))
         .padding(0)
         .width(Length::Fill)
         .style(|t: &Theme, status| {
