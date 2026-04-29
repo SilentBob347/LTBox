@@ -3895,6 +3895,25 @@ impl App {
         self.log_dirty = false;
     }
 
+    /// Shared loader-picker helper. Bypasses the file picker if Settings
+    /// has a default EDL loader configured, otherwise opens
+    /// `loader_file_spec` and routes the result through `on_chosen`.
+    /// Used by every `*SelectLoader` handler to dedupe the
+    /// `default_loader_path → update | pick_file_for` boilerplate.
+    fn pick_loader_with_default<F>(&mut self, on_chosen: F) -> Task<Message>
+    where
+        F: 'static + Send + Fn(Option<String>) -> Message,
+    {
+        if let Some(path) = self.default_loader_path.clone() {
+            return self.update(on_chosen(Some(path)));
+        }
+        pickers::pick_file_for(
+            loader_file_spec("picker_target_edl_loader"),
+            &self.recent_paths,
+            on_chosen,
+        )
+    }
+
     /// Returns the Settings-level default EDL loader path when it is set
     /// **and** the file currently exists on disk. Used by every wizard
     /// open / reset path to decide whether to pre-fill its loader slot
@@ -5048,15 +5067,7 @@ impl App {
                 // never read in this path. File picker with the standard
                 // loader extension filter, recents shared with the rest
                 // of the loader pickers via the File bucket.
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::SysRescueFolderChosen(Some(path)));
-                }
-                let spec = loader_file_spec("picker_target_edl_loader");
-                return pickers::pick_file_for(
-                    spec,
-                    &self.recent_paths,
-                    Message::SysRescueFolderChosen,
-                );
+                return self.pick_loader_with_default(Message::SysRescueFolderChosen);
             }
             Message::SysRescueFolderChosen(path) => {
                 if let Some(p) = path {
@@ -6381,14 +6392,7 @@ impl App {
                 );
             }
             Message::UnrootSelectLoader => {
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::UnrootLoaderChosen(Some(path)));
-                }
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::UnrootLoaderChosen,
-                );
+                return self.pick_loader_with_default(Message::UnrootLoaderChosen);
             }
             Message::UnrootLoaderChosen(path) => {
                 if let Some(p) = path {
@@ -7695,14 +7699,7 @@ impl App {
                 );
             }
             Message::FlashPartsSelectLoader => {
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::FlashPartsLoaderChosen(Some(path)));
-                }
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::FlashPartsLoaderChosen,
-                );
+                return self.pick_loader_with_default(Message::FlashPartsLoaderChosen);
             }
             Message::FlashPartsLoaderChosen(path) => {
                 if let Some(p) = path {
@@ -7831,14 +7828,7 @@ impl App {
                 self.end_op();
             }
             Message::DumpPartsSelectLoader => {
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::DumpPartsLoaderChosen(Some(path)));
-                }
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::DumpPartsLoaderChosen,
-                );
+                return self.pick_loader_with_default(Message::DumpPartsLoaderChosen);
             }
             Message::DumpPartsLoaderChosen(path) => {
                 if let Some(p) = path {
@@ -7960,14 +7950,7 @@ impl App {
             }
             // -- Physical Storage: Dump --------------------------------------
             Message::DumpPhysSelectLoader => {
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::DumpPhysLoaderChosen(Some(path)));
-                }
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::DumpPhysLoaderChosen,
-                );
+                return self.pick_loader_with_default(Message::DumpPhysLoaderChosen);
             }
             Message::DumpPhysLoaderChosen(path) => {
                 if let Some(p) = path {
@@ -8046,14 +8029,7 @@ impl App {
             }
             // -- Physical Storage: Flash -------------------------------------
             Message::FlashPhysSelectLoader => {
-                if let Some(path) = self.default_loader_path.clone() {
-                    return self.update(Message::FlashPhysLoaderChosen(Some(path)));
-                }
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::FlashPhysLoaderChosen,
-                );
+                return self.pick_loader_with_default(Message::FlashPhysLoaderChosen);
             }
             Message::FlashPhysLoaderChosen(path) => {
                 if let Some(p) = path {
@@ -8163,14 +8139,9 @@ impl App {
                 }
                 // EDL needs a Firehose loader before Power(reset).
                 if matches!(conn, ConnectionStatus::Edl) {
-                    if let Some(path) = self.default_loader_path.clone() {
-                        return self.update(Message::RebootEdlWithLoader(target, Some(path)));
-                    }
-                    return pickers::pick_file_for(
-                        loader_file_spec("picker_target_edl_loader"),
-                        &self.recent_paths,
-                        move |path| Message::RebootEdlWithLoader(target, path),
-                    );
+                    return self.pick_loader_with_default(move |path| {
+                        Message::RebootEdlWithLoader(target, path)
+                    });
                 }
                 self.begin_op(View::Reboot);
                 self.error_msg = None;
