@@ -4488,62 +4488,52 @@ impl App {
                             // copies written to `arb_work_dir`, flashed
                             // *after* rawprogram — avoids mutating the
                             // user's firmware folder on disk.
-                            let mut arb_patched: Vec<(
-                                String,
-                                u8,
-                                String,
-                                std::path::PathBuf,
-                            )> = Vec::new();
+                            //
+                            // Replaces the v3.0.0-beta.1 `XmlCatalog`-driven
+                            // lookup with a hardcoded partition table — boot
+                            // + vbmeta_system live on fixed LUNs across every
+                            // supported Lenovo device, the on-disk filename
+                            // is always `<base>.img`, and start sector comes
+                            // from the device's GPT via `flash_partition_by_name`.
+                            // No more rawprogram parse for ARB prep.
+                            let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
+                                Vec::new();
                             if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
-                                let xml_paths: Vec<&std::path::Path> =
-                                    raw_xmls.iter().map(|p| p.as_path()).collect();
-                                let catalog = match ltbox_core::xml_catalog::XmlCatalog::from_paths(
-                                    &xml_paths,
-                                ) {
-                                    Ok(c) => Some(c),
-                                    Err(e) => {
-                                        ltbox_core::live!(log,
-                                            "[ARB] rawprogram parse for ARB prep failed: {e}"
-                                        );
-                                        None
-                                    }
-                                };
-                                if let Some(catalog) = catalog {
-                                    // Per-run scratch dir; cleaned on entry.
-                                    let arb_work_dir = dirs::data_dir()
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                        .join("ltbox")
-                                        .join("flash_arb");
-                                    let _ = std::fs::remove_dir_all(&arb_work_dir);
-                                    std::fs::create_dir_all(&arb_work_dir)
-                                        .map_err(|e| format!("arb work dir: {e}"))?;
+                                // Per-run scratch dir; cleaned on entry.
+                                let arb_work_dir = dirs::data_dir()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                                    .join("ltbox")
+                                    .join("flash_arb");
+                                let _ = std::fs::remove_dir_all(&arb_work_dir);
+                                std::fs::create_dir_all(&arb_work_dir)
+                                    .map_err(|e| format!("arb work dir: {e}"))?;
 
-                                    // v2 partition map — boot + vbmeta_system
-                                    // processed as a pair; slot fallback
-                                    // `_a` → `_b` → unsuffixed.
-                                    let label_pairs: &[(&str, &[&str])] = &[
-                                        ("boot", &["boot_a", "boot_b", "boot"]),
-                                        (
-                                            "vbmeta_system",
-                                            &["vbmeta_system_a", "vbmeta_system_b", "vbmeta_system"],
-                                        ),
-                                    ];
-                                    for (log_name, fallbacks) in label_pairs {
-                                        let Ok(rec) = catalog.require(fallbacks[0], &fallbacks[1..]) else {
-                                            ltbox_core::live!(log,
-                                                "[ARB] {log_name}: not in rawprogram — skipping"
-                                            );
-                                            continue;
-                                        };
-                                        let filename = rec.filename.clone();
-                                        if filename.is_empty() {
-                                            ltbox_core::live!(log,
-                                                "[ARB] {log_name}: empty filename in rawprogram — skipping"
-                                            );
-                                            continue;
-                                        }
-                                        let source = fw_dir.join(&filename);
-                                        if !source.exists() {
+                                // (canonical base, on-disk filename, slot
+                                // label written back). Slot `_a` matches
+                                // the v2 `catalog.require(..._a, ..._b, …)`
+                                // first-hit semantics: the ARB-patched copy
+                                // overwrites slot A only, on top of the
+                                // full-firmware flash that already wrote
+                                // both slots from rawprogram.
+                                let label_pairs: &[(&str, &str, &str)] = &[
+                                    ("boot", "boot.img", "boot_a"),
+                                    (
+                                        "vbmeta_system",
+                                        "vbmeta_system.img",
+                                        "vbmeta_system_a",
+                                    ),
+                                ];
+                                for (log_name, filename, slot_label) in label_pairs {
+                                    let Some(lun) =
+                                        ltbox_core::partition_lun::lun_for_partition(log_name)
+                                    else {
+                                        ltbox_core::live!(log,
+                                            "[ARB] {log_name}: no hardcoded LUN — skipping"
+                                        );
+                                        continue;
+                                    };
+                                    let source = fw_dir.join(filename);
+                                    if !source.exists() {
                                             ltbox_core::live!(log,
                                                 "[ARB] {log_name}: {} not found — skipping",
                                                 source.display()
@@ -4679,13 +4669,6 @@ impl App {
                                             continue;
                                         }
 
-                                        let lun: u8 = rec
-                                            .lun
-                                            .as_deref()
-                                            .unwrap_or("0")
-                                            .parse()
-                                            .unwrap_or(0);
-                                        let start = rec.start_sector.clone().unwrap_or_else(|| "0".to_string());
                                         live!(
                                             log,
                                             "[ARB] {}",
@@ -4695,13 +4678,11 @@ impl App {
                                                 .replace("{target}", &target.to_string())
                                         );
                                         arb_patched.push((
-                                            rec.label.clone(),
+                                            slot_label.to_string(),
                                             lun,
-                                            start,
                                             patched,
                                         ));
                                     }
-                                }
                             }
 
                             live!(
@@ -4722,19 +4703,21 @@ impl App {
                                 .map_err(|e| format!("Firmware flash failed: {e}"))?;
 
                             // Overwrite rawprogram's stock boot + vbmeta_system
-                            // with the ARB-patched copies.
-                            for (label, lun, start, patched) in &arb_patched {
+                            // with the ARB-patched copies. GPT-by-name lookup
+                            // resolves the slot's start sector from the device,
+                            // not the firmware folder's rawprogram XML.
+                            for (label, lun, patched) in &arb_patched {
                                 live!(
                                     log,
                                     "[ARB] {}",
                                     ltbox_core::i18n::tr("live_arb_flash_patched")
                                         .replace("{label}", label)
                                 );
-                                if let Err(e) = session.flash_partition_at(
+                                if let Err(e) = session.flash_partition(
                                     label,
                                     patched,
+                                    0,
                                     *lun,
-                                    start,
                                     &mut log,
                                 ) {
                                     return Err(format!("ARB flash {label}: {e}"));
@@ -4782,11 +4765,11 @@ impl App {
                                     );
                                     std::fs::create_dir_all(&critical_backup)
                                         .map_err(|e| format!("critical backup folder: {e}"))?;
-                                    let xml_paths: Vec<&std::path::Path> =
-                                        raw_xmls.iter().map(|p| p.as_path()).collect();
-                                    let catalog =
-                                        ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
-                                            .map_err(|e| format!("rawprogram parse: {e}"))?;
+                                    // devinfo + persist resolve through the hardcoded
+                                    // LUN map; start/num come from the device GPT via
+                                    // `dump_partition_by_name`. Avoids re-decrypting
+                                    // `rawprogram*.x` mid-flow when the catalog scratch
+                                    // dir has been cleaned.
                                     const KNOWN_CODES: &[&str] = &[
                                         "CN","KR","JP","US","GB","DE","FR","IT","ES","NL",
                                         "AT","BE","BG","HR","CY","CZ","DK","EE","FI","GR",
@@ -4801,8 +4784,10 @@ impl App {
                                     ];
                                     let mut country_progress = CountryPatchProgress::default();
                                     for label in ["devinfo", "persist"] {
-                                        let Ok(rec) = catalog.require(label, &[]) else {
-                                            let reason = "partition not in rawprogram";
+                                        let Some(lun) =
+                                            ltbox_core::partition_lun::lun_for_partition(label)
+                                        else {
+                                            let reason = "no hardcoded LUN for label";
                                             ltbox_core::live!(
                                                 log,
                                                 "[Country] {}",
@@ -4813,36 +4798,6 @@ impl App {
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         };
-                                        let lun: u8 = rec
-                                            .lun
-                                            .as_deref()
-                                            .unwrap_or("0")
-                                            .parse()
-                                            .unwrap_or(0);
-                                        let start = rec
-                                            .start_sector
-                                            .as_deref()
-                                            .unwrap_or("0")
-                                            .parse::<u32>()
-                                            .unwrap_or(0);
-                                        let n: usize = rec
-                                            .num_sectors
-                                            .as_deref()
-                                            .unwrap_or("0")
-                                            .parse()
-                                            .unwrap_or(0);
-                                        if n == 0 {
-                                            let reason = "num_sectors=0";
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", reason)
-                                            );
-                                            country_progress.mark_failed(label, reason);
-                                            continue;
-                                        }
                                         let dump_path = work_dir.join(format!("{label}.img"));
                                         live!(
                                             log,
@@ -4850,11 +4805,11 @@ impl App {
                                             ltbox_core::i18n::tr("live_country_dump_partition")
                                                 .replace("{label}", label)
                                                 .replace("{lun}", &lun.to_string())
-                                                .replace("{start}", &start.to_string())
-                                                .replace("{sectors}", &n.to_string())
+                                                .replace("{start}", "?")
+                                                .replace("{sectors}", "?")
                                         );
-                                        if let Err(e) = session.dump_partition_at(
-                                            label, &dump_path, lun, start, n, &mut log,
+                                        if let Err(e) = session.dump_partition(
+                                            label, &dump_path, 0, lun, &mut log,
                                         ) {
                                             let reason = format!("dump failed: {e}");
                                             ltbox_core::live!(
@@ -4932,11 +4887,11 @@ impl App {
                                             EU_CODES,
                                         ) {
                                             Ok(true) => {
-                                                if let Err(e) = session.flash_partition_at(
+                                                if let Err(e) = session.flash_partition(
                                                     label,
                                                     &patched_path,
+                                                    0,
                                                     lun,
-                                                    rec.start_sector.as_deref().unwrap_or("0"),
                                                     &mut log,
                                                 ) {
                                                     ltbox_core::live!(
@@ -6577,76 +6532,27 @@ impl App {
                                             .replace("{path}", &loader.display().to_string())
                                     );
 
-                                    // Lenovo places boot on LUN 4 — GPT-by-name
-                                    // reads LUN 0 so it misses. Use rawprogram catalog.
-                                    let fw_dir = loader.parent().unwrap_or(dir);
-                                    let (raw_xmls, _patch_xmls) =
-                                        ltbox_device::edl::collect_firmware_xmls(fw_dir);
-                                    if raw_xmls.is_empty() {
-                                        return Err(format!(
-                                            "No flashable rawprogram*.xml found in {}",
-                                            fw_dir.display()
-                                        ));
-                                    }
-                                    let xml_paths: Vec<&std::path::Path> =
-                                        raw_xmls.iter().map(|p| p.as_path()).collect();
-                                    let catalog =
-                                        ltbox_core::xml_catalog::XmlCatalog::from_paths(&xml_paths)
-                                            .map_err(|e| format!("rawprogram parse failed: {e}"))?;
-                                    // `slot` was poll-resolved above and is
-                                    // guaranteed `_a` or `_b`.
-                                    let boot_primary = format!("{base_part}{slot}");
-                                    let vbmeta_primary = format!("vbmeta{slot}");
-                                    let boot_record = catalog
-                                        .require(
-                                            &boot_primary,
-                                            &[
-                                                &format!("{base_part}_a"),
-                                                &format!("{base_part}_b"),
-                                                base_part,
-                                            ],
-                                        )
-                                        .map_err(|e| format!("Resolve {boot_primary}: {e}"))?;
-                                    let vbmeta_record = catalog
-                                        .require(
-                                            &vbmeta_primary,
-                                            &["vbmeta_a", "vbmeta_b", "vbmeta"],
-                                        )
-                                        .map_err(|e| format!("Resolve {vbmeta_primary}: {e}"))?;
-                                    let boot_lun: u8 = boot_record
-                                        .lun
-                                        .as_deref()
-                                        .unwrap_or("0")
-                                        .parse()
-                                        .unwrap_or(0);
-                                    let vbm_lun: u8 = vbmeta_record
-                                        .lun
-                                        .as_deref()
-                                        .unwrap_or("0")
-                                        .parse()
-                                        .unwrap_or(0);
-                                    let boot_start = boot_record
-                                        .start_sector
-                                        .clone()
-                                        .unwrap_or_else(|| "0".to_string());
-                                    let vbm_start = vbmeta_record
-                                        .start_sector
-                                        .clone()
-                                        .unwrap_or_else(|| "0".to_string());
-                                    let boot_label = boot_record.label.clone();
-                                    let vbm_label = vbmeta_record.label.clone();
+                                    // Boot + vbmeta resolve through the
+                                    // hardcoded LUN map; GPT-by-name reads
+                                    // the slot's start sector from the
+                                    // device. No rawprogram parse needed —
+                                    // the loader's parent dir may not even
+                                    // contain a firmware XML pair.
+                                    let boot_label = format!("{base_part}{slot}");
+                                    let vbm_label = format!("vbmeta{slot}");
+                                    let boot_lun = ltbox_core::partition_lun::lun_for_partition(
+                                        base_part,
+                                    )
+                                    .ok_or_else(|| {
+                                        format!("No hardcoded LUN for {base_part}")
+                                    })?;
+                                    let vbm_lun = ltbox_core::partition_lun::lun_for_partition(
+                                        "vbmeta",
+                                    )
+                                    .ok_or_else(|| "No hardcoded LUN for vbmeta".to_string())?;
                                     live!(
                                         log,
-                                        "[Unroot] {}",
-                                        ltbox_core::i18n::tr(
-                                            "live_unroot_resolved_from_rawprogram"
-                                        )
-                                        .replace("{boot_primary}", &boot_primary)
-                                        .replace("{boot_label}", &boot_label)
-                                        .replace("{boot_lun}", &boot_lun.to_string())
-                                        .replace("{vbmeta_primary}", &vbmeta_primary)
-                                        .replace("{vbmeta_label}", &vbm_label)
-                                        .replace("{vbmeta_lun}", &vbm_lun.to_string())
+                                        "[Unroot] {boot_label} (LUN {boot_lun}) / {vbm_label} (LUN {vbm_lun}) via hardcoded map"
                                     );
 
                                     live!(
@@ -6668,20 +6574,20 @@ impl App {
                                     )
                                     .map_err(|e| format!("EDL session error: {e}"))?;
                                     session
-                                        .flash_partition_at(
+                                        .flash_partition(
                                             &boot_label,
                                             &boot_path,
+                                            0,
                                             boot_lun,
-                                            &boot_start,
                                             &mut log,
                                         )
                                         .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
                                     session
-                                        .flash_partition_at(
+                                        .flash_partition(
                                             &vbm_label,
                                             &vbmeta_path,
+                                            0,
                                             vbm_lun,
-                                            &vbm_start,
                                             &mut log,
                                         )
                                         .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
