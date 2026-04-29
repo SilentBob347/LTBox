@@ -1543,19 +1543,41 @@ impl Default for SettingsState {
     }
 }
 
+/// Country-code state for the Flash wizard's wipe path. Sum type so
+/// the three valid states (popup not yet reached / explicitly
+/// skipped / target picked) stay un-collapsible — the previous
+/// `Option<String>` + `bool` pair encoded the same with two fields
+/// and a doc-comment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum CountryAction {
+    /// Popup hasn't been answered yet.
+    #[default]
+    Unset,
+    /// User picked "Do not change" — devinfo/persist stays put.
+    Skip,
+    /// User picked a concrete target code; exec runs the patch.
+    Set(String),
+}
+
+impl CountryAction {
+    fn target(&self) -> Option<&str> {
+        match self {
+            Self::Set(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+    fn is_skipped(&self) -> bool {
+        matches!(self, Self::Skip)
+    }
+}
+
 /// Derived from wizard selections; reset after the op finishes.
 #[derive(Debug, Clone, Default)]
 struct WorkflowConfig {
     modify_region: bool,
     modify_rollback: RollbackSetting,
     wipe: bool,
-    country_code: Option<String>,
-    /// Country-code patching toggle. Wizard sets `false` when user picks
-    /// "Do not change" in the country popup so the exec phase skips the
-    /// devinfo/persist patch entirely (no dump, no flash). `country_code`
-    /// stays `None` in that case — the flag distinguishes "explicitly
-    /// skipped" from "popup not reached yet".
-    modify_country_code: bool,
+    country_action: CountryAction,
 }
 
 struct CountryEntry {
@@ -2939,9 +2961,9 @@ enum Message {
     // Country code popup
     SelectCountry(String),
     /// Flash wizard only: user picked "Do not change" in country popup.
-    /// Closes popup, marks `modify_country_code = false`, leaves wizard on
-    /// the current step. Advanced wizard ignores this message — its
-    /// PatchDevinfo path needs an explicit target code.
+    /// Sets `country_action = Skip`, closes popup, leaves wizard on the
+    /// current step. Advanced wizard ignores this — its PatchDevinfo path
+    /// needs an explicit target code.
     SkipCountryPatch,
     DismissCountryPopup,
     // Region-convert target picker popup
@@ -3710,7 +3732,7 @@ impl App {
         if self.adv_needs_country {
             self.adv_wizard.country.as_deref()
         } else {
-            self.wf_config.country_code.as_deref()
+            self.wf_config.country_action.target()
         }
     }
 
@@ -4110,8 +4132,7 @@ impl App {
                             RollbackSetting::Auto
                         },
                         wipe: self.flash.data_mode == Some(DataMode::Wipe),
-                        country_code: None,
-                        modify_country_code: true,
+                        country_action: CountryAction::Unset,
                     };
                     if self.wf_config.wipe {
                         self.flash.next();
@@ -4127,10 +4148,9 @@ impl App {
             }
             Message::FlashBack => {
                 if self.flash.step == 4 {
-                    self.wf_config.country_code = None;
                     // Re-arm country patching so the popup's "Do not change"
                     // selection doesn't survive a Back→Next round trip.
-                    self.wf_config.modify_country_code = true;
+                    self.wf_config.country_action = CountryAction::Unset;
                 }
                 self.flash.back();
             }
@@ -4409,14 +4429,14 @@ impl App {
                                     "[Flash] {}",
                                     ltbox_core::i18n::tr("live_flash_data_mode_wipe")
                                 );
-                                if let Some(cc) = &cfg.country_code {
+                                if let Some(cc) = cfg.country_action.target() {
                                     ltbox_core::live!(
                                         log,
                                         "[Flash] {}",
                                         ltbox_core::i18n::tr("live_flash_country_devinfo")
                                             .replace("{code}", cc)
                                     );
-                                } else if !cfg.modify_country_code {
+                                } else if cfg.country_action.is_skipped() {
                                     ltbox_core::live!(
                                         log,
                                         "[Flash] {}",
@@ -4690,12 +4710,11 @@ impl App {
                             }
 
                             // Country code patch: dump → patch → flash devinfo
-                            // + persist. Skipped when the popup's "Do not
-                            // change" was chosen (`modify_country_code` off)
-                            // so the device's existing region images stay put.
+                            // + persist. Skipped when the user picked "Do not
+                            // change" (`country_action` is `Skip`) — the
+                            // device's existing region images stay put.
                             if cfg.wipe
-                                && cfg.modify_country_code
-                                && let Some(target_code) = cfg.country_code.as_deref() {
+                                && let Some(target_code) = cfg.country_action.target() {
                                     live!(
                                         log,
                                         "[Flash] {}",
@@ -4960,26 +4979,24 @@ impl App {
                     self.adv_needs_country = false;
                 } else {
                     // Flash wizard: `wf_config` is source of truth.
-                    self.wf_config.country_code = Some(code);
+                    self.wf_config.country_action = CountryAction::Set(code);
                 }
             }
             Message::SkipCountryPatch => {
                 // Flash wizard only — Advanced PatchDevinfo always needs a
-                // target code, so the popup hides this option there. Leaving
-                // `country_code = None` makes the exec gate skip the patch
-                // automatically; `modify_country_code = false` keeps the
-                // confirm screen honest about the user's choice.
+                // target code, so the popup hides this option there.
+                // `Skip` makes the exec gate skip the patch and the confirm
+                // screen render the choice honestly.
                 self.country_popup_open = false;
                 if !self.adv_needs_country {
-                    self.wf_config.modify_country_code = false;
-                    self.wf_config.country_code = None;
+                    self.wf_config.country_action = CountryAction::Skip;
                 }
             }
             Message::DismissCountryPopup => {
                 self.country_popup_open = false;
                 if self.adv_needs_country {
                     self.adv_needs_country = false;
-                } else if self.wf_config.country_code.is_none() {
+                } else if matches!(self.wf_config.country_action, CountryAction::Unset) {
                     // Flash wizard — back to Data so user can switch wipe off.
                     self.flash.back();
                 }
@@ -6630,7 +6647,7 @@ impl App {
                     };
                     self.adv_confirm_path = self.adv_wizard.file_path.clone();
                     if let Some(code) = self.adv_wizard.country.clone() {
-                        self.wf_config.country_code = Some(code);
+                        self.wf_config.country_action = CountryAction::Set(code);
                     }
                     // Pre-create output folder so the Done card's
                     // "Open Folder" pill always points somewhere real.
@@ -6740,7 +6757,8 @@ impl App {
                     self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
                     let _conn = self.connection;
                     // PatchDevinfo only — unused otherwise.
-                    let adv_country: Option<String> = self.wf_config.country_code.clone();
+                    let adv_country: Option<String> =
+                        self.wf_config.country_action.target().map(str::to_string);
                     // RegionConvert only — user-picked target.
                     let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
                     let output_dir: std::path::PathBuf = self
@@ -8528,8 +8546,7 @@ impl App {
         // PatchDevinfo flow because that action requires a concrete target
         // code to write into devinfo/persist.
         if !self.adv_needs_country {
-            let skipped =
-                !self.wf_config.modify_country_code && self.wf_config.country_code.is_none();
+            let skipped = self.wf_config.country_action.is_skipped();
             let skip_bg = if skipped {
                 ACCENT
             } else {
@@ -9773,15 +9790,13 @@ impl App {
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
-        if let Some(cc) = &self.wf_config.country_code {
+        if let Some(cc) = self.wf_config.country_action.target() {
             let entry = COUNTRY_CODES.iter().find(|e| e.code == cc);
             let label = entry
                 .map(|e| format!("{} — {}", e.code, e.name))
-                .unwrap_or_else(|| cc.clone());
+                .unwrap_or_else(|| cc.to_string());
             col = col.push(info_kv_center(self.t("popup_select_country"), &label));
-        } else if self.wf_config.wipe && !self.wf_config.modify_country_code {
-            // User picked "Do not change" — mirror the popup choice on the
-            // confirm summary so the user sees country patching is off.
+        } else if self.wf_config.wipe && self.wf_config.country_action.is_skipped() {
             col = col.push(info_kv_center(
                 self.t("popup_select_country"),
                 self.t("flash_confirm_country_skip"),
@@ -14904,7 +14919,7 @@ mod tests {
                 ..AdvWizard::default()
             },
             wf_config: WorkflowConfig {
-                country_code: Some("CN".to_string()),
+                country_action: CountryAction::Set("CN".to_string()),
                 ..WorkflowConfig::default()
             },
             ..App::default()
@@ -14918,7 +14933,7 @@ mod tests {
                 ..AdvWizard::default()
             },
             wf_config: WorkflowConfig {
-                country_code: Some("CN".to_string()),
+                country_action: CountryAction::Set("CN".to_string()),
                 ..WorkflowConfig::default()
             },
             ..App::default()
