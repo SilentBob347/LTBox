@@ -3267,6 +3267,8 @@ enum DumpPartsMsg {
     DumpPartsExecDone(Vec<String>),
     /// Header click in the Select-step table.
     DumpPartsSortBy(PartsSortColumn),
+    /// Header checkbox: select-all when any unselected, otherwise clear.
+    DumpPartsToggleAll,
 }
 
 #[derive(Debug, Clone)]
@@ -8109,6 +8111,14 @@ impl App {
             Message::DumpParts(DumpPartsMsg::DumpPartsSortBy(col)) => {
                 self.dump_parts.toggle_sort(col);
             }
+            Message::DumpParts(DumpPartsMsg::DumpPartsToggleAll) => {
+                let all_selected = !self.dump_parts.rows.is_empty()
+                    && self.dump_parts.rows.iter().all(|r| r.selected);
+                let target = !all_selected;
+                for r in self.dump_parts.rows.iter_mut() {
+                    r.selected = target;
+                }
+            }
             Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder) => {
                 // Dump destination, not a firmware source — goes to the
                 // `OutputFolder` bucket so the MRU list doesn't mix input
@@ -12554,22 +12564,41 @@ impl App {
 
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
         for (idx, r) in self.flash_parts.rows.iter().enumerate() {
-            // Tri-state indicator: ☐ / ☑ / ⛔
+            // Tri-state indicator. Unchecked uses a real iced checkbox so
+            // its empty box matches the M3 sizing the user already sees on
+            // DumpParts; Flash overlays the checkbox at `is_checked=true`;
+            // Erase swaps to a red ⛔ so the destructive state pops.
+            // All glyphs render through a fixed 20-px container so the
+            // marker column never shifts vertically across state changes.
             let marker: Element<'_, Message> = match r.state {
-                FlashRowState::Unchecked => text("☐").size(16).style(muted_style).into(),
-                FlashRowState::Flash => text("☑").size(16).color(GREEN).into(),
+                FlashRowState::Unchecked => iced::widget::checkbox(false)
+                    .on_toggle(move |_| {
+                        Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
+                    })
+                    .into(),
+                FlashRowState::Flash => iced::widget::checkbox(true)
+                    .on_toggle(move |_| {
+                        Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
+                    })
+                    .into(),
                 FlashRowState::Erase => text("⛔")
-                    .size(16)
+                    .size(18)
                     .color(iced::Color::from_rgb(0.9, 0.2, 0.2))
                     .into(),
             };
-            let marker_btn = button(container(marker).width(32).center_x(Length::Fill))
-                .padding(0)
-                .on_press(Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx)))
-                .style(|_t: &Theme, _s| button::Style {
-                    background: None,
-                    ..Default::default()
-                });
+            let marker_btn = button(
+                container(marker)
+                    .width(32)
+                    .height(20)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .padding(0)
+            .on_press(Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx)))
+            .style(|_t: &Theme, _s| button::Style {
+                background: None,
+                ..Default::default()
+            });
 
             // Filename column: short display only.
             let file_disp = r
@@ -12858,8 +12887,16 @@ impl App {
         let active = self.dump_parts.sort_col;
         let desc = self.dump_parts.sort_desc;
         let mk_msg = |c: PartsSortColumn| Message::DumpParts(DumpPartsMsg::DumpPartsSortBy(c));
+        // Header select-all: checked iff every row is selected (and there
+        // is at least one row). Click flips toward whichever direction
+        // would change state for the majority — full-select if any are
+        // unchecked, else clear.
+        let all_checked =
+            !self.dump_parts.rows.is_empty() && self.dump_parts.rows.iter().all(|r| r.selected);
+        let header_cb = iced::widget::checkbox(all_checked)
+            .on_toggle(|_| Message::DumpParts(DumpPartsMsg::DumpPartsToggleAll));
         let header = row![
-            text(" ").size(11).width(32),
+            container(header_cb).width(32),
             parts_sort_header(
                 self.t("flash_parts_col_lun").to_string(),
                 active == PartsSortColumn::Lun,
