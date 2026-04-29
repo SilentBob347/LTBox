@@ -1999,6 +1999,13 @@ struct UnrootWizard {
     step: usize,
     unroot_type: Option<UnrootType>,
     folder_path: Option<String>,
+    /// Loader file (`xbl_s_devprg_ns.melf`) for the EDL flash. Decoupled
+    /// from the backup folder — a typical Unroot workflow points
+    /// `folder_path` at a folder that holds only `boot.img` + `vbmeta.img`,
+    /// with no loader inside. The wizard pre-fills this from the
+    /// Settings-level default loader when one is configured + on disk;
+    /// otherwise the folder step exposes a separate loader picker.
+    loader_path: Option<String>,
 }
 
 const UNROOT_STEPS: &[&str] = &[
@@ -2028,7 +2035,7 @@ impl UnrootWizard {
     fn can_next(&self) -> bool {
         match self.step {
             0 => self.unroot_type.is_some(),
-            1 => self.folder_path.is_some(),
+            1 => self.folder_path.is_some() && self.loader_path.is_some(),
             2 => true,
             _ => false,
         }
@@ -2958,6 +2965,13 @@ enum Message {
     ToggleLogPopup(bool),
     // Settings
     SetLanguage(Language),
+    /// Settings → Default EDL loader: open the file picker.
+    SettingsPickDefaultLoader,
+    /// Settings → Default EDL loader: result of the file picker.
+    /// `Some(path)` stores + persists; `None` is a cancel and is a no-op.
+    SettingsDefaultLoaderChosen(Option<String>),
+    /// Settings → Default EDL loader: clear the stored path.
+    SettingsClearDefaultLoader,
     // Flash wizard
     FlashRegion(DeviceRegion),
     FlashTarget(FlashTarget),
@@ -3013,6 +3027,8 @@ enum Message {
     // Unroot wizard
     SetUnrootType(UnrootType),
     UnrootSelectFolder,
+    UnrootSelectLoader,
+    UnrootLoaderChosen(Option<String>),
     UnrootNext,
     UnrootBack,
     UnrootExecStart,
@@ -3242,6 +3258,13 @@ struct App {
     busy_view: Option<View>,
     /// Persisted recent picks. Rendered as chips under every picker.
     recent_paths: settings_store::RecentPaths,
+    /// Single-device convenience: when `Some(path)`, every loader
+    /// picker (Flash / Dump partitions, Flash / Dump physical, Root,
+    /// Rescue, Reboot-to-EDL) bypasses the picker and seeds the wizard
+    /// slot with this path directly. `None` = picker shows as before.
+    /// Re-validated at every exec start so a stale path surfaces an
+    /// error before the device side starts.
+    default_loader_path: Option<String>,
     log_lines: Vec<String>,
     /// `text_editor::Content` mirror of `log_lines` — supports cursor
     /// drag + Ctrl+C unlike `scrollable(text(...))`. Rebuilt on the
@@ -3371,6 +3394,7 @@ impl Default for App {
             busy: false,
             busy_view: None,
             recent_paths: persisted.recent_paths.clone(),
+            default_loader_path: persisted.default_loader_path.clone(),
             log_lines: vec!["Ready.".to_string()],
             log_editor: iced::widget::text_editor::Content::with_text("Ready."),
             log_dirty: false,
@@ -3868,6 +3892,81 @@ impl App {
         self.log_dirty = false;
     }
 
+    /// Returns the Settings-level default EDL loader path when it is set
+    /// **and** the file currently exists on disk. Used by every wizard
+    /// open / reset path to decide whether to pre-fill its loader slot
+    /// and skip past the loader step. Returns `None` when the default is
+    /// unset or the file has been moved/deleted since it was saved (in
+    /// which case the wizard falls back to the picker step as if no
+    /// default had been configured — better than auto-advancing past a
+    /// step with a missing file and surfacing the error later).
+    fn resolved_default_loader(&self) -> Option<String> {
+        let p = self.default_loader_path.as_deref()?;
+        if std::path::Path::new(p).is_file() {
+            Some(p.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Apply the resolved default loader to whichever advanced-wizard
+    /// loader-step is currently open. Pre-fills the wizard's `loader_path`
+    /// **and** advances the wizard from step 0 (Loader) to step 1 (the
+    /// next decision step) so the user doesn't see a redundant loader
+    /// picker on every entry. Called from `AdvConfirm` after a wizard's
+    /// `_open` flag flips.
+    ///
+    /// No-op when the default loader is unset or the file is missing —
+    /// the caller's existing flow then surfaces the loader step as
+    /// before.
+    fn apply_default_loader_to_advanced_wizard(&mut self) {
+        let Some(path) = self.resolved_default_loader() else {
+            return;
+        };
+        if self.flash_parts_open {
+            self.flash_parts.loader_path = Some(path);
+            // FlashPartsWizard step layout: 0 = Loader, 1 = Select.
+            self.flash_parts.step = 1;
+        } else if self.dump_parts_open {
+            self.dump_parts.loader_path = Some(path);
+            self.dump_parts.step = 1;
+        } else if self.dump_phys_open {
+            self.dump_phys.loader_path = Some(path);
+            self.dump_phys.step = 1;
+        } else if self.flash_phys_open {
+            self.flash_phys.loader_path = Some(path);
+            self.flash_phys.step = 1;
+        }
+    }
+
+    /// Pre-flight check for the loader path captured by every EDL-using
+    /// wizard. Returns `Ok(path_string)` when the path is set and the
+    /// file exists on disk; otherwise sets `error_msg` to a localized
+    /// string and returns `Err(())` so the caller can early-return out
+    /// of the exec start without firing the device-side work.
+    ///
+    /// Catches the failure mode the new "Default EDL loader" Settings
+    /// option introduces: a single-device user sets a default loader
+    /// once, the loader file is later moved/deleted, and every wizard
+    /// silently inherits the stale path. Without this guard the failure
+    /// surfaces as an `EDL session open failed: ...` line buried in the
+    /// live log; with it, the user sees a clear "Loader file not found"
+    /// banner and the wizard stays on the Confirm step instead of
+    /// uselessly rebooting the device into Sahara.
+    fn validate_loader_path(&mut self, path: &Option<String>) -> Result<String, ()> {
+        let Some(p) = path.as_deref() else {
+            self.error_msg = Some(self.t("err_loader_not_selected").to_string());
+            return Err(());
+        };
+        let pb = std::path::Path::new(p);
+        if !pb.is_file() {
+            let msg = self.t("err_loader_missing").replace("{path}", p);
+            self.error_msg = Some(msg);
+            return Err(());
+        }
+        Ok(p.to_string())
+    }
+
     fn persist_settings(&self) {
         settings_store::save(&settings_store::PersistedSettings {
             language: self.settings.language.code().to_string(),
@@ -3875,6 +3974,7 @@ impl App {
             // Legacy field kept readable by older builds.
             dark_mode: self.dark_mode,
             recent_paths: self.recent_paths.clone(),
+            default_loader_path: self.default_loader_path.clone(),
         });
     }
 
@@ -3967,6 +4067,13 @@ impl App {
                 }
                 if v == View::Unroot && !busy && !self.unroot.is_in_exec() {
                     self.unroot.reset();
+                    // Pre-fill the new loader slot from Settings so the
+                    // user with a default loader configured doesn't see
+                    // a "Pick loader" prompt — the folder step's loader
+                    // sub-row hides itself once `loader_path` is `Some`.
+                    if let Some(path) = self.resolved_default_loader() {
+                        self.unroot.loader_path = Some(path);
+                    }
                 }
             }
             Message::SetTheme(choice) => {
@@ -3986,6 +4093,25 @@ impl App {
                 self.settings.language = l;
                 self.translations = Translations::load(l);
                 install_core_translator(l);
+                self.persist_settings();
+            }
+            Message::SettingsPickDefaultLoader => {
+                let spec = loader_file_spec("picker_target_edl_loader");
+                return pickers::pick_file_for(
+                    spec,
+                    &self.recent_paths,
+                    Message::SettingsDefaultLoaderChosen,
+                );
+            }
+            Message::SettingsDefaultLoaderChosen(path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.default_loader_path = Some(p);
+                    self.persist_settings();
+                }
+            }
+            Message::SettingsClearDefaultLoader => {
+                self.default_loader_path = None;
                 self.persist_settings();
             }
             // Flash wizard
@@ -4993,6 +5119,9 @@ impl App {
                 // never read in this path. File picker with the standard
                 // loader extension filter, recents shared with the rest
                 // of the loader pickers via the File bucket.
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::SysRescueFolderChosen(Some(path)));
+                }
                 let spec = loader_file_spec("picker_target_edl_loader");
                 return pickers::pick_file_for(
                     spec,
@@ -5031,6 +5160,11 @@ impl App {
                 // takes ownership.
                 let rescue_folder = self.sysupdate.rescue_folder.clone();
                 let rescue_region = self.sysupdate.rescue_region;
+                if action == SysUpdateAction::Rescue
+                    && self.validate_loader_path(&rescue_folder).is_err()
+                {
+                    return Task::none();
+                }
                 // Capture model for AVB fingerprint validation — mirrors
                 // v2 `_validate_device_model`, prevents flashing firmware
                 // built for a different TB3xx variant.
@@ -5584,6 +5718,13 @@ impl App {
                 // loader (`.melf`) since root no longer needs a full
                 // firmware folder — partitions resolve via the device's
                 // GPT, not `rawprogram*.xml`.
+                if let Some(path) = self.default_loader_path.clone() {
+                    // Settings-level default loader → bypass picker, store
+                    // in `folder_path` (historical field name) so the rest
+                    // of the wizard reads it as if the user picked it.
+                    self.root.folder_path = Some(path);
+                    return Task::none();
+                }
                 self.picker_target = PickerTarget::RootLoader;
                 return pickers::pick_file_for(
                     loader_file_spec("picker_target_edl_loader"),
@@ -5629,6 +5770,19 @@ impl App {
                     return Task::none();
                 }
                 self.root.next();
+                // After advancing, if the wizard landed on the loader
+                // (folder) step and a Settings-level default loader is
+                // configured + still on disk, pre-fill the folder slot
+                // and skip to the Confirm step. The loader-step picker
+                // becomes invisible to single-device users while staying
+                // available to anyone with `default_loader_path = None`.
+                if self.root.step == 5
+                    && self.root.folder_path.is_none()
+                    && let Some(path) = self.resolved_default_loader()
+                {
+                    self.root.folder_path = Some(path);
+                    self.root.next();
+                }
             }
             Message::RootBack => self.root.back(),
             Message::RootSelectKpm => {
@@ -5761,6 +5915,12 @@ impl App {
                 self.root.kernel_version_popup_open = false;
             }
             Message::RootExecStart => {
+                if self
+                    .validate_loader_path(&self.root.folder_path.clone())
+                    .is_err()
+                {
+                    return Task::none();
+                }
                 self.begin_op(View::Root);
                 self.op_steps = self.derive_root_op_steps();
                 self.error_msg = None;
@@ -6296,6 +6456,22 @@ impl App {
                     Message::FolderSelected,
                 );
             }
+            Message::UnrootSelectLoader => {
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::UnrootLoaderChosen(Some(path)));
+                }
+                return pickers::pick_file_for(
+                    loader_file_spec("picker_target_edl_loader"),
+                    &self.recent_paths,
+                    Message::UnrootLoaderChosen,
+                );
+            }
+            Message::UnrootLoaderChosen(path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.unroot.loader_path = Some(p);
+                }
+            }
             Message::UnrootNext => {
                 if self.unroot.step == 2 {
                     self.unroot.next();
@@ -6311,6 +6487,17 @@ impl App {
                 let Some(folder) = self.unroot.folder_path.clone() else {
                     return Task::none();
                 };
+                // Loader is decoupled from the backup folder — `folder`
+                // holds boot.img + vbmeta.img, the loader can live
+                // anywhere (Settings default, or whatever the user
+                // pointed the loader picker at). `validate_loader_path`
+                // surfaces a missing-file error before the device-side
+                // work starts, matching the other wizards' behaviour.
+                let loader_override =
+                    match self.validate_loader_path(&self.unroot.loader_path.clone()) {
+                        Ok(p) => Some(p),
+                        Err(()) => return Task::none(),
+                    };
                 self.begin_op(View::Unroot);
                 self.op_steps = self.derive_unroot_op_steps();
                 self.error_msg = None;
@@ -6366,14 +6553,23 @@ impl App {
                                     )
                                     .map_err(|e| format!("Unroot slot resolve: {e}"))?;
 
-                                    let loader = find_edl_loader(dir)
-                                        .or_else(|| dir.parent().and_then(find_edl_loader))
-                                        .ok_or_else(|| {
-                                            format!(
-                                                "xbl_s_devprg_ns.melf not found under {}",
-                                                dir.display()
-                                            )
-                                        })?;
+                                    // Decoupled loader — explicit picker /
+                                    // Settings default takes priority. Fall back
+                                    // to scanning the backup folder only when no
+                                    // override was set, preserving v3-pre-decouple
+                                    // behaviour for users who still ship a loader
+                                    // alongside the backup images.
+                                    let loader = match loader_override.clone() {
+                                        Some(p) => std::path::PathBuf::from(p),
+                                        None => find_edl_loader(dir)
+                                            .or_else(|| dir.parent().and_then(find_edl_loader))
+                                            .ok_or_else(|| {
+                                                format!(
+                                                    "xbl_s_devprg_ns.melf not found under {}",
+                                                    dir.display()
+                                                )
+                                            })?,
+                                    };
                                     live!(
                                         log,
                                         "[Unroot] {}",
@@ -6521,19 +6717,29 @@ impl App {
             // Advanced
             Message::AdvConfirm(a) => {
                 // Flash/Dump Partitions + Physical Storage preempt the
-                // grid with their own dedicated wizards.
+                // grid with their own dedicated wizards. After the
+                // wizard's `_open` flag flips, pull in the Settings
+                // default loader if one is configured + still on disk;
+                // that pre-fills the wizard's loader slot and advances
+                // past the loader step so the user doesn't have to
+                // re-pick the same `xbl_s_devprg_ns.melf` for every
+                // single-device flow.
                 if matches!(a, AdvAction::FlashPartitions) {
                     self.flash_parts.reset();
                     self.flash_parts_open = true;
+                    self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::DumpPartitions) {
                     self.dump_parts.reset();
                     self.dump_parts_open = true;
+                    self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::DumpPhysical) {
                     self.dump_phys.reset();
                     self.dump_phys_open = true;
+                    self.apply_default_loader_to_advanced_wizard();
                 } else if matches!(a, AdvAction::FlashPhysical) {
                     self.flash_phys.reset();
                     self.flash_phys_open = true;
+                    self.apply_default_loader_to_advanced_wizard();
                 } else {
                     return self.update(Message::AdvWizOpen(a));
                 }
@@ -7621,6 +7827,9 @@ impl App {
                 );
             }
             Message::FlashPartsSelectLoader => {
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::FlashPartsLoaderChosen(Some(path)));
+                }
                 return pickers::pick_file_for(
                     loader_file_spec("picker_target_edl_loader"),
                     &self.recent_paths,
@@ -7673,13 +7882,17 @@ impl App {
                 self.flash_parts.reset();
             }
             Message::FlashPartsScanStart => {
+                let loader = match self.validate_loader_path(&self.flash_parts.loader_path.clone())
+                {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
                 self.begin_op(View::Flash);
                 self.error_msg = None;
                 self.flash_parts.scanning = true;
                 self.flash_parts.scan_error = None;
                 self.flash_parts.rows.clear();
                 let conn = self.connection;
-                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
                 self.log_lines
                     .push("[FlashParts] Scanning partitions...".to_string());
                 return Task::perform(
@@ -7750,6 +7963,9 @@ impl App {
                 self.end_op();
             }
             Message::DumpPartsSelectLoader => {
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::DumpPartsLoaderChosen(Some(path)));
+                }
                 return pickers::pick_file_for(
                     loader_file_spec("picker_target_edl_loader"),
                     &self.recent_paths,
@@ -7783,10 +7999,10 @@ impl App {
                 self.dump_parts.reset();
             }
             Message::DumpPartsScanStart => {
-                let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
-                if loader.is_empty() {
-                    return Task::none();
-                }
+                let loader = match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
                 self.dump_parts.scanning = true;
                 self.dump_parts.scan_error = None;
                 self.dump_parts.rows.clear();
@@ -7876,6 +8092,9 @@ impl App {
             }
             // -- Physical Storage: Dump --------------------------------------
             Message::DumpPhysSelectLoader => {
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::DumpPhysLoaderChosen(Some(path)));
+                }
                 return pickers::pick_file_for(
                     loader_file_spec("picker_target_edl_loader"),
                     &self.recent_paths,
@@ -7918,13 +8137,17 @@ impl App {
             }
             Message::DumpPhysFolderChosen(path) => {
                 if let Some(folder) = path {
+                    let loader =
+                        match self.validate_loader_path(&self.dump_phys.loader_path.clone()) {
+                            Ok(p) => p,
+                            Err(()) => return Task::none(),
+                        };
                     self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_phys.output_dir = Some(folder.clone());
                     self.dump_phys.step = 2;
                     self.begin_op(View::Advanced);
                     self.error_msg = None;
                     let conn = self.connection;
-                    let loader = self.dump_phys.loader_path.clone().unwrap_or_default();
                     let luns = self.dump_phys.selected_luns();
                     self.log_push(format!(
                         "[DumpPhys] {}",
@@ -7955,6 +8178,9 @@ impl App {
             }
             // -- Physical Storage: Flash -------------------------------------
             Message::FlashPhysSelectLoader => {
+                if let Some(path) = self.default_loader_path.clone() {
+                    return self.update(Message::FlashPhysLoaderChosen(Some(path)));
+                }
                 return pickers::pick_file_for(
                     loader_file_spec("picker_target_edl_loader"),
                     &self.recent_paths,
@@ -8006,11 +8232,14 @@ impl App {
                 self.flash_phys.reset();
             }
             Message::FlashPhysExecStart => {
+                let loader = match self.validate_loader_path(&self.flash_phys.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
                 self.flash_phys.next(); // advance to Exec screen
                 self.begin_op(View::Advanced);
                 self.error_msg = None;
                 let conn = self.connection;
-                let loader = self.flash_phys.loader_path.clone().unwrap_or_default();
                 let pairs = self.flash_phys.active_pairs();
                 self.log_lines
                     .push(format!("[FlashPhys] Flashing {} LUN(s)", pairs.len()));
@@ -8066,6 +8295,9 @@ impl App {
                 }
                 // EDL needs a Firehose loader before Power(reset).
                 if matches!(conn, ConnectionStatus::Edl) {
+                    if let Some(path) = self.default_loader_path.clone() {
+                        return self.update(Message::RebootEdlWithLoader(target, Some(path)));
+                    }
                     return pickers::pick_file_for(
                         loader_file_spec("picker_target_edl_loader"),
                         &self.recent_paths,
@@ -9303,8 +9535,86 @@ impl App {
         ]
         .align_y(iced::Alignment::Center);
 
+        // Default EDL loader row — single-device convenience that
+        // makes every loader picker auto-fill from this stored path.
+        // The (?) icon is rendered as a `widget::tooltip` so the
+        // explanation only takes screen real estate when the user is
+        // actively pointing at it.
+        let default_loader_help = self.t("settings_default_loader_help").to_string();
+        let help_icon = widget::tooltip(
+            container(text("?").size(11).style(label_style))
+                .padding([2, 6])
+                .style(|t: &Theme| {
+                    let p = pal_of(t);
+                    container::Style {
+                        background: Some(with_alpha(p.on_surface_variant, 0.10).into()),
+                        border: iced::Border {
+                            radius: theme::shape::FULL.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                }),
+            container(text(default_loader_help).size(11))
+                .padding([6, 10])
+                .max_width(280)
+                .style(|t: &Theme| {
+                    let p = pal_of(t);
+                    container::Style {
+                        background: Some(p.surface_container_high.into()),
+                        text_color: Some(p.on_surface),
+                        border: iced::Border {
+                            color: p.outline_variant,
+                            width: 1.0,
+                            radius: theme::shape::SM.into(),
+                        },
+                        shadow: theme::elevation(2, is_dark(t)),
+                        ..Default::default()
+                    }
+                }),
+            widget::tooltip::Position::Right,
+        );
+
+        let mut default_loader_actions = row![
+            button(text(self.t("settings_default_loader_browse").to_string()).size(13))
+                .on_press(Message::SettingsPickDefaultLoader)
+                .padding([6, 14])
+                .style(neutral_pill_btn_style),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        if self.default_loader_path.is_some() {
+            default_loader_actions = default_loader_actions.push(
+                button(text(self.t("settings_default_loader_clear").to_string()).size(13))
+                    .on_press(Message::SettingsClearDefaultLoader)
+                    .padding([6, 14])
+                    .style(neutral_pill_btn_style),
+            );
+        }
+
+        let default_loader_top = row![
+            text(self.t("settings_default_loader").to_string())
+                .size(13)
+                .line_height(1.0),
+            help_icon,
+            Space::new().width(Length::Fill),
+            default_loader_actions,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        let default_loader_path_str = self
+            .default_loader_path
+            .clone()
+            .unwrap_or_else(|| self.t("settings_default_loader_unset").to_string());
+        let default_loader_row = column![
+            default_loader_top,
+            text(default_loader_path_str).size(11).style(muted_style),
+        ]
+        .spacing(6);
+
         let prefs_card = container(
-            column![lang_row, theme_row,]
+            column![lang_row, theme_row, default_loader_row,]
                 .spacing(14)
                 .padding(iced::Padding {
                     top: 14.0,
@@ -10457,7 +10767,7 @@ impl App {
             "picker_recents",
             false,
         );
-        let col = column![
+        let mut col = column![
             text(self.t("unroot_folder_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
@@ -10477,6 +10787,48 @@ impl App {
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
+
+        // Loader sub-row — separate from the backup folder picker
+        // because Unroot's folder is for boot.img + vbmeta.img only.
+        // Hidden when the wizard already has a loader (typically
+        // pre-filled from the Settings default at view enter time);
+        // otherwise the user picks a loader file here.
+        if self.unroot.loader_path.is_none() {
+            let loader_btn = button(
+                container(
+                    column![
+                        text(self.t("btn_browse_loader").to_string())
+                            .size(14)
+                            .center(),
+                        text(self.t("dump_parts_loader_desc").to_string())
+                            .size(11)
+                            .style(muted_style)
+                            .center(),
+                    ]
+                    .spacing(6)
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center),
+                )
+                .padding([16, 24])
+                .width(280)
+                .style(move |t: &Theme| sel_card_style(t, false)),
+            )
+            .on_press(Message::UnrootSelectLoader)
+            .padding(0)
+            .style(|t: &Theme, _s| button::Style {
+                background: None,
+                text_color: pal_of(t).on_surface,
+                ..Default::default()
+            });
+            col = col.push(loader_btn);
+        } else if let Some(p) = self.unroot.loader_path.as_deref() {
+            col = col.push(
+                text(format!("{}: {}", self.t("btn_browse_loader"), p))
+                    .size(11)
+                    .style(muted_style)
+                    .center(),
+            );
+        }
         container(col)
             .width(Length::Fill)
             .height(Length::Fill)

@@ -107,6 +107,15 @@ pub struct PersistedSettings {
     pub dark_mode: bool,
     #[serde(default)]
     pub recent_paths: RecentPaths,
+    /// Optional default EDL loader (`xbl_s_devprg_ns.melf`) path. When
+    /// set, every wizard / Reboot-to-EDL flow auto-fills this path
+    /// instead of opening the file picker. Single-device users skip the
+    /// picker on every loader prompt; the file is still re-validated at
+    /// exec start so a deleted/moved loader surfaces as an error before
+    /// the wizard kicks off the device side. `None` = picker shows as
+    /// before.
+    #[serde(default)]
+    pub default_loader_path: Option<String>,
 }
 
 fn default_language() -> String {
@@ -124,6 +133,7 @@ impl Default for PersistedSettings {
             theme: "system".to_string(),
             dark_mode: false,
             recent_paths: RecentPaths::default(),
+            default_loader_path: None,
         }
     }
 }
