@@ -3056,6 +3056,11 @@ enum RootMsg {
     RootKernelVersionInput(String),
     RootKernelVersionConfirm,
     RootKernelVersionCancel,
+    /// Result of the off-UI-thread ADB probe started by `RootNext` when
+    /// the wizard hits step 6 with `needs_ksu_lkm_kernel_version()`.
+    /// `Some(kver)` advances the wizard; `None` opens the manual-input
+    /// popup.
+    RootKernelVersionProbeDone(Option<String>),
     RootExecStart,
     RootExecDone(Vec<String>),
 }
@@ -5742,24 +5747,26 @@ impl App {
             Message::Root(RootMsg::RootNext) => {
                 if self.root.step == 6 {
                     if self.root.needs_ksu_lkm_kernel_version() {
-                        let detected = {
-                            let mut adb = ltbox_device::adb::AdbManager::new();
-                            if adb.check_device().unwrap_or(false) {
-                                adb.get_kernel_version().ok().flatten().and_then(|kv| {
-                                    ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv)
-                                })
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(kv) = detected {
-                            self.root.kernel_version = Some(kv);
-                        } else {
-                            self.root.kernel_version_buffer =
-                                self.root.kernel_version.clone().unwrap_or_default();
-                            self.root.kernel_version_popup_open = true;
-                            return Task::none();
-                        }
+                        // ADB probe is blocking — push to the heavy pool so
+                        // the UI doesn't freeze on a slow / unresponsive
+                        // device. Continuation lands in
+                        // `RootKernelVersionProbeDone`.
+                        return task_heavy(
+                            || {
+                                let mut adb = ltbox_device::adb::AdbManager::new();
+                                if adb.check_device().unwrap_or(false) {
+                                    adb.get_kernel_version().ok().flatten().and_then(|kv| {
+                                        ltbox_patch::root_pipeline::normalize_ksu_kernel_version(
+                                            &kv,
+                                        )
+                                    })
+                                } else {
+                                    None
+                                }
+                            },
+                            |__v| Message::Root(RootMsg::RootKernelVersionProbeDone(__v)),
+                            |_e| None,
+                        );
                     }
                     self.root.next();
                     return self.update(Message::Root(RootMsg::RootExecStart));
@@ -5922,6 +5929,22 @@ impl App {
             Message::Root(RootMsg::RootKernelVersionCancel) => {
                 self.root.kernel_version_buffer.clear();
                 self.root.kernel_version_popup_open = false;
+            }
+            Message::Root(RootMsg::RootKernelVersionProbeDone(detected)) => {
+                // Wizard may have moved off step 6 by the time the probe
+                // returns (user clicked Back); only act if still at the
+                // same gating point.
+                if self.root.step != 6 || !self.root.needs_ksu_lkm_kernel_version() {
+                    return Task::none();
+                }
+                if let Some(kv) = detected {
+                    self.root.kernel_version = Some(kv);
+                    self.root.next();
+                    return self.update(Message::Root(RootMsg::RootExecStart));
+                }
+                self.root.kernel_version_buffer =
+                    self.root.kernel_version.clone().unwrap_or_default();
+                self.root.kernel_version_popup_open = true;
             }
             Message::Root(RootMsg::RootExecStart) => {
                 if self
