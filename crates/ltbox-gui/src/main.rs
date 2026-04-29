@@ -4485,10 +4485,8 @@ impl App {
                             let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
                                 Vec::new();
                             if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
-                                let arb_work_dir = dirs::data_dir()
-                                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                    .join("ltbox")
-                                    .join("flash_arb");
+                                let arb_work_dir =
+                                    ltbox_core::app_paths::work_dir_for("flash_arb");
                                 let _ = std::fs::remove_dir_all(&arb_work_dir);
                                 std::fs::create_dir_all(&arb_work_dir)
                                     .map_err(|e| format!("arb work dir: {e}"))?;
@@ -4716,10 +4714,8 @@ impl App {
                                         ltbox_core::i18n::tr("live_flash_country_patch_target")
                                             .replace("{target}", target_code)
                                     );
-                                    let work_dir = dirs::data_dir()
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                        .join("ltbox")
-                                        .join("flash_country");
+                                    let work_dir =
+                                        ltbox_core::app_paths::work_dir_for("flash_country");
                                     let _ = std::fs::remove_dir_all(&work_dir);
                                     if let Err(e) = std::fs::create_dir_all(&work_dir) {
                                         return Err(format!("country work dir: {e}"));
@@ -6016,10 +6012,7 @@ impl App {
                                     .replace("{path}", &loader.display().to_string())
                             );
 
-                            let base = dirs::data_dir()
-                                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                                .join("ltbox")
-                                .join("root");
+                            let base = ltbox_core::app_paths::work_dir_for("root");
                             let work_dir = base.join("work");
                             let output_dir = base.join("out");
                             let _ = std::fs::remove_dir_all(&work_dir);

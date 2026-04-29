@@ -86,6 +86,21 @@ pub fn backup_dir_for(subdir: &str) -> PathBuf {
     }
 }
 
+/// Per-flow exec-time scratch directory. Caller is responsible for
+/// `remove_dir_all` on entry + `create_dir_all` before writes; this
+/// helper only resolves the path. Slug is the flow identifier
+/// (`"flash_arb"`, `"flash_country"`, `"root"`, …). Routes through
+/// [`auto_output_root`] so AppImage / distro installs and the
+/// Windows exe-adjacent layout stay consistent with every other
+/// LTBox-owned write.
+pub fn work_dir_for(slug: &str) -> PathBuf {
+    if cfg!(windows) {
+        auto_output_root().join(format!("work_{slug}"))
+    } else {
+        auto_output_root().join("work").join(slug)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
