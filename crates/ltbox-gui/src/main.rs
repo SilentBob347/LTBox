@@ -9813,25 +9813,25 @@ impl App {
             ));
         }
 
-        // Bottom-anchored sidebar layout: `[scrollable(nav) | update pill]`.
-        // The scrollable claims `Length::Fill` so the nav rows pin to the
-        // top, and the update-available pill (rendered only when the
-        // background probe surfaces a newer stable release) lives below
-        // the scroll region. When `update_available` is `None` the slot is
-        // an empty `Space` of zero height, so the sidebar reads identically
-        // to the pre-update-banner version.
+        // Bottom-anchored sidebar layout: `[nav | update pill]`.
+        // The nav column claims `Length::Fill` so its rows pin to
+        // the top and the update-available pill (rendered only when
+        // the background probe surfaces a newer stable release) lives
+        // below it. The previous `scrollable(col)` wrapper reserved
+        // a scrollbar gutter on the right of the column that read as
+        // a doubled line next to the sidebar's own vertical divider;
+        // the nav set is small enough that scroll is never needed,
+        // so the wrapper is dropped.
         let body: Element<'_, Message> = if let Some(release) = self.update_available.as_ref() {
             column![
-                container(scrollable(col))
-                    .width(Length::Fill)
-                    .height(Length::Fill),
+                container(col).width(Length::Fill).height(Length::Fill),
                 self.update_available_pill(release),
             ]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
         } else {
-            container(scrollable(col))
+            container(col)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
