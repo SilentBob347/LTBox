@@ -3352,6 +3352,14 @@ enum Message {
     ToastShow(String),
     /// Clear the active toast (timer expiry).
     ToastClear,
+    /// Sidebar mouse-area entered — expand to full width.
+    SidebarHoverEnter,
+    /// Sidebar mouse-area exited — collapse back to icon-only width.
+    SidebarHoverExit,
+    /// 16 ms tick from the sidebar tween subscription. Steps
+    /// `sidebar_anim` toward its target via exponential decay.
+    /// Subscription auto-stops once the value has settled.
+    SidebarAnimTick,
     DriverCheckDone(ltbox_device::driver::DriverStatus),
     InstallDrivers,
     InstallDriversDone(Result<Vec<String>, String>),
@@ -3740,6 +3748,16 @@ struct App {
     /// Transient toast message shown as a bottom-of-screen pill.
     /// Cleared by a delayed `ToastClear` task; never persisted.
     toast_msg: Option<String>,
+    /// Sidebar collapsed-vs-expanded state. Defaults to collapsed
+    /// (icons only). Mouse hover sets the tween's target; the
+    /// `SidebarAnimTick` subscription drives `sidebar_anim` toward
+    /// it on a 16 ms timer (~60 Hz) and stops once the value
+    /// settles, so the timer doesn't keep the GPU awake forever.
+    sidebar_expanded: bool,
+    /// Sidebar tween progress in `[0.0, 1.0]`. `0.0` = collapsed
+    /// (64 px icons only), `1.0` = fully expanded (210 px labels).
+    /// Width is `lerp(64, 210, sidebar_anim)` at render time.
+    sidebar_anim: f32,
     // Device portrait derived at view time via `device_portrait()`.
     platform_supported: Option<bool>,
     busy: bool,
@@ -3886,6 +3904,8 @@ impl Default for App {
             device_info_popup: None,
             arb_index_popup_open: false,
             toast_msg: None,
+            sidebar_expanded: false,
+            sidebar_anim: 0.0,
             platform_supported: None,
             busy: false,
             busy_view: None,
@@ -4556,13 +4576,24 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let mut subs = vec![
             iced::time::every(std::time::Duration::from_secs(3)).map(|_| Message::PollDevice),
             // 500 ms drain — 4 Hz drove some GPU drivers into TDR
             // during long qdl flashes.
             iced::time::every(std::time::Duration::from_millis(500))
                 .map(|_| Message::DrainStdoutTap),
-        ])
+        ];
+        // Sidebar width tween: only emit ticks while the animation
+        // hasn't settled at its target so the GPU isn't woken every
+        // 16 ms forever.
+        let sidebar_settled = (self.sidebar_anim - self.sidebar_anim_target()).abs() < 0.005;
+        if !sidebar_settled {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(16))
+                    .map(|_| Message::SidebarAnimTick),
+            );
+        }
+        Subscription::batch(subs)
     }
 
     fn update(&mut self, msg: Message) -> Task<Message> {
@@ -8374,6 +8405,26 @@ impl App {
             Message::ToastClear => {
                 self.toast_msg = None;
             }
+            Message::SidebarHoverEnter => {
+                self.sidebar_expanded = true;
+            }
+            Message::SidebarHoverExit => {
+                self.sidebar_expanded = false;
+            }
+            Message::SidebarAnimTick => {
+                let target = self.sidebar_anim_target();
+                // Exponential decay toward the target. ~0.30 per
+                // 16 ms tick lands at ~99% in ~75 ms — fast enough
+                // that label mount (gated below) does not feel
+                // delayed but still smooth.
+                let factor = 0.30;
+                let next = self.sidebar_anim + (target - self.sidebar_anim) * factor;
+                if (next - target).abs() < 0.005 {
+                    self.sidebar_anim = target;
+                } else {
+                    self.sidebar_anim = next;
+                }
+            }
             Message::DriverCheckDone(status) => {
                 self.driver_status = Some(status);
             }
@@ -9693,6 +9744,13 @@ impl App {
 
     // -- Sidebar ----------------------------------------------------------
 
+    /// Sidebar tween target — `1.0` while hovered, `0.0` otherwise.
+    /// `SidebarAnimTick` lerps `sidebar_anim` toward this each frame
+    /// and the subscription stops once the two match.
+    fn sidebar_anim_target(&self) -> f32 {
+        if self.sidebar_expanded { 1.0 } else { 0.0 }
+    }
+
     fn is_nav_enabled(&self, view: View) -> bool {
         if self.platform_supported == Some(false) {
             return matches!(view, View::Dashboard | View::SystemUpdate | View::Settings);
@@ -9701,6 +9759,13 @@ impl App {
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
+        // Only mount labels once the tween has fully settled at the
+        // expanded target. While `sidebar_anim` is still climbing the
+        // shell width is narrower than the label + icon natural row
+        // width, which made each frame re-measure the text and read
+        // as a glyph twitch. Closing: first off-target frame drops
+        // the label so the contraction stays clean.
+        let expanded = self.sidebar_anim >= 0.85;
         let mut col = column![].spacing(1).padding([16, 0]);
         for &v in NAV_MAIN {
             col = col.push(nav_btn(
@@ -9708,15 +9773,17 @@ impl App {
                 self.t(v.label_key()),
                 self.current_view == v,
                 self.is_nav_enabled(v),
+                expanded,
             ));
         }
-        col = col.push(sec_hdr(self.t("nav_section_tools")));
+        col = col.push(sec_hdr(self.t("nav_section_tools"), expanded));
         for &v in NAV_TOOLS {
             col = col.push(nav_btn(
                 v,
                 self.t(v.label_key()),
                 self.current_view == v,
                 self.is_nav_enabled(v),
+                expanded,
             ));
         }
 
@@ -9744,10 +9811,17 @@ impl App {
                 .into()
         };
 
-        container(body)
-            .width(210)
+        // Width tween: lerp 64 ↔ 210 based on `sidebar_anim`.
+        // Inner content swaps to label form at the midpoint so the
+        // labels don't pop in over an under-sized shell.
+        let width = 64.0 + (210.0 - 64.0) * self.sidebar_anim;
+        let shell = container(body)
+            .width(width)
             .height(Length::Fill)
-            .style(sidebar_bg)
+            .style(sidebar_bg);
+        iced::widget::mouse_area(shell)
+            .on_enter(Message::SidebarHoverEnter)
+            .on_exit(Message::SidebarHoverExit)
             .into()
     }
 
@@ -9769,39 +9843,61 @@ impl App {
         _release: &ltbox_core::github::StableRelease,
     ) -> Element<'_, Message> {
         let label = self.t("sidebar_update_available").to_string();
+        // Match the sidebar's settled-only check so the pill swaps
+        // in lockstep with the nav-button labels.
+        let expanded = self.sidebar_anim >= 0.85;
+        let inner: Element<'_, Message> = if expanded {
+            row![
+                icon::tile_update_on()
+                    .size(16)
+                    .style(|t: &Theme| iced::widget::text::Style {
+                        color: Some(pal_of(t).on_tertiary)
+                    }),
+                text(label).size(13).line_height(1.2),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            // Force the lucide glyph itself to center inside its
+            // measured text box. Wrapping in a center container
+            // alone left the glyph anchored to the text widget's
+            // top-left, so the bell still rode the left edge.
+            // `align_x = Center` on the text widget pulls the glyph
+            // onto the box's geometric midpoint.
+            icon::tile_update_on()
+                .size(16)
+                .width(Length::Fixed(20.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .style(|t: &Theme| iced::widget::text::Style {
+                    color: Some(pal_of(t).on_tertiary),
+                })
+                .into()
+        };
+        let btn_padding = if expanded { [10, 16] } else { [10, 10] };
         container(
-            button(
-                row![
-                    icon::tile_update_on()
-                        .size(16)
-                        .style(|t: &Theme| iced::widget::text::Style {
-                            color: Some(pal_of(t).on_tertiary)
-                        }),
-                    text(label).size(13).line_height(1.2),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            )
-            .on_press(Message::OpenUpdateUrl)
-            .padding([10, 16])
-            .style(|t: &Theme, status| {
-                let p = pal_of(t);
-                let hover = matches!(status, button::Status::Hovered);
-                let bg = if hover {
-                    with_alpha(p.tertiary, 1.0 - theme::state::HOVER * 0.5)
-                } else {
-                    p.tertiary
-                };
-                button::Style {
-                    background: Some(bg.into()),
-                    text_color: p.on_tertiary,
-                    border: iced::Border {
-                        radius: theme::shape::FULL.into(),
+            button(inner)
+                .on_press(Message::OpenUpdateUrl)
+                .padding(btn_padding)
+                .style(|t: &Theme, status| {
+                    let p = pal_of(t);
+                    let hover = matches!(status, button::Status::Hovered);
+                    let bg = if hover {
+                        with_alpha(p.tertiary, 1.0 - theme::state::HOVER * 0.5)
+                    } else {
+                        p.tertiary
+                    };
+                    button::Style {
+                        background: Some(bg.into()),
+                        text_color: p.on_tertiary,
+                        border: iced::Border {
+                            radius: theme::shape::FULL.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            }),
+                    }
+                }),
         )
         // The button widget itself sizes to its content (label + icon),
         // so its width is locale-dependent — Korean "업데이트 가능"
@@ -14606,7 +14702,18 @@ fn blend(base: iced::Color, overlay: iced::Color, t: f32) -> iced::Color {
 // Reusable widgets
 // =========================================================================
 
-fn sec_hdr<'a>(label: &str) -> Element<'a, Message> {
+/// Section header. Renders the label when `expanded` is `true`,
+/// otherwise an invisible spacer at the same fixed height — keeps
+/// the nav column from re-flowing vertically as the sidebar tween
+/// crosses its midpoint.
+const SEC_HDR_HEIGHT: f32 = 36.0;
+
+fn sec_hdr<'a>(label: &str, expanded: bool) -> Element<'a, Message> {
+    if !expanded {
+        return container(text(""))
+            .height(Length::Fixed(SEC_HDR_HEIGHT))
+            .into();
+    }
     let owned = label.to_string();
     container(
         text(owned)
@@ -14616,10 +14723,22 @@ fn sec_hdr<'a>(label: &str) -> Element<'a, Message> {
             }),
     )
     .padding([10, 22])
+    .height(Length::Fixed(SEC_HDR_HEIGHT))
     .into()
 }
 
-fn nav_btn<'a>(view: View, label: &str, active: bool, enabled: bool) -> Element<'a, Message> {
+/// Pinned nav button height — matches the expanded label form so
+/// the sidebar tween's mid-frame swap between icon-only and
+/// label content doesn't push every row vertically.
+const NAV_BTN_HEIGHT: f32 = 38.0;
+
+fn nav_btn<'a>(
+    view: View,
+    label: &str,
+    active: bool,
+    enabled: bool,
+    expanded: bool,
+) -> Element<'a, Message> {
     let icon = lucide_icon(view.nav_icon(), 18.0, move |t: &Theme| {
         let p = pal_of(t);
         if !enabled {
@@ -14631,44 +14750,67 @@ fn nav_btn<'a>(view: View, label: &str, active: bool, enabled: bool) -> Element<
         }
     });
 
-    let content = row![icon, text(label.to_string()).size(13)]
+    // Single base layout in both modes: icon left-anchored + optional
+    // label. Keeping the icon's horizontal position constant across
+    // modes means it does not jump from "centered in 64 px shell"
+    // to "left-padded next to label" the moment the label mounts.
+    // Identical `padding([0, 22])` on the outer button makes the
+    // icon's left margin (22 px) and the collapsed shell's natural
+    // icon center (≈ 23 px) read as the same x position to the eye.
+    let mut inner = iced::widget::row![icon]
         .spacing(12)
         .align_y(iced::Alignment::Center);
+    if expanded {
+        inner = inner.push(
+            text(label.to_string())
+                .size(13)
+                .height(Length::Fill)
+                .align_y(iced::alignment::Vertical::Center),
+        );
+    }
+    let content: Element<'a, Message> = container(inner)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(iced::Alignment::Center)
+        .into();
 
-    let btn =
-        button(content)
-            .padding([10, 22])
-            .width(Length::Fill)
-            .style(move |t: &Theme, status| {
-                let p = pal_of(t);
-                if !enabled {
-                    return button::Style {
+    // Horizontal padding stays at 22 in both modes so the icon
+    // doesn't slide horizontally as the sidebar tween crosses its
+    // midpoint. Vertical padding was already symmetrical.
+    let btn = button(content)
+        .padding([0, 22])
+        .width(Length::Fill)
+        .height(Length::Fixed(NAV_BTN_HEIGHT))
+        .style(move |t: &Theme, status| {
+            let p = pal_of(t);
+            if !enabled {
+                return button::Style {
+                    background: None,
+                    text_color: with_alpha(p.on_surface, 0.38),
+                    ..Default::default()
+                };
+            }
+            if active {
+                button::Style {
+                    background: Some(with_alpha(p.primary, 0.14).into()),
+                    text_color: p.primary,
+                    ..Default::default()
+                }
+            } else {
+                match status {
+                    button::Status::Hovered => button::Style {
+                        background: Some(with_alpha(p.on_surface, theme::state::HOVER).into()),
+                        text_color: p.on_surface,
+                        ..Default::default()
+                    },
+                    _ => button::Style {
                         background: None,
-                        text_color: with_alpha(p.on_surface, 0.38),
+                        text_color: p.on_surface_variant,
                         ..Default::default()
-                    };
+                    },
                 }
-                if active {
-                    button::Style {
-                        background: Some(with_alpha(p.primary, 0.14).into()),
-                        text_color: p.primary,
-                        ..Default::default()
-                    }
-                } else {
-                    match status {
-                        button::Status::Hovered => button::Style {
-                            background: Some(with_alpha(p.on_surface, theme::state::HOVER).into()),
-                            text_color: p.on_surface,
-                            ..Default::default()
-                        },
-                        _ => button::Style {
-                            background: None,
-                            text_color: p.on_surface_variant,
-                            ..Default::default()
-                        },
-                    }
-                }
-            });
+            }
+        });
     if enabled {
         btn.on_press(Message::Navigate(view)).into()
     } else {
