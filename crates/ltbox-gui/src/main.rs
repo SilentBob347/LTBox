@@ -9168,11 +9168,37 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let mut main = column![];
         main = main.push(self.title_bar());
+        // 1-px divider below the chromeless title bar so the title
+        // surface doesn't bleed into the content area.
+        main = main.push(widget::rule::horizontal(1).style(shell_rule_style));
         main = main.push(row![self.sidebar(), self.content()].height(Length::Fill));
         main = main.push(self.status_bar());
 
+        // 1-px outline around the entire window so the borderless
+        // OS-level decoration does not bleed straight into the desktop
+        // background — matches the M3 elevation-tint outline that
+        // sits under chromeless surfaces.
+        // 1-px padding so the inner content does not paint over the
+        // border. iced container layouts ignore border width when
+        // sizing children, so without the inset the children's own
+        // backgrounds were tiling over the top / left / bottom
+        // outline pixels and only the right edge (the sidebar's
+        // vertical rule) survived.
+        let framed = container(main)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(1)
+            .style(|t: &Theme| container::Style {
+                border: iced::Border {
+                    color: pal_of(t).outline_variant,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            });
+
         // Error banner below popups so the scrim dims the banner too.
-        let mut layers: Vec<Element<'_, Message>> = vec![main.into()];
+        let mut layers: Vec<Element<'_, Message>> = vec![framed.into()];
 
         if let Some(err) = &self.error_msg {
             layers.push(self.error_banner(err));
@@ -9815,10 +9841,17 @@ impl App {
         // Inner content swaps to label form at the midpoint so the
         // labels don't pop in over an under-sized shell.
         let width = 64.0 + (210.0 - 64.0) * self.sidebar_anim;
-        let shell = container(body)
+        // Right-edge divider via an explicit `vertical_rule` (1 px)
+        // instead of a container border, so the corner where the
+        // sidebar meets the status bar reads as one line per
+        // direction rather than two stacked outlines (M3 nav-rail
+        // guidance: one divider per shared edge).
+        let panel = container(body)
             .width(width)
             .height(Length::Fill)
-            .style(sidebar_bg);
+            .style(panel_bg);
+        let shell =
+            row![panel, widget::rule::vertical(1).style(shell_rule_style)].height(Length::Fill);
         iced::widget::mouse_area(shell)
             .on_enter(Message::SidebarHoverEnter)
             .on_exit(Message::SidebarHoverExit)
@@ -10072,10 +10105,17 @@ impl App {
                 .size(12)
                 .style(muted_style),
         );
-        container(status_row.padding([8, 20]))
-            .width(Length::Fill)
-            .style(|t: &Theme| sidebar_bg(t))
-            .into()
+        // Top divider via an explicit `horizontal_rule` (1 px) so
+        // the meeting point with the sidebar's right divider lands
+        // as a single line per direction (M3 bottom-app-bar
+        // guidance: one divider per shared edge).
+        column![
+            widget::rule::horizontal(1).style(shell_rule_style),
+            container(status_row.padding([8, 20]))
+                .width(Length::Fill)
+                .style(|t: &Theme| panel_bg(t)),
+        ]
+        .into()
     }
 
     // -- Dashboard --------------------------------------------------------
@@ -15883,6 +15923,11 @@ fn wizard_nav_generic<'a>(
 
 // -- Shared styles --------------------------------------------------------
 
+/// Surface fill for sticky wizard nav bars. Carries a 1-px outline
+/// on every edge — fine in isolation, but produces a doubled
+/// border anywhere two of these touch (shell sidebar + status bar
+/// at the bottom-left, etc.). Use [`panel_bg`] + an explicit
+/// `Rule` for those shell-level surfaces instead.
 fn sidebar_bg(t: &Theme) -> container::Style {
     let p = pal_of(t);
     container::Style {
@@ -15892,6 +15937,34 @@ fn sidebar_bg(t: &Theme) -> container::Style {
             width: 1.0,
             radius: 0.0.into(),
         },
+        ..Default::default()
+    }
+}
+
+/// Shared `Rule` styling so every shell-level divider (window
+/// outline, title-bar bottom, sidebar-content split, status-bar
+/// top) reads as the same hairline. Default rule color is
+/// `background.strong` from iced's extended palette which is
+/// noticeably darker than the M3 `outline_variant` used elsewhere.
+fn shell_rule_style(t: &Theme) -> iced::widget::rule::Style {
+    iced::widget::rule::Style {
+        color: pal_of(t).outline_variant,
+        radius: 0.0.into(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+        snap: true,
+    }
+}
+
+/// Border-less surface fill for the sidebar / status-bar shell
+/// panels. Adjacent shells double up `iced::Border` lines when
+/// each side has its own 1-px outline; per M3 nav-rail / bottom-app-
+/// bar guidance each shared edge should carry exactly one divider,
+/// drawn as an explicit `Rule` widget so the corners read as
+/// clean T-junctions instead of a 2-px overlap.
+fn panel_bg(t: &Theme) -> container::Style {
+    let p = pal_of(t);
+    container::Style {
+        background: Some(p.surface_container_low.into()),
         ..Default::default()
     }
 }
