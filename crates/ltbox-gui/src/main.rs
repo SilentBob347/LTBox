@@ -3205,8 +3205,9 @@ fn wait_and_install_root_manager_apk(
     let deadline = std::time::Instant::now() + timeout;
     live!(
         log,
-        "[Root] Waiting up to {}s for ADB to install manager APK",
-        timeout.as_secs()
+        "[Root] {}",
+        ltbox_core::i18n::tr("live_root_wait_adb_for_apk")
+            .replace("{seconds}", &timeout.as_secs().to_string())
     );
     loop {
         match install_root_manager_apk(manager_apk, log) {
@@ -4945,8 +4946,9 @@ impl App {
                                         ltbox_core::app_paths::auto_output_dir_for("region_convert");
                                     ltbox_core::live!(
                                         log,
-                                        "[Region] Building vendor_boot/vbmeta pair for {:?} hardware",
-                                        device_region
+                                        "[Region] {}",
+                                        ltbox_core::i18n::tr("live_region_building_pair")
+                                            .replace("{region}", &format!("{:?}", device_region))
                                     );
                                     match ltbox_patch::region::build_region_converted_boot_chain(
                                         fw_dir,
@@ -4971,8 +4973,9 @@ impl App {
                                             );
                                             ltbox_core::live!(
                                                 log,
-                                                "[Region] Repaired vendor_boot footer and rebuilt vbmeta: {}",
-                                                output.vbmeta.display()
+                                                "[Region] {}",
+                                                ltbox_core::i18n::tr("live_region_pair_rebuilt")
+                                                    .replace("{path}", &output.vbmeta.display().to_string())
                                             );
                                             region_pair = Some(output);
                                         }
@@ -5160,15 +5163,19 @@ impl App {
                                         ltbox_core::partition_lun::lun_for_partition(log_name)
                                     else {
                                         ltbox_core::live!(log,
-                                            "[ARB] {log_name}: no hardcoded LUN — skipping"
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_arb_skip_no_lun")
+                                                .replace("{name}", log_name)
                                         );
                                         continue;
                                     };
                                     let source = fw_dir.join(filename);
                                     if !source.exists() {
                                             ltbox_core::live!(log,
-                                                "[ARB] {log_name}: {} not found — skipping",
-                                                source.display()
+                                                "[ARB] {}",
+                                                ltbox_core::i18n::tr("live_arb_skip_image_missing")
+                                                    .replace("{name}", log_name)
+                                                    .replace("{file}", &source.display().to_string())
                                             );
                                             continue;
                                         }
@@ -5182,21 +5189,30 @@ impl App {
                                             Ok(a) => a,
                                             Err(e) => {
                                                 ltbox_core::live!(log,
-                                                    "[ARB] analyze {log_name} failed: {e}"
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_analyze_failed")
+                                                        .replace("{name}", log_name)
+                                                        .replace("{error}", &e.to_string())
                                                 );
                                                 continue;
                                             }
                                         };
                                         ltbox_core::live!(log,
-                                            "[ARB] {log_name}: image={}, needs_patch={} (mode={:?})",
-                                            analysis.image_index, analysis.needs_patch, rb_mode
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_arb_image_status")
+                                                .replace("{name}", log_name)
+                                                .replace("{image}", &analysis.image_index.to_string())
+                                                .replace("{needs}", &analysis.needs_patch.to_string())
+                                                .replace("{mode}", &format!("{:?}", rb_mode))
                                         );
                                         if !analysis.needs_patch {
                                             continue;
                                         }
                                         let Some(target) = device_rollback_index else {
                                             ltbox_core::live!(log,
-                                                "[ARB] {log_name}: needs_patch but device index unknown — skipping"
+                                                "[ARB] {}",
+                                                ltbox_core::i18n::tr("live_arb_skip_unknown_device")
+                                                    .replace("{name}", log_name)
                                             );
                                             continue;
                                         };
@@ -5226,8 +5242,10 @@ impl App {
                                                 }
                                                 None => {
                                                     ltbox_core::live!(log,
-                                                        "[ARB] {log_name}: pubkey {:?} not in testkey map — skipping",
-                                                        analysis.image_info.public_key_sha1
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_skip_unknown_pubkey")
+                                                            .replace("{name}", log_name)
+                                                            .replace("{key}", &format!("{:?}", analysis.image_info.public_key_sha1))
                                                     );
                                                     continue;
                                                 }
@@ -5354,9 +5372,10 @@ impl App {
                                     };
                                     live!(
                                         log,
-                                        "[Region] Flashing final {} ← {}",
-                                        label,
-                                        image.display()
+                                        "[Region] {}",
+                                        ltbox_core::i18n::tr("live_region_flashing_final")
+                                            .replace("{label}", label)
+                                            .replace("{path}", &image.display().to_string())
                                     );
                                     if let Err(e) = session.flash_partition(
                                         label,
@@ -5885,11 +5904,12 @@ impl App {
                                             .replace("{path}", &loader.display().to_string())
                                     );
                                     ltbox_core::live!(log,
-                                        "[Rescue] Target region: {}",
-                                        match region {
-                                            RescueRegion::Prc => "PRC",
-                                            RescueRegion::Row => "ROW",
-                                        }
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_target_region")
+                                            .replace("{target}", match region {
+                                                RescueRegion::Prc => "PRC",
+                                                RescueRegion::Row => "ROW",
+                                            })
                                     );
 
                                     // Stage dumps + patched outputs in a
@@ -5906,8 +5926,9 @@ impl App {
                                         return Err(format!("create work dir: {e}"));
                                     }
                                     ltbox_core::live!(log,
-                                        "[Rescue] Work dir: {}",
-                                        work_dir.display()
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_work_dir")
+                                            .replace("{path}", &work_dir.display().to_string())
                                     );
 
                                     ltbox_core::live!(
@@ -5948,13 +5969,18 @@ impl App {
                                             let out =
                                                 work_dir.join(format!("{part_name}.img"));
                                             ltbox_core::live!(log,
-                                                "[Rescue] Dumping {part_name}..."
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_dumping")
+                                                    .replace("{name}", &part_name)
                                             );
                                             if let Err(e) = session.dump_partition(
                                                 &part_name, &out, 0, RESCUE_PARTITIONS_LUN, &mut log,
                                             ) {
                                                 ltbox_core::live!(log,
-                                                    "[Rescue] Skip {part_name}: {e}"
+                                                    "[Rescue] {}",
+                                                    ltbox_core::i18n::tr("live_rescue_skip_dump")
+                                                        .replace("{name}", &part_name)
+                                                        .replace("{error}", &e.to_string())
                                                 );
                                                 continue;
                                             }
@@ -5996,13 +6022,16 @@ impl App {
                                                 ) {
                                                     ModelValidation::Match { fingerprint } => {
                                                         ltbox_core::live!(log,
-                                                            "[Rescue] Model check OK (fingerprint={fingerprint})"
+                                                            "[Rescue] {}",
+                                                            ltbox_core::i18n::tr("live_rescue_model_check_ok")
+                                                                .replace("{fingerprint}", &fingerprint)
                                                         );
                                                     }
                                                     ModelValidation::Missing => {
                                                         ltbox_core::live!(
                                                             log,
-                                                            "[Rescue] WARN: vendor_boot has no fingerprint property — skipping model check"
+                                                            "[Rescue] {}",
+                                                            ltbox_core::i18n::tr("live_rescue_no_fingerprint_skip")
                                                         );
                                                     }
                                                     ModelValidation::Mismatch {
@@ -6010,7 +6039,10 @@ impl App {
                                                         device_model,
                                                     } => {
                                                         ltbox_core::live!(log,
-                                                            "[Rescue] ABORT: model mismatch (device={device_model}, firmware fingerprint={fingerprint})"
+                                                            "[Rescue] {}",
+                                                            ltbox_core::i18n::tr("live_rescue_model_mismatch_abort")
+                                                                .replace("{device}", &device_model)
+                                                                .replace("{fingerprint}", &fingerprint)
                                                         );
                                                         session.reset_tolerant(&mut log);
                                                         return Err(
@@ -6021,7 +6053,9 @@ impl App {
                                             }
                                             Err(e) => {
                                                 ltbox_core::live!(log,
-                                                    "[Rescue] WARN: AVB inspect for model check failed: {e} — skipping"
+                                                    "[Rescue] {}",
+                                                    ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
+                                                        .replace("{error}", &e.to_string())
                                                 );
                                             }
                                         }
@@ -6055,7 +6089,9 @@ impl App {
                                         let (Some(vb_src), Some(vbm_src)) = (vb_src, vbm_src)
                                         else {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: missing dump — skipping"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_slot_missing_dump")
+                                                    .replace("{slot}", slot)
                                             );
                                             continue;
                                         };
@@ -6063,11 +6099,13 @@ impl App {
                                         let vb_patched = work_dir
                                             .join(format!("vendor_boot_{slot}.patched.img"));
                                         ltbox_core::live!(log,
-                                            "[Rescue] Patching vendor_boot_{slot} → {}",
-                                            match region {
-                                                RescueRegion::Prc => "PRC",
-                                                RescueRegion::Row => "ROW",
-                                            }
+                                            "[Rescue] {}",
+                                            ltbox_core::i18n::tr("live_rescue_patching_vendor_boot")
+                                                .replace("{slot}", slot)
+                                                .replace("{target}", match region {
+                                                    RescueRegion::Prc => "PRC",
+                                                    RescueRegion::Row => "ROW",
+                                                })
                                         );
                                         let n = match ltbox_patch::region::patch_vendor_boot(
                                             &vb_src.2,
@@ -6079,18 +6117,26 @@ impl App {
                                             Ok(n) => n,
                                             Err(e) => {
                                                 ltbox_core::live!(log,
-                                                    "[Rescue] Slot {slot}: region patch failed: {e} — skipping"
+                                                    "[Rescue] {}",
+                                                    ltbox_core::i18n::tr("live_rescue_region_patch_failed")
+                                                        .replace("{slot}", slot)
+                                                        .replace("{error}", &e.to_string())
                                                 );
                                                 continue;
                                             }
                                         };
                                         if n == 0 {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: no region bytes changed — already on target region?"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_no_region_bytes_changed")
+                                                    .replace("{slot}", slot)
                                             );
                                         } else {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: {n} occurrences patched"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_occurrences_patched")
+                                                    .replace("{slot}", slot)
+                                                    .replace("{count}", &n.to_string())
                                             );
                                         }
 
@@ -6104,7 +6150,10 @@ impl App {
                                                 Ok(i) => i,
                                                 Err(e) => {
                                                     ltbox_core::live!(log,
-                                                        "[Rescue] Slot {slot}: vendor_boot AVB inspect failed: {e}"
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_vendor_boot_avb_failed")
+                                                            .replace("{slot}", slot)
+                                                            .replace("{error}", &e.to_string())
                                                     );
                                                     continue;
                                                 }
@@ -6121,7 +6170,10 @@ impl App {
                                             None,
                                         ) {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: add_hash_footer failed: {e} — skipping"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_add_hash_footer_failed")
+                                                    .replace("{slot}", slot)
+                                                    .replace("{error}", &e.to_string())
                                             );
                                             continue;
                                         }
@@ -6173,7 +6225,10 @@ impl App {
                                             )
                                         {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Slot {slot}: rebuild vbmeta failed: {e} — skipping"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_rebuild_vbmeta_failed")
+                                                    .replace("{slot}", slot)
+                                                    .replace("{error}", &e.to_string())
                                             );
                                             continue;
                                         }
@@ -6194,15 +6249,19 @@ impl App {
                                     }
 
                                     ltbox_core::live!(log,
-                                        "[Rescue] Flashing {} target(s)...",
-                                        flash_plan.len()
+                                        "[Rescue] {}",
+                                        ltbox_core::i18n::tr("live_rescue_flashing_targets")
+                                            .replace("{count}", &flash_plan.len().to_string())
                                     );
                                     for (part_name, image) in &flash_plan {
                                         if let Err(e) = session.flash_partition(
                                             part_name, image, 0, RESCUE_PARTITIONS_LUN, &mut log,
                                         ) {
                                             ltbox_core::live!(log,
-                                                "[Rescue] Flash {part_name}: {e}"
+                                                "[Rescue] {}",
+                                                ltbox_core::i18n::tr("live_rescue_flash_failed")
+                                                    .replace("{name}", part_name)
+                                                    .replace("{error}", &e.to_string())
                                             );
                                         }
                                     }
@@ -7536,8 +7595,9 @@ impl App {
                                 if action.produces_output() {
                                     let _ = std::fs::create_dir_all(&output_dir);
                                     ltbox_core::live!(log,
-                                        "[Advanced] Output folder: {}",
-                                        output_dir.display()
+                                        "[Advanced] {}",
+                                        ltbox_core::i18n::tr("live_advanced_output_folder")
+                                            .replace("{path}", &output_dir.display().to_string())
                                     );
                                 }
                                 match action {
@@ -7657,8 +7717,9 @@ impl App {
                                                 );
                                                 ltbox_core::live!(
                                                     log,
-                                                    "[Region] Final vbmeta written: {}",
-                                                    output.vbmeta.display()
+                                                    "[Region] {}",
+                                                    ltbox_core::i18n::tr("live_region_final_vbmeta_written")
+                                                        .replace("{path}", &output.vbmeta.display().to_string())
                                                 );
                                             }
                                             Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
@@ -7849,20 +7910,35 @@ impl App {
                                         let boot_key = resolve_key(&boot_info, "boot.img")?;
                                         let vbmeta_key =
                                             resolve_key(&vbmeta_info, "vbmeta_system.img")?;
-                                        ltbox_core::live!(log, "[ARB] boot.img signing key: {boot_key}");
                                         ltbox_core::live!(
                                             log,
-                                            "[ARB] vbmeta_system.img signing key: {vbmeta_key}"
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
+                                                .replace("{name}", "boot.img")
+                                                .replace("{key}", boot_key)
                                         );
                                         ltbox_core::live!(
                                             log,
-                                            "[ARB] boot.img rollback {} → {target}",
-                                            boot_info.rollback_index
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
+                                                .replace("{name}", "vbmeta_system.img")
+                                                .replace("{key}", vbmeta_key)
                                         );
                                         ltbox_core::live!(
                                             log,
-                                            "[ARB] vbmeta_system.img rollback {} → {target}",
-                                            vbmeta_info.rollback_index
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
+                                                .replace("{name}", "boot.img")
+                                                .replace("{old}", &boot_info.rollback_index.to_string())
+                                                .replace("{new}", &target.to_string())
+                                        );
+                                        ltbox_core::live!(
+                                            log,
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
+                                                .replace("{name}", "vbmeta_system.img")
+                                                .replace("{old}", &vbmeta_info.rollback_index.to_string())
+                                                .replace("{new}", &target.to_string())
                                         );
                                         let boot_out = output_dir.join("boot.img");
                                         let vbmeta_out = output_dir.join("vbmeta_system.img");
@@ -7898,8 +7974,9 @@ impl App {
                                         .map_err(|e| format!("vbmeta_system ARB resign failed: {e}"))?;
                                         ltbox_core::live!(
                                             log,
-                                            "[ARB] Output folder: {}",
-                                            output_dir.display()
+                                            "[ARB] {}",
+                                            ltbox_core::i18n::tr("live_advanced_output_folder")
+                                                .replace("{path}", &output_dir.display().to_string())
                                         );
                                     }
                                     AdvAction::RebuildVbmeta => {
@@ -7968,26 +8045,35 @@ impl App {
                                             }) {
                                                 ltbox_core::live!(
                                                     log,
-                                                    "[AVB] Warning: Rebuild vbmeta does not repair chained image footers; use Region Convert output for modified vendor_boot.img"
+                                                    "[AVB] {}",
+                                                    ltbox_core::i18n::tr("live_avb_rebuild_warning")
                                                 );
                                             }
                                             let output = output_dir.join("vbmeta.rebuilt.img");
                                             let chained_refs: Vec<&std::path::Path> =
                                                 chained.iter().map(|p| p.as_path()).collect();
+                                            let chained_names = chained
+                                                .iter()
+                                                .map(|p| {
+                                                    p.file_name()
+                                                        .and_then(|s| s.to_str())
+                                                        .unwrap_or("")
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
                                             ltbox_core::live!(
                                                 log,
-                                                "[AVB] $ rebuild_vbmeta with {} chained image(s): {}",
-                                                chained.len(),
-                                                chained
-                                                    .iter()
-                                                    .map(|p| p.file_name().and_then(|s| s.to_str()).unwrap_or(""))
-                                                    .collect::<Vec<_>>()
-                                                    .join(", ")
+                                                "[AVB] {}",
+                                                ltbox_core::i18n::tr("live_avb_rebuild_chained")
+                                                    .replace("{count}", &chained.len().to_string())
+                                                    .replace("{names}", &chained_names)
                                             );
                                             ltbox_core::live!(
                                                 log,
-                                                "[AVB] key={key_spec} algorithm={}",
-                                                alg.unwrap_or("(from original vbmeta)"),
+                                                "[AVB] {}",
+                                                ltbox_core::i18n::tr("live_avb_rebuild_key_alg")
+                                                    .replace("{key}", key_spec)
+                                                    .replace("{alg}", alg.unwrap_or("(from original vbmeta)"))
                                             );
                                             if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
                                                 &output,
