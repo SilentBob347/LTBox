@@ -330,7 +330,7 @@ fn main() -> iced::Result {
         iced::window::icon::from_rgba(include_bytes!("../assets/icon_32.bin").to_vec(), 32, 32)
             .ok();
     let window_settings = iced::window::Settings {
-        size: iced::Size::new(920.0, 620.0),
+        size: iced::Size::new(820.0, 620.0),
         icon: win_icon,
         decorations: false,
         ..Default::default()
