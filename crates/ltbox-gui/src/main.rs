@@ -5828,6 +5828,8 @@ impl App {
                 // v2 `_validate_device_model`, prevents flashing firmware
                 // built for a different TB3xx variant.
                 let device_model = self.device_model.clone();
+                let conn = self.connection;
+                let ll = self.live_labels();
                 self.begin_op(View::SystemUpdate);
                 self.error_msg = None;
                 self.log_push(format!(
@@ -5838,20 +5840,67 @@ impl App {
                     async move {
                         tokio::task::spawn_blocking(move || {
                             let mut log = Vec::new();
-                            let mut adb = ltbox_device::adb::AdbManager::new();
-                            ltbox_core::live!(
-                                log,
-                                "[ADB] {}",
-                                ltbox_core::i18n::tr("live_adb_checking_device")
-                            );
-                            if !adb.check_device().unwrap_or(false) {
-                                return Err("No ADB device connected".to_string());
+                            // Disable/Enable need a running Android shell;
+                            // Rescue needs EDL. The previous flow assumed
+                            // ADB at start and bailed otherwise — so a
+                            // device sitting in Fastboot or EDL hard-failed
+                            // even though both modes are recoverable. Bridge
+                            // here:
+                            //   * Disable/Enable: from Fastboot, `fastboot
+                            //     continue` and wait for ADB; from EDL we
+                            //     have no automatic system-boot path so the
+                            //     user must reboot manually.
+                            //   * Rescue: hand off to `transition_to_edl`,
+                            //     which already handles all three source
+                            //     modes via `ensure_edl`.
+                            if action != SysUpdateAction::Rescue
+                                && matches!(conn, ConnectionStatus::Fastboot)
+                            {
+                                ltbox_core::live!(
+                                    log,
+                                    "[SysUpdate] {}",
+                                    ltbox_core::i18n::tr("live_sysupdate_fastboot_to_adb")
+                                );
+                                if let Ok(mut dev) =
+                                    ltbox_device::fastboot::FastbootDevice::open()
+                                {
+                                    let _ = dev.continue_boot();
+                                }
                             }
-                            ltbox_core::live!(
-                                log,
-                                "[ADB] {}",
-                                ltbox_core::i18n::tr("live_adb_device_connected")
-                            );
+                            let mut adb = ltbox_device::adb::AdbManager::new();
+                            // Disable/Enable need ADB. Wait up to 120 s
+                            // (matches `AdbManager::wait_for_device`'s
+                            // internal cap) so a fastboot→system reboot
+                            // has time to land before we surface a hard
+                            // failure. Rescue skips this — its own bridge
+                            // below routes to EDL, where ADB isn't needed.
+                            if action != SysUpdateAction::Rescue {
+                                ltbox_core::live!(
+                                    log,
+                                    "[ADB] {}",
+                                    ltbox_core::i18n::tr("live_adb_checking_device")
+                                );
+                                if !adb.check_device().unwrap_or(false) {
+                                    if matches!(conn, ConnectionStatus::Fastboot) {
+                                        if let Err(e) = adb.wait_for_device() {
+                                            return Err(ltbox_core::i18n::tr(
+                                                "err_sysupdate_no_adb",
+                                            )
+                                            .replace("{error}", &e.to_string()));
+                                        }
+                                    } else {
+                                        return Err(ltbox_core::i18n::tr(
+                                            "err_sysupdate_no_adb",
+                                        )
+                                        .replace("{error}", "device not in ADB"));
+                                    }
+                                }
+                                ltbox_core::live!(
+                                    log,
+                                    "[ADB] {}",
+                                    ltbox_core::i18n::tr("live_adb_device_connected")
+                                );
+                            }
                             let packages = [
                                 "com.lenovo.ota",
                                 "com.tblenovo.lenovowhatsnew",
@@ -5992,15 +6041,20 @@ impl App {
                                         "[Rescue] {}",
                                         ltbox_core::i18n::tr("live_rescue_transitioning")
                                     );
-                                    let _ = adb.reboot("edl");
-                                    std::thread::sleep(std::time::Duration::from_secs(5));
-                                    ltbox_core::live!(
-                                        log,
-                                        "[EDL] {}",
-                                        ltbox_core::i18n::tr("live_edl_waiting_device")
-                                    );
-                                    ltbox_device::edl::wait_for_device()
-                                        .map_err(|e| format!("EDL not found: {e}"))?;
+                                    // Use the shared `transition_to_edl`
+                                    // helper so Rescue handles every
+                                    // source mode (ADB / Fastboot / EDL)
+                                    // the same way Flash / Root / Unroot
+                                    // already do — the previous
+                                    // `adb.reboot("edl")` + 5 s sleep
+                                    // sequence assumed ADB and silently
+                                    // ignored the reboot result, so a
+                                    // device already in Fastboot or EDL
+                                    // hard-failed at the earlier ADB
+                                    // check even though the operation is
+                                    // perfectly recoverable from those
+                                    // modes.
+                                    transition_to_edl(&ll, &mut log)?;
 
                                     let mut session = ltbox_device::edl::EdlSession::open(
                                         &loader, true, &mut log,
