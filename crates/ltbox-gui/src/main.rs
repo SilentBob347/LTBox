@@ -6404,6 +6404,13 @@ impl App {
             }
             // Root wizard
             Message::Root(RootMsg::RootFamily(f)) => {
+                // Defense in depth: the family card UI grays out the
+                // Magisk option on TB320FC, but a stale message from a
+                // pre-poll click could still land here. Drop it so the
+                // wizard never enters a configuration we know boot-loops.
+                if self.is_tb320fc() && f == Family::Magisk {
+                    return Task::none();
+                }
                 self.root.family = Some(f);
                 self.root.provider = None;
                 self.root.mode = None;
@@ -6425,6 +6432,12 @@ impl App {
                 }
             }
             Message::Root(RootMsg::RootMode(m)) => {
+                // TB320FC: KernelSU LKM bootloops on this kernel. Block
+                // the message even if a stale dispatch slips past the
+                // disabled card so the wizard funnels to GKI only.
+                if self.is_tb320fc() && m == RootMode::Lkm {
+                    return Task::none();
+                }
                 self.root.mode = Some(m);
                 self.root.file_path = None;
                 self.root.kernel_version = None;
@@ -10121,6 +10134,13 @@ impl App {
         true
     }
 
+    /// Whether the polled device is a TB320FC. Drives the Root wizard
+    /// gating (Magisk family disabled, KernelSU LKM mode disabled —
+    /// only KernelSU GKI + APatch family work cleanly on this kernel).
+    fn is_tb320fc(&self) -> bool {
+        self.device_model.eq_ignore_ascii_case("TB320FC")
+    }
+
     fn sidebar(&self) -> Element<'_, Message> {
         // Only mount labels once the tween has fully settled at the
         // expanded target. While `sidebar_anim` is still climbing the
@@ -12515,14 +12535,30 @@ impl App {
     }
 
     fn root_family_step(&self) -> Element<'_, Message> {
+        // TB320FC ships a kernel that Magisk's ramdisk-injection path
+        // can't patch cleanly (test devices reliably bootloop), and the
+        // KernelSU LKM mode shares the same constraint. Render the
+        // unsupported cards as disabled cards instead of silently
+        // letting the user pick a configuration that won't boot —
+        // KernelSU is still pickable via GKI, APatch family stays fully
+        // available.
+        let tb320fc = self.is_tb320fc();
         let mk = |f: Family| -> Element<'_, Message> {
-            icon_option_card_sub(
-                f.icon(),
-                self.t(f.label_key()),
-                self.t(f.desc_key()),
-                self.root.family == Some(f),
-                Message::Root(RootMsg::RootFamily(f)),
-            )
+            if tb320fc && f == Family::Magisk {
+                icon_option_card_sub_disabled(
+                    f.icon(),
+                    self.t(f.label_key()),
+                    self.t("root_family_unsupported_tb320fc"),
+                )
+            } else {
+                icon_option_card_sub(
+                    f.icon(),
+                    self.t(f.label_key()),
+                    self.t(f.desc_key()),
+                    self.root.family == Some(f),
+                    Message::Root(RootMsg::RootFamily(f)),
+                )
+            }
         };
 
         let cards = row![mk(Family::Magisk), mk(Family::KernelSU), mk(Family::APatch),].spacing(12);
@@ -12918,6 +12954,27 @@ impl App {
         let title = self
             .t("root_mode_title_tmpl")
             .replace("{family}", fam_label);
+        // TB320FC: LKM bootloops on this kernel. Disable the LKM card
+        // so the wizard funnels to GKI (the only working mode for this
+        // model). User still sees both cards so the constraint is
+        // visible — silent skip would have been confusing for users
+        // who came in expecting LKM.
+        let tb320fc = self.is_tb320fc();
+        let lkm_card: Element<'_, Message> = if tb320fc {
+            icon_option_card_sub_disabled(
+                RootMode::Lkm.icon(),
+                self.t(RootMode::Lkm.label_key()),
+                self.t("root_family_unsupported_tb320fc"),
+            )
+        } else {
+            icon_option_card_sub(
+                RootMode::Lkm.icon(),
+                self.t(RootMode::Lkm.label_key()),
+                self.t(RootMode::Lkm.desc_key()),
+                self.root.mode == Some(RootMode::Lkm),
+                Message::Root(RootMsg::RootMode(RootMode::Lkm)),
+            )
+        };
         let col = column![
             text(title)
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -12927,13 +12984,7 @@ impl App {
                 .style(muted_style)
                 .center(),
             row![
-                icon_option_card_sub(
-                    RootMode::Lkm.icon(),
-                    self.t(RootMode::Lkm.label_key()),
-                    self.t(RootMode::Lkm.desc_key()),
-                    self.root.mode == Some(RootMode::Lkm),
-                    Message::Root(RootMsg::RootMode(RootMode::Lkm)),
-                ),
+                lkm_card,
                 icon_option_card_sub(
                     RootMode::Gki.icon(),
                     self.t(RootMode::Gki.label_key()),
@@ -16255,6 +16306,72 @@ fn icon_option_card_sub(
     .padding(0)
     .width(Length::Fill)
     .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected))
+    .into()
+}
+
+/// Disabled twin of [`icon_option_card_sub`]. Same icon / label / sub
+/// layout, but rendered without an `on_press` so the button widget
+/// reports `button::Status::Disabled` and the text reads as muted.
+/// Used by the Root wizard to grey out family / mode cards that the
+/// connected device's model doesn't support (e.g. Magisk on TB320FC).
+fn icon_option_card_sub_disabled(
+    icon: Element<'static, Message>,
+    label: &str,
+    sub: &str,
+) -> Element<'static, Message> {
+    let sub_text: Element<'static, Message> = if sub.is_empty() {
+        text(" ").size(11).width(Length::Fill).center().into()
+    } else {
+        text(sub.to_string())
+            .size(11)
+            .style(muted_style)
+            .width(Length::Fill)
+            .center()
+            .into()
+    };
+    let sub_row = container(sub_text)
+        .width(Length::Fill)
+        .height(Length::Fixed(SUB_ROW_HEIGHT))
+        .align_y(iced::alignment::Vertical::Center);
+    let content = column![
+        icon_tile(icon),
+        Space::new().height(14),
+        text(label.to_string())
+            .size(13)
+            .style(muted_style)
+            .width(Length::Fill)
+            .center(),
+        Space::new().height(4),
+        sub_row,
+    ]
+    .spacing(0)
+    .align_x(iced::Alignment::Center);
+
+    button(
+        container(content)
+            .padding([20, 16])
+            .width(Length::Fill)
+            .height(WIZARD_CARD_HEIGHT)
+            .center_x(Length::Fill)
+            .center_y(WIZARD_CARD_HEIGHT)
+            .style(|t: &Theme| sel_card_style(t, false)),
+    )
+    // No `on_press` — iced reports Status::Disabled, the style hook
+    // below renders the faded surface.
+    .padding(0)
+    .width(Length::Fill)
+    .style(|t: &Theme, _status| {
+        let p = pal_of(t);
+        button::Style {
+            background: Some(with_alpha(p.surface_container, 0.4).into()),
+            text_color: with_alpha(p.on_surface, 0.38),
+            border: iced::Border {
+                radius: theme::shape::MD.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    })
     .into()
 }
 
