@@ -9935,9 +9935,9 @@ impl App {
         let body: Element<'_, Message> = match &state {
             DeviceInfoState::Loading => container(Spinner::new())
                 .width(Length::Fill)
-                .height(120)
+                .height(48)
                 .center_x(Length::Fill)
-                .center_y(Length::Fill)
+                .center_y(48)
                 .into(),
             DeviceInfoState::Error(e) => column![
                 text(self.t("device_info_popup_error").to_string())
@@ -10036,9 +10036,9 @@ impl App {
         let body: Element<'_, Message> = match &state {
             OtaPopupState::Loading => container(Spinner::new())
                 .width(Length::Fill)
-                .height(120)
+                .height(48)
                 .center_x(Length::Fill)
-                .center_y(Length::Fill)
+                .center_y(48)
                 .into(),
             OtaPopupState::Error(e) => column![
                 text(self.t("ota_popup_error").to_string())
@@ -10065,9 +10065,9 @@ impl App {
                     .center(),
             )
             .width(Length::Fill)
-            .height(120)
+            .height(48)
             .center_x(Length::Fill)
-            .center_y(Length::Fill)
+            .center_y(48)
             .into(),
             OtaPopupState::Ready(update) => {
                 // Changelog text lives in `self.ota_changelog_editor`,
