@@ -193,7 +193,11 @@ pub fn poll_active_slot(
                 adb_attempted = true;
                 match adb.get_slot_suffix() {
                     Ok(Some(s)) if s == "_a" || s == "_b" => {
-                        ltbox_core::live!(log, "[Slot] resolved via ADB ({state}): {s}");
+                        ltbox_core::live!(
+                            log,
+                            "[Slot] {}",
+                            ltbox_core::tr_args!("log_slot_resolved_adb", state = state, slot = s,)
+                        );
                         return Ok(s);
                     }
                     Ok(Some(other)) => {
@@ -227,7 +231,11 @@ pub fn poll_active_slot(
                 fastboot_attempted = true;
                 match fb.get_slot_suffix() {
                     Ok(Some(s)) if s == "_a" || s == "_b" => {
-                        ltbox_core::live!(log, "[Slot] resolved via Fastboot: {s}");
+                        ltbox_core::live!(
+                            log,
+                            "[Slot] {}",
+                            ltbox_core::tr_args!("log_slot_resolved_fastboot", slot = s)
+                        );
                         return Ok(s);
                     }
                     Ok(Some(other)) => {

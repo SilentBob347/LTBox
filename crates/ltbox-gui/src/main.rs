@@ -5951,8 +5951,11 @@ impl App {
                 self.begin_op(View::SystemUpdate);
                 self.error_msg = None;
                 self.log_push(format!(
-                    "[SysUpdate] Starting: {}",
-                    self.t(action.label_key())
+                    "[SysUpdate] {}",
+                    tr_args!(
+                        "log_sysupdate_starting",
+                        action = self.t(action.label_key())
+                    )
                 ));
                 return Task::perform(
                     async move {
@@ -6879,20 +6882,30 @@ impl App {
                         (String::new(), String::from("file"))
                     };
                     if mountinfo.is_empty() {
-                        self.log_push("[Magisk] Preinit device: (ADB unavailable — falling back to runtime detection)".to_string());
+                        self.log_push(format!(
+                            "[Magisk] {}",
+                            ltbox_core::i18n::tr("log_magisk_preinit_adb_unavailable")
+                        ));
                         String::new()
                     } else {
                         self.log_push(format!(
-                            "[Magisk] Crypto state: encrypt_type={encrypt_type}"
+                            "[Magisk] {}",
+                            tr_args!("log_magisk_crypto_state", encrypt_type = encrypt_type)
                         ));
                         match ltbox_patch::magisk::resolve_preinit_device(&mountinfo, &encrypt_type)
                         {
                             Some(name) => {
-                                self.log_push(format!("[Magisk] Preinit device: {name} (resolved from /proc/self/mountinfo)"));
+                                self.log_push(format!(
+                                    "[Magisk] {}",
+                                    tr_args!("log_magisk_preinit_resolved", name = name)
+                                ));
                                 name
                             }
                             None => {
-                                self.log_push("[Magisk] Preinit device: (none detected — Magisk will fall back at runtime)".to_string());
+                                self.log_push(format!(
+                                    "[Magisk] {}",
+                                    ltbox_core::i18n::tr("log_magisk_preinit_none")
+                                ));
                                 String::new()
                             }
                         }
@@ -7474,19 +7487,26 @@ impl App {
                                     // contain a firmware XML pair.
                                     let boot_label = format!("{base_part}{slot}");
                                     let vbm_label = format!("vbmeta{slot}");
-                                    let boot_lun = ltbox_core::partition_lun::lun_for_partition(
-                                        base_part,
-                                    )
-                                    .ok_or_else(|| {
-                                        format!("No hardcoded LUN for {base_part}")
-                                    })?;
-                                    let vbm_lun = ltbox_core::partition_lun::lun_for_partition(
-                                        "vbmeta",
-                                    )
-                                    .ok_or_else(|| "No hardcoded LUN for vbmeta".to_string())?;
+                                    let boot_lun =
+                                        ltbox_core::partition_lun::lun_for_partition(base_part)
+                                            .ok_or_else(|| {
+                                                format!("No hardcoded LUN for {base_part}")
+                                            })?;
+                                    let vbm_lun =
+                                        ltbox_core::partition_lun::lun_for_partition("vbmeta")
+                                            .ok_or_else(|| {
+                                                "No hardcoded LUN for vbmeta".to_string()
+                                            })?;
                                     live!(
                                         log,
-                                        "[Unroot] {boot_label} (LUN {boot_lun}) / {vbm_label} (LUN {vbm_lun}) via hardcoded map"
+                                        "[Unroot] {}",
+                                        tr_args!(
+                                            "log_unroot_lun_resolved",
+                                            boot_label = boot_label,
+                                            boot_lun = boot_lun,
+                                            vbm_label = vbm_label,
+                                            vbm_lun = vbm_lun,
+                                        )
                                     );
 
                                     live!(
@@ -9409,8 +9429,10 @@ impl App {
                 self.error_msg = None;
                 let conn = self.connection;
                 let pairs = self.flash_phys.active_pairs();
-                self.log_lines
-                    .push(format!("[FlashPhys] Flashing {} LUN(s)", pairs.len()));
+                self.log_lines.push(format!(
+                    "[FlashPhys] {}",
+                    tr_args!("log_flashphys_starting", count = pairs.len())
+                ));
                 return task_heavy(
                     move || flash_physical_execute(conn, loader, pairs),
                     |__v| Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(__v)),
