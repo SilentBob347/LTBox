@@ -11,28 +11,35 @@ use crate::error::{LtboxError, Result};
 
 const USER_AGENT: &str = "LTBox-rs/3.0";
 
-/// Shared ureq agent (user-agent + per-stage timeouts) for all outbound HTTP
-/// in this crate.
+/// Process-wide shared `ureq::Agent`. Reuses TLS roots + the connection
+/// pool across every outbound HTTP request in the workspace (downloader,
+/// github / nightly.link clients, lenovo PTSTPD, lenovo OTA). Building a
+/// fresh agent per call rebuilt the rustls config + spun up a new pool
+/// each time, which on a Magisk-update flow alone meant 5+ redundant
+/// TLS-config setups in seconds.
 ///
-/// The previous `timeout_global(120 s)` covered the entire request lifecycle
-/// — connect + redirects + headers + the multi-MB body read all shared one
-/// budget. GitHub release downloads redirect from `github.com` to
-/// `objects.githubusercontent.com` (S3), so a slow link burned most of the
-/// budget on connect / TLS / redirect resolution before the body even
-/// started, and the body read then tripped `timeout: global` mid-payload.
-/// Split into per-stage timeouts so the connect / response phases get a
-/// short cap each (fast-fail on a dead link) while the body has 10 minutes
-/// to land — enough for the largest root-pipeline payload (Magisk APK,
-/// KSU `.ko` + ksuinit, APatch APK→kpimg, GKI AnyKernel3 zips) on slow
-/// network connections.
+/// Per-stage timeouts (15 s connect, 30 s recv-response, 600 s recv-body)
+/// replace the prior `timeout_global(120 s)` that guillotined slow-link
+/// downloads mid-body — see commit history for the upstream bug
+/// (`timeout: global` mid-payload on Lenovo / GitHub-release pulls).
+fn shared_agent() -> &'static ureq::Agent {
+    use std::sync::OnceLock;
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .user_agent(USER_AGENT)
+            .timeout_connect(Some(std::time::Duration::from_secs(15)))
+            .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
+            .timeout_recv_body(Some(std::time::Duration::from_secs(600)))
+            .build()
+            .new_agent()
+    })
+}
+
+/// Public alias — clones the cheap `Arc`-backed `ureq::Agent` handle so
+/// existing call sites (`build_agent()`) keep their by-value signature.
 pub(crate) fn build_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .user_agent(USER_AGENT)
-        .timeout_connect(Some(std::time::Duration::from_secs(15)))
-        .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
-        .timeout_recv_body(Some(std::time::Duration::from_secs(600)))
-        .build()
-        .new_agent()
+    shared_agent().clone()
 }
 
 /// Download `url` to `out_path` in 64 KiB chunks. Progress is throttled to
