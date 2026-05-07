@@ -8621,7 +8621,7 @@ impl App {
                                     r.slot =
                                         adb.get_slot_suffix().ok().flatten().unwrap_or_default();
                                     let fw_raw = adb
-                                        .shell("getprop ro.config.lgsi.fp.incremental")
+                                        .shell("getprop ro.build.display.id")
                                         .unwrap_or_default();
                                     r.firmware = trim_build_display(&fw_raw);
                                     r.firmware_full = fw_raw.trim().to_string();
