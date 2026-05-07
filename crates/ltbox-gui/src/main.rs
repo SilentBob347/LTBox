@@ -23,7 +23,7 @@ mod theme_detect;
 
 use std::collections::HashMap;
 
-use ltbox_core::live;
+use ltbox_core::{live, tr_args};
 
 use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Subscription, Task, Theme};
@@ -4617,7 +4617,7 @@ impl App {
         };
         let pb = std::path::Path::new(p);
         if !pb.is_file() {
-            let msg = self.t("err_loader_missing").replace("{path}", p);
+            let msg = tr_args!("err_loader_missing", path = p);
             self.error_msg = Some(msg);
             return Err(());
         }
@@ -5054,25 +5054,25 @@ impl App {
                             ltbox_core::live!(
                                 log,
                                 "[Flash] {}",
-                                ltbox_core::i18n::tr("live_flash_vendor_boot_status").replace(
-                                    "{status}",
-                                    if has_vendor_boot { &found } else { &not_found }
+                                tr_args!(
+                                    "live_flash_vendor_boot_status",
+                                    status = if has_vendor_boot { &found } else { &not_found },
                                 )
                             );
                             ltbox_core::live!(
                                 log,
                                 "[Flash] {}",
-                                ltbox_core::i18n::tr("live_flash_vbmeta_status").replace(
-                                    "{status}",
-                                    if has_vbmeta { &found } else { &not_found }
+                                tr_args!(
+                                    "live_flash_vbmeta_status",
+                                    status = if has_vbmeta { &found } else { &not_found },
                                 )
                             );
                             ltbox_core::live!(
                                 log,
                                 "[Flash] {}",
-                                ltbox_core::i18n::tr("live_flash_boot_status").replace(
-                                    "{status}",
-                                    if has_boot { &found } else { &not_found }
+                                tr_args!(
+                                    "live_flash_boot_status",
+                                    status = if has_boot { &found } else { &not_found },
                                 )
                             );
 
@@ -5191,7 +5191,7 @@ impl App {
                             ltbox_core::live!(
                                 log,
                                 "[ARB] {}",
-                                ltbox_core::i18n::tr("live_arb_modify").replace("{value}", &rb_label_for_log)
+                                tr_args!("live_arb_modify", value = rb_label_for_log)
                             );
                             let device_idx_str = device_rollback_index
                                 .map(|v| v.to_string())
@@ -6851,7 +6851,7 @@ impl App {
                     .unwrap_or_else(|| "?".to_string());
                 self.log_push(format!(
                     "[Root] {}",
-                    self.t("log_op_starting").replace("{what}", &fam_label)
+                    tr_args!("log_op_starting", what = fam_label)
                 ));
                 // Resolve Magisk preinit device via /proc/self/mountinfo
                 // before ADB vanishes past EDL. Gates /data on the device's
@@ -9630,8 +9630,8 @@ impl App {
                     }
                     Err(e) => {
                         self.log_lines
-                            .push(self.t("driver_install_failed").replace("{e}", &e));
-                        self.error_msg = Some(self.t("driver_install_failed").replace("{e}", &e));
+                            .push(tr_args!("driver_install_failed", e = e));
+                        self.error_msg = Some(tr_args!("driver_install_failed", e = e));
                     }
                 }
             }
@@ -13514,7 +13514,7 @@ impl App {
         let chip: Element<'_, Message> =
             match (self.root.nightly_source, self.root.run_id.as_deref()) {
                 (Some(NightlySource::ManualInput), Some(id)) if !id.is_empty() => {
-                    let label = self.t("nightly_manual_committed").replace("{id}", id);
+                    let label = tr_args!("nightly_manual_committed", id = id);
                     button(text(label).size(13).style(on_surface_style))
                         .padding([8, 14])
                         .on_press(Message::Root(RootMsg::RootNightlySource(
@@ -15351,7 +15351,7 @@ impl App {
         }
 
         let header = text(self.t("reboot_title").to_string()).size(theme::text_size::TITLE_LARGE);
-        let subtitle = text(self.t("reboot_subtitle").replace("{conn}", &conn_label))
+        let subtitle = text(tr_args!("reboot_subtitle", conn = conn_label))
             .size(13)
             .style(muted_style);
         column![header, subtitle, widget::rule::horizontal(1), list,]
@@ -15365,8 +15365,8 @@ impl App {
     /// M3 confirm dialog for the Reboot panel.
     fn reboot_confirm_popup(&self, target: RebootTarget) -> Element<'_, Message> {
         let short = self.t(target.short_name_key()).to_string();
-        let title = self.t("reboot_confirm_title").replace("{target}", &short);
-        let body = self.t("reboot_confirm_body").replace("{target}", &short);
+        let title = tr_args!("reboot_confirm_title", target = short);
+        let body = tr_args!("reboot_confirm_body", target = short);
         let content = column![
             text(title).size(20),
             text(body).size(13).style(muted_style),
@@ -15923,7 +15923,7 @@ fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsSc
         ltbox_core::live!(
             log,
             "[FlashParts] {}",
-            ltbox_core::i18n::tr("live_flashparts_reset_failed").replace("{error}", &e.to_string())
+            tr_args!("live_flashparts_reset_failed", error = e)
         );
     }
 
@@ -16069,11 +16069,7 @@ fn wait_for_edl_ready(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
             Ok(())
         }
         Err(e) => {
-            ltbox_core::live!(
-                log,
-                "[{tag}] {}",
-                ltbox_core::i18n::tr("live_edl_not_found").replace("{error}", &e.to_string())
-            );
+            ltbox_core::live!(log, "[{tag}] {}", tr_args!("live_edl_not_found", error = e));
             Err(())
         }
     }
@@ -16114,7 +16110,7 @@ fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
             ltbox_core::live!(
                 log,
                 "[{tag}] {}",
-                ltbox_core::i18n::tr("live_adb_state_cannot_reboot_edl").replace("{state}", other)
+                tr_args!("live_adb_state_cannot_reboot_edl", state = other)
             );
             return wait_for_manual_edl(tag, log);
         }
@@ -16265,7 +16261,7 @@ fn dump_parts_scan(conn: ConnectionStatus, loader_path: String) -> DumpPartsScan
         ltbox_core::live!(
             log,
             "[DumpParts] {}",
-            ltbox_core::i18n::tr("live_dumpparts_reset_failed").replace("{error}", &e.to_string())
+            tr_args!("live_dumpparts_reset_failed", error = e)
         );
     }
 
