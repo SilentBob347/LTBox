@@ -4785,6 +4785,51 @@ impl App {
                                     .replace("{path}", &fw_folder)
                             );
 
+                            // 2. Device detection
+                            //
+                            // Run the ADB device probe BEFORE the
+                            // Fastboot bridge below. The previous
+                            // ordering kicked off `adb reboot bootloader`
+                            // first and only then asked `AdbManager::
+                            // check_device`, by which point the device
+                            // had already detached from ADB — so the
+                            // detection block always logged "no ADB
+                            // device info" even when an ADB bridge
+                            // was sitting right there a second earlier.
+                            // Now device info gets collected on the live
+                            // ADB transport, and the bridge takes over
+                            // afterwards.
+                            let skip_adb = conn.skip_adb();
+                            if skip_adb {
+                                ltbox_core::live!(
+                                    log,
+                                    "[Flash] {}",
+                                    ltbox_core::i18n::tr("live_flash_skip_adb")
+                                );
+                            } else {
+                                ltbox_core::live!(
+                                    log,
+                                    "[ADB] {}",
+                                    ltbox_core::i18n::tr("live_adb_checking_device")
+                                );
+                                let mut adb = ltbox_device::adb::AdbManager::new();
+                                if adb.check_device().unwrap_or(false) {
+                                    ltbox_core::live!(
+                                        log,
+                                        "[ADB] {}",
+                                        ltbox_core::i18n::tr("live_adb_device_connected")
+                                    );
+                                    let _slot =
+                                        adb.get_slot_suffix().ok().flatten().unwrap_or_default();
+                                } else {
+                                    ltbox_core::live!(
+                                        log,
+                                        "[ADB] {}",
+                                        ltbox_core::i18n::tr("live_adb_no_device_info")
+                                    );
+                                }
+                            }
+
                             // Snapshot rollback index before EDL —
                             // `stored_rollback_index` vanishes past
                             // Fastboot. Probe Fastboot vars first, and
@@ -4891,37 +4936,6 @@ impl App {
                                 return Err(
                                     ltbox_core::i18n::tr("err_rollback_on_fastboot_unreachable"),
                                 );
-                            }
-
-                            // 2. Device detection
-                            let skip_adb = conn.skip_adb();
-                            if skip_adb {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Flash] {}",
-                                    ltbox_core::i18n::tr("live_flash_skip_adb")
-                                );
-                            } else {
-                                ltbox_core::live!(
-                                    log,
-                                    "[ADB] {}",
-                                    ltbox_core::i18n::tr("live_adb_checking_device")
-                                );
-                                let mut adb = ltbox_device::adb::AdbManager::new();
-                                if adb.check_device().unwrap_or(false) {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[ADB] {}",
-                                        ltbox_core::i18n::tr("live_adb_device_connected")
-                                    );
-                                    let _slot = adb.get_slot_suffix().ok().flatten().unwrap_or_default();
-                                } else {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[ADB] {}",
-                                        ltbox_core::i18n::tr("live_adb_no_device_info")
-                                    );
-                                }
                             }
 
                             // 3. Scan firmware folder
