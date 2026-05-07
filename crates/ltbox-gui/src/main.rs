@@ -4753,6 +4753,19 @@ impl App {
                         self.unroot.loader_path = Some(path);
                     }
                 }
+                // Advanced view: reset every sub-wizard + the generic
+                // adv wizard's action / file selection on entry, so a
+                // sidebar bounce mid-flow doesn't reopen the same
+                // sub-wizard with the previous picked path still
+                // populated. The `busy` gate covers in-flight ops.
+                if v == View::Advanced && !busy {
+                    self.advanced_wizard_open = AdvancedWizardOpen::None;
+                    self.adv_wizard = AdvWizard::default();
+                    self.flash_parts = FlashPartsWizard::default();
+                    self.dump_parts = DumpPartsWizard::default();
+                    self.flash_phys = FlashPhysWizard::default();
+                    self.dump_phys = DumpPhysWizard::default();
+                }
             }
             Message::SetTheme(choice) => {
                 self.theme_choice = choice;
