@@ -3053,7 +3053,14 @@ struct DevicePollResult {
     status: ConnectionStatus,
     model: String,
     slot: String,
+    /// Trimmed `ro.build.display.id` — leading device-model prefix
+    /// stripped so the dashboard cell stays readable.
     firmware: String,
+    /// Untrimmed `ro.build.display.id` exactly as the device reports
+    /// it. Required by Lenovo's OTA `querynewfirmware` endpoint —
+    /// passing the trimmed form returns an empty `<firmwareupdate/>`
+    /// because the upstream key matches the full string.
+    firmware_full: String,
     arb: String,
     ram: String,
     storage: String,
@@ -3786,6 +3793,11 @@ struct App {
     device_model: String,
     device_slot: String,
     device_firmware: String,
+    /// Untrimmed `ro.build.display.id`. Mirrors `device_firmware` but
+    /// keeps the leading device-model prefix so the OTA popup can
+    /// pass the full string to Lenovo's `querynewfirmware` endpoint
+    /// (the trimmed dashboard form would silently miss every match).
+    device_firmware_full: String,
     device_arb: String,
     device_ram: String,
     device_storage: String,
@@ -3971,6 +3983,7 @@ impl Default for App {
             device_model: String::new(),
             device_slot: String::new(),
             device_firmware: String::new(),
+            device_firmware_full: String::new(),
             device_arb: String::new(),
             device_ram: String::new(),
             device_storage: String::new(),
@@ -8607,10 +8620,11 @@ impl App {
                                     r.model = strip_twrp_prefix(&raw_model);
                                     r.slot =
                                         adb.get_slot_suffix().ok().flatten().unwrap_or_default();
-                                    r.firmware = trim_build_display(
-                                        &adb.shell("getprop ro.config.lgsi.fp.incremental")
-                                            .unwrap_or_default(),
-                                    );
+                                    let fw_raw = adb
+                                        .shell("getprop ro.config.lgsi.fp.incremental")
+                                        .unwrap_or_default();
+                                    r.firmware = trim_build_display(&fw_raw);
+                                    r.firmware_full = fw_raw.trim().to_string();
                                     r.arb = arb_from_model(&r.model).to_string();
                                     let hwboard =
                                         adb.shell("getprop ro.boot.hwboardid").unwrap_or_default();
@@ -8647,9 +8661,9 @@ impl App {
                                     let vars = dev.get_all_vars().unwrap_or_default();
                                     r.model = vars.model.unwrap_or_default();
                                     r.slot = vars.current_slot.unwrap_or_default();
-                                    r.firmware = trim_build_display(
-                                        &vars.build_display_id.unwrap_or_default(),
-                                    );
+                                    let fw_raw = vars.build_display_id.unwrap_or_default();
+                                    r.firmware = trim_build_display(&fw_raw);
+                                    r.firmware_full = fw_raw.trim().to_string();
                                     r.ram = vars.ram_gb.unwrap_or_default();
                                     r.storage = vars.storage_gb.unwrap_or_default();
                                     r.market_name = vars.product.unwrap_or_default();
@@ -8698,6 +8712,9 @@ impl App {
                 if !r.firmware.is_empty() {
                     self.device_firmware = r.firmware;
                 }
+                if !r.firmware_full.is_empty() {
+                    self.device_firmware_full = r.firmware_full;
+                }
                 if !r.arb.is_empty() {
                     self.device_arb = r.arb;
                 }
@@ -8718,6 +8735,7 @@ impl App {
                     self.device_model.clear();
                     self.device_slot.clear();
                     self.device_firmware.clear();
+                    self.device_firmware_full.clear();
                     self.device_arb.clear();
                     self.device_ram.clear();
                     self.device_storage.clear();
@@ -8805,7 +8823,18 @@ impl App {
             }
             Message::OtaOpen => {
                 let serial = self.device_serial.trim().to_string();
-                let firmware_id = self.device_firmware.trim().to_string();
+                // Pass the untrimmed firmware id to the OTA endpoint —
+                // Lenovo's `querynewfirmware` keys against the full
+                // `ro.build.display.id` value (model prefix included),
+                // so the dashboard's display-trimmed form would silently
+                // miss every match. Fall back to the trimmed dashboard
+                // value only when the full mirror is empty (older poll
+                // result that never populated the field).
+                let firmware_id = if !self.device_firmware_full.is_empty() {
+                    self.device_firmware_full.trim().to_string()
+                } else {
+                    self.device_firmware.trim().to_string()
+                };
                 if serial.is_empty() || firmware_id.is_empty() {
                     return Task::none();
                 }
