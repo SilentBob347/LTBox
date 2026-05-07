@@ -7060,30 +7060,29 @@ impl App {
                             // shell that won't come.
                             let mut kernel_version: Option<String> = gui_kernel_version.clone();
                             let mut adb_ready_at_start = false;
-                            if !skip_adb {
-                                if let Some(adb) =
+                            if !skip_adb
+                                && let Some(adb) =
                                     ltbox_device::adb::AdbManager::new_if_connected()
-                                {
-                                    adb_ready_at_start = true;
-                                    if mode == Some(RootMode::Lkm) {
-                                        if let Ok(Some(kv)) = adb.get_kernel_version() {
-                                            let normalized =
-                                                ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv);
-                                            live!(
-                                                log,
-                                                "[ADB] {}",
-                                                ltbox_core::i18n::tr("live_adb_kernel_version")
-                                                    .replace(
-                                                        "{version}",
-                                                        normalized.as_deref().unwrap_or(&kv),
-                                                    )
-                                            );
-                                            if let Some(kv) = normalized {
-                                                kernel_version = Some(kv);
-                                            }
-                                        } else {
-                                            live!(log, "[ADB] {}", ll.adb_no_kver);
+                            {
+                                adb_ready_at_start = true;
+                                if mode == Some(RootMode::Lkm) {
+                                    if let Ok(Some(kv)) = adb.get_kernel_version() {
+                                        let normalized =
+                                            ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv);
+                                        live!(
+                                            log,
+                                            "[ADB] {}",
+                                            ltbox_core::i18n::tr("live_adb_kernel_version")
+                                                .replace(
+                                                    "{version}",
+                                                    normalized.as_deref().unwrap_or(&kv),
+                                                )
+                                        );
+                                        if let Some(kv) = normalized {
+                                            kernel_version = Some(kv);
                                         }
+                                    } else {
+                                        live!(log, "[ADB] {}", ll.adb_no_kver);
                                     }
                                 }
                             }
