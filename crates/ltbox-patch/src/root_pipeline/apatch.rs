@@ -7,8 +7,7 @@ use fs_err as fs;
 
 use ltbox_core::downloader::download_to_file;
 use ltbox_core::github::GitHubClient;
-use ltbox_core::i18n::tr;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 use super::magisk::fetch_nightly_apk_outer_zip;
 use super::{RootProvider, provider_repo, resolve_nightly_run};
@@ -33,9 +32,11 @@ fn extract_kpimg_from_apk(
     ltbox_core::live!(
         log,
         "[APatch] {}",
-        tr("log_apatch_extracted_kpimg")
-            .replace("{path}", &kpimg_dst.display().to_string())
-            .replace("{bytes}", &size.to_string())
+        tr_args!(
+            "log_apatch_extracted_kpimg",
+            path = kpimg_dst.display(),
+            bytes = size,
+        )
     );
     Ok(())
 }
@@ -61,9 +62,7 @@ pub fn download_apatch_payload(
     ltbox_core::live!(
         log,
         "[APatch] {repo} {}",
-        tr("log_release_latest_asset")
-            .replace("{tag}", &tag)
-            .replace("{name}", &name)
+        tr_args!("log_release_latest_asset", tag = tag, name = name)
     );
 
     let apk_path = work_dir.join("apatch.apk");
@@ -115,7 +114,7 @@ pub fn download_apatch_payload_nightly(
     ltbox_core::live!(
         log,
         "[APatch] {repo} {}",
-        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
+        tr_args!("log_nightly_artifact", artifact = artifact_name)
     );
     // Canonical apk path so Stable / Nightly share downstream steps.
     let apk_path = work_dir.join("apatch.apk");

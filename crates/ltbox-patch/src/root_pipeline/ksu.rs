@@ -12,7 +12,7 @@ use fs_err as fs;
 use ltbox_core::downloader::download_to_file;
 use ltbox_core::github::GitHubClient;
 use ltbox_core::i18n::tr;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 use super::apatch::{download_apatch_payload, download_apatch_payload_nightly};
 use super::apk::{
@@ -45,9 +45,7 @@ fn download_ksu_manager_apk_stable(
     ltbox_core::live!(
         log,
         "[KSU] {repo} {}",
-        tr("log_release_latest_asset")
-            .replace("{tag}", &tag)
-            .replace("{name}", &name)
+        tr_args!("log_release_latest_asset", tag = tag, name = name)
     );
     let asset_path = work_dir.join(&name);
     download_to_file(&url, &asset_path, log)?;
@@ -80,7 +78,7 @@ fn download_ksu_manager_apk_nightly(
     ltbox_core::live!(
         log,
         "[KSU] {repo} {}",
-        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
+        tr_args!("log_nightly_artifact", artifact = artifact_name)
     );
     fetch_nightly_apk_outer_zip(
         "KSU",
@@ -128,8 +126,7 @@ pub fn stage_root_manager_apk(
                 ltbox_core::live!(
                     log,
                     "[Magisk] {}",
-                    tr("log_magisk_staged_fork_apk")
-                        .replace("{path}", &manager_apk.display().to_string())
+                    tr_args!("log_magisk_staged_fork_apk", path = manager_apk.display())
                 );
             }
             (_, RootVersion::Stable) => {
@@ -178,7 +175,7 @@ pub fn stage_root_manager_apk(
             ltbox_core::live!(
                 log,
                 "[APatch] {}",
-                tr("log_staged_manager_apk").replace("{path}", &manager_apk.display().to_string())
+                tr_args!("log_staged_manager_apk", path = manager_apk.display())
             );
         }
     }
@@ -270,7 +267,7 @@ pub fn download_ksu_payload(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_latest_release").replace("{tag}", &tag)
+        tr_args!("log_ksu_latest_release", tag = tag)
     );
 
     // -------- 1. Per-kernel `.ko` from release assets --------
@@ -292,7 +289,7 @@ pub fn download_ksu_payload(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_downloading_lkm").replace("{name}", &ko_name)
+        tr_args!("log_ksu_downloading_lkm", name = ko_name)
     );
     fs::create_dir_all(staging_dir)?;
     let ko_path = staging_dir.join("kernelsu.ko");
@@ -325,7 +322,7 @@ pub fn download_ksu_payload(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_downloading_ksuinit").replace("{name}", &ksuinit_artifact)
+        tr_args!("log_ksu_downloading_ksuinit", name = ksuinit_artifact)
     );
     let tmp_zip = staging_dir.join(format!("{ksuinit_artifact}.zip"));
     download_to_file(&nightly_url, &tmp_zip, log)?;
@@ -357,7 +354,7 @@ pub fn download_ksu_payload(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_staged_init_lkm").replace("{bytes}", &buf.len().to_string())
+        tr_args!("log_ksu_staged_init_lkm", bytes = buf.len())
     );
     Ok(())
 }
@@ -402,7 +399,7 @@ pub fn download_ksu_payload_nightly(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_nightly_lkm_artifact").replace("{artifact}", &ko_artifact)
+        tr_args!("log_ksu_nightly_lkm_artifact", artifact = ko_artifact)
     );
     let ko_zip_path = staging_dir.join("ksu_nightly_lkm.zip");
     let ko_url = nightly_artifact_url(repo, run_id, &ko_artifact);
@@ -442,7 +439,7 @@ pub fn download_ksu_payload_nightly(
     ltbox_core::live!(
         log,
         "[KSU] {}",
-        tr("log_ksu_nightly_ksuinit_artifact").replace("{artifact}", &init_artifact)
+        tr_args!("log_ksu_nightly_ksuinit_artifact", artifact = init_artifact)
     );
     let init_zip_path = staging_dir.join("ksu_nightly_init.zip");
     let init_url = nightly_artifact_url(repo, run_id, &init_artifact);

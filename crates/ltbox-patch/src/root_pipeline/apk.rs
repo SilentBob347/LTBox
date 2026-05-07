@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use fs_err as fs;
 
-use ltbox_core::i18n::tr;
+use ltbox_core::tr_args;
 use ltbox_core::{LtboxError, Result};
 
 use super::RootProvider;
@@ -203,9 +203,11 @@ pub(super) fn extract_first_apk_from_zip(
     ltbox_core::live!(
         log,
         "[{log_tag}] {}",
-        tr("log_extracted_manager_apk")
-            .replace("{member}", &member_name)
-            .replace("{path}", &output_path.display().to_string())
+        tr_args!(
+            "log_extracted_manager_apk",
+            member = member_name,
+            path = output_path.display(),
+        )
     );
     Ok(true)
 }
@@ -225,7 +227,7 @@ pub(super) fn stage_manager_from_downloaded_asset(
         ltbox_core::live!(
             log,
             "[{log_tag}] {}",
-            tr("log_staged_manager_apk").replace("{path}", &manager_apk.display().to_string())
+            tr_args!("log_staged_manager_apk", path = manager_apk.display())
         );
         return Ok(());
     }

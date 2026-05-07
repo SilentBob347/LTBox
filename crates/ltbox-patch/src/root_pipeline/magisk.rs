@@ -10,8 +10,7 @@ use fs_err as fs;
 
 use ltbox_core::downloader::download_to_file;
 use ltbox_core::github::GitHubClient;
-use ltbox_core::i18n::tr;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 use super::apk::{collect_apks_recursive, pick_preferred_apk_path};
 use super::{RootProvider, nightly_artifact_url, provider_repo, resolve_nightly_run};
@@ -36,9 +35,7 @@ pub fn download_latest_magisk_apk(
     ltbox_core::live!(
         log,
         "[Magisk] {}",
-        tr("log_release_latest_asset")
-            .replace("{tag}", &tag)
-            .replace("{name}", &name)
+        tr_args!("log_release_latest_asset", tag = tag, name = name)
     );
     download_to_file(&url, dst_path, log)?;
     Ok(tag)
@@ -96,7 +93,7 @@ pub(super) fn fetch_nightly_apk_outer_zip(
     ltbox_core::live!(
         log,
         "[{log_tag}] {}",
-        tr("log_staged_nightly_apk").replace("{path}", &dst_apk.display().to_string())
+        tr_args!("log_staged_nightly_apk", path = dst_apk.display())
     );
     Ok(())
 }
@@ -143,7 +140,7 @@ pub fn download_magisk_apk_nightly(
     ltbox_core::live!(
         log,
         "[Magisk] {repo} {}",
-        tr("log_nightly_artifact").replace("{artifact}", &artifact_name)
+        tr_args!("log_nightly_artifact", artifact = artifact_name)
     );
     fetch_nightly_apk_outer_zip(
         "Magisk",

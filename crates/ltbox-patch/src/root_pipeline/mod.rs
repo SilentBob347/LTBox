@@ -11,7 +11,7 @@ use fs_err as fs;
 
 use ltbox_core::github::GitHubClient;
 use ltbox_core::i18n::tr;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 use crate::{avb, gki, key_map};
 
@@ -164,10 +164,12 @@ pub(super) fn resolve_nightly_run(
             ltbox_core::live!(
                 log,
                 "[Nightly] {repo}: {}",
-                tr("log_nightly_validating_manual")
-                    .replace("{id}", &id.to_string())
-                    .replace("{workflow}", workflow_file)
-                    .replace("{branch}", branch)
+                tr_args!(
+                    "log_nightly_validating_manual",
+                    id = id,
+                    workflow = workflow_file,
+                    branch = branch,
+                )
             );
             if !client.workflow_run_matches(id, workflow_file, Some(branch))? {
                 return Err(LtboxError::Patch(format!(
@@ -180,9 +182,11 @@ pub(super) fn resolve_nightly_run(
             ltbox_core::live!(
                 log,
                 "[Nightly] {repo}: {}",
-                tr("log_nightly_auto_detect")
-                    .replace("{workflow}", workflow_file)
-                    .replace("{branch}", branch)
+                tr_args!(
+                    "log_nightly_auto_detect",
+                    workflow = workflow_file,
+                    branch = branch,
+                )
             );
             client
                 .latest_successful_run(workflow_file, Some(branch))?
@@ -196,7 +200,7 @@ pub(super) fn resolve_nightly_run(
     ltbox_core::live!(
         log,
         "[Nightly] {repo}: {}",
-        tr("log_nightly_using_run_id").replace("{id}", &run_id.to_string())
+        tr_args!("log_nightly_using_run_id", id = run_id)
     );
     Ok((repo, run_id))
 }
@@ -356,8 +360,10 @@ pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Re
                     ltbox_core::live!(
                         log,
                         "[KSU] {}",
-                        tr("log_ksu_fetching_nightly")
-                            .replace("{run_id}", &format!("{:?}", cfg.nightly_run_id))
+                        tr_args!(
+                            "log_ksu_fetching_nightly",
+                            run_id = format!("{:?}", cfg.nightly_run_id),
+                        )
                     );
                     download_ksu_payload_nightly(
                         cfg.provider,
@@ -438,7 +444,7 @@ pub fn build_patched_artifacts(
         ltbox_core::live!(
             log,
             "[GKI] {}",
-            tr("log_gki_kernel_zip").replace("{path}", &kernel_zip.display().to_string())
+            tr_args!("log_gki_kernel_zip", path = kernel_zip.display())
         );
         gki::patch_boot(&cfg.work_dir, kernel_zip, log)?
     } else {
@@ -455,9 +461,11 @@ pub fn build_patched_artifacts(
                 ltbox_core::live!(
                     log,
                     "[APatch] {}",
-                    tr("log_apatch_patching_boot")
-                        .replace("{kpm_count}", &cfg.kpm_paths.len().to_string())
-                        .replace("{superkey_len}", &cfg.superkey.len().to_string())
+                    tr_args!(
+                        "log_apatch_patching_boot",
+                        kpm_count = cfg.kpm_paths.len(),
+                        superkey_len = cfg.superkey.len(),
+                    )
                 );
                 crate::apatch::patch_boot(&cfg.work_dir, &cfg.kpm_paths, &cfg.superkey, log)?
             }
