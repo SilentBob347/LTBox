@@ -10509,6 +10509,22 @@ impl App {
         self.device_model.eq_ignore_ascii_case("TB320FC")
     }
 
+    /// True when the dashboard poll has placed the device in a mode
+    /// any wizard can transition out of (`ensure_*` helpers + the
+    /// flash/sysupdate bridges). Used to gate every wizard's final
+    /// "Start" button — `None` and `AdbUnauthorized` mean we can't
+    /// even start the operation, so spawning a worker that would
+    /// immediately bail with "no device" is just noise.
+    fn device_reachable(&self) -> bool {
+        matches!(
+            self.connection,
+            ConnectionStatus::Adb
+                | ConnectionStatus::AdbRecovery
+                | ConnectionStatus::Fastboot
+                | ConnectionStatus::Edl
+        )
+    }
+
     /// Re-populate `ota_changelog_editor` from the current popup
     /// state. Picks `desc_cn` for the Chinese GUI locale (with
     /// `desc_en` fallback when `desc_cn` is empty), `desc_en`
@@ -11385,7 +11401,9 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            let can = self.flash.can_next() && !(self.busy && is_start);
+            let can = self.flash.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav_generic(
                 self.flash.step > 0,
                 &label_owned,
@@ -11722,7 +11740,9 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            let can = self.sysupdate.can_next() && !(self.busy && is_start);
+            let can = self.sysupdate.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav_generic(
                 self.sysupdate.step > 0,
                 &label_owned,
@@ -12367,7 +12387,9 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            let can = self.unroot.can_next() && !(self.busy && is_start);
+            let can = self.unroot.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav_generic(
                 self.unroot.step > 0,
                 &label_owned,
@@ -12617,7 +12639,9 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            let can = self.root.can_next() && !(self.busy && is_start);
+            let can = self.root.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav(self.root.step > 0, &label_owned, can, self.t("btn_back"))
         } else {
             container(text("")).into()
@@ -13717,6 +13741,13 @@ impl App {
             // path) or no requirement at all (other models — Start is
             // always enabled). Other wizards keep the standard
             // `can_next` check.
+            let is_start = is_confirm || detect_arb_step0;
+            // Most advanced operations (RegionConvert / PatchDevinfo /
+            // PatchArb / RebuildVbmeta) are folder-only and don't need
+            // a connected device. The ones that DO touch the device
+            // (DetectArb, ConvertXml stays offline so excluded) get
+            // the reachability gate at the Start step.
+            let needs_device = matches!(self.adv_wizard.action, Some(AdvAction::DetectArb));
             let can = if detect_arb_step0 {
                 if self.device_model.eq_ignore_ascii_case("TB320FC") {
                     self.adv_wizard.file_path.is_some()
@@ -13725,7 +13756,8 @@ impl App {
                 }
             } else {
                 self.adv_wizard.can_next()
-            } && !self.busy;
+            } && !self.busy
+                && (!is_start || !needs_device || self.device_reachable());
             wizard_nav_generic(
                 true,
                 &label,
@@ -14267,7 +14299,9 @@ impl App {
                 _ => self.t("btn_next").to_string(),
             };
             let is_start = self.flash_parts.step == 2 || self.flash_parts.step == 0;
-            let can = self.flash_parts.can_next() && !(self.busy && is_start);
+            let can = self.flash_parts.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav_generic(
                 true,
                 &label,
@@ -14631,7 +14665,10 @@ impl App {
             } else {
                 self.t("btn_scan").to_string()
             };
-            let can = self.dump_parts.can_next() && !self.busy;
+            // DumpParts touches EDL on both Scan (step 0) and Dump
+            // (step 1) — both spawn workers that talk to the device.
+            // Gate both buttons on reachability.
+            let can = self.dump_parts.can_next() && !self.busy && self.device_reachable();
             wizard_nav_generic(
                 true,
                 &label,
@@ -14846,7 +14883,9 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            let can = self.dump_phys.can_next() && !self.busy;
+            // DumpPhys talks to EDL — gate both Scan + Dump on a
+            // reachable device.
+            let can = self.dump_phys.can_next() && !self.busy && self.device_reachable();
             wizard_nav_generic(
                 true,
                 &label,
@@ -15005,7 +15044,9 @@ impl App {
                 _ => self.t("btn_next").to_string(),
             };
             let is_start = self.flash_phys.step == 2;
-            let can = self.flash_phys.can_next() && !(self.busy && is_start);
+            let can = self.flash_phys.can_next()
+                && !(self.busy && is_start)
+                && (!is_start || self.device_reachable());
             wizard_nav_generic(
                 true,
                 &label,
@@ -15330,10 +15371,18 @@ impl App {
                         ..Default::default()
                     }
                 }),
-                button(text(self.t("btn_reboot_confirm").to_string()).size(13))
-                    .on_press(Message::Reboot(RebootMsg::RebootConfirm))
-                    .padding([8, 18])
-                    .style(md_filled_btn_style),
+                {
+                    // Mid-popup disconnect → drop the on_press so the
+                    // confirm button reads as disabled instead of
+                    // firing a reboot worker on a vanished transport.
+                    let mut b = button(text(self.t("btn_reboot_confirm").to_string()).size(13))
+                        .padding([8, 18])
+                        .style(md_filled_btn_style);
+                    if self.device_reachable() {
+                        b = b.on_press(Message::Reboot(RebootMsg::RebootConfirm));
+                    }
+                    b
+                },
             ]
             .spacing(10)
             .align_y(iced::Alignment::Center),
@@ -15511,6 +15560,22 @@ fn wizard_nav<'a>(
 /// M3 filled button — primary bg + state-layer overlay on hover/press.
 fn md_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
     let p = pal_of(t);
+    // M3 spec: disabled filled button = `on_surface @ 12%` background +
+    // `on_surface @ 38%` label. Without this branch, dropping `on_press`
+    // left the button looking identical to the active primary fill —
+    // the only cue was the cursor not flipping to a pointer, which
+    // users on touch / stable-pointer setups never noticed.
+    if matches!(status, button::Status::Disabled) {
+        return button::Style {
+            background: Some(with_alpha(p.on_surface, 0.12).into()),
+            text_color: with_alpha(p.on_surface, 0.38),
+            border: iced::Border {
+                radius: theme::shape::FULL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
     let state_alpha = match status {
         button::Status::Hovered => theme::state::HOVER,
         button::Status::Pressed => theme::state::PRESSED,
