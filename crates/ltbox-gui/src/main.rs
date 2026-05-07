@@ -9945,14 +9945,10 @@ impl App {
                     .color(iced::Color::from_rgb(0.9, 0.2, 0.2)),
                 text(e.clone()).size(11).style(muted_style),
                 Space::new().height(8),
-                button(
-                    text(self.t("btn_retry").to_string())
-                        .size(12)
-                        .color(iced::Color::WHITE),
-                )
-                .on_press(Message::DeviceInfoRetry)
-                .padding([6, 18])
-                .style(md_filled_btn_style),
+                button(text(self.t("btn_retry").to_string()).size(12))
+                    .on_press(Message::DeviceInfoRetry)
+                    .padding([6, 18])
+                    .style(md_filled_btn_style),
             ]
             .spacing(8)
             .into(),
@@ -9995,14 +9991,10 @@ impl App {
             }
         };
 
-        let close_btn = button(
-            text(self.t("btn_close").to_string())
-                .size(12)
-                .color(iced::Color::WHITE),
-        )
-        .on_press(Message::DeviceInfoClose)
-        .padding([6, 18])
-        .style(md_filled_btn_style);
+        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
+            .on_press(Message::DeviceInfoClose)
+            .padding([6, 18])
+            .style(md_filled_btn_style);
 
         let content = column![
             header,
@@ -10046,14 +10038,10 @@ impl App {
                     .color(iced::Color::from_rgb(0.9, 0.2, 0.2)),
                 text(e.clone()).size(11).style(muted_style),
                 Space::new().height(8),
-                button(
-                    text(self.t("btn_retry").to_string())
-                        .size(12)
-                        .color(iced::Color::WHITE),
-                )
-                .on_press(Message::OtaRetry)
-                .padding([6, 18])
-                .style(md_filled_btn_style),
+                button(text(self.t("btn_retry").to_string()).size(12))
+                    .on_press(Message::OtaRetry)
+                    .padding([6, 18])
+                    .style(md_filled_btn_style),
             ]
             .spacing(8)
             .into(),
@@ -10144,26 +10132,18 @@ impl App {
             OtaPopupState::Ready(u) if !u.download_url.is_empty() => Some(u.download_url.clone()),
             _ => None,
         };
-        let close_btn = button(
-            text(self.t("btn_close").to_string())
-                .size(12)
-                .color(iced::Color::WHITE),
-        )
-        .on_press(Message::OtaClose)
-        .padding([6, 18])
-        .style(md_filled_btn_style);
+        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
+            .on_press(Message::OtaClose)
+            .padding([6, 18])
+            .style(md_filled_btn_style);
         let mut action_row = iced::widget::row![Space::new().width(Length::Fill)]
             .spacing(8)
             .align_y(iced::Alignment::Center);
         if let Some(url) = download_url {
-            let download_btn = button(
-                text(self.t("ota_popup_download").to_string())
-                    .size(12)
-                    .color(iced::Color::WHITE),
-            )
-            .on_press(Message::OtaOpenDownload(url))
-            .padding([6, 18])
-            .style(md_filled_btn_style);
+            let download_btn = button(text(self.t("ota_popup_download").to_string()).size(12))
+                .on_press(Message::OtaOpenDownload(url))
+                .padding([6, 18])
+                .style(md_filled_btn_style);
             action_row = action_row.push(download_btn);
         }
         action_row = action_row.push(close_btn);
