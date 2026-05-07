@@ -2992,7 +2992,7 @@ impl AdvWizard {
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::RebuildVbmeta) => ("Android partition image (*.img)", &["img"]),
-            Some(AdvAction::DetectArb) => ("EDL loader (.melf)", &["melf"]),
+            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml)", &["melf", "xml"]),
             _ => ("", &[]),
         }
     }
@@ -3329,11 +3329,15 @@ fn pick_folder_task(
 
 fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
     // LTBox-supported devices ship `xbl_s_devprg_ns.melf` as the only
-    // viable Firehose loader, so the picker only accepts `.melf`.
-    // Filename itself is not enforced — a user-renamed copy of the same
-    // .melf still works. `.mbn` / `.elf` were dropped since neither has
-    // ever produced a successful flash on the supported hardware.
-    pickers::FilePickSpec::single(target_i18n_key).with_filter("EDL loader (.melf)", &["melf"])
+    // viable Firehose loader, so the picker accepts `.melf`. TB323FU
+    // (kaanapali chipset) uses a multi-image manifest instead — a
+    // `qsahara_device_programmer.xml` enumerating the per-id ELF /
+    // MBN payloads — so the picker also accepts `.xml`. Filename
+    // itself is not enforced for the .melf case; the model-aware
+    // resolver upgrades a TB323FU `.melf` selection to the manifest
+    // sitting next to it.
+    pickers::FilePickSpec::single(target_i18n_key)
+        .with_filter("EDL loader (.melf / .xml)", &["melf", "xml"])
 }
 
 /// Wrap a heavy blocking flow as a `Task<Message>`. Runs `f` on the
@@ -4654,11 +4658,33 @@ impl App {
         let path = std::path::Path::new(selected_path);
         if path.is_file() {
             self.remember_recent(pickers::PickerKind::File, selected_path);
+            // TB323FU model gate: if the user picked a `.melf` but the
+            // device is a multi-image kaanapali (TB323FU), upgrade to
+            // the `qsahara_device_programmer.xml` manifest sitting in
+            // the same folder. If the manifest is missing the .melf
+            // alone is wrong and would fail mid-Sahara — abort up
+            // front. Performed during resolve so the wizard's Confirm
+            // step shows the correct path.
+            if self.is_tb323fu()
+                && is_melf_loader(path)
+                && let Some(parent) = path.parent()
+            {
+                let manifest = parent.join(ltbox_core::sahara_xml::MANIFEST_FILENAME);
+                if manifest.exists() {
+                    return Ok(manifest.to_string_lossy().to_string());
+                }
+                return Err(format!(
+                    "TB323FU requires a multi-image loader manifest. \
+                     Pick `qsahara_device_programmer.xml` directly, or \
+                     place it next to the chosen .melf file ({}).",
+                    path.display()
+                ));
+            }
             if is_loader_file(path) {
                 return Ok(selected_path.to_string());
             }
             return Err(format!(
-                "Unsupported loader file: {selected_path} (expected .melf, .mbn, or .elf)"
+                "Unsupported loader file: {selected_path} (expected .melf, .mbn, .elf, or .xml)"
             ));
         }
 
@@ -6103,19 +6129,20 @@ impl App {
                                         ));
                                     }
                                     // User spec: extension-only check —
-                                    // accept any `.melf` / `.mbn` / `.elf`
-                                    // regardless of filename, mirroring the
-                                    // root-pipeline rule.
+                                    // accept `.melf` / `.mbn` / `.elf`
+                                    // single-blob loaders OR `.xml`
+                                    // (TB323FU multi-image manifest)
+                                    // regardless of filename.
                                     let ext_ok = loader
                                         .extension()
                                         .and_then(|e| e.to_str())
                                         .is_some_and(|e| {
                                             let l = e.to_ascii_lowercase();
-                                            l == "melf" || l == "mbn" || l == "elf"
+                                            l == "melf" || l == "mbn" || l == "elf" || l == "xml"
                                         });
                                     if !ext_ok {
                                         return Err(format!(
-                                            "Boot Recovery: loader must be .melf / .mbn / .elf, got: {}",
+                                            "Boot Recovery: loader must be .melf / .mbn / .elf / .xml, got: {}",
                                             loader.display()
                                         ));
                                     }
@@ -10550,6 +10577,18 @@ impl App {
     /// only KernelSU GKI + APatch family work cleanly on this kernel).
     fn is_tb320fc(&self) -> bool {
         self.device_model.eq_ignore_ascii_case("TB320FC")
+    }
+
+    /// Whether the polled device is a TB323FU. Drives the multi-image
+    /// EDL loader path: TB323FU's kaanapali chipset doesn't accept a
+    /// single `xbl_s_devprg_ns.melf`; it needs the full
+    /// `qsahara_device_programmer.xml` manifest + the per-id ELF /
+    /// MBN payloads it references. The loader resolver upgrades a
+    /// stray `.melf` selection to the manifest when one exists in
+    /// the same folder; if not, it aborts up front rather than
+    /// failing mid-Sahara.
+    fn is_tb323fu(&self) -> bool {
+        self.device_model.eq_ignore_ascii_case("TB323FU")
     }
 
     /// True when the dashboard poll has placed the device in a mode
@@ -16643,6 +16682,14 @@ fn flash_physical_execute(
 
 /// Locate a testkey PEM. Checks the image's folder, then `./keys/`.
 fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    // TB323FU multi-image manifest takes precedence over the
+    // single-.melf form when both are present (the manifest references
+    // the per-id payloads and a stray `xbl_s_devprg_ns.melf` next to
+    // it would not be the right loader for that device).
+    let manifest = dir.join(ltbox_core::sahara_xml::MANIFEST_FILENAME);
+    if manifest.exists() {
+        return Some(manifest);
+    }
     let candidate = dir.join("xbl_s_devprg_ns.melf");
     if candidate.exists() {
         return Some(candidate);
@@ -16650,6 +16697,9 @@ fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name == ltbox_core::sahara_xml::MANIFEST_FILENAME {
+                return Some(entry.path());
+            }
             if name == "xbl_s_devprg_ns.melf" {
                 return Some(entry.path());
             }
@@ -16659,6 +16709,27 @@ fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 fn is_loader_file(path: &std::path::Path) -> bool {
+    // `.xml` covers TB323FU's `qsahara_device_programmer.xml` multi-
+    // image manifest. `EdlSession::open` branches on the manifest
+    // filename (case-insensitive) — any other `.xml` file would fail
+    // there with a parse error rather than silently picking up the
+    // single-loader path.
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "melf" | "mbn" | "elf" | "xml"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Whether `path`'s extension is one of the single-blob loader formats
+/// (`.melf` / `.mbn` / `.elf`). Used by the TB323FU manifest-upgrade
+/// gate to decide whether to look for a sibling manifest — `.xml` is
+/// excluded so a manifest selection isn't recursively re-resolved.
+fn is_melf_loader(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "melf" | "mbn" | "elf"))

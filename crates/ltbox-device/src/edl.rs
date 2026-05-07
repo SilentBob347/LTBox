@@ -219,20 +219,51 @@ impl EdlSession {
         let port = wait_for_stable_port()?;
         ltbox_core::live!(log, "[EDL] {} {port}", tr("log_edl_found_on"));
 
-        ltbox_core::live!(
-            log,
-            "[EDL] {} {}",
-            tr("log_edl_loading_programmer"),
-            loader_path.display()
-        );
-        let mbn = std::fs::read(loader_path)
-            .map_err(|e| EdlError::Session(format!("Failed to read loader: {e}")))?;
-        ltbox_core::live!(
-            log,
-            "[EDL] {} {} bytes",
-            tr("log_edl_programmer_size"),
-            mbn.len()
-        );
+        // Multi-image manifest path (TB323FU / kaanapali): load every
+        // referenced ELF / MBN into a slot array indexed by Sahara
+        // image-id. Single-loader path (.melf / .mbn / .elf):
+        // one-element slice with the loader at slot 0 — preserves the
+        // pre-multi-image call shape for every other supported
+        // device.
+        let mut slots: Vec<Option<Vec<u8>>> =
+            if ltbox_core::sahara_xml::is_manifest_filename(loader_path) {
+                ltbox_core::live!(
+                    log,
+                    "[EDL] {} {}",
+                    tr("log_edl_loading_programmer"),
+                    loader_path.display()
+                );
+                let (slots, paths) = ltbox_core::sahara_xml::load_image_slots(loader_path)
+                    .map_err(|e| EdlError::Session(format!("Sahara manifest: {e}")))?;
+                let total: usize = slots
+                    .iter()
+                    .filter_map(|s| s.as_ref().map(|b| b.len()))
+                    .sum();
+                ltbox_core::live!(
+                    log,
+                    "[EDL] {} ({} images, {} bytes total)",
+                    tr("log_edl_programmer_size"),
+                    paths.len(),
+                    total
+                );
+                slots
+            } else {
+                ltbox_core::live!(
+                    log,
+                    "[EDL] {} {}",
+                    tr("log_edl_loading_programmer"),
+                    loader_path.display()
+                );
+                let mbn = std::fs::read(loader_path)
+                    .map_err(|e| EdlError::Session(format!("Failed to read loader: {e}")))?;
+                ltbox_core::live!(
+                    log,
+                    "[EDL] {} {} bytes",
+                    tr("log_edl_programmer_size"),
+                    mbn.len()
+                );
+                vec![Some(mbn)]
+            };
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_serial_transport"));
         let rw = qdl::setup_target_device(QdlBackend::Serial, None, Some(port.clone()))
@@ -253,16 +284,17 @@ impl EdlSession {
         };
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_uploading"));
-        // Upstream qdl's `sahara_run` takes `&mut [Option<Vec<u8>>]`
-        // so the caller can leave slots empty for absent images
-        // (multi-image cmd-mode callers). LTBox uploads exactly one
-        // loader (the .melf), so a single-element slice with `Some`
-        // is the equivalent of the fork's `&mut [Vec<u8>]` signature.
+        // Upstream qdl's `sahara_run` indexes `img_arr` by image-id when
+        // `len() > 1`; a length-1 slice falls back to slot 0 regardless
+        // of the requested id. Single-loader devices stay on the
+        // 1-element path; TB323FU's manifest produces a sparse array
+        // sized to (max id + 1) so the device's id-driven requests land
+        // on the right buffer.
         qdl::sahara::sahara_run(
             &mut dev,
             qdl::sahara::SaharaMode::WaitingForImage,
             None,
-            &mut [Some(mbn)],
+            &mut slots,
             vec![],
             false,
         )
