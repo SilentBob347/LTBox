@@ -28,8 +28,11 @@ pub struct OtaUpdate {
     pub to: String,
     /// MD5 hex of the upgrade package.
     pub md5: String,
-    /// Package size in bytes.
-    pub size_bytes: u64,
+    /// Package size in bytes. `None` when the upstream `<size>` field
+    /// was missing or didn't parse as a `u64` — distinct from `Some(0)`
+    /// (a real, if unusual, zero-byte payload) so callers can render
+    /// "unknown" instead of silently displaying "0.0 MB".
+    pub size_bytes: Option<u64>,
     /// English changelog (`<desc_en>`), CDATA stripped.
     pub desc_en: String,
     /// Simplified-Chinese changelog (`<desc_cn>`), CDATA stripped.
@@ -98,7 +101,12 @@ pub fn parse_ota_xml(xml: &str) -> Result<Option<OtaUpdate>> {
         None => (name.clone(), String::new()),
     };
     let md5 = text_of("md5");
-    let size_bytes = text_of("size").parse::<u64>().unwrap_or(0);
+    let size_raw = text_of("size");
+    let size_bytes = if size_raw.is_empty() {
+        None
+    } else {
+        size_raw.parse::<u64>().ok()
+    };
     let desc_en = text_of("desc_en");
     let desc_cn = text_of("desc_cn");
     let download_url = text_of("downloadurl");
@@ -128,8 +136,13 @@ fn strip_cdata(s: &str) -> String {
     trimmed.to_string()
 }
 
-/// Render a byte count as `MB` below 1 GB, otherwise `GB` (one decimal).
-pub fn format_size(bytes: u64) -> String {
+/// Render a byte count as `MB` below 1 GB, otherwise `GB`. `None`
+/// renders as a literal `?` so the popup distinguishes "unknown size"
+/// from a parsed zero.
+pub fn format_size(bytes: Option<u64>) -> String {
+    let Some(bytes) = bytes else {
+        return "?".to_string();
+    };
     const ONE_GB: u64 = 1_000_000_000;
     if bytes >= ONE_GB {
         let gb = bytes as f64 / 1_000_000_000.0;
@@ -185,16 +198,17 @@ mod tests {
         assert_eq!(got.to, "FOO_BAR_OPEN_USER_Y");
         assert_eq!(got.desc_en, "a; b; c");
         assert_eq!(got.md5, "deadbeef");
-        assert_eq!(got.size_bytes, 1_500_000_000);
+        assert_eq!(got.size_bytes, Some(1_500_000_000));
         assert_eq!(got.download_url, "https://example.invalid/x.zip");
     }
 
     #[test]
     fn size_formatter_picks_unit() {
-        assert_eq!(format_size(0), "0.0 MB");
-        assert_eq!(format_size(500_000_000), "500.0 MB");
-        assert_eq!(format_size(1_000_000_000), "1.00 GB");
-        assert_eq!(format_size(2_500_000_000), "2.50 GB");
+        assert_eq!(format_size(Some(0)), "0.0 MB");
+        assert_eq!(format_size(Some(500_000_000)), "500.0 MB");
+        assert_eq!(format_size(Some(1_000_000_000)), "1.00 GB");
+        assert_eq!(format_size(Some(2_500_000_000)), "2.50 GB");
+        assert_eq!(format_size(None), "?");
     }
 
     #[test]
