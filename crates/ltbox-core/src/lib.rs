@@ -12,6 +12,7 @@ pub mod error;
 pub mod github;
 pub mod i18n;
 pub mod lenovo_info;
+pub mod lenovo_ota;
 pub mod live_sink;
 pub mod partition_lun;
 pub mod runtime;

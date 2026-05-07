@@ -3080,6 +3080,18 @@ enum DeviceInfoState {
     Error(String),
 }
 
+/// Loading state for the firmware-OTA popup. Mirrors `DeviceInfoState`
+/// but adds a `NoUpdate` arm — the upstream `<firmwareupdate/>` empty
+/// payload means "no OTA staged for this firmware id" and renders as a
+/// single placeholder line, not as an error banner.
+#[derive(Debug, Clone)]
+enum OtaPopupState {
+    Loading,
+    NoUpdate,
+    Ready(ltbox_core::lenovo_ota::OtaUpdate),
+    Error(String),
+}
+
 /// Parse hwboardid: `"SM8750P_16+512_13"` → `("16 GB", "512 GB")`.
 fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
     let parts: Vec<&str> = hwboardid.split('_').collect();
@@ -3352,6 +3364,23 @@ enum Message {
     DeviceInfoClose,
     /// Retry fetch for the currently open popup serial.
     DeviceInfoRetry,
+    /// Click on the dashboard firmware version. Opens the OTA popup
+    /// and fires the upstream `querynewfirmware` request.
+    OtaOpen,
+    /// Result of the OTA fetch, keyed by the (serial, firmware-id)
+    /// pair the request was started for so a stale device swap can't
+    /// surface the wrong firmware's changelog.
+    OtaFetched(
+        String,
+        String,
+        Result<Option<ltbox_core::lenovo_ota::OtaUpdate>, String>,
+    ),
+    /// User dismissed the OTA popup.
+    OtaClose,
+    /// Retry fetch for the currently open OTA popup query.
+    OtaRetry,
+    /// Open the OTA download URL in the host's default browser.
+    OtaOpenDownload(String),
     /// Copy `payload` to the OS clipboard. Pairs with `ToastShow` so
     /// the user gets a visual confirmation; clipboard writes return a
     /// `Task<Message>` from iced so the second message is chained.
@@ -3750,6 +3779,11 @@ struct App {
     /// state))` → popup open for `serial`; state tracks the in-flight
     /// fetch result so the popup can render a spinner / error / table.
     device_info_popup: Option<(String, DeviceInfoState)>,
+    /// Firmware-OTA popup state. `None` → popup closed. Otherwise the
+    /// tuple carries `(serial, firmware_id, state)` so the retry
+    /// handler can re-issue the same query without recapturing the
+    /// dashboard fields.
+    ota_popup: Option<(String, String, OtaPopupState)>,
     /// PatchArb wizard's unix-timestamp input popup. `true` while the
     /// modal is on screen between picking the firmware folder and the
     /// Confirm step.
@@ -3911,6 +3945,7 @@ impl Default for App {
             device_serial: String::new(),
             device_info_cache: std::collections::HashMap::new(),
             device_info_popup: None,
+            ota_popup: None,
             arb_index_popup_open: false,
             toast_msg: None,
             sidebar_expanded: false,
@@ -8734,6 +8769,75 @@ impl App {
             Message::DeviceInfoClose => {
                 self.device_info_popup = None;
             }
+            Message::OtaOpen => {
+                let serial = self.device_serial.trim().to_string();
+                let firmware_id = self.device_firmware.trim().to_string();
+                if serial.is_empty() || firmware_id.is_empty() {
+                    return Task::none();
+                }
+                self.ota_popup =
+                    Some((serial.clone(), firmware_id.clone(), OtaPopupState::Loading));
+                let s = serial.clone();
+                let f = firmware_id.clone();
+                return task_heavy(
+                    move || {
+                        let result =
+                            ltbox_core::lenovo_ota::fetch_ota(&s, &f).map_err(|e| e.to_string());
+                        (s, f, result)
+                    },
+                    |(s, f, r)| Message::OtaFetched(s, f, r),
+                    |e| (String::new(), String::new(), Err(e)),
+                );
+            }
+            Message::OtaFetched(serial, firmware_id, result) => {
+                // Stale serial/firmware swap (device unplugged mid-fetch
+                // and the popup was closed or reopened against another
+                // device) → drop result silently.
+                let still_relevant = matches!(
+                    &self.ota_popup,
+                    Some((s, f, _)) if s == &serial && f == &firmware_id
+                );
+                if !still_relevant {
+                    return Task::none();
+                }
+                let new_state = match result {
+                    Ok(Some(update)) => OtaPopupState::Ready(update),
+                    Ok(None) => OtaPopupState::NoUpdate,
+                    Err(e) => OtaPopupState::Error(e),
+                };
+                self.ota_popup = Some((serial, firmware_id, new_state));
+            }
+            Message::OtaClose => {
+                self.ota_popup = None;
+            }
+            Message::OtaRetry => {
+                let Some((serial, firmware_id, _)) = self.ota_popup.clone() else {
+                    return Task::none();
+                };
+                self.ota_popup =
+                    Some((serial.clone(), firmware_id.clone(), OtaPopupState::Loading));
+                let s = serial.clone();
+                let f = firmware_id.clone();
+                return task_heavy(
+                    move || {
+                        let result =
+                            ltbox_core::lenovo_ota::fetch_ota(&s, &f).map_err(|e| e.to_string());
+                        (s, f, result)
+                    },
+                    |(s, f, r)| Message::OtaFetched(s, f, r),
+                    |e| (String::new(), String::new(), Err(e)),
+                );
+            }
+            Message::OtaOpenDownload(url) => {
+                // `open::that_detached` hands the URL to the host's
+                // default URL handler — Edge / Firefox / GNOME's
+                // xdg-open chain — so the user gets a real browser
+                // tab, not an in-app webview that we'd have to render
+                // and security-audit.
+                if let Err(e) = open::that_detached(&url) {
+                    tracing::warn!("failed to open OTA download URL: {e}");
+                }
+            }
             Message::CopyToClipboard(payload) => {
                 let toast = self.t("toast_copied").to_string();
                 return iced::clipboard::write::<Message>(payload)
@@ -9591,6 +9695,9 @@ impl App {
         if self.device_info_popup.is_some() {
             layers.push(self.device_info_popup_view());
         }
+        if self.ota_popup.is_some() {
+            layers.push(self.ota_popup_view());
+        }
         if self.arb_index_popup_open {
             layers.push(self.arb_index_popup_view());
         }
@@ -9839,6 +9946,165 @@ impl App {
         let content = column![
             header,
             serial_line,
+            widget::rule::horizontal(1),
+            body,
+            iced::widget::row![Space::new().width(Length::Fill), close_btn]
+                .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12)
+        .padding(20)
+        .width(640);
+
+        m3_dialog(content.into())
+    }
+
+    /// Lenovo OTA "querynewfirmware" popup. Opens when the user clicks
+    /// the dashboard firmware version. Mirrors `device_info_popup_view`
+    /// for header / spinner / error / close-button shape, but renders
+    /// the OTA payload as a stacked card (From / To / Size / MD5 /
+    /// Changelog / Download) instead of a flat key-value table.
+    fn ota_popup_view(&self) -> Element<'_, Message> {
+        let Some((_serial, _firmware_id, state)) = self.ota_popup.clone() else {
+            return container(text("")).into();
+        };
+        let title =
+            text(self.t("ota_popup_title").to_string()).size(theme::text_size::WIZARD_STEP_TITLE);
+        let header = iced::widget::row![title, Space::new().width(Length::Fill)]
+            .align_y(iced::Alignment::Center);
+
+        let body: Element<'_, Message> = match &state {
+            OtaPopupState::Loading => container(Spinner::new())
+                .width(Length::Fill)
+                .height(120)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into(),
+            OtaPopupState::Error(e) => column![
+                text(self.t("ota_popup_error").to_string())
+                    .size(13)
+                    .color(iced::Color::from_rgb(0.9, 0.2, 0.2)),
+                text(e.clone()).size(11).style(muted_style),
+                Space::new().height(8),
+                button(
+                    text(self.t("btn_retry").to_string())
+                        .size(12)
+                        .color(iced::Color::WHITE),
+                )
+                .on_press(Message::OtaRetry)
+                .padding([6, 18])
+                .style(md_filled_btn_style),
+            ]
+            .spacing(8)
+            .into(),
+            OtaPopupState::NoUpdate => container(
+                text(self.t("ota_popup_unavailable").to_string())
+                    .size(14)
+                    .style(muted_style)
+                    .width(Length::Fill)
+                    .center(),
+            )
+            .width(Length::Fill)
+            .height(120)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into(),
+            OtaPopupState::Ready(update) => {
+                // Changelog source: prefer `desc_cn` when the user is
+                // running the GUI in Chinese, fall back to `desc_en`
+                // otherwise (and also when `desc_cn` is empty so a
+                // missing translation never leaves the section blank).
+                let prefer_cn = matches!(self.settings.language, Language::Zh);
+                let raw_desc = if prefer_cn && !update.desc_cn.trim().is_empty() {
+                    &update.desc_cn
+                } else if !update.desc_en.trim().is_empty() {
+                    &update.desc_en
+                } else {
+                    &update.desc_cn
+                };
+                let changelog = ltbox_core::lenovo_ota::format_changelog(raw_desc);
+                let size_str = ltbox_core::lenovo_ota::format_size(update.size_bytes);
+
+                let from_to_row = column![
+                    text(format!("{}: {}", self.t("ota_popup_from"), update.from))
+                        .size(12)
+                        .style(muted_style),
+                    text(format!("{}: {}", self.t("ota_popup_to"), update.to)).size(13),
+                ]
+                .spacing(4);
+
+                let meta_row = iced::widget::row![
+                    info_kv(self.t("ota_popup_size"), &size_str),
+                    info_kv(self.t("ota_popup_md5"), &update.md5),
+                ]
+                .spacing(40);
+
+                let changelog_block = column![
+                    text(self.t("ota_popup_changelog").to_string())
+                        .size(11)
+                        .style(label_style),
+                    container(text(changelog).size(12))
+                        .padding([8, 10])
+                        .width(Length::Fill)
+                        .style(|t: &Theme| {
+                            let p = pal_of(t);
+                            container::Style {
+                                background: Some(p.surface_container_low.into()),
+                                border: iced::Border {
+                                    color: p.outline_variant,
+                                    width: 1.0,
+                                    radius: theme::shape::SM.into(),
+                                },
+                                ..Default::default()
+                            }
+                        }),
+                ]
+                .spacing(4);
+
+                let download_btn: Element<'_, Message> = if update.download_url.is_empty() {
+                    Space::new().into()
+                } else {
+                    button(
+                        text(self.t("ota_popup_download").to_string())
+                            .size(12)
+                            .color(iced::Color::WHITE),
+                    )
+                    .on_press(Message::OtaOpenDownload(update.download_url.clone()))
+                    .padding([8, 18])
+                    .style(md_filled_btn_style)
+                    .into()
+                };
+
+                scrollable(
+                    column![
+                        from_to_row,
+                        widget::rule::horizontal(1),
+                        meta_row,
+                        widget::rule::horizontal(1),
+                        changelog_block,
+                        Space::new().height(4),
+                        iced::widget::row![Space::new().width(Length::Fill), download_btn]
+                            .align_y(iced::Alignment::Center),
+                    ]
+                    .spacing(12)
+                    .width(Length::Fill),
+                )
+                .height(Length::Fixed(420.0))
+                .width(Length::Fill)
+                .into()
+            }
+        };
+
+        let close_btn = button(
+            text(self.t("btn_close").to_string())
+                .size(12)
+                .color(iced::Color::WHITE),
+        )
+        .on_press(Message::OtaClose)
+        .padding([6, 18])
+        .style(md_filled_btn_style);
+
+        let content = column![
+            header,
             widget::rule::horizontal(1),
             body,
             iced::widget::row![Space::new().width(Length::Fill), close_btn]
@@ -10686,13 +10952,22 @@ impl App {
             .spacing(40),
         );
         device_col = device_col.push(Space::new().height(6));
-        device_col = device_col.push(
-            row![
-                info_kv(self.t("device_arb"), arb),
-                info_kv(self.t("device_firmware"), firmware),
-            ]
-            .spacing(40),
-        );
+        // Firmware kv is clickable when a firmware id is populated —
+        // tap to fetch the matching Lenovo OTA update payload. Wrap in
+        // `mouse_area` so the kv column renders identically to the
+        // ARB / Model / etc cells (no button chrome) but registers
+        // clicks. `interaction(Pointer)` flips the cursor on hover so
+        // the affordance is discoverable.
+        let firmware_kv: Element<'_, Message> = if self.device_firmware.is_empty() {
+            info_kv(self.t("device_firmware"), firmware)
+        } else {
+            iced::widget::mouse_area(info_kv(self.t("device_firmware"), firmware))
+                .on_press(Message::OtaOpen)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into()
+        };
+        device_col =
+            device_col.push(row![info_kv(self.t("device_arb"), arb), firmware_kv,].spacing(40));
 
         // Pin the inner row to 160 px regardless of whether the device is
         // populated. Without this the empty-state card collapses to the
