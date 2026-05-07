@@ -45,3 +45,39 @@ macro_rules! live {
         $log.push(_line);
     }};
 }
+
+/// Translate `$key` and substitute `{name}` placeholders from a list of
+/// `name = value` pairs. Eliminates the chain of
+/// `tr("k").replace("{a}", &x).replace("{b}", &y)…` repeated across
+/// every live-log emit site.
+///
+/// Each `value` is converted via `Display` (`format!("{}", v)`) so the
+/// caller can pass `&str`, `String`, integers, floats, or anything else
+/// implementing `Display`. For pre-formatted floats (`"{x:.1}"`) just
+/// pass `&format!("{x:.1}")`.
+///
+/// ```ignore
+/// live!(
+///     log,
+///     "[Driver] {}",
+///     tr_args!(
+///         "live_driver_progress_pct",
+///         name = display_name,
+///         pct = format!("{pct:>3}"),
+///         downloaded = format!("{dl_mb:.1}"),
+///     )
+/// );
+/// ```
+#[macro_export]
+macro_rules! tr_args {
+    ($key:expr $(, $name:ident = $val:expr)* $(,)?) => {{
+        let mut __s = $crate::i18n::tr($key);
+        $(
+            __s = __s.replace(
+                concat!("{", stringify!($name), "}"),
+                &format!("{}", $val),
+            );
+        )*
+        __s
+    }};
+}

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ltbox_core::i18n::tr;
-use ltbox_core::live;
+use ltbox_core::{live, tr_args};
 
 use super::{DriverError, DriverStatus, Result};
 
@@ -145,7 +145,7 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
     live!(
         log,
         "[Driver] {}",
-        tr("live_driver_asset").replace("{name}", &asset_name)
+        tr_args!("live_driver_asset", name = asset_name)
     );
 
     let tmp_dir = std::env::temp_dir().join(format!("ltbox_qcom_drv_{}", std::process::id()));
@@ -186,7 +186,7 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         live!(
             log,
             "[Driver] {}",
-            tr("live_driver_installing_inf").replace("{name}", &name)
+            tr_args!("live_driver_installing_inf", name = name)
         );
         let out = silent_command("pnputil")
             .arg("/add-driver")
@@ -218,10 +218,12 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
                 live!(
                     log,
                     "[Driver] {}",
-                    tr("live_driver_pnputil_failed")
-                        .replace("{name}", &name)
-                        .replace("{exit}", &exit.to_string())
-                        .replace("{detail}", &detail)
+                    tr_args!(
+                        "live_driver_pnputil_failed",
+                        name = name,
+                        exit = exit,
+                        detail = detail,
+                    )
                 );
             }
             Err(e) => {
@@ -229,9 +231,7 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
                 live!(
                     log,
                     "[Driver] {}",
-                    tr("live_driver_pnputil_spawn_failed")
-                        .replace("{name}", &name)
-                        .replace("{error}", &e.to_string())
+                    tr_args!("live_driver_pnputil_spawn_failed", name = name, error = e,)
                 );
             }
         }
@@ -245,7 +245,7 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         live!(
             log,
             "[Driver] {}",
-            tr("live_driver_all_failed").replace("{count}", &failed.to_string())
+            tr_args!("live_driver_all_failed", count = failed)
         );
         return Err(DriverError::PnputilAllFailed { count: failed });
     }
@@ -254,9 +254,11 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
     live!(
         log,
         "[Driver] {}",
-        tr("live_driver_install_finished")
-            .replace("{succeeded}", &succeeded.to_string())
-            .replace("{total}", &total.to_string())
+        tr_args!(
+            "live_driver_install_finished",
+            succeeded = succeeded,
+            total = total,
+        )
     );
     Ok(())
 }
@@ -288,7 +290,7 @@ fn download_with_progress(
     live!(
         log,
         "[Driver] {}",
-        tr("live_driver_downloading").replace("{name}", display_name)
+        tr_args!("live_driver_downloading", name = display_name)
     );
     let mut resp = agent.get(url).call()?;
     let total: Option<u64> = resp
@@ -331,12 +333,14 @@ fn download_with_progress(
                 live!(
                     log,
                     "[Driver] {}",
-                    tr("live_driver_progress_pct")
-                        .replace("{name}", display_name)
-                        .replace("{pct}", &format!("{pct:>3}"))
-                        .replace("{downloaded}", &format!("{dl_mb:.1}"))
-                        .replace("{total}", &format!("{total_mb:.1}"))
-                        .replace("{speed}", &format!("{speed:.1}"))
+                    tr_args!(
+                        "live_driver_progress_pct",
+                        name = display_name,
+                        pct = format!("{pct:>3}"),
+                        downloaded = format!("{dl_mb:.1}"),
+                        total = format!("{total_mb:.1}"),
+                        speed = format!("{speed:.1}"),
+                    )
                 );
             }
         } else if now.duration_since(last_emit_at) >= std::time::Duration::from_millis(750) {
@@ -344,10 +348,12 @@ fn download_with_progress(
             live!(
                 log,
                 "[Driver] {}",
-                tr("live_driver_progress_chunked")
-                    .replace("{name}", display_name)
-                    .replace("{downloaded}", &format!("{dl_mb:.1}"))
-                    .replace("{speed}", &format!("{speed:.1}"))
+                tr_args!(
+                    "live_driver_progress_chunked",
+                    name = display_name,
+                    downloaded = format!("{dl_mb:.1}"),
+                    speed = format!("{speed:.1}"),
+                )
             );
         }
     }
@@ -357,10 +363,12 @@ fn download_with_progress(
     live!(
         log,
         "[Driver] {}",
-        tr("live_driver_dl_done")
-            .replace("{name}", display_name)
-            .replace("{size}", &format!("{dl_mb:.1}"))
-            .replace("{elapsed}", &format!("{elapsed:.1}"))
+        tr_args!(
+            "live_driver_dl_done",
+            name = display_name,
+            size = format!("{dl_mb:.1}"),
+            elapsed = format!("{elapsed:.1}"),
+        )
     );
     Ok(())
 }
