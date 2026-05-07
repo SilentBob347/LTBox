@@ -10083,20 +10083,6 @@ impl App {
                 ]
                 .spacing(4);
 
-                let download_btn: Element<'_, Message> = if update.download_url.is_empty() {
-                    Space::new().into()
-                } else {
-                    button(
-                        text(self.t("ota_popup_download").to_string())
-                            .size(12)
-                            .color(iced::Color::WHITE),
-                    )
-                    .on_press(Message::OtaOpenDownload(update.download_url.clone()))
-                    .padding([8, 18])
-                    .style(md_filled_btn_style)
-                    .into()
-                };
-
                 scrollable(
                     column![
                         from_to_row,
@@ -10104,9 +10090,6 @@ impl App {
                         meta_row,
                         widget::rule::horizontal(1),
                         changelog_block,
-                        Space::new().height(4),
-                        iced::widget::row![Space::new().width(Length::Fill), download_btn]
-                            .align_y(iced::Alignment::Center),
                     ]
                     .spacing(12)
                     .width(Length::Fill),
@@ -10117,6 +10100,14 @@ impl App {
             }
         };
 
+        // Bottom action row: Download (when Ready + url present) sits
+        // left of Close so the scrollable body's right-edge gutter
+        // can't overlap the action — both buttons live on the dialog
+        // chrome below the scrollable, not inside it.
+        let download_url: Option<String> = match &state {
+            OtaPopupState::Ready(u) if !u.download_url.is_empty() => Some(u.download_url.clone()),
+            _ => None,
+        };
         let close_btn = button(
             text(self.t("btn_close").to_string())
                 .size(12)
@@ -10125,17 +10116,26 @@ impl App {
         .on_press(Message::OtaClose)
         .padding([6, 18])
         .style(md_filled_btn_style);
+        let mut action_row = iced::widget::row![Space::new().width(Length::Fill)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        if let Some(url) = download_url {
+            let download_btn = button(
+                text(self.t("ota_popup_download").to_string())
+                    .size(12)
+                    .color(iced::Color::WHITE),
+            )
+            .on_press(Message::OtaOpenDownload(url))
+            .padding([6, 18])
+            .style(md_filled_btn_style);
+            action_row = action_row.push(download_btn);
+        }
+        action_row = action_row.push(close_btn);
 
-        let content = column![
-            header,
-            widget::rule::horizontal(1),
-            body,
-            iced::widget::row![Space::new().width(Length::Fill), close_btn]
-                .align_y(iced::Alignment::Center),
-        ]
-        .spacing(12)
-        .padding(20)
-        .width(640);
+        let content = column![header, widget::rule::horizontal(1), body, action_row,]
+            .spacing(12)
+            .padding(20)
+            .width(640);
 
         m3_dialog(content.into())
     }
