@@ -284,9 +284,8 @@ impl FastbootDevice {
     }
 }
 
-/// Parse one `stored_rollback_index:N = HEX` line. Always base-16 (v2
-/// `int(m.group(2), 16)`); silent `unwrap_or(0)` would kill the ARB
-/// pipeline. Tolerates `(N)` / `N)` slot wrapping and optional `0x`.
+/// Parse `stored_rollback_index:N = HEX`. Value is always base-16.
+/// Tolerates `(N)`/`N)` slot wrapping and optional `0x` prefix.
 pub(crate) fn parse_stored_rollback_line(line: &str) -> Option<(u32, u64)> {
     let rest = line.strip_prefix("stored_rollback_index:")?;
     let (slot_str, val_str) = rest.split_once('=')?;

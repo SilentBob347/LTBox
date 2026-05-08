@@ -21,22 +21,9 @@ pub mod xml_catalog;
 
 pub use error::{LtboxError, Result};
 
-/// Echo a line to `println!` (terminal + GUI stdout-tap), the
-/// [`live_sink`] in-process queue (drained by the GUI subscription),
-/// AND the caller's `&mut Vec<String>` for the rare consumer that
-/// inspects the buffer post-flow (driver installer log, headless
-/// tests, …).
-///
-/// `*ExecDone` handlers that previously fed this Vec straight back
-/// into `App::log_extend` should NOT do so — the sink path already
-/// streamed every line and a second walk re-appends the entire
-/// transcript on top of itself. Drain the sink + tap one final time
-/// instead and discard the Vec.
-///
-/// Lives in `ltbox-core` so every downstream crate (`ltbox-device`,
-/// `ltbox-patch`, `ltbox-gui`) can emit through the same path without
-/// redefining the macro or taking a circular dep. `#[macro_export]`
-/// puts it at the crate root, reachable as `ltbox_core::live!(…)`.
+/// Echo a line to stdout, the in-process live sink, and the caller's
+/// `&mut Vec<String>`. Don't re-extend the closure's Vec post-flow —
+/// the sink already streamed every line.
 #[macro_export]
 macro_rules! live {
     ($log:expr, $($arg:tt)*) => {{

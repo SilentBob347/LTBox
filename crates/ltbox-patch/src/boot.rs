@@ -6,9 +6,6 @@ use std::path::Path;
 use ltbox_core::{LtboxError, Result};
 
 /// Unpack a boot image into components. Non-zero magiskboot exit becomes `Err`.
-/// v2 parity: `MagiskBootWrapper.run` defaults to `check=True`, raising on
-/// any non-zero rc. Exit 2 (chromeos HDR) is vanishingly rare on TB3xx and
-/// needs `--nodecompress` on repack anyway — safer to surface it.
 pub fn unpack(image: &Path, work_dir: &Path) -> Result<()> {
     let name = image
         .file_name()

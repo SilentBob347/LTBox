@@ -208,10 +208,8 @@ impl WipeErasePlanEntry {
 impl EdlSession {
     /// Open: find port → Sahara upload → Firehose configure.
     ///
-    /// `auto_reset` is **intentionally ignored** — `reset_on_drop` stays
-    /// `false` because qdl's drop-time reset path recurses into
-    /// `firehose_write` → `firehose_reset` → … and overflows the stack
-    /// when the channel vanishes mid-flash. Call [`EdlSession::reset`]
+    /// `auto_reset` ignored — `reset_on_drop` stays `false` to avoid qdl's
+    /// recursive drop-time reset stack overflow. Call [`EdlSession::reset`]
     /// explicitly on the happy path.
     pub fn open(loader_path: &Path, auto_reset: bool, log: &mut Vec<String>) -> Result<Self> {
         let _ = auto_reset;
@@ -219,12 +217,8 @@ impl EdlSession {
         let port = wait_for_stable_port()?;
         ltbox_core::live!(log, "[EDL] {} {port}", tr("log_edl_found_on"));
 
-        // Multi-image manifest path (TB323FU / kaanapali): load every
-        // referenced ELF / MBN into a slot array indexed by Sahara
-        // image-id. Single-loader path (.melf / .mbn / .elf):
-        // one-element slice with the loader at slot 0 — preserves the
-        // pre-multi-image call shape for every other supported
-        // device.
+        // Manifest (TB323FU/kaanapali): slot array indexed by Sahara image-id.
+        // Single loader (.melf/.mbn/.elf): one-element slice at slot 0.
         let mut slots: Vec<Option<Vec<u8>>> =
             if ltbox_core::sahara_xml::is_manifest_filename(loader_path) {
                 ltbox_core::live!(
@@ -284,12 +278,7 @@ impl EdlSession {
         };
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_uploading"));
-        // Upstream qdl's `sahara_run` indexes `img_arr` by image-id when
-        // `len() > 1`; a length-1 slice falls back to slot 0 regardless
-        // of the requested id. Single-loader devices stay on the
-        // 1-element path; TB323FU's manifest produces a sparse array
-        // sized to (max id + 1) so the device's id-driven requests land
-        // on the right buffer.
+        // qdl `sahara_run` indexes `img_arr` by image-id when len>1, else slot 0.
         qdl::sahara::sahara_run(
             &mut dev,
             qdl::sahara::SaharaMode::WaitingForImage,

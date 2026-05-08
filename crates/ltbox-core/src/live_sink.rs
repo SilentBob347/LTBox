@@ -1,24 +1,6 @@
-//! Process-wide live-log sink — independent of the Windows stdout
-//! pipe tap.
-//!
-//! The GUI's `stdout_tap` swaps `STD_OUTPUT_HANDLE` for an
-//! `os_pipe`-backed reader thread on Windows. That works for native
-//! `println!` from external crates we don't control (`pbr` progress,
-//! `qdl` chatter, `magiskboot` …), but it has two failure modes for
-//! our own `live!` calls:
-//!
-//! 1. Rust's stdio init order can capture the *original* (invalid in
-//!    GUI subsystem) handle before the swap if anything writes to
-//!    stdout during early startup.
-//! 2. Heavy bursts on the heavy-thread pool can fill the pipe buffer
-//!    faster than the reader drains, blocking the writer for long
-//!    stretches and making the live log appear frozen.
-//!
-//! This sink is the in-process belt to the tap's suspenders: every
-//! `live!` call also pushes the formatted line into a shared
-//! `Mutex<Vec<String>>`, and the GUI subscription drains it directly
-//! every tick. No pipe, no handle dance, no third-party stdio
-//! plumbing.
+//! Process-wide live-log sink. Backstop for the Windows stdout pipe tap:
+//! every `live!` call pushes into a shared `Mutex<Vec<String>>` that the
+//! GUI subscription drains directly each tick — no pipe, no handle dance.
 
 use std::sync::{Mutex, OnceLock};
 

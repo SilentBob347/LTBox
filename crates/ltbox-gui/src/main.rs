@@ -2857,9 +2857,7 @@ fn format_bytes_auto(bytes: u64) -> String {
 }
 
 /// Wizard for every non-FlashPartitions Advanced action. Steps are
-/// [source, confirm, exec], plus a country step between source and
-/// confirm for `PatchDevinfo`. Country picker routes into the shared
-/// country popup and writes onto `self.country`.
+/// [source, confirm, exec], plus country step between for `PatchDevinfo`.
 #[derive(Default, Debug, Clone)]
 struct AdvWizard {
     action: Option<AdvAction>,
@@ -2867,29 +2865,16 @@ struct AdvWizard {
     file_path: Option<String>,
     file_paths: Vec<String>,
     country: Option<String>,
-    /// User-picked target region for `RegionConvert`. The previous
-    /// behaviour silently flipped to the opposite of whatever the
-    /// vendor_boot scan reported, which gave no UI signal of the
-    /// destination and refused to expose "no-op flip" cases. The
-    /// popup-driven picker writes the explicit target here so the
-    /// confirm step can echo it and the exec path can short-circuit
-    /// when source and target match.
+    /// User-picked target region for `RegionConvert`. Explicit target so
+    /// confirm can echo it and exec can short-circuit on no-op.
     region_target: Option<DeviceRegion>,
-    /// `{exe_dir}/output_<action>/` — populated on Confirm → Exec.
-    /// Read by the Done card's "Open Folder" pill.
+    /// `{exe_dir}/output_<action>/` — set on Confirm → Exec.
     output_dir: Option<std::path::PathBuf>,
-    /// PatchArb only: live-typing buffer for the unix-timestamp popup.
-    /// Cleared on cancel / commit. The `arb_index_committed` slot is
-    /// the canonical post-popup value.
+    /// PatchArb: live-typing buffer for the unix-timestamp popup.
     arb_index_buffer: String,
-    /// PatchArb only: committed target rollback index (unix timestamp,
-    /// 10 digits). `Some(_)` after the popup OK closes; gates `Next` on
-    /// the inspect step and feeds the Confirm summary + exec.
+    /// PatchArb: committed target rollback index. Gates inspect-step Next.
     arb_index_committed: Option<u64>,
-    /// PatchArb only: original rollback indices read from the picked
-    /// firmware folder's `boot.img` + `vbmeta_system.img`. `Some` after
-    /// the Source-step Next succeeds; gates `Next` on the inspect step.
-    /// Carries `(boot_rollback, vbmeta_rollback)`.
+    /// PatchArb: `(boot_rollback, vbmeta_rollback)` from picked firmware.
     arb_inspect: Option<(u64, u64)>,
 }
 
@@ -3197,8 +3182,6 @@ fn transition_to_edl(
     ensure_edl(conn, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
 }
 
-/// M3 neutral pill — translucent `on_surface` fill, muted text, 4 dp
-/// corners. Small secondary actions (Cancel / Show log / Save log).
 fn install_root_manager_apk(
     manager_apk: &std::path::Path,
     log: &mut Vec<String>,
@@ -3263,11 +3246,7 @@ fn neutral_pill_btn_style(t: &Theme, _s: button::Status) -> button::Style {
     }
 }
 
-/// Transparent-base button style with a subtle tinted background on
-/// hover. Used by dashboard cells (firmware kv + device portrait) that
-/// want a click affordance without inheriting the full M3 button chrome
-/// — resting state stays flush with the card surface, hover lifts via
-/// the same alpha mixing the wizard option cards use.
+/// Transparent button; tinted on hover. Used on dashboard cells.
 fn dash_clickable_btn_style(t: &Theme, status: button::Status) -> button::Style {
     let p = pal_of(t);
     let hovered = matches!(status, button::Status::Hovered);
@@ -3286,9 +3265,7 @@ fn dash_clickable_btn_style(t: &Theme, status: button::Status) -> button::Style 
     }
 }
 
-/// M3 dialog shell — centred card on a dim scrim, 28 dp radius,
-/// `surface_container` fill, elevation-2 shadow. Inner content owns
-/// its own padding + width.
+/// Centered M3 dialog card on a scrim. Inner owns padding/width.
 fn m3_dialog(inner: Element<'_, Message>) -> Element<'_, Message> {
     let card = container(inner).style(|t: &Theme| {
         let p = pal_of(t);
@@ -3377,11 +3354,7 @@ where
 
 #[derive(Debug, Clone)]
 enum Message {
-    /// No-op handler for `mouse_area` widgets that exist purely to
-    /// swallow pointer events (e.g. sidebar overlay click-blocker so
-    /// the underlying content doesn't react to hover / clicks landing
-    /// in the gaps between nav buttons). Update path matches all by
-    /// returning `Task::none()` so the runtime drops the message.
+    /// No-op for click-blocker mouse_area widgets.
     Noop,
     Navigate(View),
     SetTheme(ThemeChoice),
@@ -3832,45 +3805,22 @@ struct App {
     /// "remember" anything across runs and the same serial is queried
     /// at most once per session.
     device_info_cache: std::collections::HashMap<String, ltbox_core::lenovo_info::MachineInfo>,
-    /// Device-info popup state. `None` → popup closed. `Some((serial,
-    /// state))` → popup open for `serial`; state tracks the in-flight
-    /// fetch result so the popup can render a spinner / error / table.
+    /// Device-info popup state. `Some((serial, state))` while open.
     device_info_popup: Option<(String, DeviceInfoState)>,
-    /// Firmware-OTA popup state. `None` → popup closed. Otherwise the
-    /// tuple carries `(serial, firmware_id, state)` so the retry
-    /// handler can re-issue the same query without recapturing the
-    /// dashboard fields.
+    /// Firmware-OTA popup state. `Some((serial, firmware_id, state))` while open.
     ota_popup: Option<(String, String, OtaPopupState)>,
-    /// Session-scoped cache for OTA results, keyed by
-    /// `(serial, firmware_id)`. `None` value = "upstream returned an
-    /// empty `<firmwareupdate/>`" (NoUpdate state) — still cached so
-    /// reopening the popup doesn't re-issue the same negative query.
-    /// Errors are intentionally NOT cached so a transient network
-    /// failure clears on the next open.
+    /// Session OTA cache. `None` value = NoUpdate (still cached); errors not cached.
     ota_cache:
         std::collections::HashMap<(String, String), Option<ltbox_core::lenovo_ota::OtaUpdate>>,
-    /// Read-only `text_editor::Content` mirror of the OTA popup's
-    /// changelog text. Pulled out of the popup state so drag-select +
-    /// Ctrl+C work — the `text` widget is a static label and won't
-    /// surface a selection. Re-populated when a Ready state lands and
-    /// reset to empty on every Loading / NoUpdate / Error transition.
+    /// Selectable mirror of OTA changelog — `text` widget can't be selected.
     ota_changelog_editor: iced::widget::text_editor::Content,
-    /// PatchArb wizard's unix-timestamp input popup. `true` while the
-    /// modal is on screen between picking the firmware folder and the
-    /// Confirm step.
+    /// PatchArb wizard's unix-timestamp input popup.
     arb_index_popup_open: bool,
-    /// Transient toast message shown as a bottom-of-screen pill.
-    /// Cleared by a delayed `ToastClear` task; never persisted.
+    /// Transient toast message; auto-cleared by a delayed task.
     toast_msg: Option<String>,
-    /// Sidebar collapsed-vs-expanded state. Defaults to collapsed
-    /// (icons only). Mouse hover sets the tween's target; the
-    /// `SidebarAnimTick` subscription drives `sidebar_anim` toward
-    /// it on a 16 ms timer (~60 Hz) and stops once the value
-    /// settles, so the timer doesn't keep the GPU awake forever.
+    /// Sidebar hover state — true when mouse is over the rail.
     sidebar_expanded: bool,
-    /// Sidebar tween progress in `[0.0, 1.0]`. `0.0` = collapsed
-    /// (64 px icons only), `1.0` = fully expanded (210 px labels).
-    /// Width is `lerp(64, 210, sidebar_anim)` at render time.
+    /// Tween progress in [0.0, 1.0]. Width = lerp(64, 210, anim).
     sidebar_anim: f32,
     // Device portrait derived at view time via `device_portrait()`.
     platform_supported: Option<bool>,
@@ -3880,18 +3830,11 @@ struct App {
     busy_view: Option<View>,
     /// Persisted recent picks. Rendered as chips under every picker.
     recent_paths: settings_store::RecentPaths,
-    /// Single-device convenience: when `Some(path)`, every loader
-    /// picker (Flash / Dump partitions, Flash / Dump physical, Root,
-    /// Rescue, Reboot-to-EDL) bypasses the picker and seeds the wizard
-    /// slot with this path directly. `None` = picker shows as before.
-    /// Re-validated at every exec start so a stale path surfaces an
-    /// error before the device side starts.
+    /// When set, every loader picker bypasses to this path. Re-validated at exec.
     default_loader_path: Option<String>,
     log_lines: Vec<String>,
-    /// `text_editor::Content` mirror of `log_lines` — supports cursor
-    /// drag + Ctrl+C unlike `scrollable(text(...))`. Rebuilt on the
-    /// drain tick when `log_dirty` (batches cosmic-text reshape away
-    /// from per-push so a long pbr flash doesn't crash wgpu).
+    /// Selectable mirror of `log_lines`. Rebuilt on drain tick when `log_dirty`
+    /// — batched to keep a long pbr flash from crashing wgpu.
     log_editor: iced::widget::text_editor::Content,
     log_dirty: bool,
     image_info_log: String,
@@ -4203,26 +4146,16 @@ impl App {
     fn begin_op(&mut self, v: View) {
         self.busy = true;
         self.busy_view = Some(v);
-        // The *ExecStart handlers populate op_steps right after this
-        // call — zero here for a clean slate.
         self.error_msg = None;
         self.op_steps.clear();
         self.current_op_step = 0;
-        // START-only banner per user request — no op-name suffix and
-        // no matching END separator. Per-op `[Tag] Starting: …` line
-        // (emitted by *ExecStart) carries the operation identity, and
-        // the final `[Tag] Completed` / done line already marks the
-        // tail; a closing rule was just visual noise.
+        // Single START banner; no closing rule.
         let _ = v;
         let label = self.t("log_separator_start").to_string();
         self.log_separator(Some(&label));
     }
 
-    /// 7-phase Root flow (Phase 1/7 → 7/7). Reorganised so the
-    /// long-running download steps surface as their own phases instead
-    /// of hiding under a generic "patch" label, and short tail
-    /// transitions (re-sign, post-flash reboot) ride along with the
-    /// adjacent step they pair with.
+    /// 7-phase Root flow (Phase 1/7 → 7/7).
     fn derive_root_op_steps(&self) -> Vec<OpStep> {
         [
             "op_root_phase_1",
@@ -4484,22 +4417,9 @@ impl App {
             .unwrap_or_else(|| self.t("status_working").to_string())
     }
 
-    /// Operation-specific replacement for the default busy-dialog body
-    /// (`progress_dialog_body`). Used for sub-flows where "<op> is in
-    /// progress" reads awkwardly — the four Advanced partition / physical
-    /// flows (DumpParts, FlashParts, DumpPhys, FlashPhys) all show their
-    /// busy dialog only during the reboot → loader-upload → GPT-scan
-    /// preamble, so the unified "Reading partition info…" line is the
-    /// honest description regardless of which one of the four the user
-    /// kicked off. Returns `None` so the caller falls back to the
-    /// templated body for everything else.
-    ///
-    /// Gated on `busy_view == Advanced` so a stale `advanced_wizard_open`
-    /// (the wizards stay mounted under the
-    /// scrim while the op runs and only clear on `start_over`) doesn't
-    /// hijack an unrelated busy dialog — e.g. the EDL → System reboot
-    /// from the Reboot menu was rendering "Reading partition…" because
-    /// the user had a DumpParts session still open underneath.
+    /// Override busy-dialog body for the four Advanced partition/physical
+    /// flows during their reboot → loader → GPT-scan preamble. Gated on
+    /// `busy_view == Advanced` so a stale wizard doesn't hijack unrelated ops.
     fn busy_body_override(&self) -> Option<String> {
         if self.busy_view != Some(View::Advanced) {
             return None;
@@ -4520,11 +4440,8 @@ impl App {
         self.log_dirty = false;
     }
 
-    /// Shared loader-picker helper. Bypasses the file picker if Settings
-    /// has a default EDL loader configured, otherwise opens
-    /// `loader_file_spec` and routes the result through `on_chosen`.
-    /// Used by every `*SelectLoader` handler to dedupe the
-    /// `default_loader_path → update | pick_file_for` boilerplate.
+    /// Picker shortcut: routes through `default_loader_path` if set,
+    /// else opens `loader_file_spec`. Dedupe across `*SelectLoader` handlers.
     fn pick_loader_with_default<F>(&mut self, on_chosen: F) -> Task<Message>
     where
         F: 'static + Send + Fn(Option<String>) -> Message,
@@ -4539,19 +4456,8 @@ impl App {
         )
     }
 
-    /// Map the Lenovo PTSTPD `SaleArea` field of the *currently
-    /// connected* device (keyed by `device_serial`) to a `DeviceRegion`
-    /// for Flash-wizard preselect:
-    ///
-    /// * `"CN"` → PRC.
-    /// * JSON `null` → ROW.
-    /// * Other strings, missing key, or no cached entry for the current
-    ///   serial → `None` (caller leaves the field untouched).
-    ///
-    /// Reads only from the in-memory `device_info_cache`; never issues
-    /// a network call. Used by both the post-fetch handler and the
-    /// `Navigate(View::Flash)` reset path so navigating into Flash does
-    /// not undo a region the user already had inferred.
+    /// Map cached PTSTPD `SaleArea` for the connected device → `DeviceRegion`.
+    /// `"CN"` → PRC, JSON null → ROW, anything else → `None`. Cache-only.
     fn inferred_flash_region(&self) -> Option<DeviceRegion> {
         if self.device_serial.is_empty() {
             return None;
@@ -5125,17 +5031,12 @@ impl App {
                             );
 
                             // Cross-check the firmware folder's
-                            // vendor_boot.img against the polled device
-                            // model via the same AVB fingerprint property
-                            // Rescue uses (`com.android.build.vendor_boot.
-                            // fingerprint`). A Mismatch aborts BEFORE EDL
-                            // so the user doesn't write firmware built
-                            // for another TB3xx variant onto the device.
-                            // Missing fingerprint is logged and skipped
-                            // (older firmware may not embed it). When
-                            // `device_model` is empty (poll failed) the
-                            // helper falls through to Match — same
-                            // behavior as Rescue.
+                            // Cross-check folder vendor_boot.img AVB
+                            // fingerprint vs polled device model. Mismatch
+                            // aborts BEFORE EDL so the user doesn't write
+                            // firmware built for other models onto the
+                            // device. Missing fingerprint / empty
+                            // device_model fall through to Match.
                             if has_vendor_boot {
                                 match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
                                     Ok(info) => {
@@ -5796,8 +5697,7 @@ impl App {
                                             country_progress.mark_failed(label, reason);
                                             continue;
                                         }
-                                        // Preserve the original partition
-                                        // *before* any patch touches it.
+                                        // Backup before any patch touches it.
                                         if let Err(e) = std::fs::copy(
                                             &dump_path,
                                             critical_backup.join(format!("{label}.img")),
@@ -6104,9 +6004,8 @@ impl App {
                 {
                     return Task::none();
                 }
-                // Capture model for AVB fingerprint validation — mirrors
-                // v2 `_validate_device_model`, prevents flashing firmware
-                // built for a different TB3xx variant.
+                // Capture model for AVB fingerprint validation — prevents
+                // flashing firmware built for other models.
                 let device_model = self.device_model.clone();
                 let conn = self.connection;
                 let ll = self.live_labels();
@@ -6345,14 +6244,10 @@ impl App {
                                     )
                                     .map_err(|e| format!("EDL open: {e}"))?;
 
-                                    // vendor_boot + vbmeta on Lenovo TB3xx
-                                    // Qualcomm UFS land on LUN 0; predefine
-                                    // here so the dump + flash loops below
-                                    // share one source of truth (root flow
-                                    // does the same with `ROOT_PARTITIONS_LUN`
-                                    // for boot/init_boot on LUN 4). GPT-by-name
-                                    // resolves the actual sector geometry, so
-                                    // no rawprogram*.xml is required.
+                                    // vendor_boot + vbmeta land on LUN 0
+                                    // for supported models. GPT-by-name
+                                    // resolves sector geometry, no
+                                    // rawprogram*.xml needed.
                                     const RESCUE_PARTITIONS_LUN: u8 = 0;
                                     let slots = ["a", "b"];
                                     let mut dumped: Vec<(String, String, std::path::PathBuf)> =
@@ -9930,15 +9825,9 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let mut main = column![];
         main = main.push(self.title_bar());
-        // 1-px divider below the chromeless title bar so the title
-        // surface doesn't bleed into the content area.
         main = main.push(widget::rule::horizontal(1).style(shell_rule_style));
-        // Sidebar overlay layout: the row reserves a fixed-width rail
-        // placeholder (matching the collapsed sidebar width) so the
-        // content area never reflows when the sidebar tweens. The real
-        // sidebar floats above this rail in a `Stack`, expanding
-        // rightward over content on hover instead of shoving the
-        // dashboard horizontally each time `sidebar_anim` ticks.
+        // Sidebar floats in Stack over a fixed rail placeholder so
+        // content never reflows during tween.
         let rail_placeholder = container(iced::widget::Space::new())
             .width(Length::Fixed(SIDEBAR_RAIL_WIDTH))
             .height(Length::Fill);
@@ -9949,16 +9838,7 @@ impl App {
         main = main.push(row_area);
         main = main.push(self.status_bar());
 
-        // 1-px outline around the entire window so the borderless
-        // OS-level decoration does not bleed straight into the desktop
-        // background — matches the M3 elevation-tint outline that
-        // sits under chromeless surfaces.
-        // 1-px padding so the inner content does not paint over the
-        // border. iced container layouts ignore border width when
-        // sizing children, so without the inset the children's own
-        // backgrounds were tiling over the top / left / bottom
-        // outline pixels and only the right edge (the sidebar's
-        // vertical rule) survived.
+        // 1-px outline + 1-px inset so children don't overpaint border.
         let framed = container(main)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -10767,12 +10647,7 @@ impl App {
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
-        // Only mount labels once the tween has fully settled at the
-        // expanded target. While `sidebar_anim` is still climbing the
-        // shell width is narrower than the label + icon natural row
-        // width, which made each frame re-measure the text and read
-        // as a glyph twitch. Closing: first off-target frame drops
-        // the label so the contraction stays clean.
+        // Settle threshold avoids glyph twitch from per-frame reshape.
         let expanded = self.sidebar_anim >= 0.85;
         let mut col = column![].spacing(1).padding([16, 0]);
         for &v in NAV_MAIN {
@@ -10795,15 +10670,7 @@ impl App {
             ));
         }
 
-        // Bottom-anchored sidebar layout: `[nav | update pill]`.
-        // The nav column claims `Length::Fill` so its rows pin to
-        // the top and the update-available pill (rendered only when
-        // the background probe surfaces a newer stable release) lives
-        // below it. The previous `scrollable(col)` wrapper reserved
-        // a scrollbar gutter on the right of the column that read as
-        // a doubled line next to the sidebar's own vertical divider;
-        // the nav set is small enough that scroll is never needed,
-        // so the wrapper is dropped.
+        // Nav column fills; update pill anchored below.
         let body: Element<'_, Message> = if let Some(release) = self.update_available.as_ref() {
             column![
                 container(col).width(Length::Fill).height(Length::Fill),
@@ -10819,31 +10686,17 @@ impl App {
                 .into()
         };
 
-        // Width tween: lerp 64 ↔ 210 based on `sidebar_anim`.
-        // Inner content swaps to label form at the midpoint so the
-        // labels don't pop in over an under-sized shell.
         let width =
             SIDEBAR_RAIL_WIDTH + (SIDEBAR_EXPANDED_WIDTH - SIDEBAR_RAIL_WIDTH) * self.sidebar_anim;
-        // Right-edge divider via an explicit `vertical_rule` (1 px)
-        // instead of a container border, so the corner where the
-        // sidebar meets the status bar reads as one line per
-        // direction rather than two stacked outlines (M3 nav-rail
-        // guidance: one divider per shared edge).
         let panel = container(body)
             .width(width)
             .height(Length::Fill)
             .style(panel_bg);
         let shell =
             row![panel, widget::rule::vertical(1).style(shell_rule_style)].height(Length::Fill);
-        // `on_press` consumes the click; `interaction(Idle)` makes
-        // `iced::widget::Stack` levitate the cursor for the layer
-        // below — without a non-`None` interaction reported here,
-        // the gap pixels between nav rows fall through to whatever
-        // wizard card the sidebar floats over and that lower widget
-        // independently registers `Hovered` (its `draw` checks
-        // `cursor.is_over(bounds)`, not Move events). `Idle` is the
-        // plain arrow cursor; the inner nav buttons override it to
-        // `Pointer` on their own bounds.
+        // Idle interaction prevents click-through to wizard cards
+        // under the Stack (Stack levitates the cursor for lower
+        // layers when top reports a non-None interaction).
         iced::widget::mouse_area(shell)
             .on_enter(Message::SidebarHoverEnter)
             .on_exit(Message::SidebarHoverExit)
@@ -10852,19 +10705,8 @@ impl App {
             .into()
     }
 
-    /// Material 3 "tonal/filled" success-leaning pill that lives at the
-    /// bottom of the sidebar and links to the GitHub release page when
-    /// a newer stable build is available. Hidden entirely (caller drops
-    /// it from the layout) when `update_available` is `None`.
-    ///
-    /// Style notes:
-    ///   * Background = `tertiary` (M3 success / "go-update" color slot;
-    ///     palette-aware so dark mode reads correctly without us hand-rolling
-    ///     two greens).
-    ///   * Foreground = `on_tertiary` for the same reason.
-    ///   * Pill radius (`shape::FULL`) matches M3 button-pill geometry.
-    ///   * Hover = subtle alpha lift via `theme::state::HOVER`, parity
-    ///     with the rest of the app's tonal buttons.
+    /// Bottom-of-sidebar pill linking to the GitHub release when a
+    /// newer stable build is available.
     fn update_available_pill(
         &self,
         _release: &ltbox_core::github::StableRelease,

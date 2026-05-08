@@ -228,13 +228,8 @@ fn select_ksu_release_ko_asset(
 }
 
 fn select_ksu_nightly_ko_artifact(artifact_names: &[String], kver: &str) -> Option<String> {
-    // Nightly artifact naming changed upstream: previous
-    // `<branch>-<kver>_kernelsu.ko` style is gone, current builds emit
-    // `<branch>-<kver>-lkm` (e.g. `android15-6.6-lkm`). Accept either
-    // shape so the path keeps working through the next inevitable
-    // rename, and for the same reason match on `-{kver}-lkm` (with
-    // trailing `-`/end-of-string sentinel) so `6.1` doesn't pull
-    // `6.10`/`6.11`/`6.12`.
+    // Accept legacy `_kernelsu.ko` and current `-{kver}-lkm` naming.
+    // Trailing `-`/EOS sentinel prevents `6.1` matching `6.10/6.11/6.12`.
     let want = kver.to_lowercase();
     let lkm_marker = format!("-{want}-lkm");
     artifact_names
