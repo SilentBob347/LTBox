@@ -3166,20 +3166,35 @@ fn strip_twrp_prefix(product: &str) -> String {
 /// then `adb reboot edl`. ADB live: `adb reboot edl`. If ADB is not
 /// usable, ask the user to reboot manually and wait for 9008.
 ///
-/// `conn` is the caller's captured `App.connection`. Earlier versions
-/// re-probed every transport (`edl::check_device` →
-/// `FastbootDevice::check_device` → `AdbManager::new_if_connected`)
-/// inside this helper, which added 1–2 s of latency and could race
-/// with a freshly-rebooting device whose state already moved between
-/// GUI poll and worker spawn. Trusting the caller's `conn` removes the
-/// race; if the dashboard's poll was stale, `ensure_edl`'s own
-/// transition steps still correct course.
+/// `conn` is the caller's captured `App.connection`, used only as a
+/// fallback. The body re-probes EDL → Fastboot → ADB live because flows
+/// (e.g. Flash) may reboot the device themselves between worker spawn
+/// and the EDL transition (ADB → bootloader for variable query), making
+/// the captured `conn` stale.
 fn transition_to_edl(
     conn: ConnectionStatus,
     _ll: &LiveLabels,
     log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
-    ensure_edl(conn, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
+    let live = probe_connection_for_edl().unwrap_or(conn);
+    ensure_edl(live, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
+}
+
+/// Quick EDL/Fastboot/ADB probe in that order. Returns `None` only when
+/// every transport is silent (caller falls back to its captured conn).
+fn probe_connection_for_edl() -> Option<ConnectionStatus> {
+    if ltbox_device::edl::check_device() {
+        return Some(ConnectionStatus::Edl);
+    }
+    if ltbox_device::fastboot::FastbootDevice::check_device() {
+        return Some(ConnectionStatus::Fastboot);
+    }
+    let mut adb = ltbox_device::adb::AdbManager::new();
+    match adb.check_device_state().ok().flatten() {
+        Some("device" | "recovery") => Some(ConnectionStatus::Adb),
+        Some("unauthorized" | "authorizing") => Some(ConnectionStatus::AdbUnauthorized),
+        _ => None,
+    }
 }
 
 fn install_root_manager_apk(
