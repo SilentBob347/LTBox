@@ -3134,7 +3134,7 @@ struct LiveLabels {
 fn arb_from_model(model: &str) -> &'static str {
     let m = model.to_uppercase();
     match m.as_str() {
-        "TB320FC" | "TB321FU" | "TB520FU" | "TB710FU" => "arb_yes",
+        "TB320FC" | "TB321FU" | "TB323FU" | "TB520FU" | "TB710FU" => "arb_yes",
         "TB322FC" => "arb_no",
         _ => "arb_unknown",
     }

@@ -47,7 +47,6 @@ pub fn needs_patch(mode: RollbackMode, image_index: u64, device_index: Option<u6
 
 /// Result of rollback-index analysis against a device.
 pub struct RollbackAnalysis {
-    pub device_index: u64,
     pub image_index: u64,
     pub needs_patch: bool,
     pub image_info: AvbImageInfo,
@@ -63,7 +62,6 @@ pub fn analyze_rollback(image_path: &Path, device_rollback_index: u64) -> Result
         "Rollback analysis (legacy): device={device_rollback_index}, image={image_index}, needs_patch={needs_patch}"
     );
     Ok(RollbackAnalysis {
-        device_index: device_rollback_index,
         image_index,
         needs_patch,
         image_info,
@@ -80,12 +78,10 @@ pub fn analyze_rollback_with_mode(
     let image_info = avb::extract_image_avb_info(image_path)?;
     let image_index = image_info.rollback_index;
     let needs_patch = needs_patch(mode, image_index, device_index);
-    let reported_device = device_index.unwrap_or(0);
     info!(
         "Rollback analysis: mode={mode:?}, device={device_index:?}, image={image_index}, needs_patch={needs_patch}"
     );
     Ok(RollbackAnalysis {
-        device_index: reported_device,
         image_index,
         needs_patch,
         image_info,
