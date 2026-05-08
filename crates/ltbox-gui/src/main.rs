@@ -3180,16 +3180,20 @@ fn strip_twrp_prefix(product: &str) -> String {
 /// Already-EDL: no-op. Fastboot live: continue system boot, wait for ADB,
 /// then `adb reboot edl`. ADB live: `adb reboot edl`. If ADB is not
 /// usable, ask the user to reboot manually and wait for 9008.
-fn transition_to_edl(_ll: &LiveLabels, log: &mut Vec<String>) -> std::result::Result<(), String> {
-    let conn = if ltbox_device::edl::check_device() {
-        ConnectionStatus::Edl
-    } else if ltbox_device::fastboot::FastbootDevice::check_device() {
-        ConnectionStatus::Fastboot
-    } else if ltbox_device::adb::AdbManager::new_if_connected().is_some() {
-        ConnectionStatus::Adb
-    } else {
-        ConnectionStatus::None
-    };
+///
+/// `conn` is the caller's captured `App.connection`. Earlier versions
+/// re-probed every transport (`edl::check_device` →
+/// `FastbootDevice::check_device` → `AdbManager::new_if_connected`)
+/// inside this helper, which added 1–2 s of latency and could race
+/// with a freshly-rebooting device whose state already moved between
+/// GUI poll and worker spawn. Trusting the caller's `conn` removes the
+/// race; if the dashboard's poll was stale, `ensure_edl`'s own
+/// transition steps still correct course.
+fn transition_to_edl(
+    conn: ConnectionStatus,
+    _ll: &LiveLabels,
+    log: &mut Vec<String>,
+) -> std::result::Result<(), String> {
     ensure_edl(conn, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
 }
 
@@ -5420,7 +5424,7 @@ impl App {
                             };
 
                             live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
-                            transition_to_edl(&ll, &mut log)?;
+                            transition_to_edl(conn, &ll, &mut log)?;
 
                             let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
                                 .map_err(|e| format!("EDL session: {e}"))?;
@@ -6334,7 +6338,7 @@ impl App {
                                     // check even though the operation is
                                     // perfectly recoverable from those
                                     // modes.
-                                    transition_to_edl(&ll, &mut log)?;
+                                    transition_to_edl(conn, &ll, &mut log)?;
 
                                     let mut session = ltbox_device::edl::EdlSession::open(
                                         &loader, true, &mut log,
@@ -7293,7 +7297,7 @@ impl App {
                             let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
                             // Phase 3/7 — Reboot to EDL (was Phase 1/6).
                             live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
-                            transition_to_edl(&ll, &mut log)?;
+                            transition_to_edl(conn, &ll, &mut log)?;
 
                             // Partition naming: `boot{_a|_b}` for GKI + APatch
                             // (kernel-blob patching) and `init_boot{_a|_b}` for
@@ -7547,6 +7551,7 @@ impl App {
                 let Some(folder) = self.unroot.folder_path.clone() else {
                     return Task::none();
                 };
+                let conn = self.connection;
                 // Loader is decoupled from the backup folder — `folder`
                 // holds boot.img + vbmeta.img, the loader can live
                 // anywhere (Settings default, or whatever the user
@@ -7672,7 +7677,7 @@ impl App {
                                         "[Unroot] {}",
                                         phase_marker(1, 3, &ll.op_unroot_phase[0])
                                     );
-                                    transition_to_edl(&ll, &mut log)?;
+                                    transition_to_edl(conn, &ll, &mut log)?;
 
                                     live!(
                                         log,
