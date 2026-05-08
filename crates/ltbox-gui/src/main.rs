@@ -4888,6 +4888,7 @@ impl App {
                 self.error_msg = None;
                 let cfg = self.wf_config.clone();
                 let conn = self.connection;
+                let device_model = self.device_model.clone();
                 let fw_folder = self.flash.firmware_folder.clone().unwrap_or_default();
                 let rollback_label = self.t(cfg.modify_rollback.label_key()).to_string();
                 self.log_push(format!(
@@ -4946,16 +4947,19 @@ impl App {
                                     "[ADB] {}",
                                     ltbox_core::i18n::tr("live_adb_checking_device")
                                 );
-                                if let Some(adb) =
-                                    ltbox_device::adb::AdbManager::new_if_connected()
-                                {
+                                if ltbox_device::adb::AdbManager::new_if_connected().is_some() {
                                     ltbox_core::live!(
                                         log,
                                         "[ADB] {}",
                                         ltbox_core::i18n::tr("live_adb_device_connected")
                                     );
-                                    let _slot =
-                                        adb.get_slot_suffix().ok().flatten().unwrap_or_default();
+                                    // The active slot is resolved later via
+                                    // `controller::poll_active_slot` — that
+                                    // helper polls both ADB + Fastboot and
+                                    // hard-errors on probe failure, so the
+                                    // earlier `get_slot_suffix` round-trip
+                                    // here was redundant (its result was
+                                    // assigned to `_slot` and discarded).
                                 } else {
                                     ltbox_core::live!(
                                         log,
@@ -5108,6 +5112,75 @@ impl App {
                                     status = if has_boot { &found } else { &not_found },
                                 )
                             );
+
+                            // Cross-check the firmware folder's
+                            // vendor_boot.img against the polled device
+                            // model via the same AVB fingerprint property
+                            // Rescue uses (`com.android.build.vendor_boot.
+                            // fingerprint`). A Mismatch aborts BEFORE EDL
+                            // so the user doesn't write firmware built
+                            // for another TB3xx variant onto the device.
+                            // Missing fingerprint is logged and skipped
+                            // (older firmware may not embed it). When
+                            // `device_model` is empty (poll failed) the
+                            // helper falls through to Match — same
+                            // behavior as Rescue.
+                            if has_vendor_boot {
+                                match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
+                                    Ok(info) => {
+                                        use ltbox_patch::region::{
+                                            ModelValidation, validate_device_model,
+                                        };
+                                        match validate_device_model(&info, &device_model) {
+                                            ModelValidation::Match { fingerprint } => {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "live_rescue_model_check_ok"
+                                                    )
+                                                    .replace("{fingerprint}", &fingerprint)
+                                                );
+                                            }
+                                            ModelValidation::Missing => {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "live_rescue_no_fingerprint_skip"
+                                                    )
+                                                );
+                                            }
+                                            ModelValidation::Mismatch {
+                                                fingerprint,
+                                                device_model,
+                                            } => {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "live_rescue_model_mismatch_abort"
+                                                    )
+                                                    .replace("{device}", &device_model)
+                                                    .replace("{fingerprint}", &fingerprint)
+                                                );
+                                                return Err(
+                                                    "Flash: firmware/device model mismatch — aborting before EDL"
+                                                        .into(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        ltbox_core::live!(
+                                            log,
+                                            "[Flash] {}",
+                                            ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
+                                                .replace("{error}", &e.to_string())
+                                        );
+                                    }
+                                }
+                            }
 
                             // Count .x and .xml files
                             let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
