@@ -196,6 +196,7 @@
   "flash_step_target": "Target",
   "flash_target_subtitle": "Install firmware from a different region or same region?",
   "flash_target_title": "Select Flash Target",
+  "flash_unsupported_tb322fc": "Not supported on TB322FC",
   "flashtarget_other": "Install other region firmware",
   "flashtarget_other_desc": "Install or update firmware for a region different from the hardware",
   "flashtarget_same": "Install same region firmware",

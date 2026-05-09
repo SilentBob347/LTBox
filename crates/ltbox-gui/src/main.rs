@@ -4769,8 +4769,25 @@ impl App {
                 self.persist_settings();
             }
             // Flash wizard
-            Message::Flash(FlashMsg::FlashRegion(r)) => self.flash.device_region = Some(r),
-            Message::Flash(FlashMsg::FlashTarget(t)) => self.flash.target = Some(t),
+            Message::Flash(FlashMsg::FlashRegion(r)) => {
+                // TB322FC is a PRC-only SKU. The region card UI grays
+                // out ROW, but a stale message from a pre-poll click
+                // could still land here. Drop it so the wizard never
+                // accepts a region the hardware doesn't ship with.
+                if self.is_tb322fc() && r == DeviceRegion::Row {
+                    return Task::none();
+                }
+                self.flash.device_region = Some(r);
+            }
+            Message::Flash(FlashMsg::FlashTarget(t)) => {
+                // TB322FC: cross-region (OtherRegion) flashes are blocked
+                // because the only valid region is PRC. Drop the message
+                // even if a stale dispatch slips past the disabled card.
+                if self.is_tb322fc() && t == FlashTarget::OtherRegion {
+                    return Task::none();
+                }
+                self.flash.target = Some(t);
+            }
             Message::Flash(FlashMsg::FlashDataMode(m)) => self.flash.data_mode = Some(m),
             Message::Flash(FlashMsg::FlashNext) => {
                 // Data step → build WorkflowConfig; wipe opens country popup.
@@ -5885,6 +5902,12 @@ impl App {
             }
             // Country code popup
             Message::SelectCountry(code) => {
+                // TB322FC ships PRC-only — only `CN` is a valid country
+                // target. The popup grays out other entries, but a stale
+                // dispatch could still land here. Drop it.
+                if self.is_tb322fc() && !code.eq_ignore_ascii_case("CN") {
+                    return Task::none();
+                }
                 self.country_popup_open = false;
                 if self.adv_needs_country {
                     // Advanced wizard stores on `adv_wizard.country`.
@@ -10411,31 +10434,44 @@ impl App {
             );
             list = list.push(widget::rule::horizontal(1));
         }
+        // TB322FC PRC-only: only CN is selectable. Non-CN rows render
+        // as disabled buttons so the constraint stays visible on the
+        // popup. The "Do not change" row above remains usable.
+        let tb322fc = self.is_tb322fc();
         for entry in COUNTRY_CODES {
             let code = entry.code.to_string();
             let selected = selected_code == Some(entry.code);
             let label = format!("{} — {}", entry.code, entry.name);
-            list = list.push(
-                button(text(label).size(13))
-                    .on_press(Message::SelectCountry(code))
-                    .padding([6, 14])
-                    .width(Length::Fill)
-                    .style(move |t: &Theme, status| {
-                        let p = pal_of(t);
-                        let hover = matches!(status, button::Status::Hovered);
-                        button::Style {
-                            background: Some(if selected {
-                                p.primary.into()
-                            } else if hover {
-                                p.surface_container_high.into()
-                            } else {
-                                iced::Color::TRANSPARENT.into()
-                            }),
-                            text_color: if selected { p.on_primary } else { p.on_surface },
+            let disabled = tb322fc && !entry.code.eq_ignore_ascii_case("CN");
+            let mut btn = button(text(label).size(13))
+                .padding([6, 14])
+                .width(Length::Fill)
+                .style(move |t: &Theme, status| {
+                    let p = pal_of(t);
+                    let hover = matches!(status, button::Status::Hovered);
+                    if disabled {
+                        return button::Style {
+                            background: Some(iced::Color::TRANSPARENT.into()),
+                            text_color: with_alpha(p.on_surface, 0.38),
                             ..Default::default()
-                        }
-                    }),
-            );
+                        };
+                    }
+                    button::Style {
+                        background: Some(if selected {
+                            p.primary.into()
+                        } else if hover {
+                            p.surface_container_high.into()
+                        } else {
+                            iced::Color::TRANSPARENT.into()
+                        }),
+                        text_color: if selected { p.on_primary } else { p.on_surface },
+                        ..Default::default()
+                    }
+                });
+            if !disabled {
+                btn = btn.on_press(Message::SelectCountry(code));
+            }
+            list = list.push(btn);
         }
 
         let popup_content = container(
@@ -10620,6 +10656,14 @@ impl App {
     /// failing mid-Sahara.
     fn is_tb323fu(&self) -> bool {
         self.device_model.eq_ignore_ascii_case("TB323FU")
+    }
+
+    /// Whether the polled device is a TB322FC. PRC-only SKU — the Flash
+    /// wizard hides ROW + OtherRegion as disabled cards so the user
+    /// cannot pick a region or cross-region flash target that the
+    /// hardware doesn't ship with.
+    fn is_tb322fc(&self) -> bool {
+        self.device_model.eq_ignore_ascii_case("TB322FC")
     }
 
     /// True when the dashboard poll has placed the device in a mode
@@ -11510,6 +11554,25 @@ impl App {
     fn flash_region_step(&self) -> Element<'_, Message> {
         let prc_icon = lucide_primary(icon::region_prc(), 57.6);
         let row_icon = lucide_primary(icon::region_row(), 57.6);
+        // TB322FC is a PRC-only SKU. Render ROW as a disabled card so
+        // the constraint is visible — silent skip would confuse users
+        // who expect both options.
+        let tb322fc = self.is_tb322fc();
+        let row_card: Element<'_, Message> = if tb322fc {
+            icon_option_card_sub_disabled(
+                row_icon,
+                self.t("region_row"),
+                self.t("flash_unsupported_tb322fc"),
+            )
+        } else {
+            icon_option_card_sub(
+                row_icon,
+                self.t("region_row"),
+                self.t("region_row_name"),
+                self.flash.device_region == Some(DeviceRegion::Row),
+                Message::Flash(FlashMsg::FlashRegion(DeviceRegion::Row)),
+            )
+        };
         let col = column![
             text(self.t("flash_region_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -11526,13 +11589,7 @@ impl App {
                     self.flash.device_region == Some(DeviceRegion::Prc),
                     Message::Flash(FlashMsg::FlashRegion(DeviceRegion::Prc))
                 ),
-                icon_option_card_sub(
-                    row_icon,
-                    self.t("region_row"),
-                    self.t("region_row_name"),
-                    self.flash.device_region == Some(DeviceRegion::Row),
-                    Message::Flash(FlashMsg::FlashRegion(DeviceRegion::Row))
-                ),
+                row_card,
             ]
             .spacing(12),
         ]
@@ -11551,6 +11608,25 @@ impl App {
     fn flash_target_step(&self) -> Element<'_, Message> {
         let globe = lucide_primary(icon::tile_globe(), 57.6);
         let device = lucide_primary(icon::tile_device(), 57.6);
+        // TB322FC ships only in PRC, so cross-region (OtherRegion) is
+        // never a valid target. Disable the card to keep the constraint
+        // visible on the picker.
+        let tb322fc = self.is_tb322fc();
+        let other_card: Element<'_, Message> = if tb322fc {
+            icon_option_card_sub_disabled(
+                globe,
+                self.t(FlashTarget::OtherRegion.label_key()),
+                self.t("flash_unsupported_tb322fc"),
+            )
+        } else {
+            icon_option_card_sub(
+                globe,
+                self.t(FlashTarget::OtherRegion.label_key()),
+                self.t("flashtarget_other_desc"),
+                self.flash.target == Some(FlashTarget::OtherRegion),
+                Message::Flash(FlashMsg::FlashTarget(FlashTarget::OtherRegion)),
+            )
+        };
         let col = column![
             text(self.t("flash_target_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -11560,13 +11636,7 @@ impl App {
                 .style(muted_style)
                 .center(),
             row![
-                icon_option_card_sub(
-                    globe,
-                    self.t(FlashTarget::OtherRegion.label_key()),
-                    self.t("flashtarget_other_desc"),
-                    self.flash.target == Some(FlashTarget::OtherRegion),
-                    Message::Flash(FlashMsg::FlashTarget(FlashTarget::OtherRegion))
-                ),
+                other_card,
                 icon_option_card_sub(
                     device,
                     self.t(FlashTarget::SameRegion.label_key()),

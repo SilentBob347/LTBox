@@ -196,6 +196,7 @@
   "flash_step_target": "대상",
   "flash_target_subtitle": "같은 지역 펌웨어를 설치할지, 다른 지역 펌웨어를 설치할지 고르세요.",
   "flash_target_title": "플래싱 대상 선택",
+  "flash_unsupported_tb322fc": "TB322FC에서 지원되지 않음",
   "flashtarget_other": "다른 지역 펌웨어 설치",
   "flashtarget_other_desc": "하드웨어와 일치하지 않는 지역의 펌웨어를 설치/업데이트",
   "flashtarget_same": "같은 지역 펌웨어 설치",

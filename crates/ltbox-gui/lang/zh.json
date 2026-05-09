@@ -196,6 +196,7 @@
   "flash_step_target": "目标",
   "flash_target_subtitle": "安装本区域或其他区域的固件?",
   "flash_target_title": "选择刷写目标",
+  "flash_unsupported_tb322fc": "TB322FC 不支持",
   "flashtarget_other": "安装其他区域固件",
   "flashtarget_other_desc": "安装或更新与硬件区域不一致的固件",
   "flashtarget_same": "安装相同区域固件",

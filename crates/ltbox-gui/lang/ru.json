@@ -196,6 +196,7 @@
   "flash_step_target": "Цель",
   "flash_target_subtitle": "Установить прошивку того же или другого региона?",
   "flash_target_title": "Выбор цели прошивки",
+  "flash_unsupported_tb322fc": "Не поддерживается на TB322FC",
   "flashtarget_other": "Установить прошивку другого региона",
   "flashtarget_other_desc": "Установка или обновление прошивки региона, отличного от аппаратного",
   "flashtarget_same": "Установить прошивку того же региона",
