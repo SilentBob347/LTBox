@@ -34,6 +34,8 @@ const REQUIRED_INFS: &[&str] = &["qcadb.inf", "qcwdfser.inf"];
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
     #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
     assets: Vec<GithubAsset>,
 }
 
@@ -44,7 +46,8 @@ struct GithubAsset {
 }
 
 const RELEASES_API: &str =
-    "https://api.github.com/repos/qualcomm/qcom-usb-kernel-drivers/releases/latest";
+    "https://api.github.com/repos/qualcomm/qcom-usb-kernel-drivers/releases?per_page=10";
+const WIN_TAG_NEEDLE: &str = "win";
 const ASSET_PREFIX: &str = "qud-win-";
 const ASSET_SUFFIX: &str = "_arm64_amd64.zip";
 const USER_AGENT: &str = concat!("ltbox/", env!("CARGO_PKG_VERSION"));
@@ -128,12 +131,17 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         .build()
         .new_agent();
 
-    let release: GithubRelease = meta_agent
+    let releases: Vec<GithubRelease> = meta_agent
         .get(RELEASES_API)
         .call()?
         .body_mut()
         .read_json()
         .map_err(|e| DriverError::Parse(e.to_string()))?;
+
+    let release = releases
+        .into_iter()
+        .find(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
+        .ok_or(DriverError::NoAsset)?;
 
     let (asset_name, asset_url) = release
         .assets
