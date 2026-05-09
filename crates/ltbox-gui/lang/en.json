@@ -322,6 +322,7 @@
   "live_flash_country_skip": "Country code: do not change — devinfo/persist untouched",
   "live_flash_data_mode_keep": "Data mode: KEEP",
   "live_flash_data_mode_wipe": "Data mode: WIPE",
+  "live_flash_edl_start_skips": "Started directly in EDL — ARB patch and model fingerprint check skipped (require ADB/Bootloader probe). ARB mode forced to OFF for this run.",
   "live_flash_files_count": ".x files: {x_count}, rawprogram XML: {xml_count}",
   "live_flash_firmware_folder": "Firmware folder: {path}",
   "live_flash_phase3_xml_counts": "{raw} rawprogram + {patch} patch XML",

@@ -4863,7 +4863,19 @@ impl App {
                         .replace("{wipe}", &cfg.wipe.to_string())
                 ));
                 let rb_label_for_log = rollback_label.clone();
-                let rb_mode = cfg.modify_rollback.to_mode();
+                let mut rb_mode = cfg.modify_rollback.to_mode();
+                let edl_start = matches!(conn, ConnectionStatus::Edl);
+                if edl_start {
+                    // EDL-start drops every probe-dependent guard:
+                    // device rollback index (Fastboot vars only) and
+                    // device model (ADB / Fastboot only) are
+                    // unreachable from EDL, so the GUI emits one
+                    // umbrella warning here and downgrades:
+                    //   * ARB On/Auto → Off (silent skip downstream)
+                    //   * vendor_boot fingerprint check → skipped
+                    self.log_push(format!("[Flash] {}", self.t("live_flash_edl_start_skips")));
+                    rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+                }
                 let ll = self.live_labels();
                 return Task::perform(
                     async move {
@@ -5077,14 +5089,16 @@ impl App {
                                 )
                             );
 
-                            // Cross-check the firmware folder's
                             // Cross-check folder vendor_boot.img AVB
                             // fingerprint vs polled device model. Mismatch
                             // aborts BEFORE EDL so the user doesn't write
                             // firmware built for other models onto the
-                            // device. Missing fingerprint / empty
-                            // device_model fall through to Match.
-                            if has_vendor_boot {
+                            // device. Skipped entirely on EDL-start —
+                            // ADB/Fastboot never ran so `device_model`
+                            // is empty and the comparison would
+                            // false-positive. Single umbrella warning
+                            // already emitted at worker start.
+                            if has_vendor_boot && !edl_start {
                                 match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
                                     Ok(info) => {
                                         use ltbox_patch::region::{
