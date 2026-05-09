@@ -3732,7 +3732,7 @@ impl ConnectionStatus {
 enum EdlEntryAction {
     AlreadyEdl,
     AdbReboot,
-    FastbootContinueThenAdb,
+    FastbootRebootThenAdb,
     ManualWait,
 }
 
@@ -3772,7 +3772,7 @@ fn edl_entry_action(conn: ConnectionStatus) -> EdlEntryAction {
     match conn {
         ConnectionStatus::Edl => EdlEntryAction::AlreadyEdl,
         ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => EdlEntryAction::AdbReboot,
-        ConnectionStatus::Fastboot => EdlEntryAction::FastbootContinueThenAdb,
+        ConnectionStatus::Fastboot => EdlEntryAction::FastbootRebootThenAdb,
         ConnectionStatus::AdbUnauthorized | ConnectionStatus::None => EdlEntryAction::ManualWait,
     }
 }
@@ -6099,7 +6099,7 @@ impl App {
                                 if let Ok(mut dev) =
                                     ltbox_device::fastboot::FastbootDevice::open()
                                 {
-                                    let _ = dev.continue_boot();
+                                    let _ = dev.reboot();
                                 }
                             }
                             let mut adb = ltbox_device::adb::AdbManager::new();
@@ -16285,16 +16285,17 @@ fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
     }
 }
 
-fn fastboot_continue_then_adb_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
-    // Command echo (`fastboot continue`) suppressed — failure path still
-    // logs the precise error.
+fn fastboot_reboot_then_adb_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+    // Device boots into the OS so ADB comes up for the subsequent
+    // `adb reboot edl`. `oem edl` are intentionally not used (oem edl
+    // misbehaves on some devices).
     match ltbox_device::fastboot::FastbootDevice::open() {
         Ok(mut dev) => {
-            if let Err(e) = dev.continue_boot() {
+            if let Err(e) = dev.reboot() {
                 ltbox_core::live!(
                     log,
                     "[{tag}] {}",
-                    ltbox_core::i18n::tr("live_fastboot_continue_failed")
+                    ltbox_core::i18n::tr("live_fastboot_reboot_failed")
                         .replace("{error}", &e.to_string())
                 );
                 return wait_for_manual_edl(tag, log);
@@ -16336,7 +16337,7 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
             Ok(())
         }
         EdlEntryAction::AdbReboot => reboot_adb_to_edl(tag, log),
-        EdlEntryAction::FastbootContinueThenAdb => fastboot_continue_then_adb_edl(tag, log),
+        EdlEntryAction::FastbootRebootThenAdb => fastboot_reboot_then_adb_edl(tag, log),
         EdlEntryAction::ManualWait => wait_for_manual_edl(tag, log),
     }
 }
@@ -17578,7 +17579,7 @@ mod tests {
     fn edl_entry_action_uses_adb_from_fastboot() {
         assert_eq!(
             edl_entry_action(ConnectionStatus::Fastboot),
-            EdlEntryAction::FastbootContinueThenAdb
+            EdlEntryAction::FastbootRebootThenAdb
         );
     }
 

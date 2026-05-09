@@ -1,6 +1,6 @@
 //! Minimal Fastboot over nusb — only the commands LTBox uses
-//! (getvar, oem edl, continue, reboot, detect). Protocol: ASCII command →
-//! bulk write → read OKAY/FAIL/DATA/INFO.
+//! (getvar, oem edl, reboot, reboot-bootloader, detect). Protocol:
+//! ASCII command → bulk write → read OKAY/FAIL/DATA/INFO.
 
 use nusb::Endpoint;
 use nusb::transfer::{Buffer, Bulk, In, Out};
@@ -269,10 +269,6 @@ impl FastbootDevice {
 
     pub fn oem_edl(&mut self) -> Result<()> {
         self.command("oem edl").map(|_| ())
-    }
-
-    pub fn continue_boot(&mut self) -> Result<()> {
-        self.command("continue").map(|_| ())
     }
 
     pub fn reboot(&mut self) -> Result<()> {

@@ -34,7 +34,7 @@ type Result<T> = std::result::Result<T, ControllerError>;
 enum EdlTransitionRoute {
     AlreadyEdl,
     AdbReboot,
-    FastbootContinueThenAdb,
+    FastbootRebootThenAdb,
     ManualWait,
 }
 
@@ -42,7 +42,7 @@ fn plan_edl_transition(in_edl: bool, in_fastboot: bool, skip_adb: bool) -> EdlTr
     if in_edl {
         EdlTransitionRoute::AlreadyEdl
     } else if in_fastboot && !skip_adb {
-        EdlTransitionRoute::FastbootContinueThenAdb
+        EdlTransitionRoute::FastbootRebootThenAdb
     } else if skip_adb {
         EdlTransitionRoute::ManualWait
     } else {
@@ -118,10 +118,13 @@ impl DeviceController {
                 self.mode = DeviceMode::Edl;
                 return Ok(());
             }
-            EdlTransitionRoute::FastbootContinueThenAdb => {
-                info!("Device in Fastboot, resuming boot for ADB EDL transition...");
+            EdlTransitionRoute::FastbootRebootThenAdb => {
+                info!("Device in Fastboot, rebooting to OS for ADB EDL transition...");
                 let mut dev = FastbootDevice::open()?;
-                let _ = dev.continue_boot();
+                // `reboot` (warm restart to OS), not `continue` — some
+                // Lenovo bootloaders (e.g. TB322FC) reject `continue`
+                // with `FAIL: unknown command`. `reboot` is universal.
+                let _ = dev.reboot();
                 info!("Waiting for ADB...");
                 self.adb.wait_for_device()?;
                 info!("Rebooting to EDL via ADB...");
@@ -295,7 +298,7 @@ mod tests {
     fn edl_route_from_fastboot_prefers_adb_when_available() {
         assert_eq!(
             plan_edl_transition(false, true, false),
-            EdlTransitionRoute::FastbootContinueThenAdb
+            EdlTransitionRoute::FastbootRebootThenAdb
         );
     }
 
