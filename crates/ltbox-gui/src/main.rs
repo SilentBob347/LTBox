@@ -5340,22 +5340,6 @@ impl App {
                                 );
                             }
 
-                            // Resolve active slot BEFORE EDL — the
-                            // ARB patch step below overwrites
-                            // `boot_<slot>` / `vbmeta_system_<slot>` on
-                            // top of the rawprogram-flashed pair, and
-                            // hard-coding `_a` here was a silent footgun
-                            // when the device was actually running on
-                            // `_b`: the rawprogram XMLs flashed both
-                            // slots' un-patched images, then the ARB
-                            // patch only overwrote `_a` → `_b` boot
-                            // hit the un-patched rollback index and
-                            // failed AVB / hit the rollback gate.
-                            let slot_suffix = ltbox_device::controller::poll_active_slot(
-                                std::time::Duration::from_secs(30),
-                                &mut log,
-                            )?;
-
                             // 8. EDL flash
                             let loader = find_edl_loader(fw_dir)
                                 .or_else(|| fw_dir.parent().and_then(find_edl_loader));
@@ -5387,14 +5371,14 @@ impl App {
                                     "No flashable rawprogram*.xml found in {fw_folder}"
                                 ));
                             }
-                            // ARB-patched copies flash *after* rawprogram so
-                            // the user's firmware folder stays untouched.
+                            // ARB-patched copies are flashed *after* rawprogram
+                            // so the user's firmware folder stays untouched.
                             // LUN comes from the hardcoded map; start sector
                             // resolves through GPT-by-name in
-                            // `flash_partition`. Slot suffix is the
-                            // poll-resolved active slot so the patched
-                            // copy lands on whichever slot the device is
-                            // actually running on — not always `_a`.
+                            // `flash_partition`. Slot `_a` matches the prior
+                            // first-hit `catalog.require(..._a, ..._b, …)`
+                            // semantics — overwrites A on top of the
+                            // full-firmware flash that already wrote both.
                             let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
                                 Vec::new();
                             if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
@@ -5404,15 +5388,13 @@ impl App {
                                 std::fs::create_dir_all(&arb_work_dir)
                                     .map_err(|e| format!("arb work dir: {e}"))?;
 
-                                let boot_slot = format!("boot{slot_suffix}");
-                                let vbmeta_system_slot = format!("vbmeta_system{slot_suffix}");
                                 // (base, on-disk filename, slot label)
                                 let label_pairs: &[(&str, &str, &str)] = &[
-                                    ("boot", "boot.img", boot_slot.as_str()),
+                                    ("boot", "boot.img", "boot_a"),
                                     (
                                         "vbmeta_system",
                                         "vbmeta_system.img",
-                                        vbmeta_system_slot.as_str(),
+                                        "vbmeta_system_a",
                                     ),
                                 ];
                                 for (log_name, filename, slot_label) in label_pairs {
@@ -5615,18 +5597,9 @@ impl App {
                             // ARB overlays) so stock XML entries cannot put the
                             // unconverted ROW pair back on top.
                             if let Some(output) = &region_pair {
-                                // Use the poll-resolved active slot
-                                // suffix so the region-converted pair
-                                // overwrites whichever slot the device
-                                // is actually running on. Hard-coding
-                                // `_a` left `_b` users on the
-                                // unconverted rawprogram-flashed pair
-                                // and the region change never took.
-                                let vendor_boot_slot = format!("vendor_boot{slot_suffix}");
-                                let vbmeta_slot = format!("vbmeta{slot_suffix}");
                                 let overlays: [(&str, &std::path::Path); 2] = [
-                                    (vendor_boot_slot.as_str(), output.vendor_boot.as_path()),
-                                    (vbmeta_slot.as_str(), output.vbmeta.as_path()),
+                                    ("vendor_boot_a", output.vendor_boot.as_path()),
+                                    ("vbmeta_a", output.vbmeta.as_path()),
                                 ];
                                 for (label, image) in overlays {
                                     let Some(lun) =
