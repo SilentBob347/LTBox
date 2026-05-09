@@ -5868,6 +5868,17 @@ impl App {
                                     }
                                 }
 
+                            // Mark `_a` active before reset. Lenovo
+                            // firmware rawprograms only target `_a`, so
+                            // a full flash always lands on `_a`. Without
+                            // this the SoC may continue booting from a
+                            // previously-active `_b` on the next reset
+                            // and the freshly-written `_a` firmware
+                            // would never run.
+                            if let Err(e) = session.set_active_slot_a(&mut log) {
+                                return Err(format!("set bootable LUN: {e}"));
+                            }
+
                             live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
                             session.reset_tolerant(&mut log);
                             live!(log, "[Flash] {}", ll.flash_completed);

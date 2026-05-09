@@ -325,6 +325,7 @@
   "live_flash_files_count": ".x 파일: {x_count}개, rawprogram XML: {xml_count}개",
   "live_flash_firmware_folder": "펌웨어 폴더: {path}",
   "live_flash_phase3_xml_counts": "rawprogram {raw}개 + patch XML {patch}개",
+  "live_flash_set_bootable": "부팅 가능 LUN을 {lun}로 설정 (xbl_a)",
   "live_flash_skip_adb": "기기가 부트로더/EDL 모드 — ADB 단계 건너뜀",
   "live_flash_starting": "시작: modify_region={modify_region} rollback={rollback} wipe={wipe}",
   "live_flash_vbmeta_status": "vbmeta.img: {status}",

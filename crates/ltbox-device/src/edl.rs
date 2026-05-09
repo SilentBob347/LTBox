@@ -710,6 +710,28 @@ impl EdlSession {
         Ok(())
     }
 
+    /// Mark `xbl_a`'s LUN as the boot drive (Firehose
+    /// `<setbootablestoragedrive value="1"/>`, equivalent to fh_loader's
+    /// `setactivepartition=1`). LUN 1 is hardcoded — every supported
+    /// Lenovo Qualcomm tablet (TB320FC / TB321FU / TB322FC / TB323FU /
+    /// TB520FU / TB710FU) places `xbl_a` on LUN 1.
+    ///
+    /// Lenovo firmware rawprograms only target `_a`, so a full firmware
+    /// flash always lands on `_a`. Call this after the flash so the SoC
+    /// boots from the freshly-written `_a` on the next reset; without
+    /// it a device that was previously running on `_b` would continue
+    /// booting `_b`'s pre-flash firmware.
+    pub fn set_active_slot_a(&mut self, log: &mut Vec<String>) -> Result<()> {
+        const XBL_A_LUN: u8 = 1;
+        ltbox_core::live!(
+            log,
+            "[Flash] {}",
+            tr("live_flash_set_bootable").replace("{lun}", &XBL_A_LUN.to_string())
+        );
+        qdl::firehose_set_bootable(&mut self.dev, XBL_A_LUN)
+            .map_err(|e| EdlError::Session(format!("setbootablestoragedrive failed: {e}")))
+    }
+
     /// Flash every `<program>` in the rawprogram XMLs, then apply patch
     /// XMLs. XML coordinates drive the flash, so no slot-suffix guessing
     /// (EDL can't read slot suffix from ADB). Images resolve against the

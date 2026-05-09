@@ -325,6 +325,7 @@
   "live_flash_files_count": ".x 文件: {x_count}, rawprogram XML: {xml_count}",
   "live_flash_firmware_folder": "固件目录: {path}",
   "live_flash_phase3_xml_counts": "{raw} 个 rawprogram + {patch} 个 patch XML",
+  "live_flash_set_bootable": "将可启动 LUN 设置为 {lun} (xbl_a)",
   "live_flash_skip_adb": "设备处于引导加载程序/EDL — 跳过 ADB 步骤",
   "live_flash_starting": "开始: modify_region={modify_region} rollback={rollback} wipe={wipe}",
   "live_flash_vbmeta_status": "vbmeta.img: {status}",
