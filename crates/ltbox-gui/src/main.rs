@@ -755,6 +755,14 @@ impl Family {
         };
         svg_icon(bytes, 72.0)
     }
+    fn icon_disabled(self) -> Element<'static, Message> {
+        let bytes: &'static [u8] = match self {
+            Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
+            Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
+            Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
+        };
+        svg_icon_disabled(bytes, 72.0)
+    }
     fn has_modes(&self) -> bool {
         matches!(self, Self::KernelSU)
     }
@@ -848,6 +856,13 @@ impl RootMode {
             Self::Gki => icon::root_gki(),
         };
         lucide_primary(glyph, 57.6)
+    }
+    fn icon_disabled(self) -> Element<'static, Message> {
+        let glyph = match self {
+            Self::Lkm => icon::root_lkm(),
+            Self::Gki => icon::root_gki(),
+        };
+        lucide_disabled(glyph, 57.6)
     }
 }
 
@@ -11553,20 +11568,19 @@ impl App {
 
     fn flash_region_step(&self) -> Element<'_, Message> {
         let prc_icon = lucide_primary(icon::region_prc(), 57.6);
-        let row_icon = lucide_primary(icon::region_row(), 57.6);
-        // TB322FC is a PRC-only SKU. Render ROW as a disabled card so
-        // the constraint is visible — silent skip would confuse users
-        // who expect both options.
+        // TB322FC is a PRC-only SKU. Render ROW as a disabled card with
+        // a grayed icon so the constraint is visible — silent skip
+        // would confuse users who expect both options.
         let tb322fc = self.is_tb322fc();
         let row_card: Element<'_, Message> = if tb322fc {
             icon_option_card_sub_disabled(
-                row_icon,
+                lucide_disabled(icon::region_row(), 57.6),
                 self.t("region_row"),
                 self.t("flash_unsupported_tb322fc"),
             )
         } else {
             icon_option_card_sub(
-                row_icon,
+                lucide_primary(icon::region_row(), 57.6),
                 self.t("region_row"),
                 self.t("region_row_name"),
                 self.flash.device_region == Some(DeviceRegion::Row),
@@ -11606,21 +11620,20 @@ impl App {
     }
 
     fn flash_target_step(&self) -> Element<'_, Message> {
-        let globe = lucide_primary(icon::tile_globe(), 57.6);
         let device = lucide_primary(icon::tile_device(), 57.6);
         // TB322FC ships only in PRC, so cross-region (OtherRegion) is
-        // never a valid target. Disable the card to keep the constraint
-        // visible on the picker.
+        // never a valid target. Disable the card with a grayed icon to
+        // keep the constraint visible on the picker.
         let tb322fc = self.is_tb322fc();
         let other_card: Element<'_, Message> = if tb322fc {
             icon_option_card_sub_disabled(
-                globe,
+                lucide_disabled(icon::tile_globe(), 57.6),
                 self.t(FlashTarget::OtherRegion.label_key()),
                 self.t("flash_unsupported_tb322fc"),
             )
         } else {
             icon_option_card_sub(
-                globe,
+                lucide_primary(icon::tile_globe(), 57.6),
                 self.t(FlashTarget::OtherRegion.label_key()),
                 self.t("flashtarget_other_desc"),
                 self.flash.target == Some(FlashTarget::OtherRegion),
@@ -13131,7 +13144,7 @@ impl App {
         let mk = |f: Family| -> Element<'_, Message> {
             if tb320fc && f == Family::Magisk {
                 icon_option_card_sub_disabled(
-                    f.icon(),
+                    f.icon_disabled(),
                     self.t(f.label_key()),
                     self.t("root_family_unsupported_tb320fc"),
                 )
@@ -13547,7 +13560,7 @@ impl App {
         let tb320fc = self.is_tb320fc();
         let lkm_card: Element<'_, Message> = if tb320fc {
             icon_option_card_sub_disabled(
-                RootMode::Lkm.icon(),
+                RootMode::Lkm.icon_disabled(),
                 self.t(RootMode::Lkm.label_key()),
                 self.t("root_family_unsupported_tb320fc"),
             )
@@ -16880,6 +16893,19 @@ fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
         .into()
 }
 
+/// Disabled-state SVG icon — recolours the bitmap to `on_surface` at
+/// 0.38 alpha. Brand colour is intentionally lost so the disabled card
+/// reads as inert. Pair with [`icon_option_card_sub_disabled`].
+fn svg_icon_disabled(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
+    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
+        .width(size)
+        .height(size)
+        .style(|t: &Theme, _| iced::widget::svg::Style {
+            color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
+        })
+        .into()
+}
+
 /// Primary-coloured Lucide icon sized to `size`. Matches the colour
 /// role the old per-asset SVG glyphs used for wizard tiles, status
 /// markers, and confirm-step eyebrows.
@@ -16890,6 +16916,20 @@ fn lucide_primary(
     icon.size(size)
         .style(|t: &Theme| iced::widget::text::Style {
             color: Some(pal_of(t).primary),
+        })
+        .into()
+}
+
+/// Disabled-state Lucide icon — `on_surface` at 0.38 alpha (M3 disabled
+/// content tone). Pair with [`icon_option_card_sub_disabled`] so the
+/// whole card reads as "not pickable on this device".
+fn lucide_disabled(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    size: f32,
+) -> Element<'static, Message> {
+    icon.size(size)
+        .style(|t: &Theme| iced::widget::text::Style {
+            color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
         })
         .into()
 }
@@ -17023,12 +17063,17 @@ fn icon_option_card_sub_disabled(
     .width(Length::Fill)
     .style(|t: &Theme, _status| {
         let p = pal_of(t);
+        // Stronger M3 disabled affordance: dimmer surface + a thin
+        // outline_variant border so the inert card reads distinctly
+        // against neighbouring active cards (alpha-only fade was
+        // ambiguous on themes with a dim base surface).
         button::Style {
-            background: Some(with_alpha(p.surface_container, 0.4).into()),
+            background: Some(with_alpha(p.surface_container_low, 0.5).into()),
             text_color: with_alpha(p.on_surface, 0.38),
             border: iced::Border {
+                color: with_alpha(p.outline_variant, 0.6),
+                width: 1.0,
                 radius: theme::shape::MD.into(),
-                ..Default::default()
             },
             ..Default::default()
         }
