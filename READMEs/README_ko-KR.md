@@ -12,7 +12,7 @@
 
 ## 🔑 이게 뭔가요?
 
-일부 레노버 태블릿은 공개된 AOSP 테스트 키로 서명된 펌웨어를 탑재하고 있습니다. 이로 인해 부트로더가 **잠겨 있어도** 해당 키로 서명된 이미지를 신뢰하고 부팅에 성공합니다.
+일부 레노버 태블릿은 부트로더(ABL)에 **AOSP 테스트 공개키**가 Android Verified Boot(AVB) 신뢰 루트(`AvbRSAPublicKey` 구조체)로 임베드되어 출하됩니다. 이 키와 매칭되는 비공개키는 AOSP 소스(`external/avb/test/data/testkey_rsa4096.pem`)에 공개되어 있어, 누구나 `vbmeta` 이미지를 서명할 수 있고 **잠긴** 부트로더가 이를 정상으로 수용합니다.
 
 LTBox는 이를 활용하여 다음을 가능하게 합니다:
 
@@ -21,32 +21,38 @@ LTBox는 이를 활용하여 다음을 가능하게 합니다:
 - 🛡️ **안티롤백 우회** — 롤백 보호를 우회하여 이전/이후 펌웨어 플래싱
 - ⚡ **파티션 플래싱** — EDL(Emergency Download) 모드를 통한 파티션 읽기/쓰기
 
-### 지원 기기
+<a id="fnref-patched"></a>
+
+### 지원 기기 [‡](#fn-patched)
 
 | 기기 | 비고 |
 |---|---|
 | Legion Tab Y700 2세대, 3세대 | 전체 지원 |
-| Legion Tab Y700 4세대 | ZUXOS ≤ 1.5.10.138 |
+| Legion Tab Y700 4세대 | ZUXOS ≤ **`1.5.10.138`** <a id="fnref-y700-4th-gen-cutoff"></a>[†](#fn-y700-4th-gen-cutoff) |
 | Yoga Pad Pro AI / Yoga Tab Plus AI | 전체 지원 |
 | Xiaoxin Pad Pro GT / Yoga Tab 11.1 AI | 전체 지원 |
-
-> **참고:** 2026년 이후 출시된 기기(예: Y700 5세대)들에서는 이 취약점이 패치되었습니다.
 
 ---
 
 ## 🚀 빠른 시작
 
-### Windows
+<details>
+<summary><strong>🪟 Windows</strong> — <code>x86_64</code> / <code>arm64</code></summary>
+
+<br>
 
 1. [최신 릴리즈](../../releases/latest) 다운로드 후 압축 해제 (경로에 공백/특수문자 없이)
 2. **`ltbox.exe`** 더블클릭
 3. 사이드바에서 작업을 선택하고 위저드를 따라 진행
 
-Windows `x86_64` 및 `arm64` 빌드가 배포됩니다.
-
 > **퀄컴 USB 드라이버:** 퀄컴 USB 드라이버가 누락된 경우 대시보드에 "드라이버 설치" 배너가 표시됩니다. 클릭하면 GitHub에서 최신 `qcom-usb-kernel-drivers` 릴리즈를 다운로드하여 `pnputil`로 설치합니다. 첫 실행 시 `pnputil`이 `.inf` 파일을 설치할 수 있도록 LTBox를 관리자 권한으로 실행하세요.
 
-### Linux
+</details>
+
+<details>
+<summary><strong>🐧 Linux</strong> — <code>x86_64</code> / <code>aarch64</code></summary>
+
+<br>
 
 1. 런타임 의존성 설치 (Debian/Ubuntu 기준 — 다른 배포판은 적절히 변경):
    ```bash
@@ -70,7 +76,7 @@ Windows `x86_64` 및 `arm64` 빌드가 배포됩니다.
    `~/.local/share/applications/`에 `.desktop` 파일을, `~/.local/share/icons/hicolor/scalable/apps/`에 SVG 아이콘을 설치합니다. GNOME / KDE에서 몇 초 내로 인식됩니다. 바이너리를 옮긴 뒤에는 다시 실행하세요.
 6. `./ltbox` 실행.
 
-Linux `x86_64` 및 `aarch64` 빌드가 배포됩니다.
+</details>
 
 ---
 
@@ -91,7 +97,10 @@ Linux `x86_64` 및 `aarch64` 빌드가 배포됩니다.
 
 ### 고급 메뉴
 
-파이프라인 개별 단계 수동 제어, 세 섹션으로 구성:
+<details>
+<summary>파이프라인 개별 단계 수동 제어, 세 섹션으로 구성</summary>
+
+<br>
 
 **지역 & 패치**
 - 지역 변환 (vendor_boot + vbmeta 재구성)
@@ -107,6 +116,8 @@ Linux `x86_64` 및 `aarch64` 빌드가 배포됩니다.
 - `.x` 파일 복호화 → XML
 - 파티션 이름 기준 덤프 / 플래싱 (GPT-by-name, EDL)
 - 물리 LUN 단위 덤프 / 플래싱 (전체 LUN, EDL)
+
+</details>
 
 ---
 
@@ -130,6 +141,32 @@ Linux `x86_64` 및 `aarch64` 빌드가 배포됩니다.
 | `ltbox-device` | 전송 계층 — ADB, Fastboot, EDL / QDL, serialport 탐지, Windows 퀄컴 USB 드라이버 감지 + 자동 설치 |
 | `ltbox-patch` | 이미지 파이프라인 — AVB(내장 AOSP testkey 스펙), 부트 이미지 ramdisk 패치, 지역 변환, 롤백 인덱스 처리, 루트 프로바이더 통합 |
 | `ltbox-gui` | `iced` 데스크톱 앱 — `ltbox.exe` 바이너리 |
+
+---
+
+## 📝 노트
+
+<a id="fn-patched"></a>
+
+<details>
+<summary><strong>‡ 패치된 기기 — 신규 하드웨어에서 취약점 수정됨.</strong> <a href="#fnref-patched">↩</a></summary>
+
+<br>
+
+2026년 이후 출시된 기기(예: Y700 5세대)는 출고 단계에서 AOSP 테스트 키가 ABL 검증 경로에서 제거되었습니다. 해당 취약점은 더 이상 LTBox로 익스플로잇 불가능합니다.
+
+</details>
+
+<a id="fn-y700-4th-gen-cutoff"></a>
+
+<details>
+<summary><strong>† Y700 4세대 컷오프 — ZUXOS <code>1.5.10.138</code>이 마지막 취약 빌드.</strong> <a href="#fnref-y700-4th-gen-cutoff">↩</a></summary>
+
+<br>
+
+ZUXOS `1.5.10.183`은 갱신된 ABL을 탑재합니다: 임베디드된 `AvbRSAPublicKey`가 AOSP 테스트 키에서 Y700 5세대 production RSA-4096 공개키로 교체되었습니다.
+
+</details>
 
 ---
 

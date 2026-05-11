@@ -12,7 +12,7 @@
 
 ## 🔑 What Is This?
 
-Certain Lenovo tablets ship with firmware signed using publicly available AOSP test keys. Because of this, the bootloader trusts and boots any image signed with those keys — even when **locked**.
+Certain Lenovo tablets ship a bootloader (ABL) with the **AOSP test public key** embedded as the Android Verified Boot (AVB) root of trust (`AvbRSAPublicKey` struct). The matching private key is published in AOSP source (`external/avb/test/data/testkey_rsa4096.pem`), so anyone can sign a `vbmeta` image that the locked bootloader still accepts as authentic.
 
 LTBox exploits this to enable:
 
@@ -21,32 +21,38 @@ LTBox exploits this to enable:
 - 🛡️ **Anti-rollback bypass** — flash older/newer firmware without rollback protection blocking you
 - ⚡ **Partition flashing** — read/write partitions via EDL (Emergency Download) mode
 
-### Supported Devices
+<a id="fnref-patched"></a>
+
+### Supported Devices [‡](#fn-patched)
 
 | Device | Notes |
 |---|---|
 | Legion Tab Y700 2nd, 3rd Gen | Full support |
-| Legion Tab Y700 4th Gen | ZUXOS ≤ 1.5.10.138 |
+| Legion Tab Y700 4th Gen | ZUXOS ≤ **`1.5.10.138`** <a id="fnref-y700-4th-gen-cutoff"></a>[†](#fn-y700-4th-gen-cutoff) |
 | Yoga Pad Pro AI / Yoga Tab Plus AI | Full support |
 | Xiaoxin Pad Pro GT / Yoga Tab 11.1 AI | Full support |
-
-> **Note:** Devices released in 2026+ (e.g. Y700 5th Gen) have this vulnerability patched.
 
 ---
 
 ## 🚀 Quick Start
 
-### Windows
+<details>
+<summary><strong>🪟 Windows</strong> — <code>x86_64</code> / <code>arm64</code></summary>
+
+<br>
 
 1. Download the [latest release](../../releases/latest) and extract the zip (no spaces or special chars in the path)
 2. Double-click **`ltbox.exe`**
 3. Pick a task from the sidebar and follow the wizard
 
-Windows `x86_64` and `arm64` builds are published.
-
 > **Qualcomm USB drivers:** the dashboard shows an "Install drivers" banner when the Qualcomm USB drivers are missing. Clicking it downloads and installs the latest `qcom-usb-kernel-drivers` release from GitHub via `pnputil`. Run LTBox as Administrator the first time so `pnputil` can land the `.inf` files.
 
-### Linux
+</details>
+
+<details>
+<summary><strong>🐧 Linux</strong> — <code>x86_64</code> / <code>aarch64</code></summary>
+
+<br>
 
 1. Install runtime deps (Debian/Ubuntu shown — adapt for your distro):
    ```bash
@@ -70,7 +76,7 @@ Windows `x86_64` and `arm64` builds are published.
    Drops a `.desktop` file under `~/.local/share/applications/` and the SVG icon under `~/.local/share/icons/hicolor/scalable/apps/`. GNOME / KDE pick it up within a few seconds. Re-run after moving the binary.
 6. Run `./ltbox`.
 
-Linux `x86_64` and `aarch64` builds are published.
+</details>
 
 ---
 
@@ -91,7 +97,10 @@ The app is a sidebar-driven GUI. Each entry opens a guided wizard.
 
 ### Advanced Menu
 
-Step-by-step manual control over the pipeline, grouped into three sections:
+<details>
+<summary>Step-by-step manual control over the pipeline, grouped into three sections</summary>
+
+<br>
 
 **Region & patch**
 - Convert region (vendor_boot + vbmeta rebuild)
@@ -107,6 +116,8 @@ Step-by-step manual control over the pipeline, grouped into three sections:
 - Decrypt `.x` files → XML
 - Dump / flash partitions by name (GPT-by-name, EDL)
 - Dump / flash physical LUNs (whole-LUN, EDL)
+
+</details>
 
 ---
 
@@ -130,6 +141,32 @@ Step-by-step manual control over the pipeline, grouped into three sections:
 | `ltbox-device` | Transport layer — ADB, Fastboot, EDL / QDL, serialport discovery, Windows Qualcomm USB driver probe + auto-install |
 | `ltbox-patch` | Image pipeline — AVB (embedded AOSP testkey specs), boot image ramdisk patching, region conversion, rollback index handling, root provider integration |
 | `ltbox-gui` | `iced` desktop app — the `ltbox.exe` binary |
+
+---
+
+## 📝 Notes
+
+<a id="fn-patched"></a>
+
+<details>
+<summary><strong>‡ Patched devices — vulnerability fixed in newer hardware.</strong> <a href="#fnref-patched">↩</a></summary>
+
+<br>
+
+Devices released in 2026+ (e.g. Y700 5th Gen) ship with the AOSP test key removed from the ABL trust path at the factory. The vulnerability is no longer exploitable by LTBox on those devices.
+
+</details>
+
+<a id="fn-y700-4th-gen-cutoff"></a>
+
+<details>
+<summary><strong>† Y700 4th Gen cutoff — ZUXOS <code>1.5.10.138</code> is the last vulnerable build.</strong> <a href="#fnref-y700-4th-gen-cutoff">↩</a></summary>
+
+<br>
+
+ZUXOS `1.5.10.183` ships an updated ABL: the embedded `AvbRSAPublicKey` is swapped from the AOSP test key to the Y700 5th Gen production RSA-4096 public key.
+
+</details>
 
 ---
 

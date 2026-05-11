@@ -12,7 +12,7 @@
 
 ## 🔑 这是什么？
 
-某些联想平板电脑出厂时使用了公开的 AOSP 测试密钥签名的固件。因此，即使引导加载程序处于**锁定状态**，也会信任并引导使用这些密钥签名的镜像。
+某些联想平板电脑的引导加载程序（ABL）在出厂时嵌入了**AOSP 测试公钥**作为 Android Verified Boot（AVB）信任根（`AvbRSAPublicKey` 结构体）。与之配对的私钥已公开在 AOSP 源代码中（`external/avb/test/data/testkey_rsa4096.pem`），任何人都可以签名 `vbmeta` 镜像，处于**锁定状态**的引导加载程序仍会将其视为合法接受。
 
 LTBox 利用这一特性实现：
 
@@ -21,32 +21,38 @@ LTBox 利用这一特性实现：
 - 🛡️ **反回滚绕过** — 绕过回滚保护，刷入更旧/更新的固件
 - ⚡ **分区刷写** — 通过 EDL（紧急下载）模式读写分区
 
-### 支持的设备
+<a id="fnref-patched"></a>
+
+### 支持的设备 [‡](#fn-patched)
 
 | 设备 | 备注 |
 |---|---|
 | Legion Tab Y700 第2、3代 | 完全支持 |
-| Legion Tab Y700 第4代 | ZUXOS ≤ 1.5.10.138 |
+| Legion Tab Y700 第4代 | ZUXOS ≤ **`1.5.10.138`** <a id="fnref-y700-4th-gen-cutoff"></a>[†](#fn-y700-4th-gen-cutoff) |
 | Yoga Pad Pro AI / Yoga Tab Plus AI | 完全支持 |
 | 小新 Pad Pro GT / Yoga Tab 11.1 AI | 完全支持 |
-
-> **注意：** 2026年及之后发布的设备（如 Y700 第5代）已修补此漏洞。
 
 ---
 
 ## 🚀 快速开始
 
-### Windows
+<details>
+<summary><strong>🪟 Windows</strong> — <code>x86_64</code> / <code>arm64</code></summary>
+
+<br>
 
 1. 下载[最新版本](../../releases/latest)并解压（路径中不要包含空格或特殊字符）
 2. 双击 **`ltbox.exe`**
 3. 从侧边栏选择任务并按向导操作
 
-发布 Windows `x86_64` 和 `arm64` 构建。
-
 > **高通 USB 驱动：** 如果缺少高通 USB 驱动，仪表盘会显示"安装驱动"横幅。点击后会从 GitHub 下载最新的 `qcom-usb-kernel-drivers` 版本，并通过 `pnputil` 进行安装。首次运行时请以管理员身份启动 LTBox，以便 `pnputil` 能成功安装 `.inf` 文件。
 
-### Linux
+</details>
+
+<details>
+<summary><strong>🐧 Linux</strong> — <code>x86_64</code> / <code>aarch64</code></summary>
+
+<br>
 
 1. 安装运行时依赖（以 Debian/Ubuntu 为例 — 其他发行版请相应调整）：
    ```bash
@@ -70,7 +76,7 @@ LTBox 利用这一特性实现：
    将 `.desktop` 文件放入 `~/.local/share/applications/`，SVG 图标放入 `~/.local/share/icons/hicolor/scalable/apps/`。GNOME / KDE 会在几秒内识别。移动二进制后请重新执行。
 6. 运行 `./ltbox`。
 
-发布 Linux `x86_64` 和 `aarch64` 构建。
+</details>
 
 ---
 
@@ -91,7 +97,10 @@ LTBox 利用这一特性实现：
 
 ### 高级菜单
 
-逐步手动控制流水线，分为三个部分：
+<details>
+<summary>逐步手动控制流水线，分为三个部分</summary>
+
+<br>
 
 **区域 & 补丁**
 - 区域转换（vendor_boot + vbmeta 重建）
@@ -107,6 +116,8 @@ LTBox 利用这一特性实现：
 - 解密 `.x` 文件 → XML
 - 按名称转储 / 刷写分区（GPT-by-name, EDL）
 - 物理 LUN 整体转储 / 刷写（whole-LUN, EDL）
+
+</details>
 
 ---
 
@@ -130,6 +141,32 @@ LTBox 利用这一特性实现：
 | `ltbox-device` | 传输层 — ADB、Fastboot、EDL / QDL、serialport 探测、Windows 高通 USB 驱动检测 + 自动安装 |
 | `ltbox-patch` | 镜像流水线 — AVB（内嵌 AOSP testkey 规范）、引导镜像 ramdisk 补丁、区域转换、回滚索引处理、Root 方案集成 |
 | `ltbox-gui` | `iced` 桌面应用 — `ltbox.exe` 二进制 |
+
+---
+
+## 📝 注释
+
+<a id="fn-patched"></a>
+
+<details>
+<summary><strong>‡ 已修补设备 — 新硬件中漏洞已修复。</strong> <a href="#fnref-patched">↩</a></summary>
+
+<br>
+
+2026年及之后发布的设备（如 Y700 第5代）在出厂阶段已从 ABL 信任路径中移除 AOSP 测试密钥。该漏洞已无法再通过 LTBox 利用。
+
+</details>
+
+<a id="fn-y700-4th-gen-cutoff"></a>
+
+<details>
+<summary><strong>† Y700 第4代截止版本 — ZUXOS <code>1.5.10.138</code> 是最后一个可利用的版本。</strong> <a href="#fnref-y700-4th-gen-cutoff">↩</a></summary>
+
+<br>
+
+ZUXOS `1.5.10.183` 发布了更新的 ABL：嵌入的 `AvbRSAPublicKey` 从 AOSP 测试密钥被替换为 Y700 第5代生产 RSA-4096 公钥。
+
+</details>
 
 ---
 
