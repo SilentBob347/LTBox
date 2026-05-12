@@ -16150,15 +16150,12 @@ fn nav_btn<'a>(
                     ..Default::default()
                 };
             }
-            // State layers per M3: hover 8%, pressed 12%. Active items
-            // get a faint 4% on_surface wash so the row reads as
-            // "selected" even when not hovered — the pill carries the
-            // primary emphasis, this is just a quiet background hint.
-            let base_bg = if active {
-                Some(with_alpha(p.on_surface, 0.04).into())
-            } else {
-                None
-            };
+            // State layers per M3: hover 8%, pressed 12%. The spec
+            // does NOT add a persistent row tint to active items —
+            // the indicator pill (secondary_container chip around the
+            // icon) is the sole "selected" marker, and state layers
+            // only stack on top during interaction. Idle active items
+            // therefore get no row background.
             let bg = match status {
                 button::Status::Hovered => {
                     Some(with_alpha(p.on_surface, theme::state::HOVER).into())
@@ -16166,7 +16163,7 @@ fn nav_btn<'a>(
                 button::Status::Pressed => {
                     Some(with_alpha(p.on_surface, theme::state::PRESSED).into())
                 }
-                _ => base_bg,
+                _ => None,
             };
             button::Style {
                 background: bg,
