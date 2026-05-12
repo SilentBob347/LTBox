@@ -4456,12 +4456,24 @@ impl App {
     /// Override busy-dialog body for the four Advanced partition/physical
     /// flows during their reboot → loader → GPT-scan preamble. Gated on
     /// `busy_view == Advanced` so a stale wizard doesn't hijack unrelated ops.
+    ///
+    /// When the Advanced view is busy but no specific sub-action labels
+    /// itself, the default template "{operation} 중입니다." substitutes
+    /// in `nav_advanced` ("고급") and reads awkwardly across all four
+    /// locales — "고급 중입니다." / "Advanced is in progress." /
+    /// "高级 正在进行中。" / "Дополнительно выполняется." — because
+    /// the operation token is a section noun, not a verb phrase. The
+    /// `busy_advanced_generic` key carries a per-locale full sentence
+    /// for this fallback.
     fn busy_body_override(&self) -> Option<String> {
         if self.busy_view != Some(View::Advanced) {
             return None;
         }
         if self.advanced_wizard_open.is_open() {
             return Some(self.t("busy_partition_scan").to_string());
+        }
+        if self.advanced_operation_label().is_none() {
+            return Some(self.t("busy_advanced_generic").to_string());
         }
         None
     }
