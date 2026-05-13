@@ -116,6 +116,11 @@ pub struct PersistedSettings {
     /// before.
     #[serde(default)]
     pub default_loader_path: Option<String>,
+    /// Last window size (logical pixels) recorded on resize. Restored on
+    /// next launch so the user's preferred geometry survives restarts.
+    /// `None` on first run → the default 820×620 in `main` applies.
+    #[serde(default)]
+    pub window_size: Option<(f32, f32)>,
 }
 
 fn default_language() -> String {
@@ -134,6 +139,7 @@ impl Default for PersistedSettings {
             dark_mode: false,
             recent_paths: RecentPaths::default(),
             default_loader_path: None,
+            window_size: None,
         }
     }
 }

@@ -103,6 +103,22 @@ fn warning_style(t: &Theme) -> iced::widget::text::Style {
 /// `StartupWMClass=` so the window binds to the launcher entry.
 const APP_ID: &str = "io.github.miner7222.LTBox";
 
+/// Initial window dimensions on first run (logical pixels). Used both
+/// by `main`'s `window::Settings::size` fallback and by `App::new` when
+/// no persisted size exists yet — they must stay in lockstep.
+const DEFAULT_WINDOW_WIDTH: f32 = 820.0;
+const DEFAULT_WINDOW_HEIGHT: f32 = 620.0;
+/// Floor for cursor-drag resize and for the launch-time geometry
+/// (`window::Settings::min_size`). Anything below this stops laying
+/// out cleanly — wizard cards overlap, sidebar tween jumps.
+const MIN_WINDOW_WIDTH: f32 = 820.0;
+const MIN_WINDOW_HEIGHT: f32 = 620.0;
+/// Minimum interval between window-size persistence writes. Cursor-drag
+/// resize fires `Event::Window(Resized)` continuously; throttling to
+/// ~250 ms keeps the JSON file from being rewritten 60 times per second
+/// while still capturing the final geometry quickly after the drag ends.
+const WINDOW_SIZE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Upstream repo for the sidebar update pill.
 const UPDATE_REPO: &str = "miner7222/LTBox";
 
@@ -329,15 +345,26 @@ fn main() -> iced::Result {
     let win_icon =
         iced::window::icon::from_rgba(include_bytes!("../assets/icon_32.bin").to_vec(), 32, 32)
             .ok();
+    // Restore the user's previous window geometry if persisted (clamped
+    // to ≥ `MIN_WINDOW_*` so corrupted / pre-min-size config files can
+    // never launch a sub-floor window). Falls back to the default size
+    // on first run.
+    let persisted_size = settings_store::load()
+        .window_size
+        .map(|(w, h)| iced::Size::new(w.max(MIN_WINDOW_WIDTH), h.max(MIN_WINDOW_HEIGHT)))
+        .unwrap_or_else(|| iced::Size::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
     let window_settings = iced::window::Settings {
-        size: iced::Size::new(820.0, 620.0),
-        // Cursor-drag resize: 820x620 is the floor; anything below is
-        // unsupported (sidebar + wizard cards stop laying out cleanly).
-        // The borderless decorations strip native resize edges off the
-        // window, so the GUI overlays 8 invisible resize handles on the
-        // root Stack which emit `WindowMsg::WindowResize(direction)`
-        // and call `iced::window::drag_resize` on the host window.
-        min_size: Some(iced::Size::new(820.0, 620.0)),
+        size: persisted_size,
+        // Cursor-drag resize: `MIN_WINDOW_*` is the floor; anything
+        // below is unsupported (sidebar + wizard cards stop laying out
+        // cleanly). The borderless decorations strip native resize
+        // edges off the window, so the GUI overlays 8 invisible resize
+        // handles on the root Stack which emit
+        // `WindowMsg::WindowResize(direction)` and call
+        // `iced::window::drag_resize` on the host window. The user's
+        // resized geometry is persisted to `PersistedSettings::window_size`
+        // and restored above on the next launch.
+        min_size: Some(iced::Size::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)),
         icon: win_icon,
         decorations: false,
         ..Default::default()
@@ -3482,6 +3509,14 @@ enum Message {
     FlashPhys(FlashPhysMsg),
     Reboot(RebootMsg),
     Settings(SettingsMsg),
+    /// Window resized — carries the new logical size from
+    /// `iced::Event::Window(Resized)`. Persisted with throttling so the
+    /// user's preferred geometry survives a restart.
+    WindowResized(f32, f32),
+    /// Tick from a periodic subscription; flushes the latest window
+    /// size to disk if `window_size_dirty` is set and the debounce
+    /// interval has elapsed since the last save.
+    PersistWindowSize,
 }
 
 #[derive(Debug, Clone)]
@@ -3868,6 +3903,19 @@ struct App {
     /// displacement to target AND the velocity to be near zero so we
     /// don't stop the subscription mid-overshoot.
     sidebar_velocity: f32,
+    /// Current logical window size. Tracks `Event::Window(Resized)`
+    /// so the user's preferred geometry survives restarts via
+    /// `PersistedSettings::window_size`. A simple `Instant` debounce
+    /// throttles persistence writes during cursor-drag resize since
+    /// resize events fire on every frame.
+    window_size: (f32, f32),
+    /// Last instant a window-size save hit disk. Cursor-drag resize
+    /// fires `Resized` continuously; persistence is throttled to once
+    /// per `WINDOW_SIZE_SAVE_INTERVAL`.
+    window_size_last_save: std::time::Instant,
+    /// `true` while a pending window-size update hasn't been flushed
+    /// to disk. Cleared by `persist_window_size_if_due`.
+    window_size_dirty: bool,
     // Device portrait derived at view time via `device_portrait()`.
     platform_supported: Option<bool>,
     busy: bool,
@@ -4014,6 +4062,14 @@ impl Default for App {
             sidebar_expanded: false,
             sidebar_anim: 0.0,
             sidebar_velocity: 0.0,
+            // Use the persisted size if present, otherwise the default
+            // initial window dimensions (kept in lockstep with the
+            // values passed to `iced::window::Settings::size` in `main`).
+            window_size: persisted
+                .window_size
+                .unwrap_or((DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)),
+            window_size_last_save: std::time::Instant::now(),
+            window_size_dirty: false,
             platform_supported: None,
             busy: false,
             busy_view: None,
@@ -4618,6 +4674,7 @@ impl App {
             dark_mode: self.dark_mode,
             recent_paths: self.recent_paths.clone(),
             default_loader_path: self.default_loader_path.clone(),
+            window_size: Some(self.window_size),
         });
     }
 
@@ -4699,6 +4756,24 @@ impl App {
                     .map(|_| Message::SidebarAnimTick),
             );
         }
+        // Listen for window resize events so the user's preferred
+        // geometry survives a restart. `event::listen_with` filters at
+        // the source so non-window events don't bubble back as
+        // `Message::Noop`.
+        subs.push(iced::event::listen_with(|event, _, _| {
+            if let iced::Event::Window(iced::window::Event::Resized(size)) = event {
+                Some(Message::WindowResized(size.width, size.height))
+            } else {
+                None
+            }
+        }));
+        // Debounced window-size persistence tick: only fires while a
+        // pending size update hasn't been flushed yet.
+        if self.window_size_dirty {
+            subs.push(
+                iced::time::every(WINDOW_SIZE_SAVE_INTERVAL).map(|_| Message::PersistWindowSize),
+            );
+        }
         Subscription::batch(subs)
     }
 
@@ -4729,6 +4804,27 @@ impl App {
             Message::Window(WindowMsg::WindowResize(direction)) => {
                 if let Some(id) = self.window_id {
                     return iced::window::drag_resize(id, direction);
+                }
+            }
+            Message::WindowResized(w, h) => {
+                // Maximize / restore / cursor-drag resize all funnel
+                // through here. Snap the persisted size to the floor so
+                // a maximize → store → relaunch sequence still launches
+                // at a usable geometry rather than below MIN_*.
+                let w = w.max(MIN_WINDOW_WIDTH);
+                let h = h.max(MIN_WINDOW_HEIGHT);
+                if (w, h) != self.window_size {
+                    self.window_size = (w, h);
+                    self.window_size_dirty = true;
+                }
+            }
+            Message::PersistWindowSize => {
+                if self.window_size_dirty
+                    && self.window_size_last_save.elapsed() >= WINDOW_SIZE_SAVE_INTERVAL
+                {
+                    self.persist_settings();
+                    self.window_size_dirty = false;
+                    self.window_size_last_save = std::time::Instant::now();
                 }
             }
             // Navigation
