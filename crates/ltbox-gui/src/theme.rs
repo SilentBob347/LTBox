@@ -160,6 +160,21 @@ pub const fn with_alpha(c: Color, a: f32) -> Color {
     Color { a, ..c }
 }
 
+/// Blend `overlay` over `base` with the given alpha. Used to flatten
+/// an M3 state-layer (translucent on_X color) into a single opaque
+/// background tint, since `iced::widget::button::Style::background`
+/// only accepts one color/gradient at a time and can't stack a
+/// semi-transparent layer over the tonal fill.
+pub fn mix_color(base: Color, overlay: Color, alpha: f32) -> Color {
+    let inv = 1.0 - alpha;
+    Color {
+        r: base.r * inv + overlay.r * alpha,
+        g: base.g * inv + overlay.g * alpha,
+        b: base.b * inv + overlay.b * alpha,
+        a: 1.0,
+    }
+}
+
 /// M3 state-layer alphas.
 pub mod state {
     pub const HOVER: f32 = 0.08;

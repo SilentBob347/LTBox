@@ -59,3 +59,7 @@ tile_rescue       = "life-buoy"
 
 # Recents label (12 px)
 history           = "history"
+
+# Settings default-loader inline icon buttons (18 px)
+settings_browse   = "square-pen"
+settings_clear    = "eraser"

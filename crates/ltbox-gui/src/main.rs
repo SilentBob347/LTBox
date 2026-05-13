@@ -29,7 +29,7 @@ use iced::widget::{self, Space, button, column, container, row, scrollable, text
 use iced::{Element, Length, Subscription, Task, Theme};
 use iced_aw::widget::Spinner;
 
-use theme::{Palette, palette, with_alpha};
+use theme::{Palette, mix_color, palette, with_alpha};
 
 /// Palette lookup from `iced` style closures that only have `&Theme`.
 fn pal_of(t: &Theme) -> &'static Palette {
@@ -11413,17 +11413,31 @@ impl App {
         // click affordance visible. The previous `mouse_area` only set
         // the cursor — users on a stable pointer (touchpad tap) had no
         // visual cue.
+        // Firmware kv uses vertical-only padding so the clickable
+        // hover bg still has breathing room top/bottom around the
+        // label, but the label's left edge stays at the cell's x=0
+        // — keeping it column-aligned with the row above (모델 / RAM
+        // / 저장소 / 슬롯). Horizontal hover padding would push the
+        // label right and break that alignment.
         let firmware_kv: Element<'_, Message> = if self.device_firmware.is_empty() {
             info_kv(self.t("device_firmware"), firmware)
         } else {
             button(info_kv(self.t("device_firmware"), firmware))
                 .on_press(Message::OtaOpen)
-                .padding([4, 8])
+                .padding([4, 0])
                 .style(dash_clickable_btn_style)
                 .into()
         };
-        device_col =
-            device_col.push(row![info_kv(self.t("device_arb"), arb), firmware_kv,].spacing(40));
+        // Row align_y(Center) handles the vertical mismatch: the
+        // firmware button is `4 + label + 4` tall while the bare ARB
+        // kv is just `label` tall — centering both within the row's
+        // max height puts the two labels at the same y without
+        // introducing any horizontal offset on the ARB cell.
+        device_col = device_col.push(
+            row![info_kv(self.t("device_arb"), arb), firmware_kv,]
+                .spacing(40)
+                .align_y(iced::Alignment::Center),
+        );
 
         // Pin the inner row to 160 px regardless of whether the device is
         // populated. Without this the empty-state card collapses to the
@@ -11639,21 +11653,129 @@ impl App {
             widget::tooltip::Position::Right,
         );
 
-        let mut default_loader_actions = row![
-            button(text(self.t("settings_default_loader_browse").to_string()).size(13))
-                .on_press(Message::Settings(SettingsMsg::SettingsPickDefaultLoader))
-                .padding([6, 14])
-                .style(neutral_pill_btn_style),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+        // M3 "filled tonal" icon buttons: 36 x 36 circular surface in
+        // the secondary container family (or error family for the
+        // destructive Clear action), 18 px Lucide glyph centered, full
+        // shape radius, hover/pressed state layers on top of the base
+        // tonal fill. Each button is wrapped in a `tooltip` carrying
+        // the original "불러오기" / "지우기" label so the icon-only
+        // affordance still reads — M3 mandates a tooltip for
+        // unlabelled icon buttons.
+        let browse_btn = button(
+            container(lucide_icon(icon::settings_browse(), 18.0, |t: &Theme| {
+                pal_of(t).on_secondary_container
+            }))
+            .width(36)
+            .height(36)
+            .center_x(36)
+            .center_y(36),
+        )
+        .on_press(Message::Settings(SettingsMsg::SettingsPickDefaultLoader))
+        .padding(0)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            let base = p.secondary_container;
+            // iced's `button::Style::background` only accepts a single
+            // color/gradient, so the M3 state-layer (semi-transparent
+            // on_X over the tonal base) is pre-composited into one
+            // opaque tint via `mix_color`.
+            let bg = match status {
+                button::Status::Hovered => {
+                    mix_color(base, p.on_secondary_container, theme::state::HOVER)
+                }
+                button::Status::Pressed => {
+                    mix_color(base, p.on_secondary_container, theme::state::PRESSED)
+                }
+                _ => base,
+            };
+            let bg = Some(bg.into());
+            button::Style {
+                background: bg,
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+        let browse_tip = widget::tooltip(
+            browse_btn,
+            container(text(self.t("settings_default_loader_browse").to_string()).size(11))
+                .padding([6, 10])
+                .style(|t: &Theme| {
+                    let p = pal_of(t);
+                    container::Style {
+                        background: Some(p.surface_container_high.into()),
+                        text_color: Some(p.on_surface),
+                        border: iced::Border {
+                            color: p.outline_variant,
+                            width: 1.0,
+                            radius: theme::shape::XS.into(),
+                        },
+                        shadow: theme::elevation(2, is_dark(t)),
+                        ..Default::default()
+                    }
+                }),
+            widget::tooltip::Position::Top,
+        );
+
+        let mut default_loader_actions = row![browse_tip,]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
         if self.default_loader_path.is_some() {
-            default_loader_actions = default_loader_actions.push(
-                button(text(self.t("settings_default_loader_clear").to_string()).size(13))
-                    .on_press(Message::Settings(SettingsMsg::SettingsClearDefaultLoader))
-                    .padding([6, 14])
-                    .style(neutral_pill_btn_style),
+            let clear_btn = button(
+                container(lucide_icon(icon::settings_clear(), 18.0, |t: &Theme| {
+                    pal_of(t).on_error_container
+                }))
+                .width(36)
+                .height(36)
+                .center_x(36)
+                .center_y(36),
+            )
+            .on_press(Message::Settings(SettingsMsg::SettingsClearDefaultLoader))
+            .padding(0)
+            .style(|t: &Theme, status| {
+                let p = pal_of(t);
+                let base = p.error_container;
+                let bg = match status {
+                    button::Status::Hovered => {
+                        Some(mix_color(base, p.on_error_container, theme::state::HOVER).into())
+                    }
+                    button::Status::Pressed => {
+                        Some(mix_color(base, p.on_error_container, theme::state::PRESSED).into())
+                    }
+                    _ => Some(base.into()),
+                };
+                button::Style {
+                    background: bg,
+                    border: iced::Border {
+                        radius: theme::shape::FULL.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            });
+            let clear_tip = widget::tooltip(
+                clear_btn,
+                container(text(self.t("settings_default_loader_clear").to_string()).size(11))
+                    .padding([6, 10])
+                    .style(|t: &Theme| {
+                        let p = pal_of(t);
+                        container::Style {
+                            background: Some(p.surface_container_high.into()),
+                            text_color: Some(p.on_surface),
+                            border: iced::Border {
+                                color: p.outline_variant,
+                                width: 1.0,
+                                radius: theme::shape::XS.into(),
+                            },
+                            shadow: theme::elevation(2, is_dark(t)),
+                            ..Default::default()
+                        }
+                    }),
+                widget::tooltip::Position::Top,
             );
+            default_loader_actions = default_loader_actions.push(clear_tip);
         }
 
         let default_loader_top = row![
