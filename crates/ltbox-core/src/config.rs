@@ -116,6 +116,15 @@ impl LtboxConfig {
 
 mod hex {
     pub fn decode(s: &str) -> std::result::Result<Vec<u8>, String> {
+        // `s[i..i+2]` indexes by *bytes*. If a malformed config value
+        // smuggles in a multibyte UTF-8 char (e.g. a fullwidth digit
+        // pasted by accident, or a stray BOM), the byte-range split
+        // lands on an interior UTF-8 boundary and panics inside
+        // `Index<Range>`. Reject up front by requiring 7-bit ASCII;
+        // hex strings should never be anything else.
+        if !s.is_ascii() {
+            return Err("Hex string must be ASCII".into());
+        }
         if !s.len().is_multiple_of(2) {
             return Err("Odd hex length".into());
         }
