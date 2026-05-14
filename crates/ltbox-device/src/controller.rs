@@ -124,7 +124,12 @@ impl DeviceController {
                 // `reboot` (warm restart to OS), not `continue` — some
                 // Lenovo bootloaders (e.g. TB322FC) reject `continue`
                 // with `FAIL: unknown command`. `reboot` is universal.
-                let _ = dev.reboot();
+                // Propagate the result so a rejected `reboot` (rare but
+                // not impossible on customised bootloaders) surfaces as
+                // a Fastboot error here, not as a misleading downstream
+                // "ADB wait timed out" after this function silently
+                // moves on with the device still parked in Fastboot.
+                dev.reboot()?;
                 info!("Waiting for ADB...");
                 self.adb.wait_for_device()?;
                 info!("Rebooting to EDL via ADB...");
