@@ -4999,1174 +4999,7 @@ impl App {
             // Settings dispatch delegates to a focused handler.
             Message::Settings(m) => return self.update_settings(m),
             // Flash wizard
-            Message::Flash(FlashMsg::FlashRegion(r)) => {
-                // TB322FC is a PRC-only SKU. The region card UI grays
-                // out ROW, but a stale message from a pre-poll click
-                // could still land here. Drop it so the wizard never
-                // accepts a region the hardware doesn't ship with.
-                if self.is_tb322fc() && r == DeviceRegion::Row {
-                    return Task::none();
-                }
-                self.flash.device_region = Some(r);
-            }
-            Message::Flash(FlashMsg::FlashTarget(t)) => {
-                // TB322FC: cross-region (OtherRegion) flashes are blocked
-                // because the only valid region is PRC. Drop the message
-                // even if a stale dispatch slips past the disabled card.
-                if self.is_tb322fc() && t == FlashTarget::OtherRegion {
-                    return Task::none();
-                }
-                self.flash.target = Some(t);
-            }
-            Message::Flash(FlashMsg::FlashDataMode(m)) => self.flash.data_mode = Some(m),
-            Message::Flash(FlashMsg::FlashNext) => {
-                // Data step → build WorkflowConfig; wipe opens country popup.
-                if self.flash.step == 2 {
-                    self.wf_config = WorkflowConfig {
-                        modify_region: self.flash.target == Some(FlashTarget::OtherRegion),
-                        device_region: self.flash.device_region,
-                        modify_rollback: if self.flash.target == Some(FlashTarget::OtherRegion) {
-                            RollbackSetting::On
-                        } else {
-                            RollbackSetting::Auto
-                        },
-                        wipe: self.flash.data_mode == Some(DataMode::Wipe),
-                        country_action: CountryAction::Unset,
-                    };
-                    if self.wf_config.wipe {
-                        self.flash.next();
-                        self.country_popup_open = true;
-                        return Task::none();
-                    }
-                }
-                if self.flash.step == 4 {
-                    self.flash.next();
-                    return self.update(Message::Flash(FlashMsg::FlashExecStart));
-                }
-                self.flash.next();
-            }
-            Message::Flash(FlashMsg::FlashBack) => {
-                if self.flash.step == 4 {
-                    // Re-arm country patching so the popup's "Do not change"
-                    // selection doesn't survive a Back→Next round trip.
-                    self.wf_config.country_action = CountryAction::Unset;
-                }
-                self.flash.back();
-            }
-            Message::Flash(FlashMsg::FlashSelectFolder) => {
-                self.picker_target = PickerTarget::FlashFolder;
-                return pick_folder_task(
-                    pickers::PickerKind::QfilFirmwareFolder,
-                    &self.recent_paths,
-                    Message::FolderSelected,
-                );
-            }
-            Message::Flash(FlashMsg::FlashExecStart) => {
-                self.begin_op(View::Flash);
-                self.op_steps = self.derive_flash_op_steps();
-                self.error_msg = None;
-                let cfg = self.wf_config.clone();
-                let conn = self.connection;
-                let device_model = self.device_model.clone();
-                let fw_folder = self.flash.firmware_folder.clone().unwrap_or_default();
-                let rollback_label = self.t(cfg.modify_rollback.label_key()).to_string();
-                self.log_push(format!(
-                    "[Flash] {}",
-                    self.t("live_flash_starting")
-                        .replace("{modify_region}", &cfg.modify_region.to_string())
-                        .replace("{rollback}", &rollback_label)
-                        .replace("{wipe}", &cfg.wipe.to_string())
-                ));
-                let rb_label_for_log = rollback_label.clone();
-                let mut rb_mode = cfg.modify_rollback.to_mode();
-                let edl_start = matches!(conn, ConnectionStatus::Edl);
-                if edl_start {
-                    // EDL-start drops every probe-dependent guard:
-                    // device rollback index (Fastboot vars only) and
-                    // device model (ADB / Fastboot only) are
-                    // unreachable from EDL, so the GUI emits one
-                    // umbrella warning here and downgrades:
-                    //   * ARB On/Auto → Off (silent skip downstream)
-                    //   * vendor_boot fingerprint check → skipped
-                    self.log_push(format!("[Flash] {}", self.t("live_flash_edl_start_skips")));
-                    rb_mode = ltbox_patch::rollback::RollbackMode::Off;
-                }
-                let ll = self.live_labels();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
-                            let mut log = Vec::new();
-                            let fw_dir = std::path::Path::new(&fw_folder);
-
-                            // 1. Validate firmware folder
-                            live!(log, "[Flash] {}", phase_marker(1, 4, &ll.op_flash_phase[0]));
-                            if !fw_dir.exists() {
-                                return Err(format!("Firmware folder not found: {fw_folder}"));
-                            }
-                            live!(
-                                log,
-                                "[Flash] {}",
-                                ltbox_core::i18n::tr("live_flash_firmware_folder")
-                                    .replace("{path}", &fw_folder)
-                            );
-
-                            // 2. Device detection
-                            //
-                            // Run the ADB device probe BEFORE the
-                            // Fastboot bridge below. The previous
-                            // ordering kicked off `adb reboot bootloader`
-                            // first and only then asked `AdbManager::
-                            // check_device`, by which point the device
-                            // had already detached from ADB — so the
-                            // detection block always logged "no ADB
-                            // device info" even when an ADB bridge
-                            // was sitting right there a second earlier.
-                            // Now device info gets collected on the live
-                            // ADB transport, and the bridge takes over
-                            // afterwards.
-                            let skip_adb = conn.skip_adb();
-                            if skip_adb {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Flash] {}",
-                                    ltbox_core::i18n::tr("live_flash_skip_adb")
-                                );
-                            } else {
-                                ltbox_core::live!(
-                                    log,
-                                    "[ADB] {}",
-                                    ltbox_core::i18n::tr("live_adb_checking_device")
-                                );
-                                if ltbox_device::adb::AdbManager::new_if_connected().is_some() {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[ADB] {}",
-                                        ltbox_core::i18n::tr("live_adb_device_connected")
-                                    );
-                                    // The active slot is resolved later via
-                                    // `controller::poll_active_slot` — that
-                                    // helper polls both ADB + Fastboot and
-                                    // hard-errors on probe failure, so the
-                                    // earlier `get_slot_suffix` round-trip
-                                    // here was redundant (its result was
-                                    // assigned to `_slot` and discarded).
-                                } else {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[ADB] {}",
-                                        ltbox_core::i18n::tr("live_adb_no_device_info")
-                                    );
-                                }
-                            }
-
-                            // Snapshot rollback index before EDL —
-                            // `stored_rollback_index` vanishes past
-                            // Fastboot. Probe Fastboot vars first, and
-                            // when the device is sitting in ADB bridge
-                            // it through `adb reboot bootloader` before
-                            // retrying — otherwise the user sees the
-                            // ARB=ON abort on every PRC↔ROW flash that
-                            // started from the ADB-connected state, even
-                            // though Fastboot is reachable in principle.
-                            let probe_fastboot = || -> (Option<u64>, bool) {
-                                match ltbox_device::fastboot::FastbootDevice::open() {
-                                    Ok(mut dev) => match dev.get_all_vars() {
-                                        Ok(v) => (
-                                            ltbox_patch::rollback::compute_device_rollback_index(
-                                                &v.rollback_indices,
-                                            ),
-                                            true,
-                                        ),
-                                        Err(_) => (None, false),
-                                    },
-                                    Err(_) => (None, false),
-                                }
-                            };
-                            let mut probe = probe_fastboot();
-                            let adb_connected = matches!(
-                                conn,
-                                ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
-                            );
-                            if !probe.1 && adb_connected {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Flash] {}",
-                                    ltbox_core::i18n::tr("live_flash_adb_to_bootloader")
-                                );
-                                if let Some(mut adb) =
-                                    ltbox_device::adb::AdbManager::new_if_connected()
-                                {
-                                    match adb.reboot("bootloader") {
-                                        Ok(()) => {
-                                            // Poll for Fastboot up to
-                                            // 60s — ADB→bootloader
-                                            // typically lands inside 8 s
-                                            // but cold boots can drag.
-                                            let deadline = std::time::Instant::now()
-                                                + std::time::Duration::from_secs(60);
-                                            while std::time::Instant::now() < deadline {
-                                                if ltbox_device::fastboot::FastbootDevice::check_device()
-                                                {
-                                                    break;
-                                                }
-                                                std::thread::sleep(
-                                                    std::time::Duration::from_millis(500),
-                                                );
-                                            }
-                                            probe = probe_fastboot();
-                                        }
-                                        Err(e) => {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[ADB] {}",
-                                                ltbox_core::i18n::tr("live_adb_reboot_failed")
-                                                    .replace("{error}", &e.to_string())
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            let (device_rollback_index, fastboot_reachable) = probe;
-
-                            // Rollback=ON + no fastboot vars → can't target
-                            // a safe index. Bail before risking a brick.
-                            if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
-                                && !fastboot_reachable
-                            {
-                                live!(
-                                    log,
-                                    "[ARB] {}",
-                                    ltbox_core::i18n::tr("live_arb_on_fastboot_unreachable")
-                                );
-                                // Best-effort reboot — any failure stays
-                                // in the log; wizard still gets the Err.
-                                if let Some(adb) =
-                                    ltbox_device::adb::AdbManager::new_if_connected()
-                                {
-                                    if let Err(e) = adb.shell("reboot") {
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ADB] {}",
-                                            ltbox_core::i18n::tr("live_adb_reboot_failed")
-                                                .replace("{error}", &e.to_string())
-                                        );
-                                    } else {
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ADB] {}",
-                                            ltbox_core::i18n::tr("live_adb_reboot_sent")
-                                        );
-                                    }
-                                } else {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[ADB] {}",
-                                        ltbox_core::i18n::tr("live_adb_no_reboot_route")
-                                    );
-                                }
-                                return Err(
-                                    ltbox_core::i18n::tr("err_rollback_on_fastboot_unreachable"),
-                                );
-                            }
-
-                            // 3. Scan firmware folder
-                            let vendor_boot = fw_dir.join("vendor_boot.img");
-                            let vbmeta = fw_dir.join("vbmeta.img");
-                            let boot = fw_dir.join("boot.img");
-                            let has_vendor_boot = vendor_boot.exists();
-                            let has_vbmeta = vbmeta.exists();
-                            let has_boot = boot.exists();
-                            let found = ltbox_core::i18n::tr("live_status_found");
-                            let not_found = ltbox_core::i18n::tr("live_status_not_found");
-                            ltbox_core::live!(
-                                log,
-                                "[Flash] {}",
-                                tr_args!(
-                                    "live_flash_vendor_boot_status",
-                                    status = if has_vendor_boot { &found } else { &not_found },
-                                )
-                            );
-                            ltbox_core::live!(
-                                log,
-                                "[Flash] {}",
-                                tr_args!(
-                                    "live_flash_vbmeta_status",
-                                    status = if has_vbmeta { &found } else { &not_found },
-                                )
-                            );
-                            ltbox_core::live!(
-                                log,
-                                "[Flash] {}",
-                                tr_args!(
-                                    "live_flash_boot_status",
-                                    status = if has_boot { &found } else { &not_found },
-                                )
-                            );
-
-                            // Cross-check folder vendor_boot.img AVB
-                            // fingerprint vs polled device model. Mismatch
-                            // aborts BEFORE EDL so the user doesn't write
-                            // firmware built for other models onto the
-                            // device. Skipped entirely on EDL-start —
-                            // ADB/Fastboot never ran so `device_model`
-                            // is empty and the comparison would
-                            // false-positive. Single umbrella warning
-                            // already emitted at worker start.
-                            if has_vendor_boot && !edl_start {
-                                match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
-                                    Ok(info) => {
-                                        use ltbox_patch::region::{
-                                            ModelValidation, validate_device_model,
-                                        };
-                                        match validate_device_model(&info, &device_model) {
-                                            ModelValidation::Match { fingerprint } => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Flash] {}",
-                                                    ltbox_core::i18n::tr(
-                                                        "live_rescue_model_check_ok"
-                                                    )
-                                                    .replace("{fingerprint}", &fingerprint)
-                                                );
-                                            }
-                                            ModelValidation::Missing => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Flash] {}",
-                                                    ltbox_core::i18n::tr(
-                                                        "live_rescue_no_fingerprint_skip"
-                                                    )
-                                                );
-                                            }
-                                            ModelValidation::Mismatch {
-                                                fingerprint,
-                                                device_model,
-                                            } => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Flash] {}",
-                                                    ltbox_core::i18n::tr(
-                                                        "live_rescue_model_mismatch_abort"
-                                                    )
-                                                    .replace("{device}", &device_model)
-                                                    .replace("{fingerprint}", &fingerprint)
-                                                );
-                                                return Err(
-                                                    "Flash: firmware/device model mismatch — aborting before EDL"
-                                                        .into(),
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        ltbox_core::live!(
-                                            log,
-                                            "[Flash] {}",
-                                            ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
-                                                .replace("{error}", &e.to_string())
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Count .x and .xml files
-                            let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
-                                e.as_ref().ok().map(|e| e.path().extension().map(|ext| ext == "x").unwrap_or(false)).unwrap_or(false)
-                            }).count()).unwrap_or(0);
-                            let xml_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
-                                e.as_ref().ok().map(|e| {
-                                    let p = e.path();
-                                    p.extension().map(|ext| ext == "xml").unwrap_or(false)
-                                        && p.file_name().map(|n| n.to_string_lossy().starts_with("rawprogram")).unwrap_or(false)
-                                }).unwrap_or(false)
-                            }).count()).unwrap_or(0);
-                            ltbox_core::live!(
-                                log,
-                                "[Flash] {}",
-                                ltbox_core::i18n::tr("live_flash_files_count")
-                                    .replace("{x_count}", &x_count.to_string())
-                                    .replace("{xml_count}", &xml_count.to_string())
-                            );
-
-                            // 4. Region conversion
-                            let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
-                            if cfg.modify_region {
-                                if has_vendor_boot && has_vbmeta {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Region] {}",
-                                        ltbox_core::i18n::tr("live_region_on")
-                                    );
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Region] {}",
-                                        ltbox_core::i18n::tr("live_region_ready")
-                                    );
-                                    let Some(device_region) = cfg.device_region else {
-                                        return Err(
-                                            "Region conversion requested but no device region was selected"
-                                                .to_string(),
-                                        );
-                                    };
-                                    let target = device_region.to_region_target();
-                                    let output_dir =
-                                        ltbox_core::app_paths::auto_output_dir_for("region_convert");
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Region] {}",
-                                        ltbox_core::i18n::tr("live_region_building_pair")
-                                            .replace("{region}", &format!("{:?}", device_region))
-                                    );
-                                    match ltbox_patch::region::build_region_converted_boot_chain(
-                                        fw_dir,
-                                        &output_dir,
-                                        target,
-                                        &ltbox_patch::region::RegionPatternSet::default(),
-                                    ) {
-                                        Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Region] {}",
-                                                ltbox_core::i18n::tr("live_region_source_target")
-                                                    .replace("{source}", &format!("{:?}", output.source_region))
-                                                    .replace("{target}", &format!("{:?}", output.target))
-                                            );
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Region] {}",
-                                                ltbox_core::i18n::tr("live_region_patched")
-                                                    .replace("{count}", &output.replacement_count.to_string())
-                                                    .replace("{path}", &output.vendor_boot.display().to_string())
-                                            );
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Region] {}",
-                                                ltbox_core::i18n::tr("live_region_pair_rebuilt")
-                                                    .replace("{path}", &output.vbmeta.display().to_string())
-                                            );
-                                            region_pair = Some(output);
-                                        }
-                                        Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
-                                            source_region,
-                                            target,
-                                        }) => {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Region] {}",
-                                                ltbox_core::i18n::tr("live_region_source_target")
-                                                    .replace("{source}", &format!("{:?}", source_region))
-                                                    .replace("{target}", &format!("{:?}", target))
-                                            );
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Region] {}",
-                                                ltbox_core::i18n::tr("live_region_source_matches_target")
-                                            );
-                                        }
-                                        Err(e) => return Err(format!("Region conversion failed: {e}")),
-                                    }
-                                } else {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Region] {}",
-                                        ltbox_core::i18n::tr("live_region_missing_skip")
-                                    );
-                                }
-                            } else {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Region] {}",
-                                    ltbox_core::i18n::tr("live_region_off")
-                                );
-                            }
-
-                            // 5. ARB detection
-                            ltbox_core::live!(
-                                log,
-                                "[ARB] {}",
-                                tr_args!("live_arb_modify", value = rb_label_for_log)
-                            );
-                            let device_idx_str = device_rollback_index
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| ltbox_core::i18n::tr("live_arb_device_index_none"));
-                            ltbox_core::live!(
-                                log,
-                                "[ARB] {}",
-                                ltbox_core::i18n::tr("live_arb_device_index")
-                                    .replace("{index}", &device_idx_str)
-                            );
-                            if has_boot {
-                                // Pre-result "Analyzing …" line dropped — analysis is
-                                // synchronous and the result line ("boot.img rollback
-                                // index: …") fires immediately after.
-                                match ltbox_patch::rollback::analyze_rollback_with_mode(
-                                    &boot,
-                                    device_rollback_index,
-                                    rb_mode,
-                                ) {
-                                    Ok(info) => ltbox_core::live!(
-                                        log,
-                                        "[ARB] {}",
-                                        ltbox_core::i18n::tr("live_arb_boot_index_result")
-                                            .replace("{index}", &info.image_index.to_string())
-                                            .replace("{needs}", &info.needs_patch.to_string())
-                                            .replace("{mode}", &format!("{:?}", rb_mode))
-                                    ),
-                                    Err(e) => ltbox_core::live!(
-                                        log,
-                                        "[ARB] {}",
-                                        ltbox_core::i18n::tr("live_arb_boot_analysis_failed")
-                                            .replace("{error}", &e.to_string())
-                                    ),
-                                }
-                            }
-                            // ARB analysis above is diagnostic only — flash plan unchanged.
-
-                            // 6. XML
-                            //
-                            // Decrypt every `.x` in place — output sits next
-                            // to its source as `<stem>.xml` so the catalog
-                            // scan below picks it up and the EDL flash can
-                            // still resolve image paths via `xml_dir.join`.
-                            if x_count > 0 {
-                                ltbox_core::live!(
-                                    log,
-                                    "[XML] {}",
-                                    ltbox_core::i18n::tr("live_xml_decrypt_pending")
-                                        .replace("{count}", &x_count.to_string())
-                                );
-                                let x_entries: Vec<std::path::PathBuf> =
-                                    std::fs::read_dir(fw_dir)
-                                        .map_err(|e| {
-                                            format!("read_dir {}: {e}", fw_dir.display())
-                                        })?
-                                        .filter_map(|r| r.ok().map(|e| e.path()))
-                                        .filter(|p| {
-                                            p.is_file()
-                                                && p.extension()
-                                                    .and_then(|s| s.to_str())
-                                                    .map(|s| s.eq_ignore_ascii_case("x"))
-                                                    .unwrap_or(false)
-                                        })
-                                        .collect();
-                                let mut decrypted = 0usize;
-                                for src in &x_entries {
-                                    let stem = src.file_stem().unwrap_or_default();
-                                    let output = fw_dir.join(stem).with_extension("xml");
-                                    ltbox_core::crypto::decrypt_file(src, &output).map_err(
-                                        |e| {
-                                            format!(
-                                                "Decrypt failed for {}: {e}",
-                                                src.display()
-                                            )
-                                        },
-                                    )?;
-                                    decrypted += 1;
-                                }
-                                ltbox_core::live!(
-                                    log,
-                                    "[XML] {}",
-                                    ltbox_core::i18n::tr("live_xml_decrypt_done")
-                                        .replace("{count}", &decrypted.to_string())
-                                );
-                            }
-                            if !cfg.wipe && xml_count > 0 {
-                                ltbox_core::live!(
-                                    log,
-                                    "[XML] {}",
-                                    ltbox_core::i18n::tr("live_xml_keep_excludes")
-                                );
-                            }
-
-                            // 7. Country code
-                            if cfg.wipe {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Flash] {}",
-                                    ltbox_core::i18n::tr("live_flash_data_mode_wipe")
-                                );
-                                if let Some(cc) = cfg.country_action.target() {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Flash] {}",
-                                        ltbox_core::i18n::tr("live_flash_country_devinfo")
-                                            .replace("{code}", cc)
-                                    );
-                                } else if cfg.country_action.is_skipped() {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Flash] {}",
-                                        ltbox_core::i18n::tr("live_flash_country_skip")
-                                    );
-                                }
-                            } else {
-                                ltbox_core::live!(
-                                    log,
-                                    "[Flash] {}",
-                                    ltbox_core::i18n::tr("live_flash_data_mode_keep")
-                                );
-                            }
-
-                            // 8. EDL flash
-                            let loader = find_edl_loader(fw_dir)
-                                .or_else(|| fw_dir.parent().and_then(find_edl_loader));
-                            let loader = match loader {
-                                Some(l) => l,
-                                None => {
-                                    ltbox_core::live!(
-                                        log,
-                                        "[EDL] {}",
-                                        ltbox_core::i18n::tr("live_edl_loader_missing")
-                                    );
-                                    return Ok(log);
-                                }
-                            };
-
-                            live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
-                            transition_to_edl(conn, &ll, &mut log)?;
-
-                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-                                .map_err(|e| format!("EDL session: {e}"))?;
-
-                            // Full-firmware flash: rawprogram + patch XMLs
-                            // drive every program node (no slot guessing).
-                            let (raw_xmls, patch_xmls) =
-                                ltbox_device::edl::collect_firmware_xmls_for_flash(fw_dir, false)
-                                    .map_err(|e| format!("Firmware XML selection failed: {e}"))?;
-                            if raw_xmls.is_empty() {
-                                return Err(format!(
-                                    "No flashable rawprogram*.xml found in {fw_folder}"
-                                ));
-                            }
-                            // ARB-patched copies are flashed *after* rawprogram
-                            // so the user's firmware folder stays untouched.
-                            // LUN comes from the hardcoded map; start sector
-                            // resolves through GPT-by-name in
-                            // `flash_partition`. Slot `_a` matches the prior
-                            // first-hit `catalog.require(..._a, ..._b, …)`
-                            // semantics — overwrites A on top of the
-                            // full-firmware flash that already wrote both.
-                            let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
-                                Vec::new();
-                            if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
-                                let arb_work_dir =
-                                    ltbox_core::app_paths::work_dir_for("flash_arb");
-                                let _ = std::fs::remove_dir_all(&arb_work_dir);
-                                std::fs::create_dir_all(&arb_work_dir)
-                                    .map_err(|e| format!("arb work dir: {e}"))?;
-
-                                // (base, on-disk filename, slot label)
-                                let label_pairs: &[(&str, &str, &str)] = &[
-                                    ("boot", "boot.img", "boot_a"),
-                                    (
-                                        "vbmeta_system",
-                                        "vbmeta_system.img",
-                                        "vbmeta_system_a",
-                                    ),
-                                ];
-                                for (log_name, filename, slot_label) in label_pairs {
-                                    let Some(lun) =
-                                        ltbox_core::partition_lun::lun_for_partition(log_name)
-                                    else {
-                                        ltbox_core::live!(log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_arb_skip_no_lun")
-                                                .replace("{name}", log_name)
-                                        );
-                                        continue;
-                                    };
-                                    let source = fw_dir.join(filename);
-                                    if !source.exists() {
-                                            ltbox_core::live!(log,
-                                                "[ARB] {}",
-                                                ltbox_core::i18n::tr("live_arb_skip_image_missing")
-                                                    .replace("{name}", log_name)
-                                                    .replace("{file}", &source.display().to_string())
-                                            );
-                                            continue;
-                                        }
-
-                                        // `Off` is already bypassed; On or Auto here.
-                                        let analysis = match ltbox_patch::rollback::analyze_rollback_with_mode(
-                                            &source,
-                                            device_rollback_index,
-                                            rb_mode,
-                                        ) {
-                                            Ok(a) => a,
-                                            Err(e) => {
-                                                ltbox_core::live!(log,
-                                                    "[ARB] {}",
-                                                    ltbox_core::i18n::tr("live_arb_analyze_failed")
-                                                        .replace("{name}", log_name)
-                                                        .replace("{error}", &e.to_string())
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        ltbox_core::live!(log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_arb_image_status")
-                                                .replace("{name}", log_name)
-                                                .replace("{image}", &analysis.image_index.to_string())
-                                                .replace("{needs}", &analysis.needs_patch.to_string())
-                                                .replace("{mode}", &format!("{:?}", rb_mode))
-                                        );
-                                        if !analysis.needs_patch {
-                                            continue;
-                                        }
-                                        let Some(target) = device_rollback_index else {
-                                            ltbox_core::live!(log,
-                                                "[ARB] {}",
-                                                ltbox_core::i18n::tr("live_arb_skip_unknown_device")
-                                                    .replace("{name}", log_name)
-                                            );
-                                            continue;
-                                        };
-
-                                        // Signing-key resolution: only the two stock
-                                        // testkeys embedded in avbtool-rs. Any image
-                                        // signed by an unknown pubkey is skipped.
-                                        let key_from_map = ltbox_patch::key_map::key_spec_for_pubkey(
-                                            analysis.image_info.public_key_sha1.as_deref(),
-                                        );
-
-                                        let patched = arb_work_dir.join(format!("{log_name}.arb.img"));
-                                        let is_vbmeta = log_name.starts_with("vbmeta");
-                                        let patch_result = if is_vbmeta {
-                                            // vbmeta always resigns (no add_hash_footer).
-                                            match key_from_map {
-                                                Some(spec) => {
-                                                    std::fs::copy(&source, &patched)
-                                                        .map_err(|e| format!("copy vbmeta: {e}"))?;
-                                                    ltbox_patch::avb::resign_image(
-                                                        &patched,
-                                                        spec,
-                                                        &analysis.image_info.algorithm,
-                                                        Some(target),
-                                                    )
-                                                    .map_err(|e| format!("resign {log_name}: {e}"))
-                                                }
-                                                None => {
-                                                    ltbox_core::live!(log,
-                                                        "[ARB] {}",
-                                                        ltbox_core::i18n::tr("live_arb_skip_unknown_pubkey")
-                                                            .replace("{name}", log_name)
-                                                            .replace("{key}", &format!("{:?}", analysis.image_info.public_key_sha1))
-                                                    );
-                                                    continue;
-                                                }
-                                            }
-                                        } else if analysis.image_info.algorithm == "NONE" {
-                                            // NONE algorithm: add_hash_footer accepts
-                                            // an Option<&str> spec; pass map result
-                                            // (None is fine).
-                                            std::fs::copy(&source, &patched)
-                                                .map_err(|e| format!("copy chained: {e}"))?;
-                                            ltbox_patch::avb::add_hash_footer(
-                                                &patched,
-                                                &analysis.image_info,
-                                                key_from_map,
-                                                Some(target),
-                                            )
-                                            .map_err(|e| format!("patch {log_name}: {e}"))
-                                        } else if let Some(spec) = key_from_map {
-                                            std::fs::copy(&source, &patched)
-                                                .map_err(|e| format!("copy chained: {e}"))?;
-                                            ltbox_patch::avb::resign_image(
-                                                &patched,
-                                                spec,
-                                                &analysis.image_info.algorithm,
-                                                Some(target),
-                                            )
-                                            .map_err(|e| format!("resign {log_name}: {e}"))
-                                        } else {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[ARB] {}",
-                                                ltbox_core::i18n::tr("live_arb_no_signing_key")
-                                                    .replace("{name}", log_name)
-                                                    .replace(
-                                                        "{key}",
-                                                        &format!("{:?}", analysis.image_info.public_key_sha1),
-                                                    )
-                                            );
-                                            continue;
-                                        };
-                                        if let Err(e) = patch_result {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[ARB] {}",
-                                                ltbox_core::i18n::tr("live_arb_patch_failed")
-                                                    .replace("{name}", log_name)
-                                                    .replace("{error}", &e.to_string())
-                                            );
-                                            continue;
-                                        }
-
-                                        live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_arb_prepared_patch")
-                                                .replace("{name}", log_name)
-                                                .replace("{path}", &patched.display().to_string())
-                                                .replace("{target}", &target.to_string())
-                                        );
-                                        arb_patched.push((
-                                            slot_label.to_string(),
-                                            lun,
-                                            patched,
-                                        ));
-                                    }
-                            }
-
-                            live!(
-                                log,
-                                "[Flash] {} ({})",
-                                phase_marker(3, 4, &ll.op_flash_phase[2]),
-                                ltbox_core::i18n::tr("live_flash_phase3_xml_counts")
-                                    .replace("{raw}", &raw_xmls.len().to_string())
-                                    .replace("{patch}", &patch_xmls.len().to_string())
-                            );
-                            session
-                                .flash_rawprogram_with_wipe(
-                                    &raw_xmls,
-                                    &patch_xmls,
-                                    cfg.wipe,
-                                    &mut log,
-                                )
-                                .map_err(|e| format!("Firmware flash failed: {e}"))?;
-
-                            // Overwrite rawprogram's stock boot + vbmeta_system
-                            // with the ARB-patched copies. GPT-by-name lookup
-                            // resolves the slot's start sector from the device,
-                            // not the firmware folder's rawprogram XML.
-                            for (label, lun, patched) in &arb_patched {
-                                live!(
-                                    log,
-                                    "[ARB] {}",
-                                    ltbox_core::i18n::tr("live_arb_flash_patched")
-                                        .replace("{label}", label)
-                                );
-                                if let Err(e) = session.flash_partition(
-                                    label,
-                                    patched,
-                                    0,
-                                    *lun,
-                                    &mut log,
-                                ) {
-                                    return Err(format!("ARB flash {label}: {e}"));
-                                }
-                            }
-
-                            // Overwrite rawprogram's stock vendor_boot/vbmeta
-                            // with the final region-converted AVB-valid pair.
-                            // This must happen after rawprogram (and after any
-                            // ARB overlays) so stock XML entries cannot put the
-                            // unconverted ROW pair back on top.
-                            if let Some(output) = &region_pair {
-                                let overlays: [(&str, &std::path::Path); 2] = [
-                                    ("vendor_boot_a", output.vendor_boot.as_path()),
-                                    ("vbmeta_a", output.vbmeta.as_path()),
-                                ];
-                                for (label, image) in overlays {
-                                    let Some(lun) =
-                                        ltbox_core::partition_lun::lun_for_partition(label)
-                                    else {
-                                        return Err(format!(
-                                            "Region flash {label}: no hardcoded LUN"
-                                        ));
-                                    };
-                                    live!(
-                                        log,
-                                        "[Region] {}",
-                                        ltbox_core::i18n::tr("live_region_flashing_final")
-                                            .replace("{label}", label)
-                                            .replace("{path}", &image.display().to_string())
-                                    );
-                                    if let Err(e) = session.flash_partition(
-                                        label,
-                                        image,
-                                        0,
-                                        lun,
-                                        &mut log,
-                                    ) {
-                                        return Err(format!("Region flash {label}: {e}"));
-                                    }
-                                }
-                            }
-
-                            // Country code patch: dump → patch → flash devinfo
-                            // + persist. Skipped when the user picked "Do not
-                            // change" (`country_action` is `Skip`) — the
-                            // device's existing region images stay put.
-                            if cfg.wipe
-                                && let Some(target_code) = cfg.country_action.target() {
-                                    live!(
-                                        log,
-                                        "[Flash] {}",
-                                        ltbox_core::i18n::tr("live_flash_country_patch_target")
-                                            .replace("{target}", target_code)
-                                    );
-                                    let work_dir =
-                                        ltbox_core::app_paths::work_dir_for("flash_country");
-                                    let _ = std::fs::remove_dir_all(&work_dir);
-                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
-                                        return Err(format!("country work dir: {e}"));
-                                    }
-                                    // Critical-image backup: original region
-                                    // partitions held aside for manual restore.
-                                    // `app_paths::backup_dir_for` keeps writes
-                                    // off the read-only AppImage mount on
-                                    // non-Windows hosts.
-                                    let ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_secs())
-                                        .unwrap_or(0);
-                                    let critical_backup = ltbox_core::app_paths::backup_dir_for(
-                                        &format!("backup_critical_{ts}"),
-                                    );
-                                    std::fs::create_dir_all(&critical_backup)
-                                        .map_err(|e| format!("critical backup folder: {e}"))?;
-                                    // devinfo + persist resolve through the hardcoded
-                                    // LUN map; start/num come from the device GPT via
-                                    // `dump_partition_by_name`. Avoids re-decrypting
-                                    // `rawprogram*.x` mid-flow when the catalog scratch
-                                    // dir has been cleaned.
-                                    const KNOWN_CODES: &[&str] = &[
-                                        "CN","KR","JP","US","GB","DE","FR","IT","ES","NL",
-                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","GR",
-                                        "HU","IE","LV","LT","LU","MT","PL","PT","RO","SK",
-                                        "SI","SE","AU","CA","IN","RU","BR","MX","SA","AE",
-                                        "WW",
-                                    ];
-                                    const EU_CODES: &[&str] = &[
-                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR",
-                                        "DE","GR","HU","IE","IT","LV","LT","LU","MT","NL",
-                                        "PL","PT","RO","SK","SI","ES","SE",
-                                    ];
-                                    let mut country_progress = CountryPatchProgress::default();
-                                    for label in ["devinfo", "persist"] {
-                                        let Some(lun) =
-                                            ltbox_core::partition_lun::lun_for_partition(label)
-                                        else {
-                                            let reason = "no hardcoded LUN for label";
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", reason)
-                                            );
-                                            country_progress.mark_failed(label, reason);
-                                            continue;
-                                        };
-                                        let dump_path = work_dir.join(format!("{label}.img"));
-                                        live!(
-                                            log,
-                                            "[Country] {}",
-                                            ltbox_core::i18n::tr("live_country_dump_partition")
-                                                .replace("{label}", label)
-                                                .replace("{lun}", &lun.to_string())
-                                                .replace("{start}", "?")
-                                                .replace("{sectors}", "?")
-                                        );
-                                        if let Err(e) = session.dump_partition(
-                                            label, &dump_path, 0, lun, &mut log,
-                                        ) {
-                                            let reason = format!("dump failed: {e}");
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", &reason)
-                                            );
-                                            country_progress.mark_failed(label, reason);
-                                            continue;
-                                        }
-                                        // Backup before any patch touches it.
-                                        if let Err(e) = std::fs::copy(
-                                            &dump_path,
-                                            critical_backup.join(format!("{label}.img")),
-                                        ) {
-                                            let reason = format!("backup failed: {e}");
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", &reason)
-                                            );
-                                            country_progress.mark_failed(label, reason);
-                                            continue;
-                                        }
-                                        let detected = match ltbox_patch::region::detect_country_code(
-                                            &dump_path,
-                                            KNOWN_CODES,
-                                        ) {
-                                            Ok(c) => c,
-                                            Err(e) => {
-                                                let reason = format!("detect failed: {e}");
-                                                ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", &reason)
-                                            );
-                                                country_progress.mark_failed(label, reason);
-                                                None
-                                            }
-                                        };
-                                        let Some(old_code) = detected else {
-                                            let reason = "no known code detected";
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", reason)
-                                            );
-                                            country_progress.mark_failed(label, reason);
-                                            continue;
-                                        };
-                                        live!(
-                                            log,
-                                            "[Country] {}",
-                                            ltbox_core::i18n::tr("live_country_patch_transition")
-                                                .replace("{label}", label)
-                                                .replace("{from}", &old_code)
-                                                .replace("{to}", target_code)
-                                        );
-                                        let patched_path =
-                                            work_dir.join(format!("{label}.patched.img"));
-                                        match ltbox_patch::region::patch_country_code(
-                                            &dump_path,
-                                            &patched_path,
-                                            &old_code,
-                                            target_code,
-                                            EU_CODES,
-                                        ) {
-                                            Ok(true) => {
-                                                if let Err(e) = session.flash_partition(
-                                                    label,
-                                                    &patched_path,
-                                                    0,
-                                                    lun,
-                                                    &mut log,
-                                                ) {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[Country] {}",
-                                                        ltbox_core::i18n::tr("live_country_flash_failed")
-                                                            .replace("{label}", label)
-                                                            .replace("{error}", &e.to_string())
-                                                    );
-                                                    country_progress.mark_failed(
-                                                        label,
-                                                        format!("flash failed: {e}"),
-                                                    );
-                                                } else {
-                                                    live!(
-                                                        log,
-                                                        "[Country] {}",
-                                                        ltbox_core::i18n::tr("live_country_patched_flashed")
-                                                            .replace("{label}", label)
-                                                    );
-                                                    country_progress.mark_flashed(label);
-                                                }
-                                            }
-                                            Ok(false) if old_code == target_code => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Country] {}",
-                                                    ltbox_core::i18n::tr("live_country_partition_already")
-                                                        .replace("{label}", label)
-                                                        .replace("{target}", target_code)
-                                                );
-                                                country_progress.mark_flashed(label);
-                                            }
-                                            Ok(false) => {
-                                                let reason = "no replacements";
-                                                ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", reason)
-                                            );
-                                                country_progress.mark_failed(label, reason);
-                                            }
-                                            Err(e) => {
-                                                let reason = format!("patch failed: {e}");
-                                                ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                    .replace("{label}", label)
-                                                    .replace("{reason}", &reason)
-                                            );
-                                                country_progress.mark_failed(label, reason);
-                                            }
-                                        }
-                                    }
-                                    if let Err(e) = country_progress.finish() {
-                                        ltbox_core::live!(
-                                            log,
-                                            "[Country] {}",
-                                            ltbox_core::i18n::tr("live_country_error")
-                                                .replace("{error}", &e)
-                                        );
-                                        return Err(e);
-                                    }
-                                    // Surface the backup location once
-                                    // per run. Empty dir = every label
-                                    // was skipped.
-                                    if std::fs::read_dir(&critical_backup)
-                                        .map(|mut it| it.next().is_some())
-                                        .unwrap_or(false)
-                                    {
-                                        live!(
-                                            log,
-                                            "[Country] {} {}",
-                                            ll.backup_saved_prefix,
-                                            critical_backup.display()
-                                        );
-                                    }
-                                }
-
-                            // Mark `_a` active before reset. Lenovo
-                            // firmware rawprograms only target `_a`, so
-                            // a full flash always lands on `_a`. Without
-                            // this the SoC may continue booting from a
-                            // previously-active `_b` on the next reset
-                            // and the freshly-written `_a` firmware
-                            // would never run.
-                            if let Err(e) = session.set_active_slot_a(&mut log) {
-                                return Err(format!("set bootable LUN: {e}"));
-                            }
-
-                            live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
-                            session.reset_tolerant(&mut log);
-                            live!(log, "[Flash] {}", ll.flash_completed);
-                            Ok(log)
-                            }).and_then(|r| r)
-                        }).await.unwrap_or(Err("Task failed".to_string()))
-                    },
-                    |result| match result {
-                        Ok(lines) => Message::Flash(FlashMsg::FlashExecDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Flash(FlashMsg::FlashExecDone(lines)) => {
-                // Extend *before* end_op so the END separator sits
-                // below the backend's detail lines, not above them.
-                self.flush_exec_done_log(lines);
-                self.end_op();
-                self.wf_config = WorkflowConfig::default();
-            }
+            Message::Flash(m) => return self.update_flash(m),
             // Country code popup
             Message::SelectCountry(code) => {
                 // TB322FC ships PRC-only — only `CN` is a valid country
@@ -6213,2605 +5046,13 @@ impl App {
                 self.region_target_popup_open = false;
             }
             // System Update wizard
-            Message::Sys(SysMsg::SysAction(a)) => {
-                // Switching action resets Rescue-specific state so a stale
-                // folder/region can't leak into a fresh flow.
-                self.sysupdate.action = Some(a);
-                self.sysupdate.rescue_folder = None;
-                self.sysupdate.rescue_region = None;
-                self.sysupdate.rescue_region_popup_open = false;
-                self.sysupdate.rescue_region_confirmed = false;
-            }
-            Message::Sys(SysMsg::SysNext) => {
-                // Rescue flow: Action(0) → Folder(1) → Confirm(2) → Exec(3).
-                // Gate: popping the region popup between Folder and Confirm.
-                if self.sysupdate.is_rescue() {
-                    if self.sysupdate.step == 1 && !self.sysupdate.rescue_region_confirmed {
-                        // Pre-select rescue region from the polled
-                        // device's PTSTPD `SaleArea` when we have it,
-                        // mirroring how Flash seeds `device_region`
-                        // from `inferred_flash_region`. The popup
-                        // still opens — users get to see/confirm —
-                        // but the matching radio is checked on entry
-                        // so a CN device doesn't force a blind pick.
-                        if self.sysupdate.rescue_region.is_none()
-                            && let Some(inferred) = self.inferred_flash_region()
-                        {
-                            self.sysupdate.rescue_region = Some(match inferred {
-                                DeviceRegion::Prc => RescueRegion::Prc,
-                                DeviceRegion::Row => RescueRegion::Row,
-                            });
-                        }
-                        self.sysupdate.rescue_region_popup_open = true;
-                        return Task::none();
-                    }
-                    if self.sysupdate.step == 2 {
-                        self.sysupdate.next();
-                        return self.update(Message::Sys(SysMsg::SysExecStart));
-                    }
-                    self.sysupdate.next();
-                } else {
-                    // Disable/Enable: Action(0) → Confirm(1) → Exec(2).
-                    if self.sysupdate.step == 1 {
-                        self.sysupdate.next();
-                        return self.update(Message::Sys(SysMsg::SysExecStart));
-                    }
-                    self.sysupdate.next();
-                }
-            }
-            Message::Sys(SysMsg::SysBack) => self.sysupdate.back(),
-            Message::Sys(SysMsg::SysRescueSelectFolder) => {
-                // Rescue dump+flash resolves vendor_boot / vbmeta against
-                // the device's on-storage GPT (LUN 0), so the wizard only
-                // needs the EDL loader binary — `rawprogram*.xml` was
-                // never read in this path. File picker with the standard
-                // loader extension filter, recents shared with the rest
-                // of the loader pickers via the File bucket.
-                return self.pick_loader_with_default(|__v| {
-                    Message::Sys(SysMsg::SysRescueFolderChosen(__v))
-                });
-            }
-            Message::Sys(SysMsg::SysRescueFolderChosen(path)) => {
-                if let Some(p) = path {
-                    self.remember_recent(pickers::PickerKind::File, &p);
-                    self.sysupdate.rescue_folder = Some(p);
-                    // Force re-pick of region when loader changes — a stale
-                    // region from a prior firmware could target the wrong
-                    // hardware.
-                    self.sysupdate.rescue_region = None;
-                    self.sysupdate.rescue_region_confirmed = false;
-                }
-            }
-            Message::Sys(SysMsg::SysRescueRegion(r)) => {
-                self.sysupdate.rescue_region = Some(r);
-                self.sysupdate.rescue_region_confirmed = true;
-                self.sysupdate.rescue_region_popup_open = false;
-                // Auto-advance out of Folder step into Confirm — picking
-                // the region is the implicit "Next" of the popup.
-                if self.sysupdate.step == 1 {
-                    self.sysupdate.next();
-                }
-            }
-            Message::Sys(SysMsg::SysRescueRegionPopupDismiss) => {
-                self.sysupdate.rescue_region_popup_open = false;
-            }
-            Message::Sys(SysMsg::SysExecStart) => {
-                let Some(action) = self.sysupdate.action else {
-                    return Task::none();
-                };
-                // Rescue captures folder + region into the blocking task.
-                // Cloning here keeps `self` untouched while the async move
-                // takes ownership.
-                let rescue_folder = self.sysupdate.rescue_folder.clone();
-                let rescue_region = self.sysupdate.rescue_region;
-                if action == SysUpdateAction::Rescue
-                    && self.validate_loader_path(&rescue_folder).is_err()
-                {
-                    return Task::none();
-                }
-                // Capture model for AVB fingerprint validation — prevents
-                // flashing firmware built for other models.
-                let device_model = self.device_model.clone();
-                let conn = self.connection;
-                let ll = self.live_labels();
-                self.begin_op(View::SystemUpdate);
-                self.error_msg = None;
-                self.log_push(format!(
-                    "[SysUpdate] {}",
-                    tr_args!(
-                        "log_sysupdate_starting",
-                        action = self.t(action.label_key())
-                    )
-                ));
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let mut log = Vec::new();
-                            // Disable/Enable need a running Android shell;
-                            // Rescue needs EDL. The previous flow assumed
-                            // ADB at start and bailed otherwise — so a
-                            // device sitting in Fastboot or EDL hard-failed
-                            // even though both modes are recoverable. Bridge
-                            // here:
-                            //   * Disable/Enable: from Fastboot, `fastboot
-                            //     continue` and wait for ADB; from EDL we
-                            //     have no automatic system-boot path so the
-                            //     user must reboot manually.
-                            //   * Rescue: hand off to `transition_to_edl`,
-                            //     which already handles all three source
-                            //     modes via `ensure_edl`.
-                            if action != SysUpdateAction::Rescue
-                                && matches!(conn, ConnectionStatus::Fastboot)
-                            {
-                                ltbox_core::live!(
-                                    log,
-                                    "[SysUpdate] {}",
-                                    ltbox_core::i18n::tr("live_sysupdate_fastboot_to_adb")
-                                );
-                                if let Ok(mut dev) =
-                                    ltbox_device::fastboot::FastbootDevice::open()
-                                {
-                                    let _ = dev.reboot();
-                                }
-                            }
-                            let mut adb = ltbox_device::adb::AdbManager::new();
-                            // Disable/Enable need ADB. Wait up to 120 s
-                            // (matches `AdbManager::wait_for_device`'s
-                            // internal cap) so a fastboot→system reboot
-                            // has time to land before we surface a hard
-                            // failure. Rescue skips this — its own bridge
-                            // below routes to EDL, where ADB isn't needed.
-                            if action != SysUpdateAction::Rescue {
-                                ltbox_core::live!(
-                                    log,
-                                    "[ADB] {}",
-                                    ltbox_core::i18n::tr("live_adb_checking_device")
-                                );
-                                if !adb.check_device().unwrap_or(false) {
-                                    if matches!(conn, ConnectionStatus::Fastboot) {
-                                        if let Err(e) = adb.wait_for_device() {
-                                            return Err(ltbox_core::i18n::tr(
-                                                "err_sysupdate_no_adb",
-                                            )
-                                            .replace("{error}", &e.to_string()));
-                                        }
-                                    } else {
-                                        return Err(ltbox_core::i18n::tr(
-                                            "err_sysupdate_no_adb",
-                                        )
-                                        .replace("{error}", "device not in ADB"));
-                                    }
-                                }
-                                ltbox_core::live!(
-                                    log,
-                                    "[ADB] {}",
-                                    ltbox_core::i18n::tr("live_adb_device_connected")
-                                );
-                            }
-                            let packages = [
-                                "com.lenovo.ota",
-                                "com.tblenovo.lenovowhatsnew",
-                                "com.lenovo.tbengine",
-                            ];
-                            match action {
-                                SysUpdateAction::Disable => {
-                                    // Command echoes (`$ settings put …` / `$ pm clear …`)
-                                    // were noise — the user only needs to see the outcome
-                                    // (Uninstalled / Reinstalled / failure). Suppressed.
-                                    adb.shell("settings put global ota_disable_automatic_update 1")
-                                        .map_err(|e| e.to_string())?;
-                                    adb.shell("settings put secure lenovo_ota_new_version_found 0")
-                                        .map_err(|e| e.to_string())?;
-
-                                    for pkg in &packages {
-                                        let _ = adb.shell(&format!("pm clear {pkg}"));
-
-                                        match adb.shell(&format!("pm uninstall -k --user 0 {pkg}")) {
-                                            Ok(out) if out.contains("Success") => ltbox_core::live!(
-                                                log,
-                                                "[ADB] {}",
-                                                ltbox_core::i18n::tr("live_adb_uninstalled")
-                                                    .replace("{package}", pkg)
-                                            ),
-                                            Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
-                                            Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
-                                        }
-                                    }
-                                    ltbox_core::live!(
-                                        log,
-                                        "[SysUpdate] {}",
-                                        ltbox_core::i18n::tr("live_sysupdate_disabled")
-                                    );
-                                    Ok(log)
-                                }
-                                SysUpdateAction::Enable => {
-                                    // Command echoes suppressed — same rationale as Disable.
-                                    adb.shell("settings put global ota_disable_automatic_update 0")
-                                        .map_err(|e| e.to_string())?;
-
-                                    for pkg in &packages {
-                                        match adb.shell(&format!("cmd package install-existing {pkg}")) {
-                                            Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(
-                                                log,
-                                                "[ADB] {}",
-                                                ltbox_core::i18n::tr("live_adb_reinstalled")
-                                                    .replace("{package}", pkg)
-                                            ),
-                                            Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
-                                            Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
-                                        }
-                                    }
-                                    ltbox_core::live!(
-                                        log,
-                                        "[SysUpdate] {}",
-                                        ltbox_core::i18n::tr("live_sysupdate_enabled")
-                                    );
-                                    Ok(log)
-                                }
-                                SysUpdateAction::Rescue => {
-                                    // Precondition: loader file + region
-                                    // picked in the wizard.
-                                    let Some(loader_path) = rescue_folder else {
-                                        return Err(
-                                            "Boot Recovery: EDL loader not selected".into(),
-                                        );
-                                    };
-                                    let Some(region) = rescue_region else {
-                                        return Err(
-                                            "Boot Recovery: target region (PRC/ROW) not selected".into(),
-                                        );
-                                    };
-                                    let loader = std::path::PathBuf::from(&loader_path);
-                                    if !loader.is_file() {
-                                        return Err(format!(
-                                            "Boot Recovery: loader does not exist: {}",
-                                            loader.display()
-                                        ));
-                                    }
-                                    // User spec: extension-only check —
-                                    // accept `.melf` / `.mbn` / `.elf`
-                                    // single-blob loaders OR `.xml`
-                                    // (TB323FU multi-image manifest)
-                                    // regardless of filename.
-                                    let ext_ok = loader
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .is_some_and(|e| {
-                                            let l = e.to_ascii_lowercase();
-                                            l == "melf" || l == "mbn" || l == "elf" || l == "xml"
-                                        });
-                                    if !ext_ok {
-                                        return Err(format!(
-                                            "Boot Recovery: loader must be .melf / .mbn / .elf / .xml, got: {}",
-                                            loader.display()
-                                        ));
-                                    }
-                                    let loader_dir = loader
-                                        .parent()
-                                        .map(std::path::Path::to_path_buf)
-                                        .unwrap_or_else(|| std::path::PathBuf::from("."));
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_loader")
-                                            .replace("{path}", &loader.display().to_string())
-                                    );
-                                    ltbox_core::live!(log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_target_region")
-                                            .replace("{target}", match region {
-                                                RescueRegion::Prc => "PRC",
-                                                RescueRegion::Row => "ROW",
-                                            })
-                                    );
-
-                                    // Stage dumps + patched outputs in a
-                                    // timestamped temp dir next to the
-                                    // loader so the user's loader directory
-                                    // doesn't get cluttered with rescue
-                                    // intermediates.
-                                    let ts = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_secs())
-                                        .unwrap_or(0);
-                                    let work_dir = loader_dir.join(format!("rescue_{ts}"));
-                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
-                                        return Err(format!("create work dir: {e}"));
-                                    }
-                                    ltbox_core::live!(log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_work_dir")
-                                            .replace("{path}", &work_dir.display().to_string())
-                                    );
-
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_transitioning")
-                                    );
-                                    // Use the shared `transition_to_edl`
-                                    // helper so Rescue handles every
-                                    // source mode (ADB / Fastboot / EDL)
-                                    // the same way Flash / Root / Unroot
-                                    // already do — the previous
-                                    // `adb.reboot("edl")` + 5 s sleep
-                                    // sequence assumed ADB and silently
-                                    // ignored the reboot result, so a
-                                    // device already in Fastboot or EDL
-                                    // hard-failed at the earlier ADB
-                                    // check even though the operation is
-                                    // perfectly recoverable from those
-                                    // modes.
-                                    transition_to_edl(conn, &ll, &mut log)?;
-
-                                    let mut session = ltbox_device::edl::EdlSession::open(
-                                        &loader, true, &mut log,
-                                    )
-                                    .map_err(|e| format!("EDL open: {e}"))?;
-
-                                    // vendor_boot + vbmeta land on LUN 0
-                                    // for supported models. GPT-by-name
-                                    // resolves sector geometry, no
-                                    // rawprogram*.xml needed.
-                                    const RESCUE_PARTITIONS_LUN: u8 = 0;
-                                    let slots = ["a", "b"];
-                                    let mut dumped: Vec<(String, String, std::path::PathBuf)> =
-                                        Vec::new();
-                                    for slot in &slots {
-                                        for base in &["vendor_boot", "vbmeta"] {
-                                            let part_name = format!("{base}_{slot}");
-                                            let out =
-                                                work_dir.join(format!("{part_name}.img"));
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_dumping")
-                                                    .replace("{name}", &part_name)
-                                            );
-                                            if let Err(e) = session.dump_partition(
-                                                &part_name, &out, 0, RESCUE_PARTITIONS_LUN, &mut log,
-                                            ) {
-                                                ltbox_core::live!(log,
-                                                    "[Rescue] {}",
-                                                    ltbox_core::i18n::tr("live_rescue_skip_dump")
-                                                        .replace("{name}", &part_name)
-                                                        .replace("{error}", &e.to_string())
-                                                );
-                                                continue;
-                                            }
-                                            dumped.push((
-                                                (*base).to_string(),
-                                                (*slot).to_string(),
-                                                out,
-                                            ));
-                                        }
-                                    }
-
-                                    if dumped.is_empty() {
-                                        return Err(
-                                            "Boot Recovery: no partitions dumped — aborting"
-                                                .into(),
-                                        );
-                                    }
-
-                                    // Cross-check firmware against device
-                                    // model via AVB vendor_boot fingerprint —
-                                    // aborts the whole rescue if the dumped
-                                    // image was built for another model. Uses
-                                    // the first available vendor_boot dump;
-                                    // slot A/B carry the same fingerprint.
-                                    if let Some(vb_probe) = dumped
-                                        .iter()
-                                        .find(|(b, _, _)| b == "vendor_boot")
-                                    {
-                                        match ltbox_patch::avb::extract_image_avb_info(
-                                            &vb_probe.2,
-                                        ) {
-                                            Ok(info) => {
-                                                use ltbox_patch::region::{
-                                                    validate_device_model, ModelValidation,
-                                                };
-                                                match validate_device_model(
-                                                    &info,
-                                                    &device_model,
-                                                ) {
-                                                    ModelValidation::Match { fingerprint } => {
-                                                        ltbox_core::live!(log,
-                                                            "[Rescue] {}",
-                                                            ltbox_core::i18n::tr("live_rescue_model_check_ok")
-                                                                .replace("{fingerprint}", &fingerprint)
-                                                        );
-                                                    }
-                                                    ModelValidation::Missing => {
-                                                        ltbox_core::live!(
-                                                            log,
-                                                            "[Rescue] {}",
-                                                            ltbox_core::i18n::tr("live_rescue_no_fingerprint_skip")
-                                                        );
-                                                    }
-                                                    ModelValidation::Mismatch {
-                                                        fingerprint,
-                                                        device_model,
-                                                    } => {
-                                                        ltbox_core::live!(log,
-                                                            "[Rescue] {}",
-                                                            ltbox_core::i18n::tr("live_rescue_model_mismatch_abort")
-                                                                .replace("{device}", &device_model)
-                                                                .replace("{fingerprint}", &fingerprint)
-                                                        );
-                                                        session.reset_tolerant(&mut log);
-                                                        return Err(
-                                                            "Boot Recovery: firmware/device model mismatch".into(),
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                ltbox_core::live!(log,
-                                                    "[Rescue] {}",
-                                                    ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
-                                                        .replace("{error}", &e.to_string())
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Patch vendor_boot per region, rebuild
-                                    // footer, rebuild vbmeta chain per slot.
-                                    let target = region.to_target();
-                                    let prc_dot = vec![0x2E, 0x50, 0x52, 0x43]; // ".PRC"
-                                    let prc_i = vec![0x49, 0x50, 0x52, 0x43]; // "IPRC"
-                                    let row_dot = vec![0x2E, 0x52, 0x4F, 0x57]; // ".ROW"
-                                    let row_i = vec![0x49, 0x52, 0x4F, 0x57]; // "IROW"
-                                    let prc_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
-                                        (prc_dot.clone(), row_dot.clone()),
-                                        (prc_i.clone(), row_i.clone()),
-                                    ];
-                                    let row_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
-                                        (row_dot.clone(), prc_dot.clone()),
-                                        (row_i.clone(), prc_i.clone()),
-                                    ];
-
-                                    let mut flash_plan: Vec<(String, std::path::PathBuf)> =
-                                        Vec::new();
-                                    for slot in &slots {
-                                        let vb_src = dumped.iter().find(|(b, s, _)| {
-                                            b == "vendor_boot" && s == slot
-                                        });
-                                        let vbm_src = dumped.iter().find(|(b, s, _)| {
-                                            b == "vbmeta" && s == slot
-                                        });
-                                        let (Some(vb_src), Some(vbm_src)) = (vb_src, vbm_src)
-                                        else {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_slot_missing_dump")
-                                                    .replace("{slot}", slot)
-                                            );
-                                            continue;
-                                        };
-
-                                        let vb_patched = work_dir
-                                            .join(format!("vendor_boot_{slot}.patched.img"));
-                                        ltbox_core::live!(log,
-                                            "[Rescue] {}",
-                                            ltbox_core::i18n::tr("live_rescue_patching_vendor_boot")
-                                                .replace("{slot}", slot)
-                                                .replace("{target}", match region {
-                                                    RescueRegion::Prc => "PRC",
-                                                    RescueRegion::Row => "ROW",
-                                                })
-                                        );
-                                        let n = match ltbox_patch::region::patch_vendor_boot(
-                                            &vb_src.2,
-                                            &vb_patched,
-                                            target,
-                                            &prc_patterns,
-                                            &row_patterns,
-                                        ) {
-                                            Ok(n) => n,
-                                            Err(e) => {
-                                                ltbox_core::live!(log,
-                                                    "[Rescue] {}",
-                                                    ltbox_core::i18n::tr("live_rescue_region_patch_failed")
-                                                        .replace("{slot}", slot)
-                                                        .replace("{error}", &e.to_string())
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        if n == 0 {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_no_region_bytes_changed")
-                                                    .replace("{slot}", slot)
-                                            );
-                                        } else {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_occurrences_patched")
-                                                    .replace("{slot}", slot)
-                                                    .replace("{count}", &n.to_string())
-                                            );
-                                        }
-
-                                        // Rebuild AVB hash footer on the
-                                        // patched vendor_boot using metadata
-                                        // from the original.
-                                        let vb_info =
-                                            match ltbox_patch::avb::extract_image_avb_info(
-                                                &vb_src.2,
-                                            ) {
-                                                Ok(i) => i,
-                                                Err(e) => {
-                                                    ltbox_core::live!(log,
-                                                        "[Rescue] {}",
-                                                        ltbox_core::i18n::tr("live_rescue_vendor_boot_avb_failed")
-                                                            .replace("{slot}", slot)
-                                                            .replace("{error}", &e.to_string())
-                                                    );
-                                                    continue;
-                                                }
-                                            };
-                                        // Only the two stock testkeys embedded in
-                                        // avbtool-rs are supported.
-                                        let vb_key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
-                                            vb_info.public_key_sha1.as_deref(),
-                                        );
-                                        if let Err(e) = ltbox_patch::avb::add_hash_footer(
-                                            &vb_patched,
-                                            &vb_info,
-                                            vb_key_spec,
-                                            None,
-                                        ) {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_add_hash_footer_failed")
-                                                    .replace("{slot}", slot)
-                                                    .replace("{error}", &e.to_string())
-                                            );
-                                            continue;
-                                        }
-
-                                        // Rebuild vbmeta chained to the
-                                        // patched vendor_boot. Key fallback:
-                                        // algorithm comes from the original
-                                        // vbmeta header.
-                                        let vbm_info =
-                                            match ltbox_patch::avb::extract_image_avb_info(
-                                                &vbm_src.2,
-                                            ) {
-                                                Ok(i) => i,
-                                                Err(e) => {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[Rescue] {}",
-                                                        ltbox_core::i18n::tr("live_rescue_vbmeta_inspect_failed")
-                                                            .replace("{slot}", slot)
-                                                            .replace("{error}", &e.to_string())
-                                                    );
-                                                    continue;
-                                                }
-                                            };
-                                        let Some(vbm_key) = ltbox_patch::key_map::key_spec_for_pubkey(
-                                            vbm_info.public_key_sha1.as_deref(),
-                                        )
-                                        else {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_no_testkey")
-                                                    .replace("{slot}", slot)
-                                                    .replace("{path}", &loader_dir.display().to_string())
-                                            );
-                                            continue;
-                                        };
-                                        let vbm_rebuilt = work_dir
-                                            .join(format!("vbmeta_{slot}.rebuilt.img"));
-                                        let chained: [&std::path::Path; 1] =
-                                            [vb_patched.as_path()];
-                                        if let Err(e) =
-                                            ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
-                                                &vbm_rebuilt,
-                                                &vbm_src.2,
-                                                &chained,
-                                                vbm_key,
-                                                Some(vbm_info.algorithm.as_str()),
-                                            )
-                                        {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_rebuild_vbmeta_failed")
-                                                    .replace("{slot}", slot)
-                                                    .replace("{error}", &e.to_string())
-                                            );
-                                            continue;
-                                        }
-
-                                        flash_plan.push((
-                                            format!("vendor_boot_{slot}"),
-                                            vb_patched,
-                                        ));
-                                        flash_plan
-                                            .push((format!("vbmeta_{slot}"), vbm_rebuilt));
-                                    }
-
-                                    if flash_plan.is_empty() {
-                                        return Err(
-                                            "Boot Recovery: nothing to flash after patch/resign"
-                                                .into(),
-                                        );
-                                    }
-
-                                    ltbox_core::live!(log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_flashing_targets")
-                                            .replace("{count}", &flash_plan.len().to_string())
-                                    );
-                                    for (part_name, image) in &flash_plan {
-                                        if let Err(e) = session.flash_partition(
-                                            part_name, image, 0, RESCUE_PARTITIONS_LUN, &mut log,
-                                        ) {
-                                            ltbox_core::live!(log,
-                                                "[Rescue] {}",
-                                                ltbox_core::i18n::tr("live_rescue_flash_failed")
-                                                    .replace("{name}", part_name)
-                                                    .replace("{error}", &e.to_string())
-                                            );
-                                        }
-                                    }
-
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_resetting")
-                                    );
-                                    session.reset_tolerant(&mut log);
-                                    ltbox_core::live!(
-                                        log,
-                                        "[Rescue] {}",
-                                        ltbox_core::i18n::tr("live_rescue_complete")
-                                    );
-                                    Ok(log)
-                                }
-                            }
-                        }).await.unwrap_or(Err("Task failed".to_string()))
-                    },
-                    |result| match result {
-                        Ok(lines) => Message::Sys(SysMsg::SysExecDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Sys(SysMsg::SysExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
+            Message::Sys(m) => return self.update_sys(m),
             // Root wizard
-            Message::Root(RootMsg::RootFamily(f)) => {
-                // Defense in depth: the family card UI grays out the
-                // Magisk option on TB320FC, but a stale message from a
-                // pre-poll click could still land here. Drop it so the
-                // wizard never enters a configuration we know boot-loops.
-                if self.is_tb320fc() && f == Family::Magisk {
-                    return Task::none();
-                }
-                self.root.family = Some(f);
-                self.root.provider = None;
-                self.root.mode = None;
-                self.root.file_path = None;
-                self.root.kernel_version = None;
-            }
-            Message::Root(RootMsg::RootProvider(p)) => {
-                self.root.provider = Some(p);
-                self.root.file_path = None;
-                // ReSukiSU has no Stable channel — if the user had Stable
-                // picked before switching to ReSukiSU, force Nightly so the
-                // hidden-Stable version step lands on the sole valid choice
-                // instead of showing an orphan "no selection" state.
-                if p == Provider::ReSukiSU && self.root.version == Some(VerChoice::Stable) {
-                    self.root.version = Some(VerChoice::Nightly);
-                    self.root.nightly_source = None;
-                    self.root.run_id = None;
-                    self.root.run_id_buffer.clear();
-                }
-            }
-            Message::Root(RootMsg::RootMode(m)) => {
-                // TB320FC: KernelSU LKM bootloops on this kernel. Block
-                // the message even if a stale dispatch slips past the
-                // disabled card so the wizard funnels to GKI only.
-                if self.is_tb320fc() && m == RootMode::Lkm {
-                    return Task::none();
-                }
-                self.root.mode = Some(m);
-                self.root.file_path = None;
-                self.root.kernel_version = None;
-            }
-            Message::Root(RootMsg::RootVersion(v)) => {
-                self.root.version = Some(v);
-                self.root.nightly_source = None;
-                self.root.run_id = None;
-                self.root.run_id_buffer.clear();
-            }
-            Message::Root(RootMsg::RootNightlySource(s)) => {
-                self.root.nightly_source = Some(s);
-                match s {
-                    NightlySource::AutoDetect => {
-                        // Leaving ManualInput — drop the committed run ID.
-                        self.root.run_id = None;
-                        self.root.run_id_buffer.clear();
-                    }
-                    NightlySource::ManualInput => {
-                        // Prefill from any previous commit so re-entry is painless.
-                        self.root.run_id_buffer = self.root.run_id.clone().unwrap_or_default();
-                        self.root.run_id_popup_open = true;
-                    }
-                }
-            }
-            Message::Root(RootMsg::RootSelectFile) => {
-                self.picker_target = PickerTarget::RootFile;
-                let spec = if self.root.is_gki() {
-                    pickers::FilePickSpec::single("picker_target_kernelsu_zip")
-                        .with_filter("ZIP", &["zip"])
-                } else {
-                    pickers::FilePickSpec::single("picker_target_apatch_apk")
-                        .with_filter("APK", &["apk"])
-                };
-                return pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected);
-            }
-            Message::Root(RootMsg::RootSelectFolder) => {
-                // Name kept for backwards compat with existing view code;
-                // the picker is now a single-file dialog for the EDL
-                // loader (`.melf`) since root no longer needs a full
-                // firmware folder — partitions resolve via the device's
-                // GPT, not `rawprogram*.xml`.
-                if let Some(path) = self.default_loader_path.clone() {
-                    // Settings-level default loader → bypass picker, store
-                    // in `folder_path` (historical field name) so the rest
-                    // of the wizard reads it as if the user picked it.
-                    self.root.folder_path = Some(path);
-                    return Task::none();
-                }
-                self.picker_target = PickerTarget::RootLoader;
-                return pickers::pick_file_for(
-                    loader_file_spec("picker_target_edl_loader"),
-                    &self.recent_paths,
-                    Message::FileSelected,
-                );
-            }
-            Message::Root(RootMsg::RootNext) => {
-                if self.root.step == 6 {
-                    if self.root.needs_ksu_lkm_kernel_version() {
-                        // ADB probe is blocking — push to the heavy pool so
-                        // the UI doesn't freeze on a slow / unresponsive
-                        // device. Continuation lands in
-                        // `RootKernelVersionProbeDone`.
-                        return task_heavy(
-                            || {
-                                ltbox_device::adb::AdbManager::new_if_connected().and_then(|adb| {
-                                    adb.get_kernel_version().ok().flatten().and_then(|kv| {
-                                        ltbox_patch::root_pipeline::normalize_ksu_kernel_version(
-                                            &kv,
-                                        )
-                                    })
-                                })
-                            },
-                            |__v| Message::Root(RootMsg::RootKernelVersionProbeDone(__v)),
-                            |_e| None,
-                        );
-                    }
-                    self.root.next();
-                    return self.update(Message::Root(RootMsg::RootExecStart));
-                }
-                // APatch KPM step: open superkey popup — advance is
-                // gated on a valid commit, not this press. Always start
-                // on the first-entry stage; the existing committed key
-                // (if any) isn't pre-filled because the user has to
-                // re-type it twice anyway, which is the whole point of
-                // the verification flow.
-                if self.root.step == 8 {
-                    self.root.superkey_buffer.clear();
-                    self.root.superkey_first_entry = None;
-                    self.root.superkey_popup_open = true;
-                    return Task::none();
-                }
-                self.root.next();
-                // After advancing, if the wizard landed on the loader
-                // (folder) step and a Settings-level default loader is
-                // configured + still on disk, pre-fill the folder slot
-                // and skip to the Confirm step. The loader-step picker
-                // becomes invisible to single-device users while staying
-                // available to anyone with `default_loader_path = None`.
-                if self.root.step == 5
-                    && self.root.folder_path.is_none()
-                    && let Some(path) = self.resolved_default_loader()
-                {
-                    self.root.folder_path = Some(path);
-                    self.root.next();
-                }
-            }
-            Message::Root(RootMsg::RootBack) => self.root.back(),
-            Message::Root(RootMsg::RootSelectKpm) => {
-                // Multi-select; paths merge-dedup into the list so
-                // the user can Browse multiple times.
-                let spec = pickers::FilePickSpec::multi("picker_target_kpm_modules")
-                    .with_filter("KPM modules", &["kpm"]);
-                return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
-                    Message::Root(RootMsg::RootKpmSelected(__v))
-                });
-            }
-            Message::Root(RootMsg::RootKpmSelected(paths)) => {
-                if let Some(paths) = paths {
-                    if let Some(first) = paths.first() {
-                        self.remember_recent(pickers::PickerKind::File, first);
-                    }
-                    for p in paths {
-                        if !self.root.kpm_paths.iter().any(|existing| existing == &p) {
-                            self.root.kpm_paths.push(p);
-                        }
-                    }
-                }
-            }
-            Message::Root(RootMsg::RootKpmRemove(path)) => {
-                self.root.kpm_paths.retain(|p| p != &path);
-            }
-            Message::Root(RootMsg::RootSuperkeyInput(text)) => {
-                self.root.superkey_buffer = text;
-            }
-            Message::Root(RootMsg::RootSuperkeyConfirm) => {
-                let key = self.root.superkey_buffer.trim().to_string();
-                match self.root.superkey_first_entry.take() {
-                    None => {
-                        // Stage 1 — first entry. Validate the format
-                        // up-front so the user finds out about a too-short
-                        // / non-alnum key on the first round, not after
-                        // re-typing it. Upstream rule: 8–63 alphanumeric.
-                        let valid = (8..=63).contains(&key.len())
-                            && key.chars().all(|c| c.is_ascii_alphanumeric());
-                        if !valid {
-                            self.error_msg = Some(self.t("apatch_superkey_invalid").to_string());
-                            return Task::none();
-                        }
-                        // Stash the validated first entry, blank the
-                        // field, and stay open for the verification
-                        // round. View flips to the "re-enter" prompt
-                        // because `superkey_first_entry.is_some()`.
-                        self.root.superkey_first_entry = Some(key);
-                        self.root.superkey_buffer.clear();
-                        self.error_msg = None;
-                    }
-                    Some(first) => {
-                        // Stage 2 — verification entry. Mismatch resets
-                        // the whole flow so the user types both rounds
-                        // again from scratch (no "edit second field"
-                        // shortcut, since the typo could be in either).
-                        if key != first {
-                            self.error_msg = Some(self.t("apatch_superkey_mismatch").to_string());
-                            self.root.superkey_buffer.clear();
-                            // `superkey_first_entry` already cleared by
-                            // the `.take()` above — stage flips back to
-                            // first-entry automatically.
-                            return Task::none();
-                        }
-                        self.root.superkey = Some(key);
-                        self.root.superkey_buffer.clear();
-                        self.root.superkey_popup_open = false;
-                        self.error_msg = None;
-                        self.root.next();
-                    }
-                }
-            }
-            Message::Root(RootMsg::RootSuperkeyCancel) => {
-                self.root.superkey_buffer.clear();
-                self.root.superkey_first_entry = None;
-                self.root.superkey_popup_open = false;
-                self.error_msg = None;
-            }
-            Message::Root(RootMsg::RootRunIdInput(text)) => {
-                // GH Actions run IDs are 10 digits; cap at 12 for headroom.
-                let filtered: String = text
-                    .chars()
-                    .filter(|c| c.is_ascii_digit())
-                    .take(12)
-                    .collect();
-                self.root.run_id_buffer = filtered;
-            }
-            Message::Root(RootMsg::RootRunIdConfirm) => {
-                let id = self.root.run_id_buffer.trim().to_string();
-                if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
-                    self.error_msg = Some(self.t("nightly_manual_invalid").to_string());
-                    return Task::none();
-                }
-                self.root.run_id = Some(id);
-                self.root.run_id_popup_open = false;
-                self.error_msg = None;
-            }
-            Message::Root(RootMsg::RootRunIdCancel) => {
-                self.root.run_id_buffer.clear();
-                self.root.run_id_popup_open = false;
-                // Roll back NightlySource so the step gate forces a re-pick.
-                if self.root.run_id.is_none() {
-                    self.root.nightly_source = None;
-                }
-            }
-            Message::Root(RootMsg::RootKernelVersionInput(text)) => {
-                let filtered: String = text
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '.')
-                    .take(16)
-                    .collect();
-                self.root.kernel_version_buffer = filtered;
-            }
-            Message::Root(RootMsg::RootKernelVersionConfirm) => {
-                let input = self.root.kernel_version_buffer.trim();
-                let Some(kv) = ltbox_patch::root_pipeline::normalize_ksu_kernel_version(input)
-                else {
-                    self.error_msg = Some(self.t("root_kernel_version_invalid").to_string());
-                    return Task::none();
-                };
-                self.root.kernel_version = Some(kv);
-                self.root.kernel_version_buffer.clear();
-                self.root.kernel_version_popup_open = false;
-                self.error_msg = None;
-                if self.root.step == 6 {
-                    self.root.next();
-                    return self.update(Message::Root(RootMsg::RootExecStart));
-                }
-            }
-            Message::Root(RootMsg::RootKernelVersionCancel) => {
-                self.root.kernel_version_buffer.clear();
-                self.root.kernel_version_popup_open = false;
-            }
-            Message::Root(RootMsg::RootKernelVersionProbeDone(detected)) => {
-                // Wizard may have moved off step 6 by the time the probe
-                // returns (user clicked Back); only act if still at the
-                // same gating point.
-                if self.root.step != 6 || !self.root.needs_ksu_lkm_kernel_version() {
-                    return Task::none();
-                }
-                if let Some(kv) = detected {
-                    self.root.kernel_version = Some(kv);
-                    self.root.next();
-                    return self.update(Message::Root(RootMsg::RootExecStart));
-                }
-                self.root.kernel_version_buffer =
-                    self.root.kernel_version.clone().unwrap_or_default();
-                self.root.kernel_version_popup_open = true;
-            }
-            Message::Root(RootMsg::RootExecStart) => {
-                if self
-                    .validate_loader_path(&self.root.folder_path.clone())
-                    .is_err()
-                {
-                    return Task::none();
-                }
-                self.begin_op(View::Root);
-                self.op_steps = self.derive_root_op_steps();
-                self.error_msg = None;
-                let family = self.root.family;
-                let mode = self.root.mode;
-                let provider = self.root.provider;
-                let version = self.root.version;
-                let file_path = self.root.file_path.clone();
-                let gui_kernel_version = self.root.kernel_version.clone();
-                let conn = self.connection;
-                // Folder must contain `xbl_s_devprg_ns.melf`; optional
-                // `keys/testkey_rsa{2048,4096}.pem` as KEY_MAP fallback.
-                let fw_folder = self.root.folder_path.clone();
-                // APatch-only; empty / default elsewhere.
-                let kpm_paths: Vec<std::path::PathBuf> = self
-                    .root
-                    .kpm_paths
-                    .iter()
-                    .map(std::path::PathBuf::from)
-                    .collect();
-                let superkey = self.root.superkey.clone().unwrap_or_default();
-                let nightly_run_id: Option<u64> =
-                    if self.root.nightly_source == Some(NightlySource::ManualInput) {
-                        self.root.run_id.as_deref().and_then(|s| s.parse().ok())
-                    } else {
-                        None
-                    };
-
-                let fam_label = family
-                    .map(|f| self.t(f.label_key()).to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                self.log_push(format!(
-                    "[Root] {}",
-                    tr_args!("log_op_starting", what = fam_label)
-                ));
-                // Resolve Magisk preinit device via /proc/self/mountinfo
-                // before ADB vanishes past EDL. Gates /data on the device's
-                // encryption state — metadata-encrypted devices land preinit
-                // on userdata otherwise and boot-loop after first wipe.
-                let preinit_device: String = if matches!(family, Some(Family::Magisk))
-                    && matches!(
-                        self.connection,
-                        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
-                    ) {
-                    let (mountinfo, encrypt_type) = if let Some(adb) =
-                        ltbox_device::adb::AdbManager::new_if_connected()
-                    {
-                        let mi = adb.shell("cat /proc/self/mountinfo").unwrap_or_default();
-                        let cs = adb.shell("getprop ro.crypto.state").unwrap_or_default();
-                        let ct = adb.shell("getprop ro.crypto.type").unwrap_or_default();
-                        let cme = adb
-                            .shell("getprop ro.crypto.metadata.enabled")
-                            .unwrap_or_default();
-                        (
-                            mi,
-                            ltbox_patch::magisk::derive_encrypt_type(&cs, &ct, &cme).to_string(),
-                        )
-                    } else {
-                        (String::new(), String::from("file"))
-                    };
-                    if mountinfo.is_empty() {
-                        self.log_push(format!(
-                            "[Magisk] {}",
-                            ltbox_core::i18n::tr("log_magisk_preinit_adb_unavailable")
-                        ));
-                        String::new()
-                    } else {
-                        self.log_push(format!(
-                            "[Magisk] {}",
-                            tr_args!("log_magisk_crypto_state", encrypt_type = encrypt_type)
-                        ));
-                        match ltbox_patch::magisk::resolve_preinit_device(&mountinfo, &encrypt_type)
-                        {
-                            Some(name) => {
-                                self.log_push(format!(
-                                    "[Magisk] {}",
-                                    tr_args!("log_magisk_preinit_resolved", name = name)
-                                ));
-                                name
-                            }
-                            None => {
-                                self.log_push(format!(
-                                    "[Magisk] {}",
-                                    ltbox_core::i18n::tr("log_magisk_preinit_none")
-                                ));
-                                String::new()
-                            }
-                        }
-                    }
-                } else {
-                    String::new()
-                };
-                let ll = self.live_labels();
-
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
-                            let mut log = Vec::new();
-                            let skip_adb = conn.skip_adb();
-
-                            // GKI route: AnyKernel3 zip is the full input —
-                            // no provider / version / GitHub fetch.
-                            let is_gki_route = mode == Some(RootMode::Gki);
-                            let family = family.ok_or_else(|| "No root family selected".to_string())?;
-                            let (provider, version) = if is_gki_route {
-                                // `Magisk` stand-in — picks magiskboot as
-                                // the backend for unpack/repack.
-                                (Provider::Magisk, VerChoice::Stable)
-                            } else {
-                                let prov = provider.ok_or_else(|| "No provider selected".to_string())?;
-                                let ver = version.ok_or_else(|| "No version selected".to_string())?;
-                                (prov, ver)
-                            };
-
-                            use ltbox_patch::root_pipeline::{
-                                RootFamily, RootPipelineConfig, RootProvider, RootVersion,
-                                build_patched_artifacts, ensure_nightly_run_id,
-                                stage_root_manager_apk, stage_root_payload,
-                            };
-
-                            let pipe_family = match family {
-                                Family::Magisk => RootFamily::Magisk,
-                                Family::KernelSU => RootFamily::KernelSU,
-                                Family::APatch => RootFamily::APatch,
-                            };
-                            let pipe_provider = match provider {
-                                Provider::Magisk => RootProvider::Magisk,
-                                Provider::MagiskForks => RootProvider::MagiskFork,
-                                Provider::KernelSU => RootProvider::KernelSU,
-                                Provider::KernelSUNext => RootProvider::KernelSUNext,
-                                Provider::SukiSU => RootProvider::SukiSU,
-                                Provider::ReSukiSU => RootProvider::ReSukiSU,
-                                Provider::APatch => RootProvider::APatch,
-                                Provider::FolkPatch => RootProvider::FolkPatch,
-                            };
-                            let pipe_version = match version {
-                                VerChoice::Stable => RootVersion::Stable,
-                                VerChoice::Nightly => RootVersion::Nightly,
-                            };
-                            let file_path_buf: Option<std::path::PathBuf> =
-                                file_path.as_ref().map(std::path::PathBuf::from);
-
-                            let loader_path = fw_folder.ok_or_else(|| {
-                                "No EDL loader selected. Pick an xbl_s_devprg_ns.melf \
-(or equivalent `.melf`) file on the Loader step and retry."
-                                    .to_string()
-                            })?;
-                            let loader = std::path::PathBuf::from(&loader_path);
-                            if !loader.is_file() {
-                                return Err(format!(
-                                    "Selected loader does not exist: {}",
-                                    loader.display()
-                                ));
-                            }
-                            // User spec: match on `.melf` extension only —
-                            // filename itself is free-form, so no
-                            // `xbl_s_devprg_ns`-equals check.
-                            let is_melf = loader
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .is_some_and(|e| e.eq_ignore_ascii_case("melf"));
-                            if !is_melf {
-                                return Err(format!(
-                                    "Selected loader must be a .melf file, got: {}",
-                                    loader.display()
-                                ));
-                            }
-                            // Signing key: pipeline resolves via KEY_MAP
-                            // + `public_key_sha1`; PEM is `include_str!`'d
-                            // in avbtool-rs. No on-disk key consulted here.
-                            ltbox_core::live!(
-                                log,
-                                "[Root] {}",
-                                ltbox_core::i18n::tr("log_root_loader")
-                                    .replace("{path}", &loader.display().to_string())
-                            );
-
-                            let base = ltbox_core::app_paths::work_dir_for("root");
-                            let work_dir = base.join("work");
-                            let output_dir = base.join("out");
-                            let _ = std::fs::remove_dir_all(&work_dir);
-                            std::fs::create_dir_all(&work_dir)
-                                .map_err(|e| format!("work dir: {e}"))?;
-                            std::fs::create_dir_all(&output_dir)
-                                .map_err(|e| format!("out dir: {e}"))?;
-
-                            // Phase 1/7 — ADB connect + slot/kver detect.
-                            // Front-loaded so the user sees something happen
-                            // before the long manager-APK / payload download.
-                            live!(log, "[Root] {}", phase_marker(1, 7, &ll.op_root_phase[0]));
-                            // Slot detection MUST succeed — root flashes
-                            // boot_<slot> + vbmeta_<slot> + init_boot_<slot>,
-                            // and silently defaulting to `_a` previously
-                            // landed flashes on the wrong slot when the
-                            // device was actually running on `_b`. Poll
-                            // both ADB + Fastboot up to 30 s; on failure,
-                            // the helper returns a diagnostic that names
-                            // which transport last failed and what to do
-                            // (re-plug into normal/recovery, reboot to
-                            // bootloader, fix unauthorized ADB, …).
-                            let slot_suffix = ltbox_device::controller::poll_active_slot(
-                                std::time::Duration::from_secs(30),
-                                &mut log,
-                            )?;
-                            // Kernel version probe (KSU LKM) needs ADB
-                            // shell; runs only when ADB is currently
-                            // usable so the slot-resolved-via-Fastboot
-                            // path doesn't waste 30 s waiting for a
-                            // shell that won't come.
-                            let mut kernel_version: Option<String> = gui_kernel_version.clone();
-                            let mut adb_ready_at_start = false;
-                            if !skip_adb
-                                && let Some(adb) =
-                                    ltbox_device::adb::AdbManager::new_if_connected()
-                            {
-                                adb_ready_at_start = true;
-                                if mode == Some(RootMode::Lkm) {
-                                    if let Ok(Some(kv)) = adb.get_kernel_version() {
-                                        let normalized =
-                                            ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv);
-                                        live!(
-                                            log,
-                                            "[ADB] {}",
-                                            ltbox_core::i18n::tr("live_adb_kernel_version")
-                                                .replace(
-                                                    "{version}",
-                                                    normalized.as_deref().unwrap_or(&kv),
-                                                )
-                                        );
-                                        if let Some(kv) = normalized {
-                                            kernel_version = Some(kv);
-                                        }
-                                    } else {
-                                        live!(log, "[ADB] {}", ll.adb_no_kver);
-                                    }
-                                }
-                            }
-                            if mode == Some(RootMode::Lkm) && kernel_version.is_none() {
-                                return Err(
-                                    "KernelSU LKM requires kernel version before EDL; enter it manually and retry."
-                                        .to_string(),
-                                );
-                            }
-
-                            let mut manager_cfg = RootPipelineConfig {
-                                family: pipe_family,
-                                provider: pipe_provider,
-                                version: pipe_version,
-                                work_dir: work_dir.clone(),
-                                output_dir: output_dir.clone(),
-                                loader: loader.clone(),
-                                slot_suffix: slot_suffix.clone(),
-                                preinit_device: preinit_device.clone(),
-                                kernel_version: kernel_version.clone(),
-                                gki_kernel_zip: if is_gki_route { file_path_buf.clone() } else { None },
-                                gki_mode: is_gki_route,
-                                kpm_paths: kpm_paths.clone(),
-                                superkey: superkey.clone(),
-                                magisk_forks_apk: if matches!(pipe_provider, RootProvider::MagiskFork) {
-                                    file_path_buf.clone()
-                                } else {
-                                    None
-                                },
-                                nightly_run_id,
-                            };
-                            // Phase 2/7 — Download EVERY root file before
-                            // EDL: manager APK + per-family payload
-                            // (Magisk APK extract / KSU `.ko`+`init` /
-                            // APatch APK→kpimg). Used to split the .ko +
-                            // ksuinit fetch into Phase 5; that hid a
-                            // multi-second network stall behind a
-                            // "patching" label and blocked the user
-                            // from copying the device serial. Single
-                            // download burst now, then offline patch.
-                            live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
-                            // Pin the nightly workflow run ID once so
-                            // every fetch in this Phase 2 pulls from
-                            // the SAME upstream build. Without this,
-                            // a new workflow landing between the
-                            // ~minute-long manager APK download and
-                            // the .ko/ksuinit fetch would split the
-                            // installed manager APK across two
-                            // different builds.
-                            ensure_nightly_run_id(&mut manager_cfg, &mut log)
-                                .map_err(|e| format!("Nightly run resolve: {e}"))?;
-                            let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
-                                .map_err(|e| format!("Manager APK: {e}"))?;
-                            stage_root_payload(&manager_cfg, &mut log)
-                                .map_err(|e| format!("Root payload: {e}"))?;
-                            let manager_installed_pre_edl = if adb_ready_at_start {
-                                if let Some(path) = manager_apk.as_ref() {
-                                    install_root_manager_apk(path, &mut log)?;
-                                    true
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
-
-                            // Wrap the device-interaction phase (phase 1/6 onwards)
-                            // so any error triggers a best-effort EDL → system reset
-                            // before we bubble the error up. Without this, a failure
-                            // mid-pipeline (e.g. patch errors out) leaves the device
-                            // stuck in 9008 mode and the user has to yank the cable
-                            // + battery to recover. `log` / `loader` are captured by
-                            // reference so both the success and failure paths still
-                            // see the accumulated lines.
-                            let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
-                            // Phase 3/7 — Reboot to EDL (was Phase 1/6).
-                            live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
-                            transition_to_edl(conn, &ll, &mut log)?;
-
-                            // Partition naming: `boot{_a|_b}` for GKI + APatch
-                            // (kernel-blob patching) and `init_boot{_a|_b}` for
-                            // Magisk / KSU (ramdisk injection). Slot is derived
-                            // from ADB/Fastboot pre-EDL; on devices without an
-                            // active-slot getvar we default to `_a`.
-                            //
-                            // Root pipeline no longer consumes `rawprogram*.xml`
-                            // — `EdlSession::{dump,flash}_partition` resolves
-                            // geometry via the device's on-storage GPT using
-                            // these names, matching the equivalent one-shot
-                            // `qdl-rs dump-part <name>` / `write <name> <img>`
-                            // invocations a user would run by hand.
-                            let is_gki_mode = is_gki_route;
-                            let base_name = ltbox_patch::root_pipeline::boot_partition_base(pipe_family, is_gki_mode);
-                            // `slot_suffix` was poll-resolved at Phase 1
-                            // and propagated through `RootPipelineConfig`;
-                            // it is guaranteed to be `_a` or `_b` here.
-                            let boot_primary = format!("{base_name}{slot_suffix}");
-                            let vbmeta_primary = format!("vbmeta{slot_suffix}");
-                            // Lenovo devices on Qualcomm UFS place
-                            // boot / init_boot / vbmeta on LUN 4 (userdata
-                            // LUN), same index used by the reference
-                            // `qdl-rs --phys-part-idx 4` recipe.
-                            const ROOT_PARTITIONS_LUN: u8 = 4;
-                            live!(
-                                log,
-                                "[Root] {} {} / {} (LUN {ROOT_PARTITIONS_LUN})",
-                                ll.root_resolved_prefix,
-                                boot_primary,
-                                vbmeta_primary,
-                            );
-
-                            // Phase 4/7 — Read stock images (was Phase 2/6).
-                            live!(log, "[Root] {}", phase_marker(4, 7, &ll.op_root_phase[3]));
-                            // Hoisted so Phase 6 can echo the path.
-                            // Routed through `app_paths::backup_dir_for`
-                            // so AppImage / distro Linux installs don't
-                            // try to write next to the executable.
-                            let backup_dir = ltbox_core::app_paths::backup_dir_for(
-                                &format!("backup_{base_name}"),
-                            );
-                            {
-                                let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
-                                    .map_err(|e| format!("EDL session: {e}"))?;
-                                // Patch pipeline hardcodes `init_boot.img` /
-                                // `vbmeta.img` regardless of device label.
-                                let boot_out = if base_name == "boot" { "boot.img" } else { "init_boot.img" };
-                                let dumped_boot = work_dir.join(boot_out);
-                                let dumped_vbmeta = work_dir.join("vbmeta.img");
-                                // `dump_partition` scans the LUN's GPT for the
-                                // named partition — matches the shell-level
-                                // `qdl-rs --phys-part-idx 4 dump-part <name>`.
-                                session.dump_partition(&boot_primary, &dumped_boot, 0, ROOT_PARTITIONS_LUN, &mut log)
-                                    .map_err(|e| format!("Dump {boot_primary}: {e}"))?;
-                                session.dump_partition(&vbmeta_primary, &dumped_vbmeta, 0, ROOT_PARTITIONS_LUN, &mut log)
-                                    .map_err(|e| format!("Dump {vbmeta_primary}: {e}"))?;
-                                // Dump backup next to `ltbox.exe` for Unroot.
-                                let _ = std::fs::create_dir_all(&backup_dir);
-                                let _ = std::fs::copy(&dumped_boot, backup_dir.join(boot_out));
-                                let _ = std::fs::copy(&dumped_vbmeta, backup_dir.join("vbmeta.img"));
-                                live!(
-                                    log,
-                                    "[Root] {} {} + vbmeta.img → {}",
-                                    ll.root_backup_copy_prefix,
-                                    boot_out,
-                                    backup_dir.display()
-                                );
-                                // Bounce to Sahara — otherwise the second
-                                // session's sahara_run times out because
-                                // the device is still in Firehose.
-                                session.reset_to_edl(&mut log)
-                                    .map_err(|e| format!("reset_to_edl: {e}"))?;
-                                // Terminate any dangling pbr `\r`-only
-                                // line so the next message gets a fresh row.
-                                println!();
-                                live!(log, "[EDL] {}", ll.closing_dump);
-                                // Drop session — serial port closes so
-                                // the post-patch open gets a fresh handle.
-                            }
-
-                            // Phase 5/7 — Offline patch + AVB resign +
-                            // vbmeta rebuild. Network downloads moved
-                            // up to Phase 2; this step never touches
-                            // the network so progress now matches the
-                            // "patching" label.
-                            live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
-
-                            // The patch phase reuses the same config the
-                            // download phase built — none of the input
-                            // locals mutate between Phase 2 and Phase 5
-                            // (only `nightly_run_id` was hoisted out of
-                            // `manager_cfg` for logging). Clone the cfg
-                            // instead of re-cloning every field, which
-                            // keeps the two phases in lockstep automatically
-                            // if a future field gets added to the struct.
-                            let cfg = manager_cfg.clone();
-                            let artifacts = build_patched_artifacts(&cfg, &mut log)
-                                .map_err(|e| format!("Root patch: {e}"))?;
-                            if manager_apk.is_none() {
-                                manager_apk = artifacts.manager_apk.clone();
-                            }
-                            // Phase 6/7 — Write patched images (was Phase
-                            // 5/6). Old standalone Phase 4 marker dropped
-                            // since there was no real work between it and
-                            // flash open — collapsed into this one phase.
-                            live!(log, "[Root] {}", phase_marker(6, 7, &ll.op_root_phase[5]));
-                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-                                .map_err(|e| format!("EDL session (flash): {e}"))?;
-                            // Mirror of the equivalent one-shot `qdl-rs
-                            // --phys-part-idx 4 write <name> <img>` — GPT
-                            // resolves the start sector, so no rawprogram
-                            // sector attrs to thread through.
-                            session
-                                .flash_partition(&boot_primary, &artifacts.patched_boot, 0, ROOT_PARTITIONS_LUN, &mut log)
-                                .map_err(|e| format!("Flash {boot_primary}: {e}"))?;
-                            if let Some(vbpath) = &artifacts.patched_vbmeta {
-                                session
-                                    .flash_partition(&vbmeta_primary, vbpath, 0, ROOT_PARTITIONS_LUN, &mut log)
-                                    .map_err(|e| format!("Flash {vbmeta_primary}: {e}"))?;
-                            }
-                            println!();
-                            // Phase 7/7 — Reboot to system (was Phase 6/6).
-                            live!(log, "[Root] {}", phase_marker(7, 7, &ll.op_root_phase[6]));
-                            // Surface the backup folder before the reset
-                            // so the user doesn't have to scroll.
-                            if backup_dir.exists() {
-                                live!(
-                                    log,
-                                    "[Root] {} {}",
-                                    ll.backup_saved_prefix,
-                                    backup_dir.display()
-                                );
-                            }
-                            session.reset_tolerant(&mut log);
-                            if !manager_installed_pre_edl
-                                && let Some(path) = manager_apk.as_ref()
-                            {
-                                wait_and_install_root_manager_apk(
-                                    path,
-                                    std::time::Duration::from_secs(60),
-                                    &mut log,
-                                )
-                                .map_err(|e| format!("Manager APK install after reboot failed: {e}"))?;
-                            }
-                            live!(log, "[Root] {}", ll.root_completed);
-                            Ok(())
-                            })();
-                            match device_phase_result {
-                                Ok(()) => {
-                                    // Success path only: drop the
-                                    // `AppData\Roaming\ltbox\root`
-                                    // staging tree (work_dir + out)
-                                    // so a stale ~30 MB Magisk APK +
-                                    // dumped boot/vbmeta blobs from a
-                                    // previous run don't accumulate
-                                    // on disk indefinitely. On error
-                                    // we KEEP it — having the dumped
-                                    // stock images, downloaded payload
-                                    // and intermediate patched files
-                                    // around makes post-mortem
-                                    // debugging tractable.
-                                    let _ = std::fs::remove_dir_all(&base);
-                                    Ok(log)
-                                }
-                                Err(e) => {
-                                    // Best-effort: open a fresh session on the same
-                                    // loader and ask the device to boot. `reset_tolerant`
-                                    // already swallows the post-handoff error some
-                                    // devices return, so this never masks the real
-                                    // error — failures here are only logged.
-                                    let mut reset_log: Vec<String> = Vec::new();
-                                    reset_log.push(format!(
-                                        "[EDL] attempting device reset after error: {e}"
-                                    ));
-                                    if let Ok(mut s) = ltbox_device::edl::EdlSession::open(
-                                        &loader,
-                                        false,
-                                        &mut reset_log,
-                                    ) {
-                                        s.reset_tolerant(&mut reset_log);
-                                    } else {
-                                        reset_log.push(
-                                            "[EDL] reset skipped — could not re-open EDL session".into(),
-                                        );
-                                    }
-                                    for line in reset_log {
-                                        println!("{line}");
-                                    }
-                                    Err(e)
-                                }
-                            }
-                            }).and_then(|r| r)
-                        }).await.unwrap_or(Err("Task failed".to_string()))
-                    },
-                    |result| match result {
-                        Ok(lines) => Message::Root(RootMsg::RootExecDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Root(RootMsg::RootExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
+            Message::Root(m) => return self.update_root(m),
             // Unroot wizard
-            Message::Unroot(UnrootMsg::SetUnrootType(t)) => self.unroot.unroot_type = Some(t),
-            Message::Unroot(UnrootMsg::UnrootSelectFolder) => {
-                self.picker_target = PickerTarget::UnrootFolder;
-                return pick_folder_task(
-                    pickers::PickerKind::QfilFirmwareFolder,
-                    &self.recent_paths,
-                    Message::FolderSelected,
-                );
-            }
-            Message::Unroot(UnrootMsg::UnrootSelectLoader) => {
-                return self.pick_loader_with_default(|__v| {
-                    Message::Unroot(UnrootMsg::UnrootLoaderChosen(__v))
-                });
-            }
-            Message::Unroot(UnrootMsg::UnrootLoaderChosen(path)) => {
-                if let Some(p) = path {
-                    self.remember_recent(pickers::PickerKind::File, &p);
-                    self.unroot.loader_path = Some(p);
-                }
-            }
-            Message::Unroot(UnrootMsg::UnrootNext) => {
-                if self.unroot.step == 2 {
-                    self.unroot.next();
-                    return self.update(Message::Unroot(UnrootMsg::UnrootExecStart));
-                }
-                self.unroot.next();
-            }
-            Message::Unroot(UnrootMsg::UnrootBack) => self.unroot.back(),
-            Message::Unroot(UnrootMsg::UnrootExecStart) => {
-                let Some(unroot_type) = self.unroot.unroot_type else {
-                    return Task::none();
-                };
-                let Some(folder) = self.unroot.folder_path.clone() else {
-                    return Task::none();
-                };
-                let conn = self.connection;
-                // Loader is decoupled from the backup folder — `folder`
-                // holds boot.img + vbmeta.img, the loader can live
-                // anywhere (Settings default, or whatever the user
-                // pointed the loader picker at). `validate_loader_path`
-                // surfaces a missing-file error before the device-side
-                // work starts, matching the other wizards' behaviour.
-                let loader_override =
-                    match self.validate_loader_path(&self.unroot.loader_path.clone()) {
-                        Ok(p) => Some(p),
-                        Err(()) => return Task::none(),
-                    };
-                self.begin_op(View::Unroot);
-                self.op_steps = self.derive_unroot_op_steps();
-                self.error_msg = None;
-                self.log_push(format!(
-                    "[Unroot] {}",
-                    self.t("log_op_starting")
-                        .replace("{what}", self.t(unroot_type.label_key()))
-                ));
-                let ll = self.live_labels();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(
-                                move || -> Result<Vec<String>, String> {
-                                    let mut log = Vec::new();
-                                    let dir = std::path::Path::new(&folder);
-
-                                    let (boot_name, base_part) = match unroot_type {
-                                        UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
-                                        UnrootType::APatchGki => ("boot.img", "boot"),
-                                    };
-                                    let boot_path = dir.join(boot_name);
-                                    let vbmeta_path = dir.join("vbmeta.img");
-                                    if !boot_path.exists() {
-                                        return Err(format!(
-                                            "{boot_name} not found in selected folder"
-                                        ));
-                                    }
-                                    if !vbmeta_path.exists() {
-                                        return Err(
-                                            "vbmeta.img not found in selected folder".to_string()
-                                        );
-                                    }
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
-                                            .replace("{boot}", boot_name)
-                                    );
-
-                                    // Slot resolution must succeed —
-                                    // unroot writes init_boot_<slot> +
-                                    // vbmeta_<slot> from the user's
-                                    // backup folder. Defaulting to `_a`
-                                    // when the device was on `_b`
-                                    // restored stale stock blobs to the
-                                    // wrong slot and left the active
-                                    // slot still rooted, with no clear
-                                    // signal to the user.
-                                    let slot = ltbox_device::controller::poll_active_slot(
-                                        std::time::Duration::from_secs(30),
-                                        &mut log,
-                                    )
-                                    .map_err(|e| format!("Unroot slot resolve: {e}"))?;
-
-                                    // Decoupled loader — explicit picker /
-                                    // Settings default takes priority. Fall back
-                                    // to scanning the backup folder only when no
-                                    // override was set, preserving v3-pre-decouple
-                                    // behaviour for users who still ship a loader
-                                    // alongside the backup images.
-                                    let loader = match loader_override.clone() {
-                                        Some(p) => std::path::PathBuf::from(p),
-                                        None => find_edl_loader(dir)
-                                            .or_else(|| dir.parent().and_then(find_edl_loader))
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "xbl_s_devprg_ns.melf not found under {}",
-                                                    dir.display()
-                                                )
-                                            })?,
-                                    };
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        ltbox_core::i18n::tr("live_unroot_loader_path")
-                                            .replace("{path}", &loader.display().to_string())
-                                    );
-
-                                    // Boot + vbmeta resolve through the
-                                    // hardcoded LUN map; GPT-by-name reads
-                                    // the slot's start sector from the
-                                    // device. No rawprogram parse needed —
-                                    // the loader's parent dir may not even
-                                    // contain a firmware XML pair.
-                                    let boot_label = format!("{base_part}{slot}");
-                                    let vbm_label = format!("vbmeta{slot}");
-                                    let boot_lun =
-                                        ltbox_core::partition_lun::lun_for_partition(base_part)
-                                            .ok_or_else(|| {
-                                                format!("No hardcoded LUN for {base_part}")
-                                            })?;
-                                    let vbm_lun =
-                                        ltbox_core::partition_lun::lun_for_partition("vbmeta")
-                                            .ok_or_else(|| {
-                                                "No hardcoded LUN for vbmeta".to_string()
-                                            })?;
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        tr_args!(
-                                            "log_unroot_lun_resolved",
-                                            boot_label = boot_label,
-                                            boot_lun = boot_lun,
-                                            vbm_label = vbm_label,
-                                            vbm_lun = vbm_lun,
-                                        )
-                                    );
-
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        phase_marker(1, 3, &ll.op_unroot_phase[0])
-                                    );
-                                    transition_to_edl(conn, &ll, &mut log)?;
-
-                                    live!(
-                                        log,
-                                        "[Unroot] {} ({})",
-                                        phase_marker(2, 3, &ll.op_unroot_phase[1]),
-                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
-                                            .replace("{boot}", boot_name)
-                                    );
-                                    let mut session = ltbox_device::edl::EdlSession::open(
-                                        &loader, true, &mut log,
-                                    )
-                                    .map_err(|e| format!("EDL session error: {e}"))?;
-                                    session
-                                        .flash_partition(
-                                            &boot_label,
-                                            &boot_path,
-                                            0,
-                                            boot_lun,
-                                            &mut log,
-                                        )
-                                        .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
-                                    session
-                                        .flash_partition(
-                                            &vbm_label,
-                                            &vbmeta_path,
-                                            0,
-                                            vbm_lun,
-                                            &mut log,
-                                        )
-                                        .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
-
-                                    println!();
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        phase_marker(3, 3, &ll.op_unroot_phase[2])
-                                    );
-                                    session
-                                        .reset(&mut log)
-                                        .map_err(|e| format!("Reset failed: {e}"))?;
-                                    live!(log, "[Unroot] {}", ll.unroot_completed);
-                                    Ok(log)
-                                },
-                            )
-                            .and_then(|r| r)
-                        })
-                        .await
-                        .unwrap_or(Err("Task failed".to_string()))
-                    },
-                    |result| match result {
-                        Ok(lines) => Message::Unroot(UnrootMsg::UnrootExecDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Unroot(UnrootMsg::UnrootExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
+            Message::Unroot(m) => return self.update_unroot(m),
             // Advanced
-            Message::Adv(AdvMsg::AdvConfirm(a)) => {
-                // Flash/Dump Partitions + Physical Storage preempt the
-                // grid with their own dedicated wizards. After the
-                // wizard's `_open` flag flips, pull in the Settings
-                // default loader if one is configured + still on disk;
-                // that pre-fills the wizard's loader slot and advances
-                // past the loader step so the user doesn't have to
-                // re-pick the same `xbl_s_devprg_ns.melf` for every
-                // single-device flow.
-                if matches!(a, AdvAction::FlashPartitions) {
-                    self.flash_parts.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::FlashParts;
-                    return self.apply_default_loader_to_advanced_wizard();
-                } else if matches!(a, AdvAction::DumpPartitions) {
-                    self.dump_parts.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::DumpParts;
-                    return self.apply_default_loader_to_advanced_wizard();
-                } else if matches!(a, AdvAction::DumpPhysical) {
-                    self.dump_phys.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::DumpPhys;
-                    return self.apply_default_loader_to_advanced_wizard();
-                } else if matches!(a, AdvAction::FlashPhysical) {
-                    self.flash_phys.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::FlashPhys;
-                    return self.apply_default_loader_to_advanced_wizard();
-                } else {
-                    return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
-                }
-            }
-            Message::Adv(AdvMsg::AdvWizOpen(a)) => {
-                self.adv_wizard.open(a);
-                // Mirror into legacy fields so AdvFileSelected /
-                // AdvExecDone keep working unchanged.
-                self.adv_confirm = Some(a);
-                self.adv_confirm_path = None;
-            }
-            Message::Adv(AdvMsg::AdvWizBack) => {
-                if self.adv_wizard.step == 0 {
-                    // Back on step 0 closes the wizard.
-                    self.adv_wizard.reset();
-                    self.adv_confirm = None;
-                    self.adv_confirm_path = None;
-                } else {
-                    self.adv_wizard.back();
-                }
-            }
-            Message::Adv(AdvMsg::AdvWizNext) => {
-                if self.adv_wizard.is_image_info() && self.adv_wizard.step == 0 {
-                    self.adv_wizard.next();
-                    return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
-                }
-                // DetectArb: source step Next jumps straight to exec.
-                // The source step renders either a loader picker (only
-                // when ADB/fastboot already identified the device as
-                // TB320FC, since that is the model that needs the EDL
-                // fallback) or a plain Start prompt.
-                if matches!(self.adv_wizard.action, Some(AdvAction::DetectArb))
-                    && self.adv_wizard.step == 0
-                {
-                    self.adv_wizard.next();
-                    return self.update(Message::Adv(AdvMsg::AdvDetectArbExecStart));
-                }
-                // PatchArb: source step Next reads the AVB rollback
-                // indices from the picked folder + advances to the
-                // inspect step. Inspect step Next opens the timestamp
-                // popup; the popup OK is what advances to the confirm
-                // step.
-                if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb)) {
-                    if self.adv_wizard.step == 0 {
-                        let Some(folder) = self.adv_wizard.file_path.clone() else {
-                            return Task::none();
-                        };
-                        let dir = std::path::PathBuf::from(&folder);
-                        let boot = dir.join("boot.img");
-                        let vbmeta = dir.join("vbmeta_system.img");
-                        if !boot.is_file() {
-                            self.error_msg = Some(format!("Missing boot.img in {}", dir.display()));
-                            return Task::none();
-                        }
-                        if !vbmeta.is_file() {
-                            self.error_msg =
-                                Some(format!("Missing vbmeta_system.img in {}", dir.display()));
-                            return Task::none();
-                        }
-                        let boot_info = match ltbox_patch::avb::extract_image_avb_info(&boot) {
-                            Ok(i) => i,
-                            Err(e) => {
-                                self.error_msg = Some(format!("boot.img inspect failed: {e}"));
-                                return Task::none();
-                            }
-                        };
-                        let vbmeta_info = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
-                            Ok(i) => i,
-                            Err(e) => {
-                                self.error_msg =
-                                    Some(format!("vbmeta_system.img inspect failed: {e}"));
-                                return Task::none();
-                            }
-                        };
-                        self.adv_wizard.arb_inspect =
-                            Some((boot_info.rollback_index, vbmeta_info.rollback_index));
-                        self.error_msg = None;
-                        self.adv_wizard.next();
-                        return Task::none();
-                    }
-                    if self.adv_wizard.step == 1 {
-                        self.adv_wizard.arb_index_buffer = self
-                            .adv_wizard
-                            .arb_index_committed
-                            .map(|v| v.to_string())
-                            .unwrap_or_default();
-                        self.arb_index_popup_open = true;
-                        return Task::none();
-                    }
-                }
-                if self.adv_wizard.is_confirm_step() {
-                    let Some(action) = self.adv_wizard.action else {
-                        return Task::none();
-                    };
-                    self.adv_confirm_path = self.adv_wizard.file_path.clone();
-                    if let Some(code) = self.adv_wizard.country.clone() {
-                        self.wf_config.country_action = CountryAction::Set(code);
-                    }
-                    // Pre-create output folder so the Done card's
-                    // "Open Folder" pill always points somewhere real.
-                    if action.produces_output() {
-                        let dir = adv_output_dir(action);
-                        let _ = std::fs::create_dir_all(&dir);
-                        self.adv_wizard.output_dir = Some(dir);
-                    } else {
-                        self.adv_wizard.output_dir = None;
-                    }
-                    self.adv_wizard.next();
-                    return self.update(Message::Adv(AdvMsg::AdvExec(action)));
-                }
-                self.adv_wizard.next();
-            }
-            Message::Adv(AdvMsg::AdvWizBrowse) => {
-                if self.adv_wizard.is_image_info() {
-                    let spec =
-                        pickers::FilePickSpec::multi(self.adv_wizard.picker_target_i18n_key())
-                            .with_filter("Android image (*.img)", &["img"]);
-                    return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
-                        Message::Adv(AdvMsg::AdvWizBrowseManyDone(__v))
-                    });
-                }
-                let kind = self.adv_wizard.picker_kind();
-                if kind.is_folder() {
-                    return pick_folder_task(kind, &self.recent_paths, |__v| {
-                        Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
-                    });
-                }
-                let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
-                let target_key = self.adv_wizard.picker_target_i18n_key();
-                let mut spec = pickers::FilePickSpec::single(target_key);
-                if !filter_exts.is_empty() {
-                    spec = spec.with_filter(filter_label, filter_exts);
-                }
-                return pickers::pick_file_for(spec, &self.recent_paths, |__v| {
-                    Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
-                });
-            }
-            Message::Adv(AdvMsg::AdvWizBrowseDone(path)) => {
-                if let Some(p) = path {
-                    if std::path::Path::new(&p).exists() {
-                        // Kind is derived from the action (folder ops →
-                        // folder bucket, file ops → File) rather than the
-                        // runtime is_dir() check — trusting the action
-                        // keeps buckets consistent even if rfd returns an
-                        // unexpected path type.
-                        self.remember_recent(self.adv_wizard.picker_kind(), &p);
-                    }
-                    self.adv_wizard.file_path = Some(p);
-                }
-            }
-            Message::Adv(AdvMsg::AdvWizBrowseManyDone(paths)) => {
-                if let Some(paths) = paths {
-                    let paths: Vec<String> = paths
-                        .into_iter()
-                        .filter(|p| {
-                            std::path::Path::new(p)
-                                .extension()
-                                .and_then(|s| s.to_str())
-                                .map(|s| s.eq_ignore_ascii_case("img"))
-                                .unwrap_or(false)
-                        })
-                        .collect();
-                    for p in &paths {
-                        if std::path::Path::new(p).exists() {
-                            self.remember_recent(pickers::PickerKind::File, p);
-                        }
-                    }
-                    self.adv_wizard.file_paths = paths;
-                    self.adv_wizard.file_path = None;
-                }
-            }
-            Message::Adv(AdvMsg::AdvWizOpenCountry) => {
-                self.adv_needs_country = true;
-                self.country_popup_open = true;
-            }
-            Message::Adv(AdvMsg::AdvWizOpenRegionTarget) => {
-                self.region_target_popup_open = true;
-            }
-            Message::Adv(AdvMsg::AdvWizOpenOutputFolder) => {
-                if let Some(dir) = self.adv_wizard.output_dir.clone()
-                    && let Err(err) = open_in_file_manager(&dir)
-                {
-                    // Surface the failed command + path in the log
-                    // so the user can see what was tried — silent
-                    // no-op was the old behaviour and made missing
-                    // xdg-open invisible on Linux.
-                    self.log_push(format!("[GUI] Open Folder failed: {err}"));
-                }
-            }
-            Message::Adv(AdvMsg::AdvWizArbIndexInput(s)) => {
-                // Strip non-digits + cap at 10 chars so paste-of-garbage
-                // can't smuggle a longer / non-numeric value past the UI.
-                let cleaned: String = s.chars().filter(|c| c.is_ascii_digit()).take(10).collect();
-                self.adv_wizard.arb_index_buffer = cleaned;
-            }
-            Message::Adv(AdvMsg::AdvWizArbIndexConfirm) => {
-                let buf = self.adv_wizard.arb_index_buffer.clone();
-                if buf.len() != 10 {
-                    return Task::none();
-                }
-                let Ok(parsed) = buf.parse::<u64>() else {
-                    return Task::none();
-                };
-                self.adv_wizard.arb_index_committed = Some(parsed);
-                self.adv_wizard.arb_index_buffer.clear();
-                self.arb_index_popup_open = false;
-                // Advance to Confirm.
-                self.adv_wizard.next();
-            }
-            Message::Adv(AdvMsg::AdvWizArbIndexCancel) => {
-                self.adv_wizard.arb_index_buffer.clear();
-                self.arb_index_popup_open = false;
-            }
-            Message::Adv(AdvMsg::AdvExec(action)) => {
-                // Picker ran in AdvConfirm; replay the saved path.
-                let Some(path) = self.adv_confirm_path.clone() else {
-                    self.adv_confirm = None;
-                    return Task::none();
-                };
-                return self.update(Message::Adv(AdvMsg::AdvFileSelected(action, Some(path))));
-            }
-            Message::Adv(AdvMsg::AdvFileSelected(action, path)) => {
-                if let Some(input_path) = path {
-                    // See AdvWizBrowseDone — trust the action's kind over
-                    // the runtime is_dir() probe.
-                    self.remember_recent(self.adv_wizard.picker_kind(), &input_path);
-                    self.begin_op(View::Advanced);
-                    self.error_msg = None;
-                    let action_label = self.t(action.label_key()).to_string();
-                    self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
-                    let _conn = self.connection;
-                    // PatchDevinfo only — unused otherwise.
-                    let adv_country: Option<String> =
-                        self.wf_config.country_action.target().map(str::to_string);
-                    // RegionConvert only — user-picked target.
-                    let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
-                    // PatchArb only — committed unix-timestamp index.
-                    let adv_arb_index: Option<u64> = self.adv_wizard.arb_index_committed;
-                    let output_dir: std::path::PathBuf = self
-                        .adv_wizard
-                        .output_dir
-                        .clone()
-                        .unwrap_or_else(|| adv_output_dir(action));
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
-                                let mut log = Vec::new();
-                                let input = std::path::Path::new(&input_path);
-                                let parent = input.parent().unwrap_or(std::path::Path::new("."));
-                                // Created eagerly so a no-op exec still
-                                // leaves a folder for the user to find.
-                                if action.produces_output() {
-                                    let _ = std::fs::create_dir_all(&output_dir);
-                                    ltbox_core::live!(log,
-                                        "[Advanced] {}",
-                                        ltbox_core::i18n::tr("live_advanced_output_folder")
-                                            .replace("{path}", &output_dir.display().to_string())
-                                    );
-                                }
-                                match action {
-                                    AdvAction::ImageInfo => {
-                                        return Err(
-                                            "Image Info uses a dedicated multi-file flow"
-                                                .to_string(),
-                                        );
-                                    }
-                                    AdvAction::ConvertXml => {
-                                        // `input` is now the folder holding the encrypted
-                                        // `*.x` pack (picker moved from file→folder so
-                                        // users don't have to repeat the dialog for each
-                                        // file). Iterate every `*.x`, decrypt to `*.xml`
-                                        // in `output_dir`.
-                                        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(input)
-                                            .map_err(|e| format!("read_dir {}: {e}", input.display()))?
-                                            .filter_map(|r| r.ok().map(|e| e.path()))
-                                            .filter(|p| {
-                                                p.is_file()
-                                                    && p.extension()
-                                                        .and_then(|s| s.to_str())
-                                                        .map(|s| s.eq_ignore_ascii_case("x"))
-                                                        .unwrap_or(false)
-                                            })
-                                            .collect();
-                                        entries.sort();
-                                        if entries.is_empty() {
-                                            return Err(format!(
-                                                "No *.x files found under {}",
-                                                input.display()
-                                            ));
-                                        }
-                                        for src in entries {
-                                            let stem = src.file_stem().unwrap_or_default();
-                                            let output = output_dir.join(stem).with_extension("xml");
-                                            match ltbox_core::crypto::decrypt_file(&src, &output) {
-                                                Ok(size) => ltbox_core::live!(
-                                                    log,
-                                                    "[Crypto] {}",
-                                                    ltbox_core::i18n::tr("live_crypto_decrypted")
-                                                        .replace("{bytes}", &size.to_string())
-                                                ),
-                                                Err(e) => return Err(format!("Decryption failed: {e}")),
-                                            }
-                                        }
-                                    }
-                                    AdvAction::DetectArb => {
-                                        // DetectArb routes through its dedicated
-                                        // `AdvDetectArbExecStart` worker, not the
-                                        // generic file-selected pipeline. Reaching
-                                        // this arm means a stale code path triggered
-                                        // it; surface a clear error instead of a
-                                        // silent no-op.
-                                        return Err(
-                                            "DetectArb uses a dedicated worker — file pipeline should not run"
-                                                .to_string(),
-                                        );
-                                    }
-                                    AdvAction::FlashPartitions
-                                    | AdvAction::DumpPartitions
-                                    | AdvAction::FlashPhysical
-                                    | AdvAction::DumpPhysical => {
-                                        ltbox_core::live!(
-                                            log,
-                                            "[Advanced] {}",
-                                            ltbox_core::i18n::tr("live_advanced_use_dedicated")
-                                        );
-                                    }
-                                    AdvAction::RegionConvert => {
-                                        let Some(target_region) = adv_region_target else {
-                                            return Err(
-                                                "No target region selected — pick PRC or ROW in the popup before starting"
-                                                    .into(),
-                                            );
-                                        };
-                                        if input
-                                            .file_name()
-                                            .and_then(|s| s.to_str())
-                                            .map(|s| !s.eq_ignore_ascii_case("vendor_boot.img"))
-                                            .unwrap_or(true)
-                                        {
-                                            return Err(
-                                                "Region Convert expects vendor_boot.img; select the firmware folder's vendor_boot.img"
-                                                    .to_string(),
-                                            );
-                                        }
-                                        let firmware_dir = parent;
-                                        let sibling_vbmeta = firmware_dir.join("vbmeta.img");
-                                        if !sibling_vbmeta.is_file() {
-                                            return Err(format!(
-                                                "Region Convert requires vbmeta.img beside vendor_boot.img; missing {}",
-                                                sibling_vbmeta.display()
-                                            ));
-                                        }
-                                        let target = target_region.to_region_target();
-                                        match ltbox_patch::region::build_region_converted_boot_chain(
-                                            firmware_dir,
-                                            &output_dir,
-                                            target,
-                                            &ltbox_patch::region::RegionPatternSet::default(),
-                                        ) {
-                                            Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Region] {}",
-                                                    ltbox_core::i18n::tr("live_region_source_target")
-                                                        .replace("{source}", &format!("{:?}", output.source_region))
-                                                        .replace("{target}", &format!("{:?}", output.target))
-                                                );
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Region] {}",
-                                                    ltbox_core::i18n::tr("live_region_patched")
-                                                        .replace("{count}", &output.replacement_count.to_string())
-                                                        .replace("{path}", &output.vendor_boot.display().to_string())
-                                                );
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Region] {}",
-                                                    ltbox_core::i18n::tr("live_region_final_vbmeta_written")
-                                                        .replace("{path}", &output.vbmeta.display().to_string())
-                                                );
-                                            }
-                                            Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
-                                                source_region,
-                                                target,
-                                            }) => {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Region] {}",
-                                                    ltbox_core::i18n::tr("live_region_source_target")
-                                                        .replace("{source}", &format!("{:?}", source_region))
-                                                        .replace("{target}", &format!("{:?}", target))
-                                                );
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Region] {}",
-                                                    ltbox_core::i18n::tr("live_region_source_matches_target")
-                                                );
-                                            }
-                                            Err(e) => return Err(format!("Region conversion failed: {e}")),
-                                        }
-                                    }
-                                    AdvAction::PatchDevinfo => {
-                                        // Country code lives in both devinfo.img
-                                        // + persist.img — folder picker, at
-                                        // least one must exist.
-                                        const KNOWN: &[&str] = &[
-                                            "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL",
-                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "GR",
-                                            "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT", "RO", "SK",
-                                            "SI", "SE", "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE",
-                                            "WW",
-                                        ];
-                                        const EU: &[&str] = &[
-                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
-                                            "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-                                            "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-                                        ];
-                                        let Some(new_code) = adv_country.as_deref() else {
-                                            return Err(
-                                                "No target country code selected — pick one in the popup before starting"
-                                                    .into(),
-                                            );
-                                        };
-                                        if !input.is_dir() {
-                                            return Err(format!(
-                                                "PatchDevinfo expects a folder containing devinfo.img + persist.img, got {}",
-                                                input.display()
-                                            ));
-                                        }
-                                        let mut any_written = false;
-                                        let mut any_found = false;
-                                        for name in ["devinfo.img", "persist.img"] {
-                                            let src = input.join(name);
-                                            if !src.exists() {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Country] {}",
-                                                    ltbox_core::i18n::tr("live_country_name_missing")
-                                                        .replace("{name}", name)
-                                                );
-                                                continue;
-                                            }
-                                            any_found = true;
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_processing")
-                                                    .replace("{path}", &src.display().to_string())
-                                            );
-                                            let detected = ltbox_patch::region::detect_country_code(&src, KNOWN)
-                                                .map_err(|e| format!("Country detect failed on {name}: {e}"))?;
-                                            let Some(old_code) = detected else {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Country] {}",
-                                                    ltbox_core::i18n::tr("live_country_no_code_detected")
-                                                        .replace("{name}", name)
-                                                );
-                                                continue;
-                                            };
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_detected")
-                                                    .replace("{name}", name)
-                                                    .replace("{old_code}", &old_code)
-                                            );
-                                            let stem = std::path::Path::new(name)
-                                                .file_stem()
-                                                .map(|s| s.to_string_lossy().to_string())
-                                                .unwrap_or_else(|| name.to_string());
-                                            // v2 naming: `<stem>_modified.img`.
-                                            let output = output_dir.join(format!("{stem}_modified.img"));
-                                            match ltbox_patch::region::patch_country_code(&src, &output, &old_code, new_code, EU) {
-                                                Ok(true) => {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[Country] {}",
-                                                        ltbox_core::i18n::tr("live_country_written")
-                                                            .replace("{name}", name)
-                                                            .replace("{old_code}", &old_code)
-                                                            .replace("{new_code}", new_code)
-                                                            .replace("{path}", &output.display().to_string())
-                                                    );
-                                                    any_written = true;
-                                                }
-                                                Ok(false) => ltbox_core::live!(
-                                                    log,
-                                                    "[Country] {}",
-                                                    ltbox_core::i18n::tr("live_country_no_replacements")
-                                                        .replace("{name}", name)
-                                                ),
-                                                Err(e) => return Err(format!(
-                                                    "Country patch failed on {name}: {e}"
-                                                )),
-                                            }
-                                        }
-                                        if !any_found {
-                                            return Err(format!(
-                                                "Neither devinfo.img nor persist.img found in {}",
-                                                input.display()
-                                            ));
-                                        }
-                                        if !any_written {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[Country] {}",
-                                                ltbox_core::i18n::tr("live_country_already_matches")
-                                            );
-                                        }
-                                    }
-                                    AdvAction::PatchArb => {
-                                        // `input` is the firmware folder; user-picked
-                                        // target rollback index lives on the wizard.
-                                        let target = adv_arb_index.ok_or_else(|| {
-                                            "Patch Rollback Index: missing target index".to_string()
-                                        })?;
-                                        let boot = input.join("boot.img");
-                                        let vbmeta = input.join("vbmeta_system.img");
-                                        if !boot.is_file() {
-                                            return Err(format!(
-                                                "Missing boot.img in {}",
-                                                input.display()
-                                            ));
-                                        }
-                                        if !vbmeta.is_file() {
-                                            return Err(format!(
-                                                "Missing vbmeta_system.img in {}",
-                                                input.display()
-                                            ));
-                                        }
-                                        // Read AVB info first so the abort guards (rollback
-                                        // == 0 / 1) trip before any signing-key work runs.
-                                        let boot_info = ltbox_patch::avb::extract_image_avb_info(&boot)
-                                            .map_err(|e| format!("boot.img inspect failed: {e}"))?;
-                                        let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(&vbmeta)
-                                            .map_err(|e| format!("vbmeta_system.img inspect failed: {e}"))?;
-                                        if boot_info.rollback_index <= 1 {
-                                            return Err(format!(
-                                                "boot.img rollback index is {} — refusing to patch",
-                                                boot_info.rollback_index
-                                            ));
-                                        }
-                                        if vbmeta_info.rollback_index <= 1 {
-                                            return Err(format!(
-                                                "vbmeta_system.img rollback index is {} — refusing to patch",
-                                                vbmeta_info.rollback_index
-                                            ));
-                                        }
-                                        // Signing key resolution: only the two stock
-                                        // testkeys embedded in avbtool-rs are supported.
-                                        // Anything else aborts — user-supplied PEMs are
-                                        // intentionally not consulted.
-                                        let resolve_key = |info: &ltbox_patch::avb::AvbImageInfo,
-                                                           label: &str|
-                                         -> std::result::Result<&'static str, String> {
-                                            ltbox_patch::key_map::key_spec_for_pubkey(
-                                                info.public_key_sha1.as_deref(),
-                                            )
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "{label}: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
-                                                    info.public_key_sha1
-                                                )
-                                            })
-                                        };
-                                        let boot_key = resolve_key(&boot_info, "boot.img")?;
-                                        let vbmeta_key =
-                                            resolve_key(&vbmeta_info, "vbmeta_system.img")?;
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
-                                                .replace("{name}", "boot.img")
-                                                .replace("{key}", boot_key)
-                                        );
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
-                                                .replace("{name}", "vbmeta_system.img")
-                                                .replace("{key}", vbmeta_key)
-                                        );
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
-                                                .replace("{name}", "boot.img")
-                                                .replace("{old}", &boot_info.rollback_index.to_string())
-                                                .replace("{new}", &target.to_string())
-                                        );
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
-                                                .replace("{name}", "vbmeta_system.img")
-                                                .replace("{old}", &vbmeta_info.rollback_index.to_string())
-                                                .replace("{new}", &target.to_string())
-                                        );
-                                        let boot_out = output_dir.join("boot.img");
-                                        let vbmeta_out = output_dir.join("vbmeta_system.img");
-                                        // boot.img: NONE → add_hash_footer; signed → resign.
-                                        std::fs::copy(&boot, &boot_out)
-                                            .map_err(|e| format!("copy boot.img: {e}"))?;
-                                        if boot_info.algorithm == "NONE" {
-                                            ltbox_patch::avb::add_hash_footer(
-                                                &boot_out,
-                                                &boot_info,
-                                                Some(boot_key),
-                                                Some(target),
-                                            )
-                                            .map_err(|e| format!("boot ARB add_hash_footer failed: {e}"))?;
-                                        } else {
-                                            ltbox_patch::avb::resign_image(
-                                                &boot_out,
-                                                boot_key,
-                                                &boot_info.algorithm,
-                                                Some(target),
-                                            )
-                                            .map_err(|e| format!("boot ARB resign failed: {e}"))?;
-                                        }
-                                        // vbmeta_system.img: always resign (chains require sig).
-                                        std::fs::copy(&vbmeta, &vbmeta_out)
-                                            .map_err(|e| format!("copy vbmeta_system.img: {e}"))?;
-                                        ltbox_patch::avb::resign_image(
-                                            &vbmeta_out,
-                                            vbmeta_key,
-                                            &vbmeta_info.algorithm,
-                                            Some(target),
-                                        )
-                                        .map_err(|e| format!("vbmeta_system ARB resign failed: {e}"))?;
-                                        ltbox_core::live!(
-                                            log,
-                                            "[ARB] {}",
-                                            ltbox_core::i18n::tr("live_advanced_output_folder")
-                                                .replace("{path}", &output_dir.display().to_string())
-                                        );
-                                    }
-                                    AdvAction::RebuildVbmeta => {
-                                        // `resign_image` alone won't work — chain
-                                        // hashes go stale once dtbo / init_boot /
-                                        // vendor_boot move.
-                                        let info = ltbox_patch::avb::extract_image_avb_info(input)
-                                            .map_err(|e| format!("VBMeta inspect failed: {e}"))?;
-                                        // Only the two stock testkeys embedded in
-                                        // avbtool-rs are supported.
-                                        let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
-                                            info.public_key_sha1.as_deref(),
-                                        )
-                                        .ok_or_else(|| {
-                                            format!(
-                                                "Rebuild vbmeta: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
-                                                info.public_key_sha1
-                                            )
-                                        })?;
-                                        let alg: Option<&str> = if info.algorithm == "NONE" {
-                                            // NONE → infer from the resolved key spec.
-                                            Some(if key_spec.contains("2048") {
-                                                "SHA256_RSA2048"
-                                            } else {
-                                                "SHA256_RSA4096"
-                                            })
-                                        } else {
-                                            Some(info.algorithm.as_str())
-                                        };
-
-                                        // Advanced is file-only — user supplies
-                                        // the chained images (v2 dumps them).
-                                        let candidates: &[&str] = &[
-                                            "dtbo.img", "dtbo_a.img", "dtbo_b.img",
-                                            "init_boot.img", "init_boot_a.img", "init_boot_b.img",
-                                            "vendor_boot.img", "vendor_boot_a.img", "vendor_boot_b.img",
-                                            "boot.img", "boot_a.img", "boot_b.img",
-                                        ];
-                                        let mut chained: Vec<std::path::PathBuf> = Vec::new();
-                                        for name in candidates {
-                                            let p = parent.join(name);
-                                            if p.exists() {
-                                                chained.push(p);
-                                            }
-                                        }
-                                        if chained.is_empty() {
-                                            ltbox_core::live!(
-                                                log,
-                                                "[AVB] {}",
-                                                ltbox_core::i18n::tr("live_avb_no_chained_fallback")
-                                            );
-                                            if let Err(e) = ltbox_patch::avb::resign_image(
-                                                input,
-                                                key_spec,
-                                                alg.unwrap_or("SHA256_RSA4096"),
-                                                Some(info.rollback_index),
-                                            ) {
-                                                return Err(format!("Rebuild vbmeta fallback resign failed: {e}"));
-                                            }
-                                        } else {
-                                            if chained.iter().any(|p| {
-                                                p.file_name()
-                                                    .and_then(|s| s.to_str())
-                                                    .map(|s| s.starts_with("vendor_boot"))
-                                                    .unwrap_or(false)
-                                            }) {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[AVB] {}",
-                                                    ltbox_core::i18n::tr("live_avb_rebuild_warning")
-                                                );
-                                            }
-                                            let output = output_dir.join("vbmeta.rebuilt.img");
-                                            let chained_refs: Vec<&std::path::Path> =
-                                                chained.iter().map(|p| p.as_path()).collect();
-                                            let chained_names = chained
-                                                .iter()
-                                                .map(|p| {
-                                                    p.file_name()
-                                                        .and_then(|s| s.to_str())
-                                                        .unwrap_or("")
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join(", ");
-                                            ltbox_core::live!(
-                                                log,
-                                                "[AVB] {}",
-                                                ltbox_core::i18n::tr("live_avb_rebuild_chained")
-                                                    .replace("{count}", &chained.len().to_string())
-                                                    .replace("{names}", &chained_names)
-                                            );
-                                            ltbox_core::live!(
-                                                log,
-                                                "[AVB] {}",
-                                                ltbox_core::i18n::tr("live_avb_rebuild_key_alg")
-                                                    .replace("{key}", key_spec)
-                                                    .replace("{alg}", alg.unwrap_or("(from original vbmeta)"))
-                                            );
-                                            if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
-                                                &output,
-                                                input,
-                                                &chained_refs,
-                                                key_spec,
-                                                alg,
-                                            ) {
-                                                return Err(format!("Rebuild vbmeta failed: {e}"));
-                                            }
-                                            ltbox_core::live!(
-                                                log,
-                                                "[AVB] {}",
-                                                ltbox_core::i18n::tr("live_avb_rebuilt_written")
-                                                    .replace("{path}", &output.display().to_string())
-                                            );
-                                        }
-                                    }
-                                }
-                                ltbox_core::live!(
-                                    log,
-                                    "[Advanced] {}",
-                                    ltbox_core::i18n::tr("live_advanced_completed")
-                                        .replace("{action}", &action_label)
-                                );
-                                Ok(log)
-                                }).and_then(|r| r)
-                            }).await.unwrap_or(Err("Task failed".to_string()))
-                        },
-                        |result| match result {
-                            Ok(lines) => Message::Adv(AdvMsg::AdvExecDone(lines)),
-                            Err(e) => Message::OperationError(e),
-                        },
-                    );
-                }
-                self.adv_confirm = None;
-            }
-            Message::Adv(AdvMsg::AdvExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                // Leave adv_wizard / adv_confirm* intact so the exec
-                // screen stays visible with Done/Failed until StartOver.
-                self.end_op();
-            }
-            Message::Adv(AdvMsg::AdvImageInfoExecStart) => {
-                let paths: Vec<std::path::PathBuf> = self
-                    .adv_wizard
-                    .file_paths
-                    .iter()
-                    .map(std::path::PathBuf::from)
-                    .collect();
-                let scanning = self
-                    .t("adv_image_info_scanning")
-                    .replace("{count}", &paths.len().to_string());
-                self.set_image_info_log(scanning);
-                self.begin_silent_op(View::Advanced);
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(move || {
-                                ltbox_patch::avb::image_info_report(&paths)
-                                    .map_err(|e| e.to_string())
-                            })
-                            .and_then(|r| r)
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Task failed: {e}")))
-                    },
-                    |__v| Message::Adv(AdvMsg::AdvImageInfoExecDone(__v)),
-                );
-            }
-            Message::Adv(AdvMsg::AdvImageInfoExecDone(result)) => {
-                self.end_silent_op();
-                match result {
-                    Ok(report) => {
-                        self.error_msg = None;
-                        self.set_image_info_log(report);
-                    }
-                    Err(e) => {
-                        self.error_msg = Some(e.clone());
-                        self.set_image_info_log(format!("ERROR: {e}"));
-                    }
-                }
-            }
-            Message::Adv(AdvMsg::AdvDetectArbExecStart) => {
-                self.begin_op(View::Advanced);
-                self.error_msg = None;
-                let conn = self.connection;
-                let device_model = self.device_model.clone();
-                let loader_path = self.adv_wizard.file_path.clone();
-                let i_anti = self.t("arb_detect_is_anti_rollback").to_string();
-                let i_not = self.t("arb_detect_no_anti_rollback").to_string();
-                let i_reboot_fastboot = self.t("live_arb_reboot_to_fastboot").to_string();
-                let i_reboot_system = self.t("live_arb_reboot_to_system").to_string();
-                let i_tb320fc_edl = self.t("live_arb_tb320fc_edl_dump").to_string();
-                return task_heavy(
-                    move || {
-                        let mut log = Vec::new();
-                        match detect_arb_run(
-                            conn,
-                            device_model,
-                            loader_path,
-                            &i_anti,
-                            &i_not,
-                            &i_reboot_fastboot,
-                            &i_reboot_system,
-                            &i_tb320fc_edl,
-                            &mut log,
-                        ) {
-                            Ok(()) => Ok(log),
-                            Err(e) => Err(e),
-                        }
-                    },
-                    |__v| Message::Adv(AdvMsg::AdvDetectArbExecDone(__v)),
-                    Err,
-                );
-            }
-            Message::Adv(AdvMsg::AdvDetectArbExecDone(result)) => {
-                match result {
-                    Ok(lines) => {
-                        self.flush_exec_done_log(lines);
-                    }
-                    Err(e) => {
-                        self.error_msg = Some(e.clone());
-                        self.log_push(format!("ERROR: {e}"));
-                    }
-                }
-                self.end_op();
-            }
+            Message::Adv(m) => return self.update_adv(m),
             // Async results
             Message::FileSelected(path) => {
                 if let Some(p) = path {
@@ -9427,563 +5668,13 @@ impl App {
                     Message::InstallDriversDone,
                 );
             }
-            Message::FlashParts(FlashPartsMsg::FlashPartsSelectLoader) => {
-                return self.pick_loader_with_default(|__v| {
-                    Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(__v))
-                });
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(path)) => {
-                if let Some(p) = path {
-                    match self.resolve_loader_input(&p) {
-                        Ok(loader) => {
-                            self.flash_parts.loader_path = Some(loader);
-                            self.flash_parts.scan_error = None;
-                        }
-                        Err(msg) => self.flash_parts.scan_error = Some(msg),
-                    }
-                }
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx)) => {
-                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
-                    row.state = row.state.cycle();
-                }
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsPickRowFile(idx)) => {
-                let spec = pickers::FilePickSpec::single("picker_target_partition_image")
-                    .with_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"]);
-                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
-                    Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path))
-                });
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path)) => {
-                if let Some(p) = path {
-                    self.remember_recent(pickers::PickerKind::File, &p);
-                    if let Some(row) = self.flash_parts.rows.get_mut(idx) {
-                        row.file_path = Some(p);
-                        // Picking a file implicitly flips the row to Flash
-                        // so the user doesn't have to also cycle the box.
-                        row.state = FlashRowState::Flash;
-                    }
-                }
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsNext) => match self.flash_parts.step {
-                0 => return self.update(Message::FlashParts(FlashPartsMsg::FlashPartsScanStart)),
-                1 => self.flash_parts.next(), // → Confirm
-                2 => return self.update(Message::FlashParts(FlashPartsMsg::FlashPartsExecStart)),
-                _ => {}
-            },
-            Message::FlashParts(FlashPartsMsg::FlashPartsBack) => self.flash_parts.back(),
-            Message::FlashParts(FlashPartsMsg::FlashPartsClose) => {
-                self.advanced_wizard_open = AdvancedWizardOpen::None;
-                self.flash_parts.reset();
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsScanStart) => {
-                let loader = match self.validate_loader_path(&self.flash_parts.loader_path.clone())
-                {
-                    Ok(p) => p,
-                    Err(()) => return Task::none(),
-                };
-                self.begin_op(View::Flash);
-                self.error_msg = None;
-                self.flash_parts.scanning = true;
-                self.flash_parts.scan_error = None;
-                self.flash_parts.rows.clear();
-                let conn = self.connection;
-                self.log_lines
-                    .push("[FlashParts] Scanning partitions...".to_string());
-                return task_heavy(
-                    move || flash_parts_scan(conn, loader),
-                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(__v)),
-                    |e| FlashPartsScanResult {
-                        logs: vec![format!("[FlashParts] {e}")],
-                        rows: Vec::new(),
-                        error: Some(e),
-                    },
-                );
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(result)) => {
-                self.flush_exec_done_log(result.logs);
-                self.flash_parts.scanning = false;
-                self.flash_parts.rows = result.rows;
-                self.flash_parts.apply_sort();
-                self.flash_parts.scan_error = result.error.clone();
-                self.end_op();
-                if result.error.is_none() && !self.flash_parts.rows.is_empty() {
-                    self.flash_parts.next(); // → Select
-                }
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsSortBy(col)) => {
-                self.flash_parts.toggle_sort(col);
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsExecStart) => {
-                self.flash_parts.next(); // advance to Exec screen
-                self.begin_op(View::Flash);
-                self.error_msg = None;
-                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
-                let rows = self.flash_parts.active_rows();
-                let flash_cnt = rows
-                    .iter()
-                    .filter(|r| r.state == FlashRowState::Flash)
-                    .count();
-                let erase_cnt = rows
-                    .iter()
-                    .filter(|r| r.state == FlashRowState::Erase)
-                    .count();
-                self.log_lines.push(format!(
-                    "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
-                ));
-                return task_heavy(
-                    move || flash_parts_execute(loader, rows),
-                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(__v)),
-                    |e| vec![format!("[FlashParts] {e}")],
-                );
-            }
-            Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsSelectLoader) => {
-                return self.pick_loader_with_default(|__v| {
-                    Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(__v))
-                });
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(path)) => {
-                if let Some(p) = path {
-                    match self.resolve_loader_input(&p) {
-                        Ok(loader) => {
-                            self.dump_parts.loader_path = Some(loader);
-                            self.dump_parts.scan_error = None;
-                        }
-                        Err(msg) => self.dump_parts.scan_error = Some(msg),
-                    }
-                }
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsToggleRow(idx)) => {
-                if let Some(row) = self.dump_parts.rows.get_mut(idx) {
-                    row.selected = !row.selected;
-                }
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsNext) => match self.dump_parts.step {
-                0 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsScanStart)),
-                1 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder)),
-                _ => {}
-            },
-            Message::DumpParts(DumpPartsMsg::DumpPartsBack) => self.dump_parts.back(),
-            Message::DumpParts(DumpPartsMsg::DumpPartsClose) => {
-                self.advanced_wizard_open = AdvancedWizardOpen::None;
-                self.dump_parts.reset();
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsScanStart) => {
-                let loader = match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
-                    Ok(p) => p,
-                    Err(()) => return Task::none(),
-                };
-                self.dump_parts.scanning = true;
-                self.dump_parts.scan_error = None;
-                self.dump_parts.rows.clear();
-                self.begin_op(View::Advanced);
-                self.error_msg = None;
-                let conn = self.connection;
-                self.log_lines
-                    .push("[DumpParts] Scanning partition tables...".to_string());
-                return task_heavy(
-                    move || dump_parts_scan(conn, loader),
-                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(__v)),
-                    |e| DumpPartsScanResult {
-                        logs: vec![format!("[DumpParts] {e}")],
-                        rows: Vec::new(),
-                        error: Some(e),
-                    },
-                );
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(result)) => {
-                self.flush_exec_done_log(result.logs);
-                self.end_op();
-                self.dump_parts.scanning = false;
-                self.dump_parts.rows = result.rows;
-                self.dump_parts.apply_sort();
-                if let Some(err) = result.error {
-                    self.dump_parts.scan_error = Some(err);
-                } else if self.dump_parts.rows.is_empty() {
-                    self.dump_parts.scan_error =
-                        Some("No partitions returned from device".to_string());
-                } else {
-                    self.dump_parts.step = 1;
-                }
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsSortBy(col)) => {
-                self.dump_parts.toggle_sort(col);
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsToggleAll) => {
-                let all_selected = !self.dump_parts.rows.is_empty()
-                    && self.dump_parts.rows.iter().all(|r| r.selected);
-                let target = !all_selected;
-                for r in self.dump_parts.rows.iter_mut() {
-                    r.selected = target;
-                }
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder) => {
-                // Dump destination, not a firmware source — goes to the
-                // `OutputFolder` bucket so the MRU list doesn't mix input
-                // firmware dirs with output dump dirs.
-                return pick_folder_task(
-                    pickers::PickerKind::OutputFolder,
-                    &self.recent_paths,
-                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(__v)),
-                );
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(path)) => {
-                if let Some(folder) = path {
-                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
-                    self.dump_parts.output_dir = Some(folder.clone());
-                    self.dump_parts.step = 2;
-                    self.begin_op(View::Advanced);
-                    self.error_msg = None;
-                    let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
-                    let rows = self.dump_parts.selected_rows();
-                    self.log_lines.push(format!(
-                        "[DumpParts] Dumping {} partition(s) to {}",
-                        rows.len(),
-                        folder
-                    ));
-                    return task_heavy(
-                        move || dump_parts_execute(loader, folder, rows),
-                        |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
-                        |e| vec![format!("[DumpParts] {e}")],
-                    );
-                }
-            }
-            Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
+            Message::FlashParts(m) => return self.update_flash_parts(m),
+            Message::DumpParts(m) => return self.update_dump_parts(m),
             // -- Physical Storage: Dump --------------------------------------
-            Message::DumpPhys(DumpPhysMsg::DumpPhysSelectLoader) => {
-                return self.pick_loader_with_default(|__v| {
-                    Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(__v))
-                });
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(path)) => {
-                if let Some(p) = path {
-                    match self.resolve_loader_input(&p) {
-                        Ok(loader) => {
-                            self.dump_phys.loader_path = Some(loader);
-                            self.dump_phys.loader_error = None;
-                        }
-                        Err(msg) => self.dump_phys.loader_error = Some(msg),
-                    }
-                }
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysToggleRow(idx)) => {
-                if let Some(slot) = self.dump_phys.selected.get_mut(idx) {
-                    *slot = !*slot;
-                }
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysNext) => match self.dump_phys.step {
-                0 => self.dump_phys.step = 1, // loader → select
-                1 => return self.update(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder)),
-                _ => {}
-            },
-            Message::DumpPhys(DumpPhysMsg::DumpPhysBack) => self.dump_phys.back(),
-            Message::DumpPhys(DumpPhysMsg::DumpPhysClose) => {
-                self.advanced_wizard_open = AdvancedWizardOpen::None;
-                self.dump_phys.reset();
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder) => {
-                // Dump destination — see DumpPartsSelectFolder.
-                return pick_folder_task(
-                    pickers::PickerKind::OutputFolder,
-                    &self.recent_paths,
-                    |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(__v)),
-                );
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(path)) => {
-                if let Some(folder) = path {
-                    let loader =
-                        match self.validate_loader_path(&self.dump_phys.loader_path.clone()) {
-                            Ok(p) => p,
-                            Err(()) => return Task::none(),
-                        };
-                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
-                    self.dump_phys.output_dir = Some(folder.clone());
-                    self.dump_phys.step = 2;
-                    self.begin_op(View::Advanced);
-                    self.error_msg = None;
-                    let conn = self.connection;
-                    let luns = self.dump_phys.selected_luns();
-                    self.log_push(format!(
-                        "[DumpPhys] {}",
-                        self.t("live_dump_phys_batch_start")
-                            .replace("{count}", &luns.len().to_string())
-                            .replace("{path}", &folder)
-                    ));
-                    return task_heavy(
-                        move || dump_physical_execute(conn, loader, folder, luns),
-                        |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
-                        |e| vec![format!("[DumpPhys] {e}")],
-                    );
-                }
-            }
-            Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
+            Message::DumpPhys(m) => return self.update_dump_phys(m),
             // -- Physical Storage: Flash -------------------------------------
-            Message::FlashPhys(FlashPhysMsg::FlashPhysSelectLoader) => {
-                return self.pick_loader_with_default(|__v| {
-                    Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(__v))
-                });
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(path)) => {
-                if let Some(p) = path {
-                    match self.resolve_loader_input(&p) {
-                        Ok(loader) => {
-                            self.flash_phys.loader_path = Some(loader);
-                            self.flash_phys.loader_error = None;
-                        }
-                        Err(msg) => self.flash_phys.loader_error = Some(msg),
-                    }
-                }
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysToggleRow(idx)) => {
-                if let Some(slot) = self.flash_phys.selected.get_mut(idx) {
-                    *slot = !*slot;
-                }
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysPickRowFile(idx)) => {
-                let spec = pickers::FilePickSpec::single("picker_target_storage_image")
-                    .with_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"]);
-                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
-                    Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path))
-                });
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path)) => {
-                if idx < PHYS_LUN_COUNT
-                    && let Some(p) = path
-                {
-                    self.remember_recent(pickers::PickerKind::File, &p);
-                    self.flash_phys.file_paths[idx] = Some(p);
-                    // Picking a file implicitly selects the row.
-                    self.flash_phys.selected[idx] = true;
-                }
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysNext) => match self.flash_phys.step {
-                0 => self.flash_phys.step = 1,
-                1 => self.flash_phys.next(), // → Confirm
-                2 => return self.update(Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart)),
-                _ => {}
-            },
-            Message::FlashPhys(FlashPhysMsg::FlashPhysBack) => self.flash_phys.back(),
-            Message::FlashPhys(FlashPhysMsg::FlashPhysClose) => {
-                self.advanced_wizard_open = AdvancedWizardOpen::None;
-                self.flash_phys.reset();
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart) => {
-                let loader = match self.validate_loader_path(&self.flash_phys.loader_path.clone()) {
-                    Ok(p) => p,
-                    Err(()) => return Task::none(),
-                };
-                self.flash_phys.next(); // advance to Exec screen
-                self.begin_op(View::Advanced);
-                self.error_msg = None;
-                let conn = self.connection;
-                let pairs = self.flash_phys.active_pairs();
-                self.log_lines.push(format!(
-                    "[FlashPhys] {}",
-                    tr_args!("log_flashphys_starting", count = pairs.len())
-                ));
-                return task_heavy(
-                    move || flash_physical_execute(conn, loader, pairs),
-                    |__v| Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(__v)),
-                    |e| vec![format!("[FlashPhys] {e}")],
-                );
-            }
-            Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(lines)) => {
-                self.flush_exec_done_log(lines);
-                self.end_op();
-            }
-            Message::Reboot(RebootMsg::RebootRequest(target)) => {
-                if self.busy {
-                    return Task::none();
-                }
-                if !target.available_from(self.connection) {
-                    self.error_msg = Some(format!(
-                        "{:?} not reachable from {:?}",
-                        target, self.connection
-                    ));
-                    return Task::none();
-                }
-                self.reboot_confirm_target = Some(target);
-            }
-            Message::Reboot(RebootMsg::RebootDismiss) => {
-                self.reboot_confirm_target = None;
-            }
-            Message::Reboot(RebootMsg::RebootConfirm) => {
-                if let Some(t) = self.reboot_confirm_target.take() {
-                    return self.update(Message::Reboot(RebootMsg::RebootTo(t)));
-                }
-            }
-            Message::Reboot(RebootMsg::RebootTo(target)) => {
-                if self.busy {
-                    return Task::none();
-                }
-                let conn = self.connection;
-                if !target.available_from(conn) {
-                    self.error_msg = Some(format!("{:?} not reachable from {:?}", target, conn));
-                    return Task::none();
-                }
-                // EDL needs a Firehose loader before Power(reset).
-                if matches!(conn, ConnectionStatus::Edl) {
-                    return self.pick_loader_with_default(move |path| {
-                        Message::Reboot(RebootMsg::RebootEdlWithLoader(target, path))
-                    });
-                }
-                self.begin_op(View::Reboot);
-                self.error_msg = None;
-                self.log_push(format!(
-                    "[Reboot] {}",
-                    self.t("log_reboot_target_from")
-                        .replace("{target}", self.t(target.label_key()))
-                        .replace("{source}", &format!("{conn:?}")),
-                ));
-                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let mut log = Vec::new();
-                            match (conn, target) {
-                                (ConnectionStatus::Adb | ConnectionStatus::AdbRecovery, t) => {
-                                    let mut adb = ltbox_device::adb::AdbManager::new();
-                                    // `AdbManager::reboot` needs the serial
-                                    // from a prior `check_device` call.
-                                    if !adb.check_device().unwrap_or(false) {
-                                        return Err("No ADB device detected — try replugging the cable".into());
-                                    }
-                                    let arg = match t {
-                                        RebootTarget::System => "",
-                                        RebootTarget::Recovery => "recovery",
-                                        RebootTarget::Bootloader => "bootloader",
-                                        RebootTarget::Edl => "edl",
-                                    };
-                                    if let Err(e) = adb.reboot(arg) {
-                                        return Err(format!("ADB reboot failed: {e}"));
-                                    }
-                                }
-                                (ConnectionStatus::Fastboot, t) => {
-                                    let mut dev = ltbox_device::fastboot::FastbootDevice::open()
-                                        .map_err(|e| format!("Fastboot open: {e}"))?;
-                                    match t {
-                                        RebootTarget::System => {
-                                            dev.reboot().map_err(|e| format!("reboot: {e}"))?;
-                                        }
-                                        RebootTarget::Bootloader => {
-                                            dev.reboot_bootloader().map_err(|e| format!("reboot-bootloader: {e}"))?;
-                                        }
-                                        RebootTarget::Edl => {
-                                            drop(dev);
-                                            ensure_edl(ConnectionStatus::Fastboot, "Reboot", &mut log)
-                                                .map_err(|()| "Could not transition device to EDL".to_string())?;
-                                        }
-                                        RebootTarget::Recovery => {
-                                            return Err("Fastboot cannot reboot to recovery directly — switch to ADB first".into());
-                                        }
-                                    }
-                                }
-                                (ConnectionStatus::Edl, _) => {
-                                    // RebootTo routes EDL through
-                                    // RebootEdlWithLoader, never here.
-                                    unreachable!("EDL reboot goes through RebootEdlWithLoader");
-                                }
-                                (ConnectionStatus::None, _) => {
-                                    return Err("No device connected".into());
-                                }
-                                (ConnectionStatus::AdbUnauthorized, _) => {
-                                    return Err(
-                                        "USB debugging is not authorized on the device".into(),
-                                    );
-                                }
-                            }
-                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
-                            Ok(log)
-                        })
-                        .await
-                        .unwrap_or_else(|_| Err("Task failed".to_string()))
-                    },
-                    |r| match r {
-                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Reboot(RebootMsg::RebootEdlWithLoader(target, path)) => {
-                let Some(loader_input) = path else {
-                    self.log_push(format!(
-                        "[Reboot] {}",
-                        self.t("log_reboot_cancelled_no_loader")
-                    ));
-                    return Task::none();
-                };
-                // Accept direct loader files. Legacy folder paths from
-                // older recents remain supported via resolve_loader_input.
-                let loader = match self.resolve_loader_input(&loader_input) {
-                    Ok(p) => std::path::PathBuf::from(p),
-                    Err(msg) => {
-                        self.error_msg = Some(msg);
-                        return Task::none();
-                    }
-                };
-                if !loader.exists() {
-                    self.error_msg = Some(format!("Loader not found: {}", loader.display()));
-                    return Task::none();
-                }
-                self.begin_op(View::Reboot);
-                self.error_msg = None;
-                self.log_push(format!(
-                    "[Reboot] {}",
-                    self.t("log_reboot_target_from_edl")
-                        .replace("{target}", self.t(target.label_key()))
-                        .replace("{loader}", &loader.display().to_string()),
-                ));
-                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let mut log = Vec::new();
-                            // `auto_reset=false` — reset is triggered explicitly below.
-                            let mut session =
-                                ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
-                                    .map_err(|e| format!("EDL session open: {e}"))?;
-                            match target {
-                                RebootTarget::System => {
-                                    session.reset_tolerant(&mut log);
-                                }
-                                RebootTarget::Edl => {
-                                    session
-                                        .reset_to_edl(&mut log)
-                                        .map_err(|e| format!("reset_to_edl: {e}"))?;
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "Reboot to {other:?} is not supported from EDL"
-                                    ));
-                                }
-                            }
-                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
-                            Ok(log)
-                        })
-                        .await
-                        .unwrap_or_else(|_| Err("Task failed".to_string()))
-                    },
-                    |r| match r {
-                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-            }
-            Message::Reboot(RebootMsg::RebootDone(lines)) => {
-                self.end_op();
-                self.flush_exec_done_log(lines);
-            }
+            Message::FlashPhys(m) => return self.update_flash_phys(m),
+            Message::Reboot(m) => return self.update_reboot(m),
             Message::InstallDriversDone(result) => {
                 self.installing_drivers = false;
                 // Drain any lines still pending in the sink/tap so the
@@ -15977,6 +11668,4628 @@ impl App {
         .spacing(14)
         .width(Length::Fill)
         .into()
+    }
+
+    /// Dispatch for `Message::Reboot(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_reboot(&mut self, msg: RebootMsg) -> Task<Message> {
+        match msg {
+            RebootMsg::RebootRequest(target) => {
+                if self.busy {
+                    return Task::none();
+                }
+                if !target.available_from(self.connection) {
+                    self.error_msg = Some(format!(
+                        "{:?} not reachable from {:?}",
+                        target, self.connection
+                    ));
+                    return Task::none();
+                }
+                self.reboot_confirm_target = Some(target);
+                Task::none()
+            }
+            RebootMsg::RebootDismiss => {
+                self.reboot_confirm_target = None;
+                Task::none()
+            }
+            RebootMsg::RebootConfirm => {
+                if let Some(t) = self.reboot_confirm_target.take() {
+                    return self.update(Message::Reboot(RebootMsg::RebootTo(t)));
+                }
+                Task::none()
+            }
+            RebootMsg::RebootTo(target) => {
+                if self.busy {
+                    return Task::none();
+                }
+                let conn = self.connection;
+                if !target.available_from(conn) {
+                    self.error_msg = Some(format!("{:?} not reachable from {:?}", target, conn));
+                    return Task::none();
+                }
+                // EDL needs a Firehose loader before Power(reset).
+                if matches!(conn, ConnectionStatus::Edl) {
+                    return self.pick_loader_with_default(move |path| {
+                        Message::Reboot(RebootMsg::RebootEdlWithLoader(target, path))
+                    });
+                }
+                self.begin_op(View::Reboot);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Reboot] {}",
+                    self.t("log_reboot_target_from")
+                        .replace("{target}", self.t(target.label_key()))
+                        .replace("{source}", &format!("{conn:?}")),
+                ));
+                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                                            let mut log = Vec::new();
+                                            match (conn, target) {
+                                                (ConnectionStatus::Adb | ConnectionStatus::AdbRecovery, t) => {
+                                                    let mut adb = ltbox_device::adb::AdbManager::new();
+                                                    // `AdbManager::reboot` needs the serial
+                                                    // from a prior `check_device` call.
+                                                    if !adb.check_device().unwrap_or(false) {
+                                                        return Err("No ADB device detected — try replugging the cable".into());
+                                                    }
+                                                    let arg = match t {
+                                                        RebootTarget::System => "",
+                                                        RebootTarget::Recovery => "recovery",
+                                                        RebootTarget::Bootloader => "bootloader",
+                                                        RebootTarget::Edl => "edl",
+                                                    };
+                                                    if let Err(e) = adb.reboot(arg) {
+                                                        return Err(format!("ADB reboot failed: {e}"));
+                                                    }
+                                                }
+                                                (ConnectionStatus::Fastboot, t) => {
+                                                    let mut dev = ltbox_device::fastboot::FastbootDevice::open()
+                                                        .map_err(|e| format!("Fastboot open: {e}"))?;
+                                                    match t {
+                                                        RebootTarget::System => {
+                                                            dev.reboot().map_err(|e| format!("reboot: {e}"))?;
+                                                        }
+                                                        RebootTarget::Bootloader => {
+                                                            dev.reboot_bootloader().map_err(|e| format!("reboot-bootloader: {e}"))?;
+                                                        }
+                                                        RebootTarget::Edl => {
+                                                            drop(dev);
+                                                            ensure_edl(ConnectionStatus::Fastboot, "Reboot", &mut log)
+                                                                .map_err(|()| "Could not transition device to EDL".to_string())?;
+                                                        }
+                                                        RebootTarget::Recovery => {
+                                                            return Err("Fastboot cannot reboot to recovery directly — switch to ADB first".into());
+                                                        }
+                                                    }
+                                                }
+                                                (ConnectionStatus::Edl, _) => {
+                                                    // RebootTo routes EDL through
+                                                    // RebootEdlWithLoader, never here.
+                                                    unreachable!("EDL reboot goes through RebootEdlWithLoader");
+                                                }
+                                                (ConnectionStatus::None, _) => {
+                                                    return Err("No device connected".into());
+                                                }
+                                                (ConnectionStatus::AdbUnauthorized, _) => {
+                                                    return Err(
+                                                        "USB debugging is not authorized on the device".into(),
+                                                    );
+                                                }
+                                            }
+                                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
+                                            Ok(log)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|_| Err("Task failed".to_string()))
+                    },
+                    |r| match r {
+                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            RebootMsg::RebootEdlWithLoader(target, path) => {
+                let Some(loader_input) = path else {
+                    self.log_push(format!(
+                        "[Reboot] {}",
+                        self.t("log_reboot_cancelled_no_loader")
+                    ));
+                    return Task::none();
+                };
+                // Accept direct loader files. Legacy folder paths from
+                // older recents remain supported via resolve_loader_input.
+                let loader = match self.resolve_loader_input(&loader_input) {
+                    Ok(p) => std::path::PathBuf::from(p),
+                    Err(msg) => {
+                        self.error_msg = Some(msg);
+                        return Task::none();
+                    }
+                };
+                if !loader.exists() {
+                    self.error_msg = Some(format!("Loader not found: {}", loader.display()));
+                    return Task::none();
+                }
+                self.begin_op(View::Reboot);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Reboot] {}",
+                    self.t("log_reboot_target_from_edl")
+                        .replace("{target}", self.t(target.label_key()))
+                        .replace("{loader}", &loader.display().to_string()),
+                ));
+                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let mut log = Vec::new();
+                            // `auto_reset=false` — reset is triggered explicitly below.
+                            let mut session =
+                                ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
+                                    .map_err(|e| format!("EDL session open: {e}"))?;
+                            match target {
+                                RebootTarget::System => {
+                                    session.reset_tolerant(&mut log);
+                                }
+                                RebootTarget::Edl => {
+                                    session
+                                        .reset_to_edl(&mut log)
+                                        .map_err(|e| format!("reset_to_edl: {e}"))?;
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "Reboot to {other:?} is not supported from EDL"
+                                    ));
+                                }
+                            }
+                            ltbox_core::live!(log, "[Reboot] {}", reboot_cmd_sent);
+                            Ok(log)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("Task failed".to_string()))
+                    },
+                    |r| match r {
+                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            RebootMsg::RebootDone(lines) => {
+                self.end_op();
+                self.flush_exec_done_log(lines);
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::Unroot(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_unroot(&mut self, msg: UnrootMsg) -> Task<Message> {
+        match msg {
+            UnrootMsg::SetUnrootType(t) => {
+                self.unroot.unroot_type = Some(t);
+                Task::none()
+            }
+            UnrootMsg::UnrootSelectFolder => {
+                self.picker_target = PickerTarget::UnrootFolder;
+                return pick_folder_task(
+                    pickers::PickerKind::QfilFirmwareFolder,
+                    &self.recent_paths,
+                    Message::FolderSelected,
+                );
+                Task::none()
+            }
+            UnrootMsg::UnrootSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::Unroot(UnrootMsg::UnrootLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            UnrootMsg::UnrootLoaderChosen(path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.unroot.loader_path = Some(p);
+                }
+                Task::none()
+            }
+            UnrootMsg::UnrootNext => {
+                if self.unroot.step == 2 {
+                    self.unroot.next();
+                    return self.update(Message::Unroot(UnrootMsg::UnrootExecStart));
+                }
+                self.unroot.next();
+                Task::none()
+            }
+            UnrootMsg::UnrootBack => {
+                self.unroot.back();
+                Task::none()
+            }
+            UnrootMsg::UnrootExecStart => {
+                let Some(unroot_type) = self.unroot.unroot_type else {
+                    return Task::none();
+                };
+                let Some(folder) = self.unroot.folder_path.clone() else {
+                    return Task::none();
+                };
+                let conn = self.connection;
+                // Loader is decoupled from the backup folder — `folder`
+                // holds boot.img + vbmeta.img, the loader can live
+                // anywhere (Settings default, or whatever the user
+                // pointed the loader picker at). `validate_loader_path`
+                // surfaces a missing-file error before the device-side
+                // work starts, matching the other wizards' behaviour.
+                let loader_override =
+                    match self.validate_loader_path(&self.unroot.loader_path.clone()) {
+                        Ok(p) => Some(p),
+                        Err(()) => return Task::none(),
+                    };
+                self.begin_op(View::Unroot);
+                self.op_steps = self.derive_unroot_op_steps();
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[Unroot] {}",
+                    self.t("log_op_starting")
+                        .replace("{what}", self.t(unroot_type.label_key()))
+                ));
+                let ll = self.live_labels();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(
+                                move || -> Result<Vec<String>, String> {
+                                    let mut log = Vec::new();
+                                    let dir = std::path::Path::new(&folder);
+
+                                    let (boot_name, base_part) = match unroot_type {
+                                        UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
+                                        UnrootType::APatchGki => ("boot.img", "boot"),
+                                    };
+                                    let boot_path = dir.join(boot_name);
+                                    let vbmeta_path = dir.join("vbmeta.img");
+                                    if !boot_path.exists() {
+                                        return Err(format!(
+                                            "{boot_name} not found in selected folder"
+                                        ));
+                                    }
+                                    if !vbmeta_path.exists() {
+                                        return Err(
+                                            "vbmeta.img not found in selected folder".to_string()
+                                        );
+                                    }
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
+                                            .replace("{boot}", boot_name)
+                                    );
+
+                                    // Slot resolution must succeed —
+                                    // unroot writes init_boot_<slot> +
+                                    // vbmeta_<slot> from the user's
+                                    // backup folder. Defaulting to `_a`
+                                    // when the device was on `_b`
+                                    // restored stale stock blobs to the
+                                    // wrong slot and left the active
+                                    // slot still rooted, with no clear
+                                    // signal to the user.
+                                    let slot = ltbox_device::controller::poll_active_slot(
+                                        std::time::Duration::from_secs(30),
+                                        &mut log,
+                                    )
+                                    .map_err(|e| format!("Unroot slot resolve: {e}"))?;
+
+                                    // Decoupled loader — explicit picker /
+                                    // Settings default takes priority. Fall back
+                                    // to scanning the backup folder only when no
+                                    // override was set, preserving v3-pre-decouple
+                                    // behaviour for users who still ship a loader
+                                    // alongside the backup images.
+                                    let loader = match loader_override.clone() {
+                                        Some(p) => std::path::PathBuf::from(p),
+                                        None => find_edl_loader(dir)
+                                            .or_else(|| dir.parent().and_then(find_edl_loader))
+                                            .ok_or_else(|| {
+                                                format!(
+                                                    "xbl_s_devprg_ns.melf not found under {}",
+                                                    dir.display()
+                                                )
+                                            })?,
+                                    };
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        ltbox_core::i18n::tr("live_unroot_loader_path")
+                                            .replace("{path}", &loader.display().to_string())
+                                    );
+
+                                    // Boot + vbmeta resolve through the
+                                    // hardcoded LUN map; GPT-by-name reads
+                                    // the slot's start sector from the
+                                    // device. No rawprogram parse needed —
+                                    // the loader's parent dir may not even
+                                    // contain a firmware XML pair.
+                                    let boot_label = format!("{base_part}{slot}");
+                                    let vbm_label = format!("vbmeta{slot}");
+                                    let boot_lun =
+                                        ltbox_core::partition_lun::lun_for_partition(base_part)
+                                            .ok_or_else(|| {
+                                                format!("No hardcoded LUN for {base_part}")
+                                            })?;
+                                    let vbm_lun =
+                                        ltbox_core::partition_lun::lun_for_partition("vbmeta")
+                                            .ok_or_else(|| {
+                                                "No hardcoded LUN for vbmeta".to_string()
+                                            })?;
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        tr_args!(
+                                            "log_unroot_lun_resolved",
+                                            boot_label = boot_label,
+                                            boot_lun = boot_lun,
+                                            vbm_label = vbm_label,
+                                            vbm_lun = vbm_lun,
+                                        )
+                                    );
+
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        phase_marker(1, 3, &ll.op_unroot_phase[0])
+                                    );
+                                    transition_to_edl(conn, &ll, &mut log)?;
+
+                                    live!(
+                                        log,
+                                        "[Unroot] {} ({})",
+                                        phase_marker(2, 3, &ll.op_unroot_phase[1]),
+                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
+                                            .replace("{boot}", boot_name)
+                                    );
+                                    let mut session = ltbox_device::edl::EdlSession::open(
+                                        &loader, true, &mut log,
+                                    )
+                                    .map_err(|e| format!("EDL session error: {e}"))?;
+                                    session
+                                        .flash_partition(
+                                            &boot_label,
+                                            &boot_path,
+                                            0,
+                                            boot_lun,
+                                            &mut log,
+                                        )
+                                        .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
+                                    session
+                                        .flash_partition(
+                                            &vbm_label,
+                                            &vbmeta_path,
+                                            0,
+                                            vbm_lun,
+                                            &mut log,
+                                        )
+                                        .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
+
+                                    println!();
+                                    live!(
+                                        log,
+                                        "[Unroot] {}",
+                                        phase_marker(3, 3, &ll.op_unroot_phase[2])
+                                    );
+                                    session
+                                        .reset(&mut log)
+                                        .map_err(|e| format!("Reset failed: {e}"))?;
+                                    live!(log, "[Unroot] {}", ll.unroot_completed);
+                                    Ok(log)
+                                },
+                            )
+                            .and_then(|r| r)
+                        })
+                        .await
+                        .unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::Unroot(UnrootMsg::UnrootExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            UnrootMsg::UnrootExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::Sys(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_sys(&mut self, msg: SysMsg) -> Task<Message> {
+        match msg {
+            SysMsg::SysAction(a) => {
+                // Switching action resets Rescue-specific state so a stale
+                // folder/region can't leak into a fresh flow.
+                self.sysupdate.action = Some(a);
+                self.sysupdate.rescue_folder = None;
+                self.sysupdate.rescue_region = None;
+                self.sysupdate.rescue_region_popup_open = false;
+                self.sysupdate.rescue_region_confirmed = false;
+                Task::none()
+            }
+            SysMsg::SysNext => {
+                // Rescue flow: Action(0) → Folder(1) → Confirm(2) → Exec(3).
+                // Gate: popping the region popup between Folder and Confirm.
+                if self.sysupdate.is_rescue() {
+                    if self.sysupdate.step == 1 && !self.sysupdate.rescue_region_confirmed {
+                        // Pre-select rescue region from the polled
+                        // device's PTSTPD `SaleArea` when we have it,
+                        // mirroring how Flash seeds `device_region`
+                        // from `inferred_flash_region`. The popup
+                        // still opens — users get to see/confirm —
+                        // but the matching radio is checked on entry
+                        // so a CN device doesn't force a blind pick.
+                        if self.sysupdate.rescue_region.is_none()
+                            && let Some(inferred) = self.inferred_flash_region()
+                        {
+                            self.sysupdate.rescue_region = Some(match inferred {
+                                DeviceRegion::Prc => RescueRegion::Prc,
+                                DeviceRegion::Row => RescueRegion::Row,
+                            });
+                        }
+                        self.sysupdate.rescue_region_popup_open = true;
+                        return Task::none();
+                    }
+                    if self.sysupdate.step == 2 {
+                        self.sysupdate.next();
+                        return self.update(Message::Sys(SysMsg::SysExecStart));
+                    }
+                    self.sysupdate.next();
+                } else {
+                    // Disable/Enable: Action(0) → Confirm(1) → Exec(2).
+                    if self.sysupdate.step == 1 {
+                        self.sysupdate.next();
+                        return self.update(Message::Sys(SysMsg::SysExecStart));
+                    }
+                    self.sysupdate.next();
+                }
+                Task::none()
+            }
+            SysMsg::SysBack => {
+                self.sysupdate.back();
+                Task::none()
+            }
+            SysMsg::SysRescueSelectFolder => {
+                // Rescue dump+flash resolves vendor_boot / vbmeta against
+                // the device's on-storage GPT (LUN 0), so the wizard only
+                // needs the EDL loader binary — `rawprogram*.xml` was
+                // never read in this path. File picker with the standard
+                // loader extension filter, recents shared with the rest
+                // of the loader pickers via the File bucket.
+                return self.pick_loader_with_default(|__v| {
+                    Message::Sys(SysMsg::SysRescueFolderChosen(__v))
+                });
+                Task::none()
+            }
+            SysMsg::SysRescueFolderChosen(path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.sysupdate.rescue_folder = Some(p);
+                    // Force re-pick of region when loader changes — a stale
+                    // region from a prior firmware could target the wrong
+                    // hardware.
+                    self.sysupdate.rescue_region = None;
+                    self.sysupdate.rescue_region_confirmed = false;
+                }
+                Task::none()
+            }
+            SysMsg::SysRescueRegion(r) => {
+                self.sysupdate.rescue_region = Some(r);
+                self.sysupdate.rescue_region_confirmed = true;
+                self.sysupdate.rescue_region_popup_open = false;
+                // Auto-advance out of Folder step into Confirm — picking
+                // the region is the implicit "Next" of the popup.
+                if self.sysupdate.step == 1 {
+                    self.sysupdate.next();
+                }
+                Task::none()
+            }
+            SysMsg::SysRescueRegionPopupDismiss => {
+                self.sysupdate.rescue_region_popup_open = false;
+                Task::none()
+            }
+            SysMsg::SysExecStart => {
+                let Some(action) = self.sysupdate.action else {
+                    return Task::none();
+                };
+                // Rescue captures folder + region into the blocking task.
+                // Cloning here keeps `self` untouched while the async move
+                // takes ownership.
+                let rescue_folder = self.sysupdate.rescue_folder.clone();
+                let rescue_region = self.sysupdate.rescue_region;
+                if action == SysUpdateAction::Rescue
+                    && self.validate_loader_path(&rescue_folder).is_err()
+                {
+                    return Task::none();
+                }
+                // Capture model for AVB fingerprint validation — prevents
+                // flashing firmware built for other models.
+                let device_model = self.device_model.clone();
+                let conn = self.connection;
+                let ll = self.live_labels();
+                self.begin_op(View::SystemUpdate);
+                self.error_msg = None;
+                self.log_push(format!(
+                    "[SysUpdate] {}",
+                    tr_args!(
+                        "log_sysupdate_starting",
+                        action = self.t(action.label_key())
+                    )
+                ));
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                                            let mut log = Vec::new();
+                                            // Disable/Enable need a running Android shell;
+                                            // Rescue needs EDL. The previous flow assumed
+                                            // ADB at start and bailed otherwise — so a
+                                            // device sitting in Fastboot or EDL hard-failed
+                                            // even though both modes are recoverable. Bridge
+                                            // here:
+                                            //   * Disable/Enable: from Fastboot, `fastboot
+                                            //     continue` and wait for ADB; from EDL we
+                                            //     have no automatic system-boot path so the
+                                            //     user must reboot manually.
+                                            //   * Rescue: hand off to `transition_to_edl`,
+                                            //     which already handles all three source
+                                            //     modes via `ensure_edl`.
+                                            if action != SysUpdateAction::Rescue
+                                                && matches!(conn, ConnectionStatus::Fastboot)
+                                            {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[SysUpdate] {}",
+                                                    ltbox_core::i18n::tr("live_sysupdate_fastboot_to_adb")
+                                                );
+                                                if let Ok(mut dev) =
+                                                    ltbox_device::fastboot::FastbootDevice::open()
+                                                {
+                                                    let _ = dev.reboot();
+                                                }
+                                            }
+                                            let mut adb = ltbox_device::adb::AdbManager::new();
+                                            // Disable/Enable need ADB. Wait up to 120 s
+                                            // (matches `AdbManager::wait_for_device`'s
+                                            // internal cap) so a fastboot→system reboot
+                                            // has time to land before we surface a hard
+                                            // failure. Rescue skips this — its own bridge
+                                            // below routes to EDL, where ADB isn't needed.
+                                            if action != SysUpdateAction::Rescue {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ADB] {}",
+                                                    ltbox_core::i18n::tr("live_adb_checking_device")
+                                                );
+                                                if !adb.check_device().unwrap_or(false) {
+                                                    if matches!(conn, ConnectionStatus::Fastboot) {
+                                                        if let Err(e) = adb.wait_for_device() {
+                                                            return Err(ltbox_core::i18n::tr(
+                                                                "err_sysupdate_no_adb",
+                                                            )
+                                                            .replace("{error}", &e.to_string()));
+                                                        }
+                                                    } else {
+                                                        return Err(ltbox_core::i18n::tr(
+                                                            "err_sysupdate_no_adb",
+                                                        )
+                                                        .replace("{error}", "device not in ADB"));
+                                                    }
+                                                }
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ADB] {}",
+                                                    ltbox_core::i18n::tr("live_adb_device_connected")
+                                                );
+                                            }
+                                            let packages = [
+                                                "com.lenovo.ota",
+                                                "com.tblenovo.lenovowhatsnew",
+                                                "com.lenovo.tbengine",
+                                            ];
+                                            match action {
+                                                SysUpdateAction::Disable => {
+                                                    // Command echoes (`$ settings put …` / `$ pm clear …`)
+                                                    // were noise — the user only needs to see the outcome
+                                                    // (Uninstalled / Reinstalled / failure). Suppressed.
+                                                    adb.shell("settings put global ota_disable_automatic_update 1")
+                                                        .map_err(|e| e.to_string())?;
+                                                    adb.shell("settings put secure lenovo_ota_new_version_found 0")
+                                                        .map_err(|e| e.to_string())?;
+
+                                                    for pkg in &packages {
+                                                        let _ = adb.shell(&format!("pm clear {pkg}"));
+
+                                                        match adb.shell(&format!("pm uninstall -k --user 0 {pkg}")) {
+                                                            Ok(out) if out.contains("Success") => ltbox_core::live!(
+                                                                log,
+                                                                "[ADB] {}",
+                                                                ltbox_core::i18n::tr("live_adb_uninstalled")
+                                                                    .replace("{package}", pkg)
+                                                            ),
+                                                            Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
+                                                            Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
+                                                        }
+                                                    }
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[SysUpdate] {}",
+                                                        ltbox_core::i18n::tr("live_sysupdate_disabled")
+                                                    );
+                                                    Ok(log)
+                                                }
+                                                SysUpdateAction::Enable => {
+                                                    // Command echoes suppressed — same rationale as Disable.
+                                                    adb.shell("settings put global ota_disable_automatic_update 0")
+                                                        .map_err(|e| e.to_string())?;
+
+                                                    for pkg in &packages {
+                                                        match adb.shell(&format!("cmd package install-existing {pkg}")) {
+                                                            Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(
+                                                                log,
+                                                                "[ADB] {}",
+                                                                ltbox_core::i18n::tr("live_adb_reinstalled")
+                                                                    .replace("{package}", pkg)
+                                                            ),
+                                                            Ok(out) => ltbox_core::live!(log, "[ADB] {pkg}: {out}"),
+                                                            Err(e) => ltbox_core::live!(log, "[ADB] {pkg}: {e}"),
+                                                        }
+                                                    }
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[SysUpdate] {}",
+                                                        ltbox_core::i18n::tr("live_sysupdate_enabled")
+                                                    );
+                                                    Ok(log)
+                                                }
+                                                SysUpdateAction::Rescue => {
+                                                    // Precondition: loader file + region
+                                                    // picked in the wizard.
+                                                    let Some(loader_path) = rescue_folder else {
+                                                        return Err(
+                                                            "Boot Recovery: EDL loader not selected".into(),
+                                                        );
+                                                    };
+                                                    let Some(region) = rescue_region else {
+                                                        return Err(
+                                                            "Boot Recovery: target region (PRC/ROW) not selected".into(),
+                                                        );
+                                                    };
+                                                    let loader = std::path::PathBuf::from(&loader_path);
+                                                    if !loader.is_file() {
+                                                        return Err(format!(
+                                                            "Boot Recovery: loader does not exist: {}",
+                                                            loader.display()
+                                                        ));
+                                                    }
+                                                    // User spec: extension-only check —
+                                                    // accept `.melf` / `.mbn` / `.elf`
+                                                    // single-blob loaders OR `.xml`
+                                                    // (TB323FU multi-image manifest)
+                                                    // regardless of filename.
+                                                    let ext_ok = loader
+                                                        .extension()
+                                                        .and_then(|e| e.to_str())
+                                                        .is_some_and(|e| {
+                                                            let l = e.to_ascii_lowercase();
+                                                            l == "melf" || l == "mbn" || l == "elf" || l == "xml"
+                                                        });
+                                                    if !ext_ok {
+                                                        return Err(format!(
+                                                            "Boot Recovery: loader must be .melf / .mbn / .elf / .xml, got: {}",
+                                                            loader.display()
+                                                        ));
+                                                    }
+                                                    let loader_dir = loader
+                                                        .parent()
+                                                        .map(std::path::Path::to_path_buf)
+                                                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_loader")
+                                                            .replace("{path}", &loader.display().to_string())
+                                                    );
+                                                    ltbox_core::live!(log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_target_region")
+                                                            .replace("{target}", match region {
+                                                                RescueRegion::Prc => "PRC",
+                                                                RescueRegion::Row => "ROW",
+                                                            })
+                                                    );
+
+                                                    // Stage dumps + patched outputs in a
+                                                    // timestamped temp dir next to the
+                                                    // loader so the user's loader directory
+                                                    // doesn't get cluttered with rescue
+                                                    // intermediates.
+                                                    let ts = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .map(|d| d.as_secs())
+                                                        .unwrap_or(0);
+                                                    let work_dir = loader_dir.join(format!("rescue_{ts}"));
+                                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+                                                        return Err(format!("create work dir: {e}"));
+                                                    }
+                                                    ltbox_core::live!(log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_work_dir")
+                                                            .replace("{path}", &work_dir.display().to_string())
+                                                    );
+
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_transitioning")
+                                                    );
+                                                    // Use the shared `transition_to_edl`
+                                                    // helper so Rescue handles every
+                                                    // source mode (ADB / Fastboot / EDL)
+                                                    // the same way Flash / Root / Unroot
+                                                    // already do — the previous
+                                                    // `adb.reboot("edl")` + 5 s sleep
+                                                    // sequence assumed ADB and silently
+                                                    // ignored the reboot result, so a
+                                                    // device already in Fastboot or EDL
+                                                    // hard-failed at the earlier ADB
+                                                    // check even though the operation is
+                                                    // perfectly recoverable from those
+                                                    // modes.
+                                                    transition_to_edl(conn, &ll, &mut log)?;
+
+                                                    let mut session = ltbox_device::edl::EdlSession::open(
+                                                        &loader, true, &mut log,
+                                                    )
+                                                    .map_err(|e| format!("EDL open: {e}"))?;
+
+                                                    // vendor_boot + vbmeta land on LUN 0
+                                                    // for supported models. GPT-by-name
+                                                    // resolves sector geometry, no
+                                                    // rawprogram*.xml needed.
+                                                    const RESCUE_PARTITIONS_LUN: u8 = 0;
+                                                    let slots = ["a", "b"];
+                                                    let mut dumped: Vec<(String, String, std::path::PathBuf)> =
+                                                        Vec::new();
+                                                    for slot in &slots {
+                                                        for base in &["vendor_boot", "vbmeta"] {
+                                                            let part_name = format!("{base}_{slot}");
+                                                            let out =
+                                                                work_dir.join(format!("{part_name}.img"));
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_dumping")
+                                                                    .replace("{name}", &part_name)
+                                                            );
+                                                            if let Err(e) = session.dump_partition(
+                                                                &part_name, &out, 0, RESCUE_PARTITIONS_LUN, &mut log,
+                                                            ) {
+                                                                ltbox_core::live!(log,
+                                                                    "[Rescue] {}",
+                                                                    ltbox_core::i18n::tr("live_rescue_skip_dump")
+                                                                        .replace("{name}", &part_name)
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                                continue;
+                                                            }
+                                                            dumped.push((
+                                                                (*base).to_string(),
+                                                                (*slot).to_string(),
+                                                                out,
+                                                            ));
+                                                        }
+                                                    }
+
+                                                    if dumped.is_empty() {
+                                                        return Err(
+                                                            "Boot Recovery: no partitions dumped — aborting"
+                                                                .into(),
+                                                        );
+                                                    }
+
+                                                    // Cross-check firmware against device
+                                                    // model via AVB vendor_boot fingerprint —
+                                                    // aborts the whole rescue if the dumped
+                                                    // image was built for another model. Uses
+                                                    // the first available vendor_boot dump;
+                                                    // slot A/B carry the same fingerprint.
+                                                    if let Some(vb_probe) = dumped
+                                                        .iter()
+                                                        .find(|(b, _, _)| b == "vendor_boot")
+                                                    {
+                                                        match ltbox_patch::avb::extract_image_avb_info(
+                                                            &vb_probe.2,
+                                                        ) {
+                                                            Ok(info) => {
+                                                                use ltbox_patch::region::{
+                                                                    validate_device_model, ModelValidation,
+                                                                };
+                                                                match validate_device_model(
+                                                                    &info,
+                                                                    &device_model,
+                                                                ) {
+                                                                    ModelValidation::Match { fingerprint } => {
+                                                                        ltbox_core::live!(log,
+                                                                            "[Rescue] {}",
+                                                                            ltbox_core::i18n::tr("live_rescue_model_check_ok")
+                                                                                .replace("{fingerprint}", &fingerprint)
+                                                                        );
+                                                                    }
+                                                                    ModelValidation::Missing => {
+                                                                        ltbox_core::live!(
+                                                                            log,
+                                                                            "[Rescue] {}",
+                                                                            ltbox_core::i18n::tr("live_rescue_no_fingerprint_skip")
+                                                                        );
+                                                                    }
+                                                                    ModelValidation::Mismatch {
+                                                                        fingerprint,
+                                                                        device_model,
+                                                                    } => {
+                                                                        ltbox_core::live!(log,
+                                                                            "[Rescue] {}",
+                                                                            ltbox_core::i18n::tr("live_rescue_model_mismatch_abort")
+                                                                                .replace("{device}", &device_model)
+                                                                                .replace("{fingerprint}", &fingerprint)
+                                                                        );
+                                                                        session.reset_tolerant(&mut log);
+                                                                        return Err(
+                                                                            "Boot Recovery: firmware/device model mismatch".into(),
+                                                                        );
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                ltbox_core::live!(log,
+                                                                    "[Rescue] {}",
+                                                                    ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Patch vendor_boot per region, rebuild
+                                                    // footer, rebuild vbmeta chain per slot.
+                                                    let target = region.to_target();
+                                                    let prc_dot = vec![0x2E, 0x50, 0x52, 0x43]; // ".PRC"
+                                                    let prc_i = vec![0x49, 0x50, 0x52, 0x43]; // "IPRC"
+                                                    let row_dot = vec![0x2E, 0x52, 0x4F, 0x57]; // ".ROW"
+                                                    let row_i = vec![0x49, 0x52, 0x4F, 0x57]; // "IROW"
+                                                    let prc_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                                        (prc_dot.clone(), row_dot.clone()),
+                                                        (prc_i.clone(), row_i.clone()),
+                                                    ];
+                                                    let row_patterns: Vec<(Vec<u8>, Vec<u8>)> = vec![
+                                                        (row_dot.clone(), prc_dot.clone()),
+                                                        (row_i.clone(), prc_i.clone()),
+                                                    ];
+
+                                                    let mut flash_plan: Vec<(String, std::path::PathBuf)> =
+                                                        Vec::new();
+                                                    for slot in &slots {
+                                                        let vb_src = dumped.iter().find(|(b, s, _)| {
+                                                            b == "vendor_boot" && s == slot
+                                                        });
+                                                        let vbm_src = dumped.iter().find(|(b, s, _)| {
+                                                            b == "vbmeta" && s == slot
+                                                        });
+                                                        let (Some(vb_src), Some(vbm_src)) = (vb_src, vbm_src)
+                                                        else {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_slot_missing_dump")
+                                                                    .replace("{slot}", slot)
+                                                            );
+                                                            continue;
+                                                        };
+
+                                                        let vb_patched = work_dir
+                                                            .join(format!("vendor_boot_{slot}.patched.img"));
+                                                        ltbox_core::live!(log,
+                                                            "[Rescue] {}",
+                                                            ltbox_core::i18n::tr("live_rescue_patching_vendor_boot")
+                                                                .replace("{slot}", slot)
+                                                                .replace("{target}", match region {
+                                                                    RescueRegion::Prc => "PRC",
+                                                                    RescueRegion::Row => "ROW",
+                                                                })
+                                                        );
+                                                        let n = match ltbox_patch::region::patch_vendor_boot(
+                                                            &vb_src.2,
+                                                            &vb_patched,
+                                                            target,
+                                                            &prc_patterns,
+                                                            &row_patterns,
+                                                        ) {
+                                                            Ok(n) => n,
+                                                            Err(e) => {
+                                                                ltbox_core::live!(log,
+                                                                    "[Rescue] {}",
+                                                                    ltbox_core::i18n::tr("live_rescue_region_patch_failed")
+                                                                        .replace("{slot}", slot)
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                                continue;
+                                                            }
+                                                        };
+                                                        if n == 0 {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_no_region_bytes_changed")
+                                                                    .replace("{slot}", slot)
+                                                            );
+                                                        } else {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_occurrences_patched")
+                                                                    .replace("{slot}", slot)
+                                                                    .replace("{count}", &n.to_string())
+                                                            );
+                                                        }
+
+                                                        // Rebuild AVB hash footer on the
+                                                        // patched vendor_boot using metadata
+                                                        // from the original.
+                                                        let vb_info =
+                                                            match ltbox_patch::avb::extract_image_avb_info(
+                                                                &vb_src.2,
+                                                            ) {
+                                                                Ok(i) => i,
+                                                                Err(e) => {
+                                                                    ltbox_core::live!(log,
+                                                                        "[Rescue] {}",
+                                                                        ltbox_core::i18n::tr("live_rescue_vendor_boot_avb_failed")
+                                                                            .replace("{slot}", slot)
+                                                                            .replace("{error}", &e.to_string())
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                            };
+                                                        // Only the two stock testkeys embedded in
+                                                        // avbtool-rs are supported.
+                                                        let vb_key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
+                                                            vb_info.public_key_sha1.as_deref(),
+                                                        );
+                                                        if let Err(e) = ltbox_patch::avb::add_hash_footer(
+                                                            &vb_patched,
+                                                            &vb_info,
+                                                            vb_key_spec,
+                                                            None,
+                                                        ) {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_add_hash_footer_failed")
+                                                                    .replace("{slot}", slot)
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                            continue;
+                                                        }
+
+                                                        // Rebuild vbmeta chained to the
+                                                        // patched vendor_boot. Key fallback:
+                                                        // algorithm comes from the original
+                                                        // vbmeta header.
+                                                        let vbm_info =
+                                                            match ltbox_patch::avb::extract_image_avb_info(
+                                                                &vbm_src.2,
+                                                            ) {
+                                                                Ok(i) => i,
+                                                                Err(e) => {
+                                                                    ltbox_core::live!(
+                                                                        log,
+                                                                        "[Rescue] {}",
+                                                                        ltbox_core::i18n::tr("live_rescue_vbmeta_inspect_failed")
+                                                                            .replace("{slot}", slot)
+                                                                            .replace("{error}", &e.to_string())
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                            };
+                                                        let Some(vbm_key) = ltbox_patch::key_map::key_spec_for_pubkey(
+                                                            vbm_info.public_key_sha1.as_deref(),
+                                                        )
+                                                        else {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_no_testkey")
+                                                                    .replace("{slot}", slot)
+                                                                    .replace("{path}", &loader_dir.display().to_string())
+                                                            );
+                                                            continue;
+                                                        };
+                                                        let vbm_rebuilt = work_dir
+                                                            .join(format!("vbmeta_{slot}.rebuilt.img"));
+                                                        let chained: [&std::path::Path; 1] =
+                                                            [vb_patched.as_path()];
+                                                        if let Err(e) =
+                                                            ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                                                                &vbm_rebuilt,
+                                                                &vbm_src.2,
+                                                                &chained,
+                                                                vbm_key,
+                                                                Some(vbm_info.algorithm.as_str()),
+                                                            )
+                                                        {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_rebuild_vbmeta_failed")
+                                                                    .replace("{slot}", slot)
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                            continue;
+                                                        }
+
+                                                        flash_plan.push((
+                                                            format!("vendor_boot_{slot}"),
+                                                            vb_patched,
+                                                        ));
+                                                        flash_plan
+                                                            .push((format!("vbmeta_{slot}"), vbm_rebuilt));
+                                                    }
+
+                                                    if flash_plan.is_empty() {
+                                                        return Err(
+                                                            "Boot Recovery: nothing to flash after patch/resign"
+                                                                .into(),
+                                                        );
+                                                    }
+
+                                                    ltbox_core::live!(log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_flashing_targets")
+                                                            .replace("{count}", &flash_plan.len().to_string())
+                                                    );
+                                                    for (part_name, image) in &flash_plan {
+                                                        if let Err(e) = session.flash_partition(
+                                                            part_name, image, 0, RESCUE_PARTITIONS_LUN, &mut log,
+                                                        ) {
+                                                            ltbox_core::live!(log,
+                                                                "[Rescue] {}",
+                                                                ltbox_core::i18n::tr("live_rescue_flash_failed")
+                                                                    .replace("{name}", part_name)
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                        }
+                                                    }
+
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_resetting")
+                                                    );
+                                                    session.reset_tolerant(&mut log);
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Rescue] {}",
+                                                        ltbox_core::i18n::tr("live_rescue_complete")
+                                                    );
+                                                    Ok(log)
+                                                }
+                                            }
+                                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::Sys(SysMsg::SysExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            SysMsg::SysExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::DumpPhys(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_dump_phys(&mut self, msg: DumpPhysMsg) -> Task<Message> {
+        match msg {
+            DumpPhysMsg::DumpPhysSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.dump_phys.loader_path = Some(loader);
+                            self.dump_phys.loader_error = None;
+                        }
+                        Err(msg) => self.dump_phys.loader_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysToggleRow(idx) => {
+                if let Some(slot) = self.dump_phys.selected.get_mut(idx) {
+                    *slot = !*slot;
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysNext => {
+                match self.dump_phys.step {
+                    0 => self.dump_phys.step = 1, // loader → select
+                    1 => return self.update(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder)),
+                    _ => {}
+                };
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysBack => {
+                self.dump_phys.back();
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.dump_phys.reset();
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysSelectFolder => {
+                // Dump destination — see DumpPartsSelectFolder.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(__v)),
+                );
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysFolderChosen(path) => {
+                if let Some(folder) = path {
+                    let loader =
+                        match self.validate_loader_path(&self.dump_phys.loader_path.clone()) {
+                            Ok(p) => p,
+                            Err(()) => return Task::none(),
+                        };
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
+                    self.dump_phys.output_dir = Some(folder.clone());
+                    self.dump_phys.step = 2;
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let conn = self.connection;
+                    let luns = self.dump_phys.selected_luns();
+                    self.log_push(format!(
+                        "[DumpPhys] {}",
+                        self.t("live_dump_phys_batch_start")
+                            .replace("{count}", &luns.len().to_string())
+                            .replace("{path}", &folder)
+                    ));
+                    return task_heavy(
+                        move || dump_physical_execute(conn, loader, folder, luns),
+                        |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
+                        |e| vec![format!("[DumpPhys] {e}")],
+                    );
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::FlashPhys(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_flash_phys(&mut self, msg: FlashPhysMsg) -> Task<Message> {
+        match msg {
+            FlashPhysMsg::FlashPhysSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.flash_phys.loader_path = Some(loader);
+                            self.flash_phys.loader_error = None;
+                        }
+                        Err(msg) => self.flash_phys.loader_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysToggleRow(idx) => {
+                if let Some(slot) = self.flash_phys.selected.get_mut(idx) {
+                    *slot = !*slot;
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysPickRowFile(idx) => {
+                let spec = pickers::FilePickSpec::single("picker_target_storage_image")
+                    .with_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"]);
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path))
+                });
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysRowFileChosen(idx, path) => {
+                if idx < PHYS_LUN_COUNT
+                    && let Some(p) = path
+                {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.flash_phys.file_paths[idx] = Some(p);
+                    // Picking a file implicitly selects the row.
+                    self.flash_phys.selected[idx] = true;
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysNext => {
+                match self.flash_phys.step {
+                    0 => self.flash_phys.step = 1,
+                    1 => self.flash_phys.next(), // → Confirm
+                    2 => return self.update(Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart)),
+                    _ => {}
+                };
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysBack => {
+                self.flash_phys.back();
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.flash_phys.reset();
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysExecStart => {
+                let loader = match self.validate_loader_path(&self.flash_phys.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                self.flash_phys.next(); // advance to Exec screen
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                let pairs = self.flash_phys.active_pairs();
+                self.log_lines.push(format!(
+                    "[FlashPhys] {}",
+                    tr_args!("log_flashphys_starting", count = pairs.len())
+                ));
+                return task_heavy(
+                    move || flash_physical_execute(conn, loader, pairs),
+                    |__v| Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(__v)),
+                    |e| vec![format!("[FlashPhys] {e}")],
+                );
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::DumpParts(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_dump_parts(&mut self, msg: DumpPartsMsg) -> Task<Message> {
+        match msg {
+            DumpPartsMsg::DumpPartsSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.dump_parts.loader_path = Some(loader);
+                            self.dump_parts.scan_error = None;
+                        }
+                        Err(msg) => self.dump_parts.scan_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsToggleRow(idx) => {
+                if let Some(row) = self.dump_parts.rows.get_mut(idx) {
+                    row.selected = !row.selected;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsNext => {
+                match self.dump_parts.step {
+                    0 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsScanStart)),
+                    1 => {
+                        return self
+                            .update(Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder));
+                    }
+                    _ => {}
+                };
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsBack => {
+                self.dump_parts.back();
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.dump_parts.reset();
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsScanStart => {
+                let loader = match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                self.dump_parts.scanning = true;
+                self.dump_parts.scan_error = None;
+                self.dump_parts.rows.clear();
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                self.log_lines
+                    .push("[DumpParts] Scanning partition tables...".to_string());
+                return task_heavy(
+                    move || dump_parts_scan(conn, loader),
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(__v)),
+                    |e| DumpPartsScanResult {
+                        logs: vec![format!("[DumpParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
+                );
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsScanDone(result) => {
+                self.flush_exec_done_log(result.logs);
+                self.end_op();
+                self.dump_parts.scanning = false;
+                self.dump_parts.rows = result.rows;
+                self.dump_parts.apply_sort();
+                if let Some(err) = result.error {
+                    self.dump_parts.scan_error = Some(err);
+                } else if self.dump_parts.rows.is_empty() {
+                    self.dump_parts.scan_error =
+                        Some("No partitions returned from device".to_string());
+                } else {
+                    self.dump_parts.step = 1;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsSortBy(col) => {
+                self.dump_parts.toggle_sort(col);
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsToggleAll => {
+                let all_selected = !self.dump_parts.rows.is_empty()
+                    && self.dump_parts.rows.iter().all(|r| r.selected);
+                let target = !all_selected;
+                for r in self.dump_parts.rows.iter_mut() {
+                    r.selected = target;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsSelectFolder => {
+                // Dump destination, not a firmware source — goes to the
+                // `OutputFolder` bucket so the MRU list doesn't mix input
+                // firmware dirs with output dump dirs.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(__v)),
+                );
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsFolderChosen(path) => {
+                if let Some(folder) = path {
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
+                    self.dump_parts.output_dir = Some(folder.clone());
+                    self.dump_parts.step = 2;
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
+                    let rows = self.dump_parts.selected_rows();
+                    self.log_lines.push(format!(
+                        "[DumpParts] Dumping {} partition(s) to {}",
+                        rows.len(),
+                        folder
+                    ));
+                    return task_heavy(
+                        move || dump_parts_execute(loader, folder, rows),
+                        |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
+                        |e| vec![format!("[DumpParts] {e}")],
+                    );
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::FlashParts(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_flash_parts(&mut self, msg: FlashPartsMsg) -> Task<Message> {
+        match msg {
+            FlashPartsMsg::FlashPartsSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.flash_parts.loader_path = Some(loader);
+                            self.flash_parts.scan_error = None;
+                        }
+                        Err(msg) => self.flash_parts.scan_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsToggleRow(idx) => {
+                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                    row.state = row.state.cycle();
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsPickRowFile(idx) => {
+                let spec = pickers::FilePickSpec::single("picker_target_partition_image")
+                    .with_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"]);
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path))
+                });
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsRowFileChosen(idx, path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                        row.file_path = Some(p);
+                        // Picking a file implicitly flips the row to Flash
+                        // so the user doesn't have to also cycle the box.
+                        row.state = FlashRowState::Flash;
+                    }
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsNext => {
+                match self.flash_parts.step {
+                    0 => {
+                        return self
+                            .update(Message::FlashParts(FlashPartsMsg::FlashPartsScanStart));
+                    }
+                    1 => self.flash_parts.next(), // → Confirm
+                    2 => {
+                        return self
+                            .update(Message::FlashParts(FlashPartsMsg::FlashPartsExecStart));
+                    }
+                    _ => {}
+                };
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsBack => {
+                self.flash_parts.back();
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.flash_parts.reset();
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsScanStart => {
+                let loader = match self.validate_loader_path(&self.flash_parts.loader_path.clone())
+                {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                self.begin_op(View::Flash);
+                self.error_msg = None;
+                self.flash_parts.scanning = true;
+                self.flash_parts.scan_error = None;
+                self.flash_parts.rows.clear();
+                let conn = self.connection;
+                self.log_lines
+                    .push("[FlashParts] Scanning partitions...".to_string());
+                return task_heavy(
+                    move || flash_parts_scan(conn, loader),
+                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(__v)),
+                    |e| FlashPartsScanResult {
+                        logs: vec![format!("[FlashParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
+                );
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsScanDone(result) => {
+                self.flush_exec_done_log(result.logs);
+                self.flash_parts.scanning = false;
+                self.flash_parts.rows = result.rows;
+                self.flash_parts.apply_sort();
+                self.flash_parts.scan_error = result.error.clone();
+                self.end_op();
+                if result.error.is_none() && !self.flash_parts.rows.is_empty() {
+                    self.flash_parts.next(); // → Select
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsSortBy(col) => {
+                self.flash_parts.toggle_sort(col);
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsExecStart => {
+                self.flash_parts.next(); // advance to Exec screen
+                self.begin_op(View::Flash);
+                self.error_msg = None;
+                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
+                let rows = self.flash_parts.active_rows();
+                let flash_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Flash)
+                    .count();
+                let erase_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Erase)
+                    .count();
+                self.log_lines.push(format!(
+                    "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
+                ));
+                return task_heavy(
+                    move || flash_parts_execute(loader, rows),
+                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(__v)),
+                    |e| vec![format!("[FlashParts] {e}")],
+                );
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::Flash(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_flash(&mut self, msg: FlashMsg) -> Task<Message> {
+        match msg {
+            FlashMsg::FlashRegion(r) => {
+                // TB322FC is a PRC-only SKU. The region card UI grays
+                // out ROW, but a stale message from a pre-poll click
+                // could still land here. Drop it so the wizard never
+                // accepts a region the hardware doesn't ship with.
+                if self.is_tb322fc() && r == DeviceRegion::Row {
+                    return Task::none();
+                }
+                self.flash.device_region = Some(r);
+                Task::none()
+            }
+            FlashMsg::FlashTarget(t) => {
+                // TB322FC: cross-region (OtherRegion) flashes are blocked
+                // because the only valid region is PRC. Drop the message
+                // even if a stale dispatch slips past the disabled card.
+                if self.is_tb322fc() && t == FlashTarget::OtherRegion {
+                    return Task::none();
+                }
+                self.flash.target = Some(t);
+                Task::none()
+            }
+            FlashMsg::FlashDataMode(m) => {
+                self.flash.data_mode = Some(m);
+                Task::none()
+            }
+            FlashMsg::FlashNext => {
+                // Data step → build WorkflowConfig; wipe opens country popup.
+                if self.flash.step == 2 {
+                    self.wf_config = WorkflowConfig {
+                        modify_region: self.flash.target == Some(FlashTarget::OtherRegion),
+                        device_region: self.flash.device_region,
+                        modify_rollback: if self.flash.target == Some(FlashTarget::OtherRegion) {
+                            RollbackSetting::On
+                        } else {
+                            RollbackSetting::Auto
+                        },
+                        wipe: self.flash.data_mode == Some(DataMode::Wipe),
+                        country_action: CountryAction::Unset,
+                    };
+                    if self.wf_config.wipe {
+                        self.flash.next();
+                        self.country_popup_open = true;
+                        return Task::none();
+                    }
+                }
+                if self.flash.step == 4 {
+                    self.flash.next();
+                    return self.update(Message::Flash(FlashMsg::FlashExecStart));
+                }
+                self.flash.next();
+                Task::none()
+            }
+            FlashMsg::FlashBack => {
+                if self.flash.step == 4 {
+                    // Re-arm country patching so the popup's "Do not change"
+                    // selection doesn't survive a Back→Next round trip.
+                    self.wf_config.country_action = CountryAction::Unset;
+                }
+                self.flash.back();
+                Task::none()
+            }
+            FlashMsg::FlashSelectFolder => {
+                self.picker_target = PickerTarget::FlashFolder;
+                return pick_folder_task(
+                    pickers::PickerKind::QfilFirmwareFolder,
+                    &self.recent_paths,
+                    Message::FolderSelected,
+                );
+                Task::none()
+            }
+            FlashMsg::FlashExecStart => {
+                self.begin_op(View::Flash);
+                self.op_steps = self.derive_flash_op_steps();
+                self.error_msg = None;
+                let cfg = self.wf_config.clone();
+                let conn = self.connection;
+                let device_model = self.device_model.clone();
+                let fw_folder = self.flash.firmware_folder.clone().unwrap_or_default();
+                let rollback_label = self.t(cfg.modify_rollback.label_key()).to_string();
+                self.log_push(format!(
+                    "[Flash] {}",
+                    self.t("live_flash_starting")
+                        .replace("{modify_region}", &cfg.modify_region.to_string())
+                        .replace("{rollback}", &rollback_label)
+                        .replace("{wipe}", &cfg.wipe.to_string())
+                ));
+                let rb_label_for_log = rollback_label.clone();
+                let mut rb_mode = cfg.modify_rollback.to_mode();
+                let edl_start = matches!(conn, ConnectionStatus::Edl);
+                if edl_start {
+                    // EDL-start drops every probe-dependent guard:
+                    // device rollback index (Fastboot vars only) and
+                    // device model (ADB / Fastboot only) are
+                    // unreachable from EDL, so the GUI emits one
+                    // umbrella warning here and downgrades:
+                    //   * ARB On/Auto → Off (silent skip downstream)
+                    //   * vendor_boot fingerprint check → skipped
+                    self.log_push(format!("[Flash] {}", self.t("live_flash_edl_start_skips")));
+                    rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+                }
+                let ll = self.live_labels();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                                            let mut log = Vec::new();
+                                            let fw_dir = std::path::Path::new(&fw_folder);
+
+                                            // 1. Validate firmware folder
+                                            live!(log, "[Flash] {}", phase_marker(1, 4, &ll.op_flash_phase[0]));
+                                            if !fw_dir.exists() {
+                                                return Err(format!("Firmware folder not found: {fw_folder}"));
+                                            }
+                                            live!(
+                                                log,
+                                                "[Flash] {}",
+                                                ltbox_core::i18n::tr("live_flash_firmware_folder")
+                                                    .replace("{path}", &fw_folder)
+                                            );
+
+                                            // 2. Device detection
+                                            //
+                                            // Run the ADB device probe BEFORE the
+                                            // Fastboot bridge below. The previous
+                                            // ordering kicked off `adb reboot bootloader`
+                                            // first and only then asked `AdbManager::
+                                            // check_device`, by which point the device
+                                            // had already detached from ADB — so the
+                                            // detection block always logged "no ADB
+                                            // device info" even when an ADB bridge
+                                            // was sitting right there a second earlier.
+                                            // Now device info gets collected on the live
+                                            // ADB transport, and the bridge takes over
+                                            // afterwards.
+                                            let skip_adb = conn.skip_adb();
+                                            if skip_adb {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_skip_adb")
+                                                );
+                                            } else {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ADB] {}",
+                                                    ltbox_core::i18n::tr("live_adb_checking_device")
+                                                );
+                                                if ltbox_device::adb::AdbManager::new_if_connected().is_some() {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ADB] {}",
+                                                        ltbox_core::i18n::tr("live_adb_device_connected")
+                                                    );
+                                                    // The active slot is resolved later via
+                                                    // `controller::poll_active_slot` — that
+                                                    // helper polls both ADB + Fastboot and
+                                                    // hard-errors on probe failure, so the
+                                                    // earlier `get_slot_suffix` round-trip
+                                                    // here was redundant (its result was
+                                                    // assigned to `_slot` and discarded).
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ADB] {}",
+                                                        ltbox_core::i18n::tr("live_adb_no_device_info")
+                                                    );
+                                                }
+                                            }
+
+                                            // Snapshot rollback index before EDL —
+                                            // `stored_rollback_index` vanishes past
+                                            // Fastboot. Probe Fastboot vars first, and
+                                            // when the device is sitting in ADB bridge
+                                            // it through `adb reboot bootloader` before
+                                            // retrying — otherwise the user sees the
+                                            // ARB=ON abort on every PRC↔ROW flash that
+                                            // started from the ADB-connected state, even
+                                            // though Fastboot is reachable in principle.
+                                            let probe_fastboot = || -> (Option<u64>, bool) {
+                                                match ltbox_device::fastboot::FastbootDevice::open() {
+                                                    Ok(mut dev) => match dev.get_all_vars() {
+                                                        Ok(v) => (
+                                                            ltbox_patch::rollback::compute_device_rollback_index(
+                                                                &v.rollback_indices,
+                                                            ),
+                                                            true,
+                                                        ),
+                                                        Err(_) => (None, false),
+                                                    },
+                                                    Err(_) => (None, false),
+                                                }
+                                            };
+                                            let mut probe = probe_fastboot();
+                                            let adb_connected = matches!(
+                                                conn,
+                                                ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
+                                            );
+                                            if !probe.1 && adb_connected {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_adb_to_bootloader")
+                                                );
+                                                if let Some(mut adb) =
+                                                    ltbox_device::adb::AdbManager::new_if_connected()
+                                                {
+                                                    match adb.reboot("bootloader") {
+                                                        Ok(()) => {
+                                                            // Poll for Fastboot up to
+                                                            // 60s — ADB→bootloader
+                                                            // typically lands inside 8 s
+                                                            // but cold boots can drag.
+                                                            let deadline = std::time::Instant::now()
+                                                                + std::time::Duration::from_secs(60);
+                                                            while std::time::Instant::now() < deadline {
+                                                                if ltbox_device::fastboot::FastbootDevice::check_device()
+                                                                {
+                                                                    break;
+                                                                }
+                                                                std::thread::sleep(
+                                                                    std::time::Duration::from_millis(500),
+                                                                );
+                                                            }
+                                                            probe = probe_fastboot();
+                                                        }
+                                                        Err(e) => {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[ADB] {}",
+                                                                ltbox_core::i18n::tr("live_adb_reboot_failed")
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            let (device_rollback_index, fastboot_reachable) = probe;
+
+                                            // Rollback=ON + no fastboot vars → can't target
+                                            // a safe index. Bail before risking a brick.
+                                            if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
+                                                && !fastboot_reachable
+                                            {
+                                                live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_on_fastboot_unreachable")
+                                                );
+                                                // Best-effort reboot — any failure stays
+                                                // in the log; wizard still gets the Err.
+                                                if let Some(adb) =
+                                                    ltbox_device::adb::AdbManager::new_if_connected()
+                                                {
+                                                    if let Err(e) = adb.shell("reboot") {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ADB] {}",
+                                                            ltbox_core::i18n::tr("live_adb_reboot_failed")
+                                                                .replace("{error}", &e.to_string())
+                                                        );
+                                                    } else {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ADB] {}",
+                                                            ltbox_core::i18n::tr("live_adb_reboot_sent")
+                                                        );
+                                                    }
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ADB] {}",
+                                                        ltbox_core::i18n::tr("live_adb_no_reboot_route")
+                                                    );
+                                                }
+                                                return Err(
+                                                    ltbox_core::i18n::tr("err_rollback_on_fastboot_unreachable"),
+                                                );
+                                            }
+
+                                            // 3. Scan firmware folder
+                                            let vendor_boot = fw_dir.join("vendor_boot.img");
+                                            let vbmeta = fw_dir.join("vbmeta.img");
+                                            let boot = fw_dir.join("boot.img");
+                                            let has_vendor_boot = vendor_boot.exists();
+                                            let has_vbmeta = vbmeta.exists();
+                                            let has_boot = boot.exists();
+                                            let found = ltbox_core::i18n::tr("live_status_found");
+                                            let not_found = ltbox_core::i18n::tr("live_status_not_found");
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Flash] {}",
+                                                tr_args!(
+                                                    "live_flash_vendor_boot_status",
+                                                    status = if has_vendor_boot { &found } else { &not_found },
+                                                )
+                                            );
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Flash] {}",
+                                                tr_args!(
+                                                    "live_flash_vbmeta_status",
+                                                    status = if has_vbmeta { &found } else { &not_found },
+                                                )
+                                            );
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Flash] {}",
+                                                tr_args!(
+                                                    "live_flash_boot_status",
+                                                    status = if has_boot { &found } else { &not_found },
+                                                )
+                                            );
+
+                                            // Cross-check folder vendor_boot.img AVB
+                                            // fingerprint vs polled device model. Mismatch
+                                            // aborts BEFORE EDL so the user doesn't write
+                                            // firmware built for other models onto the
+                                            // device. Skipped entirely on EDL-start —
+                                            // ADB/Fastboot never ran so `device_model`
+                                            // is empty and the comparison would
+                                            // false-positive. Single umbrella warning
+                                            // already emitted at worker start.
+                                            if has_vendor_boot && !edl_start {
+                                                match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
+                                                    Ok(info) => {
+                                                        use ltbox_patch::region::{
+                                                            ModelValidation, validate_device_model,
+                                                        };
+                                                        match validate_device_model(&info, &device_model) {
+                                                            ModelValidation::Match { fingerprint } => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Flash] {}",
+                                                                    ltbox_core::i18n::tr(
+                                                                        "live_rescue_model_check_ok"
+                                                                    )
+                                                                    .replace("{fingerprint}", &fingerprint)
+                                                                );
+                                                            }
+                                                            ModelValidation::Missing => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Flash] {}",
+                                                                    ltbox_core::i18n::tr(
+                                                                        "live_rescue_no_fingerprint_skip"
+                                                                    )
+                                                                );
+                                                            }
+                                                            ModelValidation::Mismatch {
+                                                                fingerprint,
+                                                                device_model,
+                                                            } => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Flash] {}",
+                                                                    ltbox_core::i18n::tr(
+                                                                        "live_rescue_model_mismatch_abort"
+                                                                    )
+                                                                    .replace("{device}", &device_model)
+                                                                    .replace("{fingerprint}", &fingerprint)
+                                                                );
+                                                                return Err(
+                                                                    "Flash: firmware/device model mismatch — aborting before EDL"
+                                                                        .into(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Flash] {}",
+                                                            ltbox_core::i18n::tr("live_rescue_avb_inspect_skip")
+                                                                .replace("{error}", &e.to_string())
+                                                        );
+                                                    }
+                                                }
+                                            }
+
+                                            // Count .x and .xml files
+                                            let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
+                                                e.as_ref().ok().map(|e| e.path().extension().map(|ext| ext == "x").unwrap_or(false)).unwrap_or(false)
+                                            }).count()).unwrap_or(0);
+                                            let xml_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
+                                                e.as_ref().ok().map(|e| {
+                                                    let p = e.path();
+                                                    p.extension().map(|ext| ext == "xml").unwrap_or(false)
+                                                        && p.file_name().map(|n| n.to_string_lossy().starts_with("rawprogram")).unwrap_or(false)
+                                                }).unwrap_or(false)
+                                            }).count()).unwrap_or(0);
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Flash] {}",
+                                                ltbox_core::i18n::tr("live_flash_files_count")
+                                                    .replace("{x_count}", &x_count.to_string())
+                                                    .replace("{xml_count}", &xml_count.to_string())
+                                            );
+
+                                            // 4. Region conversion
+                                            let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
+                                            if cfg.modify_region {
+                                                if has_vendor_boot && has_vbmeta {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Region] {}",
+                                                        ltbox_core::i18n::tr("live_region_on")
+                                                    );
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Region] {}",
+                                                        ltbox_core::i18n::tr("live_region_ready")
+                                                    );
+                                                    let Some(device_region) = cfg.device_region else {
+                                                        return Err(
+                                                            "Region conversion requested but no device region was selected"
+                                                                .to_string(),
+                                                        );
+                                                    };
+                                                    let target = device_region.to_region_target();
+                                                    let output_dir =
+                                                        ltbox_core::app_paths::auto_output_dir_for("region_convert");
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Region] {}",
+                                                        ltbox_core::i18n::tr("live_region_building_pair")
+                                                            .replace("{region}", &format!("{:?}", device_region))
+                                                    );
+                                                    match ltbox_patch::region::build_region_converted_boot_chain(
+                                                        fw_dir,
+                                                        &output_dir,
+                                                        target,
+                                                        &ltbox_patch::region::RegionPatternSet::default(),
+                                                    ) {
+                                                        Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Region] {}",
+                                                                ltbox_core::i18n::tr("live_region_source_target")
+                                                                    .replace("{source}", &format!("{:?}", output.source_region))
+                                                                    .replace("{target}", &format!("{:?}", output.target))
+                                                            );
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Region] {}",
+                                                                ltbox_core::i18n::tr("live_region_patched")
+                                                                    .replace("{count}", &output.replacement_count.to_string())
+                                                                    .replace("{path}", &output.vendor_boot.display().to_string())
+                                                            );
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Region] {}",
+                                                                ltbox_core::i18n::tr("live_region_pair_rebuilt")
+                                                                    .replace("{path}", &output.vbmeta.display().to_string())
+                                                            );
+                                                            region_pair = Some(output);
+                                                        }
+                                                        Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
+                                                            source_region,
+                                                            target,
+                                                        }) => {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Region] {}",
+                                                                ltbox_core::i18n::tr("live_region_source_target")
+                                                                    .replace("{source}", &format!("{:?}", source_region))
+                                                                    .replace("{target}", &format!("{:?}", target))
+                                                            );
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Region] {}",
+                                                                ltbox_core::i18n::tr("live_region_source_matches_target")
+                                                            );
+                                                        }
+                                                        Err(e) => return Err(format!("Region conversion failed: {e}")),
+                                                    }
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Region] {}",
+                                                        ltbox_core::i18n::tr("live_region_missing_skip")
+                                                    );
+                                                }
+                                            } else {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Region] {}",
+                                                    ltbox_core::i18n::tr("live_region_off")
+                                                );
+                                            }
+
+                                            // 5. ARB detection
+                                            ltbox_core::live!(
+                                                log,
+                                                "[ARB] {}",
+                                                tr_args!("live_arb_modify", value = rb_label_for_log)
+                                            );
+                                            let device_idx_str = device_rollback_index
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_else(|| ltbox_core::i18n::tr("live_arb_device_index_none"));
+                                            ltbox_core::live!(
+                                                log,
+                                                "[ARB] {}",
+                                                ltbox_core::i18n::tr("live_arb_device_index")
+                                                    .replace("{index}", &device_idx_str)
+                                            );
+                                            if has_boot {
+                                                // Pre-result "Analyzing …" line dropped — analysis is
+                                                // synchronous and the result line ("boot.img rollback
+                                                // index: …") fires immediately after.
+                                                match ltbox_patch::rollback::analyze_rollback_with_mode(
+                                                    &boot,
+                                                    device_rollback_index,
+                                                    rb_mode,
+                                                ) {
+                                                    Ok(info) => ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_boot_index_result")
+                                                            .replace("{index}", &info.image_index.to_string())
+                                                            .replace("{needs}", &info.needs_patch.to_string())
+                                                            .replace("{mode}", &format!("{:?}", rb_mode))
+                                                    ),
+                                                    Err(e) => ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr("live_arb_boot_analysis_failed")
+                                                            .replace("{error}", &e.to_string())
+                                                    ),
+                                                }
+                                            }
+                                            // ARB analysis above is diagnostic only — flash plan unchanged.
+
+                                            // 6. XML
+                                            //
+                                            // Decrypt every `.x` in place — output sits next
+                                            // to its source as `<stem>.xml` so the catalog
+                                            // scan below picks it up and the EDL flash can
+                                            // still resolve image paths via `xml_dir.join`.
+                                            if x_count > 0 {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[XML] {}",
+                                                    ltbox_core::i18n::tr("live_xml_decrypt_pending")
+                                                        .replace("{count}", &x_count.to_string())
+                                                );
+                                                let x_entries: Vec<std::path::PathBuf> =
+                                                    std::fs::read_dir(fw_dir)
+                                                        .map_err(|e| {
+                                                            format!("read_dir {}: {e}", fw_dir.display())
+                                                        })?
+                                                        .filter_map(|r| r.ok().map(|e| e.path()))
+                                                        .filter(|p| {
+                                                            p.is_file()
+                                                                && p.extension()
+                                                                    .and_then(|s| s.to_str())
+                                                                    .map(|s| s.eq_ignore_ascii_case("x"))
+                                                                    .unwrap_or(false)
+                                                        })
+                                                        .collect();
+                                                let mut decrypted = 0usize;
+                                                for src in &x_entries {
+                                                    let stem = src.file_stem().unwrap_or_default();
+                                                    let output = fw_dir.join(stem).with_extension("xml");
+                                                    ltbox_core::crypto::decrypt_file(src, &output).map_err(
+                                                        |e| {
+                                                            format!(
+                                                                "Decrypt failed for {}: {e}",
+                                                                src.display()
+                                                            )
+                                                        },
+                                                    )?;
+                                                    decrypted += 1;
+                                                }
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[XML] {}",
+                                                    ltbox_core::i18n::tr("live_xml_decrypt_done")
+                                                        .replace("{count}", &decrypted.to_string())
+                                                );
+                                            }
+                                            if !cfg.wipe && xml_count > 0 {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[XML] {}",
+                                                    ltbox_core::i18n::tr("live_xml_keep_excludes")
+                                                );
+                                            }
+
+                                            // 7. Country code
+                                            if cfg.wipe {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_data_mode_wipe")
+                                                );
+                                                if let Some(cc) = cfg.country_action.target() {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Flash] {}",
+                                                        ltbox_core::i18n::tr("live_flash_country_devinfo")
+                                                            .replace("{code}", cc)
+                                                    );
+                                                } else if cfg.country_action.is_skipped() {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Flash] {}",
+                                                        ltbox_core::i18n::tr("live_flash_country_skip")
+                                                    );
+                                                }
+                                            } else {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_data_mode_keep")
+                                                );
+                                            }
+
+                                            // 8. EDL flash
+                                            let loader = find_edl_loader(fw_dir)
+                                                .or_else(|| fw_dir.parent().and_then(find_edl_loader));
+                                            let loader = match loader {
+                                                Some(l) => l,
+                                                None => {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[EDL] {}",
+                                                        ltbox_core::i18n::tr("live_edl_loader_missing")
+                                                    );
+                                                    return Ok(log);
+                                                }
+                                            };
+
+                                            live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
+                                            transition_to_edl(conn, &ll, &mut log)?;
+
+                                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                                .map_err(|e| format!("EDL session: {e}"))?;
+
+                                            // Full-firmware flash: rawprogram + patch XMLs
+                                            // drive every program node (no slot guessing).
+                                            let (raw_xmls, patch_xmls) =
+                                                ltbox_device::edl::collect_firmware_xmls_for_flash(fw_dir, false)
+                                                    .map_err(|e| format!("Firmware XML selection failed: {e}"))?;
+                                            if raw_xmls.is_empty() {
+                                                return Err(format!(
+                                                    "No flashable rawprogram*.xml found in {fw_folder}"
+                                                ));
+                                            }
+                                            // ARB-patched copies are flashed *after* rawprogram
+                                            // so the user's firmware folder stays untouched.
+                                            // LUN comes from the hardcoded map; start sector
+                                            // resolves through GPT-by-name in
+                                            // `flash_partition`. Slot `_a` matches the prior
+                                            // first-hit `catalog.require(..._a, ..._b, …)`
+                                            // semantics — overwrites A on top of the
+                                            // full-firmware flash that already wrote both.
+                                            let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
+                                                Vec::new();
+                                            if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
+                                                let arb_work_dir =
+                                                    ltbox_core::app_paths::work_dir_for("flash_arb");
+                                                let _ = std::fs::remove_dir_all(&arb_work_dir);
+                                                std::fs::create_dir_all(&arb_work_dir)
+                                                    .map_err(|e| format!("arb work dir: {e}"))?;
+
+                                                // (base, on-disk filename, slot label)
+                                                let label_pairs: &[(&str, &str, &str)] = &[
+                                                    ("boot", "boot.img", "boot_a"),
+                                                    (
+                                                        "vbmeta_system",
+                                                        "vbmeta_system.img",
+                                                        "vbmeta_system_a",
+                                                    ),
+                                                ];
+                                                for (log_name, filename, slot_label) in label_pairs {
+                                                    let Some(lun) =
+                                                        ltbox_core::partition_lun::lun_for_partition(log_name)
+                                                    else {
+                                                        ltbox_core::live!(log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_arb_skip_no_lun")
+                                                                .replace("{name}", log_name)
+                                                        );
+                                                        continue;
+                                                    };
+                                                    let source = fw_dir.join(filename);
+                                                    if !source.exists() {
+                                                            ltbox_core::live!(log,
+                                                                "[ARB] {}",
+                                                                ltbox_core::i18n::tr("live_arb_skip_image_missing")
+                                                                    .replace("{name}", log_name)
+                                                                    .replace("{file}", &source.display().to_string())
+                                                            );
+                                                            continue;
+                                                        }
+
+                                                        // `Off` is already bypassed; On or Auto here.
+                                                        let analysis = match ltbox_patch::rollback::analyze_rollback_with_mode(
+                                                            &source,
+                                                            device_rollback_index,
+                                                            rb_mode,
+                                                        ) {
+                                                            Ok(a) => a,
+                                                            Err(e) => {
+                                                                ltbox_core::live!(log,
+                                                                    "[ARB] {}",
+                                                                    ltbox_core::i18n::tr("live_arb_analyze_failed")
+                                                                        .replace("{name}", log_name)
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                                continue;
+                                                            }
+                                                        };
+                                                        ltbox_core::live!(log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_arb_image_status")
+                                                                .replace("{name}", log_name)
+                                                                .replace("{image}", &analysis.image_index.to_string())
+                                                                .replace("{needs}", &analysis.needs_patch.to_string())
+                                                                .replace("{mode}", &format!("{:?}", rb_mode))
+                                                        );
+                                                        if !analysis.needs_patch {
+                                                            continue;
+                                                        }
+                                                        let Some(target) = device_rollback_index else {
+                                                            ltbox_core::live!(log,
+                                                                "[ARB] {}",
+                                                                ltbox_core::i18n::tr("live_arb_skip_unknown_device")
+                                                                    .replace("{name}", log_name)
+                                                            );
+                                                            continue;
+                                                        };
+
+                                                        // Signing-key resolution: only the two stock
+                                                        // testkeys embedded in avbtool-rs. Any image
+                                                        // signed by an unknown pubkey is skipped.
+                                                        let key_from_map = ltbox_patch::key_map::key_spec_for_pubkey(
+                                                            analysis.image_info.public_key_sha1.as_deref(),
+                                                        );
+
+                                                        let patched = arb_work_dir.join(format!("{log_name}.arb.img"));
+                                                        let is_vbmeta = log_name.starts_with("vbmeta");
+                                                        let patch_result = if is_vbmeta {
+                                                            // vbmeta always resigns (no add_hash_footer).
+                                                            match key_from_map {
+                                                                Some(spec) => {
+                                                                    std::fs::copy(&source, &patched)
+                                                                        .map_err(|e| format!("copy vbmeta: {e}"))?;
+                                                                    ltbox_patch::avb::resign_image(
+                                                                        &patched,
+                                                                        spec,
+                                                                        &analysis.image_info.algorithm,
+                                                                        Some(target),
+                                                                    )
+                                                                    .map_err(|e| format!("resign {log_name}: {e}"))
+                                                                }
+                                                                None => {
+                                                                    ltbox_core::live!(log,
+                                                                        "[ARB] {}",
+                                                                        ltbox_core::i18n::tr("live_arb_skip_unknown_pubkey")
+                                                                            .replace("{name}", log_name)
+                                                                            .replace("{key}", &format!("{:?}", analysis.image_info.public_key_sha1))
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        } else if analysis.image_info.algorithm == "NONE" {
+                                                            // NONE algorithm: add_hash_footer accepts
+                                                            // an Option<&str> spec; pass map result
+                                                            // (None is fine).
+                                                            std::fs::copy(&source, &patched)
+                                                                .map_err(|e| format!("copy chained: {e}"))?;
+                                                            ltbox_patch::avb::add_hash_footer(
+                                                                &patched,
+                                                                &analysis.image_info,
+                                                                key_from_map,
+                                                                Some(target),
+                                                            )
+                                                            .map_err(|e| format!("patch {log_name}: {e}"))
+                                                        } else if let Some(spec) = key_from_map {
+                                                            std::fs::copy(&source, &patched)
+                                                                .map_err(|e| format!("copy chained: {e}"))?;
+                                                            ltbox_patch::avb::resign_image(
+                                                                &patched,
+                                                                spec,
+                                                                &analysis.image_info.algorithm,
+                                                                Some(target),
+                                                            )
+                                                            .map_err(|e| format!("resign {log_name}: {e}"))
+                                                        } else {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[ARB] {}",
+                                                                ltbox_core::i18n::tr("live_arb_no_signing_key")
+                                                                    .replace("{name}", log_name)
+                                                                    .replace(
+                                                                        "{key}",
+                                                                        &format!("{:?}", analysis.image_info.public_key_sha1),
+                                                                    )
+                                                            );
+                                                            continue;
+                                                        };
+                                                        if let Err(e) = patch_result {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[ARB] {}",
+                                                                ltbox_core::i18n::tr("live_arb_patch_failed")
+                                                                    .replace("{name}", log_name)
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                            continue;
+                                                        }
+
+                                                        live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_arb_prepared_patch")
+                                                                .replace("{name}", log_name)
+                                                                .replace("{path}", &patched.display().to_string())
+                                                                .replace("{target}", &target.to_string())
+                                                        );
+                                                        arb_patched.push((
+                                                            slot_label.to_string(),
+                                                            lun,
+                                                            patched,
+                                                        ));
+                                                    }
+                                            }
+
+                                            live!(
+                                                log,
+                                                "[Flash] {} ({})",
+                                                phase_marker(3, 4, &ll.op_flash_phase[2]),
+                                                ltbox_core::i18n::tr("live_flash_phase3_xml_counts")
+                                                    .replace("{raw}", &raw_xmls.len().to_string())
+                                                    .replace("{patch}", &patch_xmls.len().to_string())
+                                            );
+                                            session
+                                                .flash_rawprogram_with_wipe(
+                                                    &raw_xmls,
+                                                    &patch_xmls,
+                                                    cfg.wipe,
+                                                    &mut log,
+                                                )
+                                                .map_err(|e| format!("Firmware flash failed: {e}"))?;
+
+                                            // Overwrite rawprogram's stock boot + vbmeta_system
+                                            // with the ARB-patched copies. GPT-by-name lookup
+                                            // resolves the slot's start sector from the device,
+                                            // not the firmware folder's rawprogram XML.
+                                            for (label, lun, patched) in &arb_patched {
+                                                live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_flash_patched")
+                                                        .replace("{label}", label)
+                                                );
+                                                if let Err(e) = session.flash_partition(
+                                                    label,
+                                                    patched,
+                                                    0,
+                                                    *lun,
+                                                    &mut log,
+                                                ) {
+                                                    return Err(format!("ARB flash {label}: {e}"));
+                                                }
+                                            }
+
+                                            // Overwrite rawprogram's stock vendor_boot/vbmeta
+                                            // with the final region-converted AVB-valid pair.
+                                            // This must happen after rawprogram (and after any
+                                            // ARB overlays) so stock XML entries cannot put the
+                                            // unconverted ROW pair back on top.
+                                            if let Some(output) = &region_pair {
+                                                let overlays: [(&str, &std::path::Path); 2] = [
+                                                    ("vendor_boot_a", output.vendor_boot.as_path()),
+                                                    ("vbmeta_a", output.vbmeta.as_path()),
+                                                ];
+                                                for (label, image) in overlays {
+                                                    let Some(lun) =
+                                                        ltbox_core::partition_lun::lun_for_partition(label)
+                                                    else {
+                                                        return Err(format!(
+                                                            "Region flash {label}: no hardcoded LUN"
+                                                        ));
+                                                    };
+                                                    live!(
+                                                        log,
+                                                        "[Region] {}",
+                                                        ltbox_core::i18n::tr("live_region_flashing_final")
+                                                            .replace("{label}", label)
+                                                            .replace("{path}", &image.display().to_string())
+                                                    );
+                                                    if let Err(e) = session.flash_partition(
+                                                        label,
+                                                        image,
+                                                        0,
+                                                        lun,
+                                                        &mut log,
+                                                    ) {
+                                                        return Err(format!("Region flash {label}: {e}"));
+                                                    }
+                                                }
+                                            }
+
+                                            // Country code patch: dump → patch → flash devinfo
+                                            // + persist. Skipped when the user picked "Do not
+                                            // change" (`country_action` is `Skip`) — the
+                                            // device's existing region images stay put.
+                                            if cfg.wipe
+                                                && let Some(target_code) = cfg.country_action.target() {
+                                                    live!(
+                                                        log,
+                                                        "[Flash] {}",
+                                                        ltbox_core::i18n::tr("live_flash_country_patch_target")
+                                                            .replace("{target}", target_code)
+                                                    );
+                                                    let work_dir =
+                                                        ltbox_core::app_paths::work_dir_for("flash_country");
+                                                    let _ = std::fs::remove_dir_all(&work_dir);
+                                                    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+                                                        return Err(format!("country work dir: {e}"));
+                                                    }
+                                                    // Critical-image backup: original region
+                                                    // partitions held aside for manual restore.
+                                                    // `app_paths::backup_dir_for` keeps writes
+                                                    // off the read-only AppImage mount on
+                                                    // non-Windows hosts.
+                                                    let ts = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .map(|d| d.as_secs())
+                                                        .unwrap_or(0);
+                                                    let critical_backup = ltbox_core::app_paths::backup_dir_for(
+                                                        &format!("backup_critical_{ts}"),
+                                                    );
+                                                    std::fs::create_dir_all(&critical_backup)
+                                                        .map_err(|e| format!("critical backup folder: {e}"))?;
+                                                    // devinfo + persist resolve through the hardcoded
+                                                    // LUN map; start/num come from the device GPT via
+                                                    // `dump_partition_by_name`. Avoids re-decrypting
+                                                    // `rawprogram*.x` mid-flow when the catalog scratch
+                                                    // dir has been cleaned.
+                                                    const KNOWN_CODES: &[&str] = &[
+                                                        "CN","KR","JP","US","GB","DE","FR","IT","ES","NL",
+                                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","GR",
+                                                        "HU","IE","LV","LT","LU","MT","PL","PT","RO","SK",
+                                                        "SI","SE","AU","CA","IN","RU","BR","MX","SA","AE",
+                                                        "WW",
+                                                    ];
+                                                    const EU_CODES: &[&str] = &[
+                                                        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR",
+                                                        "DE","GR","HU","IE","IT","LV","LT","LU","MT","NL",
+                                                        "PL","PT","RO","SK","SI","ES","SE",
+                                                    ];
+                                                    let mut country_progress = CountryPatchProgress::default();
+                                                    for label in ["devinfo", "persist"] {
+                                                        let Some(lun) =
+                                                            ltbox_core::partition_lun::lun_for_partition(label)
+                                                        else {
+                                                            let reason = "no hardcoded LUN for label";
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", reason)
+                                                            );
+                                                            country_progress.mark_failed(label, reason);
+                                                            continue;
+                                                        };
+                                                        let dump_path = work_dir.join(format!("{label}.img"));
+                                                        live!(
+                                                            log,
+                                                            "[Country] {}",
+                                                            ltbox_core::i18n::tr("live_country_dump_partition")
+                                                                .replace("{label}", label)
+                                                                .replace("{lun}", &lun.to_string())
+                                                                .replace("{start}", "?")
+                                                                .replace("{sectors}", "?")
+                                                        );
+                                                        if let Err(e) = session.dump_partition(
+                                                            label, &dump_path, 0, lun, &mut log,
+                                                        ) {
+                                                            let reason = format!("dump failed: {e}");
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", &reason)
+                                                            );
+                                                            country_progress.mark_failed(label, reason);
+                                                            continue;
+                                                        }
+                                                        // Backup before any patch touches it.
+                                                        if let Err(e) = std::fs::copy(
+                                                            &dump_path,
+                                                            critical_backup.join(format!("{label}.img")),
+                                                        ) {
+                                                            let reason = format!("backup failed: {e}");
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", &reason)
+                                                            );
+                                                            country_progress.mark_failed(label, reason);
+                                                            continue;
+                                                        }
+                                                        let detected = match ltbox_patch::region::detect_country_code(
+                                                            &dump_path,
+                                                            KNOWN_CODES,
+                                                        ) {
+                                                            Ok(c) => c,
+                                                            Err(e) => {
+                                                                let reason = format!("detect failed: {e}");
+                                                                ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", &reason)
+                                                            );
+                                                                country_progress.mark_failed(label, reason);
+                                                                None
+                                                            }
+                                                        };
+                                                        let Some(old_code) = detected else {
+                                                            let reason = "no known code detected";
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", reason)
+                                                            );
+                                                            country_progress.mark_failed(label, reason);
+                                                            continue;
+                                                        };
+                                                        live!(
+                                                            log,
+                                                            "[Country] {}",
+                                                            ltbox_core::i18n::tr("live_country_patch_transition")
+                                                                .replace("{label}", label)
+                                                                .replace("{from}", &old_code)
+                                                                .replace("{to}", target_code)
+                                                        );
+                                                        let patched_path =
+                                                            work_dir.join(format!("{label}.patched.img"));
+                                                        match ltbox_patch::region::patch_country_code(
+                                                            &dump_path,
+                                                            &patched_path,
+                                                            &old_code,
+                                                            target_code,
+                                                            EU_CODES,
+                                                        ) {
+                                                            Ok(true) => {
+                                                                if let Err(e) = session.flash_partition(
+                                                                    label,
+                                                                    &patched_path,
+                                                                    0,
+                                                                    lun,
+                                                                    &mut log,
+                                                                ) {
+                                                                    ltbox_core::live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_country_flash_failed")
+                                                                            .replace("{label}", label)
+                                                                            .replace("{error}", &e.to_string())
+                                                                    );
+                                                                    country_progress.mark_failed(
+                                                                        label,
+                                                                        format!("flash failed: {e}"),
+                                                                    );
+                                                                } else {
+                                                                    live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_country_patched_flashed")
+                                                                            .replace("{label}", label)
+                                                                    );
+                                                                    country_progress.mark_flashed(label);
+                                                                }
+                                                            }
+                                                            Ok(false) if old_code == target_code => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_partition_already")
+                                                                        .replace("{label}", label)
+                                                                        .replace("{target}", target_code)
+                                                                );
+                                                                country_progress.mark_flashed(label);
+                                                            }
+                                                            Ok(false) => {
+                                                                let reason = "no replacements";
+                                                                ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", reason)
+                                                            );
+                                                                country_progress.mark_failed(label, reason);
+                                                            }
+                                                            Err(e) => {
+                                                                let reason = format!("patch failed: {e}");
+                                                                ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_status")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{reason}", &reason)
+                                                            );
+                                                                country_progress.mark_failed(label, reason);
+                                                            }
+                                                        }
+                                                    }
+                                                    if let Err(e) = country_progress.finish() {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Country] {}",
+                                                            ltbox_core::i18n::tr("live_country_error")
+                                                                .replace("{error}", &e)
+                                                        );
+                                                        return Err(e);
+                                                    }
+                                                    // Surface the backup location once
+                                                    // per run. Empty dir = every label
+                                                    // was skipped.
+                                                    if std::fs::read_dir(&critical_backup)
+                                                        .map(|mut it| it.next().is_some())
+                                                        .unwrap_or(false)
+                                                    {
+                                                        live!(
+                                                            log,
+                                                            "[Country] {} {}",
+                                                            ll.backup_saved_prefix,
+                                                            critical_backup.display()
+                                                        );
+                                                    }
+                                                }
+
+                                            // Mark `_a` active before reset. Lenovo
+                                            // firmware rawprograms only target `_a`, so
+                                            // a full flash always lands on `_a`. Without
+                                            // this the SoC may continue booting from a
+                                            // previously-active `_b` on the next reset
+                                            // and the freshly-written `_a` firmware
+                                            // would never run.
+                                            if let Err(e) = session.set_active_slot_a(&mut log) {
+                                                return Err(format!("set bootable LUN: {e}"));
+                                            }
+
+                                            live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
+                                            session.reset_tolerant(&mut log);
+                                            live!(log, "[Flash] {}", ll.flash_completed);
+                                            Ok(log)
+                                            }).and_then(|r| r)
+                                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::Flash(FlashMsg::FlashExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            FlashMsg::FlashExecDone(lines) => {
+                // Extend *before* end_op so the END separator sits
+                // below the backend's detail lines, not above them.
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                self.wf_config = WorkflowConfig::default();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::Adv(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_adv(&mut self, msg: AdvMsg) -> Task<Message> {
+        match msg {
+            AdvMsg::AdvConfirm(a) => {
+                // Flash/Dump Partitions + Physical Storage preempt the
+                // grid with their own dedicated wizards. After the
+                // wizard's `_open` flag flips, pull in the Settings
+                // default loader if one is configured + still on disk;
+                // that pre-fills the wizard's loader slot and advances
+                // past the loader step so the user doesn't have to
+                // re-pick the same `xbl_s_devprg_ns.melf` for every
+                // single-device flow.
+                if matches!(a, AdvAction::FlashPartitions) {
+                    self.flash_parts.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::FlashParts;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::DumpPartitions) {
+                    self.dump_parts.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::DumpParts;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::DumpPhysical) {
+                    self.dump_phys.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::DumpPhys;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::FlashPhysical) {
+                    self.flash_phys.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::FlashPhys;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else {
+                    return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizOpen(a) => {
+                self.adv_wizard.open(a);
+                // Mirror into legacy fields so AdvFileSelected /
+                // AdvExecDone keep working unchanged.
+                self.adv_confirm = Some(a);
+                self.adv_confirm_path = None;
+                Task::none()
+            }
+            AdvMsg::AdvWizBack => {
+                if self.adv_wizard.step == 0 {
+                    // Back on step 0 closes the wizard.
+                    self.adv_wizard.reset();
+                    self.adv_confirm = None;
+                    self.adv_confirm_path = None;
+                } else {
+                    self.adv_wizard.back();
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizNext => {
+                if self.adv_wizard.is_image_info() && self.adv_wizard.step == 0 {
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
+                }
+                // DetectArb: source step Next jumps straight to exec.
+                // The source step renders either a loader picker (only
+                // when ADB/fastboot already identified the device as
+                // TB320FC, since that is the model that needs the EDL
+                // fallback) or a plain Start prompt.
+                if matches!(self.adv_wizard.action, Some(AdvAction::DetectArb))
+                    && self.adv_wizard.step == 0
+                {
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvDetectArbExecStart));
+                }
+                // PatchArb: source step Next reads the AVB rollback
+                // indices from the picked folder + advances to the
+                // inspect step. Inspect step Next opens the timestamp
+                // popup; the popup OK is what advances to the confirm
+                // step.
+                if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb)) {
+                    if self.adv_wizard.step == 0 {
+                        let Some(folder) = self.adv_wizard.file_path.clone() else {
+                            return Task::none();
+                        };
+                        let dir = std::path::PathBuf::from(&folder);
+                        let boot = dir.join("boot.img");
+                        let vbmeta = dir.join("vbmeta_system.img");
+                        if !boot.is_file() {
+                            self.error_msg = Some(format!("Missing boot.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        if !vbmeta.is_file() {
+                            self.error_msg =
+                                Some(format!("Missing vbmeta_system.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        let boot_info = match ltbox_patch::avb::extract_image_avb_info(&boot) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg = Some(format!("boot.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        let vbmeta_info = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg =
+                                    Some(format!("vbmeta_system.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        self.adv_wizard.arb_inspect =
+                            Some((boot_info.rollback_index, vbmeta_info.rollback_index));
+                        self.error_msg = None;
+                        self.adv_wizard.next();
+                        return Task::none();
+                    }
+                    if self.adv_wizard.step == 1 {
+                        self.adv_wizard.arb_index_buffer = self
+                            .adv_wizard
+                            .arb_index_committed
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
+                        self.arb_index_popup_open = true;
+                        return Task::none();
+                    }
+                }
+                if self.adv_wizard.is_confirm_step() {
+                    let Some(action) = self.adv_wizard.action else {
+                        return Task::none();
+                    };
+                    self.adv_confirm_path = self.adv_wizard.file_path.clone();
+                    if let Some(code) = self.adv_wizard.country.clone() {
+                        self.wf_config.country_action = CountryAction::Set(code);
+                    }
+                    // Pre-create output folder so the Done card's
+                    // "Open Folder" pill always points somewhere real.
+                    if action.produces_output() {
+                        let dir = adv_output_dir(action);
+                        let _ = std::fs::create_dir_all(&dir);
+                        self.adv_wizard.output_dir = Some(dir);
+                    } else {
+                        self.adv_wizard.output_dir = None;
+                    }
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvExec(action)));
+                }
+                self.adv_wizard.next();
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowse => {
+                if self.adv_wizard.is_image_info() {
+                    let spec =
+                        pickers::FilePickSpec::multi(self.adv_wizard.picker_target_i18n_key())
+                            .with_filter("Android image (*.img)", &["img"]);
+                    return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseManyDone(__v))
+                    });
+                }
+                let kind = self.adv_wizard.picker_kind();
+                if kind.is_folder() {
+                    return pick_folder_task(kind, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                    });
+                }
+                let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
+                let target_key = self.adv_wizard.picker_target_i18n_key();
+                let mut spec = pickers::FilePickSpec::single(target_key);
+                if !filter_exts.is_empty() {
+                    spec = spec.with_filter(filter_label, filter_exts);
+                }
+                return pickers::pick_file_for(spec, &self.recent_paths, |__v| {
+                    Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                });
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowseDone(path) => {
+                if let Some(p) = path {
+                    if std::path::Path::new(&p).exists() {
+                        // Kind is derived from the action (folder ops →
+                        // folder bucket, file ops → File) rather than the
+                        // runtime is_dir() check — trusting the action
+                        // keeps buckets consistent even if rfd returns an
+                        // unexpected path type.
+                        self.remember_recent(self.adv_wizard.picker_kind(), &p);
+                    }
+                    self.adv_wizard.file_path = Some(p);
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowseManyDone(paths) => {
+                if let Some(paths) = paths {
+                    let paths: Vec<String> = paths
+                        .into_iter()
+                        .filter(|p| {
+                            std::path::Path::new(p)
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.eq_ignore_ascii_case("img"))
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    for p in &paths {
+                        if std::path::Path::new(p).exists() {
+                            self.remember_recent(pickers::PickerKind::File, p);
+                        }
+                    }
+                    self.adv_wizard.file_paths = paths;
+                    self.adv_wizard.file_path = None;
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenCountry => {
+                self.adv_needs_country = true;
+                self.country_popup_open = true;
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenRegionTarget => {
+                self.region_target_popup_open = true;
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenOutputFolder => {
+                if let Some(dir) = self.adv_wizard.output_dir.clone()
+                    && let Err(err) = open_in_file_manager(&dir)
+                {
+                    // Surface the failed command + path in the log
+                    // so the user can see what was tried — silent
+                    // no-op was the old behaviour and made missing
+                    // xdg-open invisible on Linux.
+                    self.log_push(format!("[GUI] Open Folder failed: {err}"));
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexInput(s) => {
+                // Strip non-digits + cap at 10 chars so paste-of-garbage
+                // can't smuggle a longer / non-numeric value past the UI.
+                let cleaned: String = s.chars().filter(|c| c.is_ascii_digit()).take(10).collect();
+                self.adv_wizard.arb_index_buffer = cleaned;
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexConfirm => {
+                let buf = self.adv_wizard.arb_index_buffer.clone();
+                if buf.len() != 10 {
+                    return Task::none();
+                }
+                let Ok(parsed) = buf.parse::<u64>() else {
+                    return Task::none();
+                };
+                self.adv_wizard.arb_index_committed = Some(parsed);
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+                // Advance to Confirm.
+                self.adv_wizard.next();
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexCancel => {
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+                Task::none()
+            }
+            AdvMsg::AdvExec(action) => {
+                // Picker ran in AdvConfirm; replay the saved path.
+                let Some(path) = self.adv_confirm_path.clone() else {
+                    self.adv_confirm = None;
+                    return Task::none();
+                };
+                self.update(Message::Adv(AdvMsg::AdvFileSelected(action, Some(path))))
+            }
+            AdvMsg::AdvFileSelected(action, path) => {
+                if let Some(input_path) = path {
+                    // See AdvWizBrowseDone — trust the action's kind over
+                    // the runtime is_dir() probe.
+                    self.remember_recent(self.adv_wizard.picker_kind(), &input_path);
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let action_label = self.t(action.label_key()).to_string();
+                    self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
+                    let _conn = self.connection;
+                    // PatchDevinfo only — unused otherwise.
+                    let adv_country: Option<String> =
+                        self.wf_config.country_action.target().map(str::to_string);
+                    // RegionConvert only — user-picked target.
+                    let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
+                    // PatchArb only — committed unix-timestamp index.
+                    let adv_arb_index: Option<u64> = self.adv_wizard.arb_index_committed;
+                    let output_dir: std::path::PathBuf = self
+                        .adv_wizard
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| adv_output_dir(action));
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                                ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                                                let mut log = Vec::new();
+                                                let input = std::path::Path::new(&input_path);
+                                                let parent = input.parent().unwrap_or(std::path::Path::new("."));
+                                                // Created eagerly so a no-op exec still
+                                                // leaves a folder for the user to find.
+                                                if action.produces_output() {
+                                                    let _ = std::fs::create_dir_all(&output_dir);
+                                                    ltbox_core::live!(log,
+                                                        "[Advanced] {}",
+                                                        ltbox_core::i18n::tr("live_advanced_output_folder")
+                                                            .replace("{path}", &output_dir.display().to_string())
+                                                    );
+                                                }
+                                                match action {
+                                                    AdvAction::ImageInfo => {
+                                                        return Err(
+                                                            "Image Info uses a dedicated multi-file flow"
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    AdvAction::ConvertXml => {
+                                                        // `input` is now the folder holding the encrypted
+                                                        // `*.x` pack (picker moved from file→folder so
+                                                        // users don't have to repeat the dialog for each
+                                                        // file). Iterate every `*.x`, decrypt to `*.xml`
+                                                        // in `output_dir`.
+                                                        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(input)
+                                                            .map_err(|e| format!("read_dir {}: {e}", input.display()))?
+                                                            .filter_map(|r| r.ok().map(|e| e.path()))
+                                                            .filter(|p| {
+                                                                p.is_file()
+                                                                    && p.extension()
+                                                                        .and_then(|s| s.to_str())
+                                                                        .map(|s| s.eq_ignore_ascii_case("x"))
+                                                                        .unwrap_or(false)
+                                                            })
+                                                            .collect();
+                                                        entries.sort();
+                                                        if entries.is_empty() {
+                                                            return Err(format!(
+                                                                "No *.x files found under {}",
+                                                                input.display()
+                                                            ));
+                                                        }
+                                                        for src in entries {
+                                                            let stem = src.file_stem().unwrap_or_default();
+                                                            let output = output_dir.join(stem).with_extension("xml");
+                                                            match ltbox_core::crypto::decrypt_file(&src, &output) {
+                                                                Ok(size) => ltbox_core::live!(
+                                                                    log,
+                                                                    "[Crypto] {}",
+                                                                    ltbox_core::i18n::tr("live_crypto_decrypted")
+                                                                        .replace("{bytes}", &size.to_string())
+                                                                ),
+                                                                Err(e) => return Err(format!("Decryption failed: {e}")),
+                                                            }
+                                                        }
+                                                    }
+                                                    AdvAction::DetectArb => {
+                                                        // DetectArb routes through its dedicated
+                                                        // `AdvDetectArbExecStart` worker, not the
+                                                        // generic file-selected pipeline. Reaching
+                                                        // this arm means a stale code path triggered
+                                                        // it; surface a clear error instead of a
+                                                        // silent no-op.
+                                                        return Err(
+                                                            "DetectArb uses a dedicated worker — file pipeline should not run"
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    AdvAction::FlashPartitions
+                                                    | AdvAction::DumpPartitions
+                                                    | AdvAction::FlashPhysical
+                                                    | AdvAction::DumpPhysical => {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Advanced] {}",
+                                                            ltbox_core::i18n::tr("live_advanced_use_dedicated")
+                                                        );
+                                                    }
+                                                    AdvAction::RegionConvert => {
+                                                        let Some(target_region) = adv_region_target else {
+                                                            return Err(
+                                                                "No target region selected — pick PRC or ROW in the popup before starting"
+                                                                    .into(),
+                                                            );
+                                                        };
+                                                        if input
+                                                            .file_name()
+                                                            .and_then(|s| s.to_str())
+                                                            .map(|s| !s.eq_ignore_ascii_case("vendor_boot.img"))
+                                                            .unwrap_or(true)
+                                                        {
+                                                            return Err(
+                                                                "Region Convert expects vendor_boot.img; select the firmware folder's vendor_boot.img"
+                                                                    .to_string(),
+                                                            );
+                                                        }
+                                                        let firmware_dir = parent;
+                                                        let sibling_vbmeta = firmware_dir.join("vbmeta.img");
+                                                        if !sibling_vbmeta.is_file() {
+                                                            return Err(format!(
+                                                                "Region Convert requires vbmeta.img beside vendor_boot.img; missing {}",
+                                                                sibling_vbmeta.display()
+                                                            ));
+                                                        }
+                                                        let target = target_region.to_region_target();
+                                                        match ltbox_patch::region::build_region_converted_boot_chain(
+                                                            firmware_dir,
+                                                            &output_dir,
+                                                            target,
+                                                            &ltbox_patch::region::RegionPatternSet::default(),
+                                                        ) {
+                                                            Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Region] {}",
+                                                                    ltbox_core::i18n::tr("live_region_source_target")
+                                                                        .replace("{source}", &format!("{:?}", output.source_region))
+                                                                        .replace("{target}", &format!("{:?}", output.target))
+                                                                );
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Region] {}",
+                                                                    ltbox_core::i18n::tr("live_region_patched")
+                                                                        .replace("{count}", &output.replacement_count.to_string())
+                                                                        .replace("{path}", &output.vendor_boot.display().to_string())
+                                                                );
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Region] {}",
+                                                                    ltbox_core::i18n::tr("live_region_final_vbmeta_written")
+                                                                        .replace("{path}", &output.vbmeta.display().to_string())
+                                                                );
+                                                            }
+                                                            Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
+                                                                source_region,
+                                                                target,
+                                                            }) => {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Region] {}",
+                                                                    ltbox_core::i18n::tr("live_region_source_target")
+                                                                        .replace("{source}", &format!("{:?}", source_region))
+                                                                        .replace("{target}", &format!("{:?}", target))
+                                                                );
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Region] {}",
+                                                                    ltbox_core::i18n::tr("live_region_source_matches_target")
+                                                                );
+                                                            }
+                                                            Err(e) => return Err(format!("Region conversion failed: {e}")),
+                                                        }
+                                                    }
+                                                    AdvAction::PatchDevinfo => {
+                                                        // Country code lives in both devinfo.img
+                                                        // + persist.img — folder picker, at
+                                                        // least one must exist.
+                                                        const KNOWN: &[&str] = &[
+                                                            "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL",
+                                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "GR",
+                                                            "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT", "RO", "SK",
+                                                            "SI", "SE", "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE",
+                                                            "WW",
+                                                        ];
+                                                        const EU: &[&str] = &[
+                                                            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+                                                            "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+                                                            "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+                                                        ];
+                                                        let Some(new_code) = adv_country.as_deref() else {
+                                                            return Err(
+                                                                "No target country code selected — pick one in the popup before starting"
+                                                                    .into(),
+                                                            );
+                                                        };
+                                                        if !input.is_dir() {
+                                                            return Err(format!(
+                                                                "PatchDevinfo expects a folder containing devinfo.img + persist.img, got {}",
+                                                                input.display()
+                                                            ));
+                                                        }
+                                                        let mut any_written = false;
+                                                        let mut any_found = false;
+                                                        for name in ["devinfo.img", "persist.img"] {
+                                                            let src = input.join(name);
+                                                            if !src.exists() {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_name_missing")
+                                                                        .replace("{name}", name)
+                                                                );
+                                                                continue;
+                                                            }
+                                                            any_found = true;
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_processing")
+                                                                    .replace("{path}", &src.display().to_string())
+                                                            );
+                                                            let detected = ltbox_patch::region::detect_country_code(&src, KNOWN)
+                                                                .map_err(|e| format!("Country detect failed on {name}: {e}"))?;
+                                                            let Some(old_code) = detected else {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_no_code_detected")
+                                                                        .replace("{name}", name)
+                                                                );
+                                                                continue;
+                                                            };
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_detected")
+                                                                    .replace("{name}", name)
+                                                                    .replace("{old_code}", &old_code)
+                                                            );
+                                                            let stem = std::path::Path::new(name)
+                                                                .file_stem()
+                                                                .map(|s| s.to_string_lossy().to_string())
+                                                                .unwrap_or_else(|| name.to_string());
+                                                            // v2 naming: `<stem>_modified.img`.
+                                                            let output = output_dir.join(format!("{stem}_modified.img"));
+                                                            match ltbox_patch::region::patch_country_code(&src, &output, &old_code, new_code, EU) {
+                                                                Ok(true) => {
+                                                                    ltbox_core::live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_country_written")
+                                                                            .replace("{name}", name)
+                                                                            .replace("{old_code}", &old_code)
+                                                                            .replace("{new_code}", new_code)
+                                                                            .replace("{path}", &output.display().to_string())
+                                                                    );
+                                                                    any_written = true;
+                                                                }
+                                                                Ok(false) => ltbox_core::live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_no_replacements")
+                                                                        .replace("{name}", name)
+                                                                ),
+                                                                Err(e) => return Err(format!(
+                                                                    "Country patch failed on {name}: {e}"
+                                                                )),
+                                                            }
+                                                        }
+                                                        if !any_found {
+                                                            return Err(format!(
+                                                                "Neither devinfo.img nor persist.img found in {}",
+                                                                input.display()
+                                                            ));
+                                                        }
+                                                        if !any_written {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_already_matches")
+                                                            );
+                                                        }
+                                                    }
+                                                    AdvAction::PatchArb => {
+                                                        // `input` is the firmware folder; user-picked
+                                                        // target rollback index lives on the wizard.
+                                                        let target = adv_arb_index.ok_or_else(|| {
+                                                            "Patch Rollback Index: missing target index".to_string()
+                                                        })?;
+                                                        let boot = input.join("boot.img");
+                                                        let vbmeta = input.join("vbmeta_system.img");
+                                                        if !boot.is_file() {
+                                                            return Err(format!(
+                                                                "Missing boot.img in {}",
+                                                                input.display()
+                                                            ));
+                                                        }
+                                                        if !vbmeta.is_file() {
+                                                            return Err(format!(
+                                                                "Missing vbmeta_system.img in {}",
+                                                                input.display()
+                                                            ));
+                                                        }
+                                                        // Read AVB info first so the abort guards (rollback
+                                                        // == 0 / 1) trip before any signing-key work runs.
+                                                        let boot_info = ltbox_patch::avb::extract_image_avb_info(&boot)
+                                                            .map_err(|e| format!("boot.img inspect failed: {e}"))?;
+                                                        let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(&vbmeta)
+                                                            .map_err(|e| format!("vbmeta_system.img inspect failed: {e}"))?;
+                                                        if boot_info.rollback_index <= 1 {
+                                                            return Err(format!(
+                                                                "boot.img rollback index is {} — refusing to patch",
+                                                                boot_info.rollback_index
+                                                            ));
+                                                        }
+                                                        if vbmeta_info.rollback_index <= 1 {
+                                                            return Err(format!(
+                                                                "vbmeta_system.img rollback index is {} — refusing to patch",
+                                                                vbmeta_info.rollback_index
+                                                            ));
+                                                        }
+                                                        // Signing key resolution: only the two stock
+                                                        // testkeys embedded in avbtool-rs are supported.
+                                                        // Anything else aborts — user-supplied PEMs are
+                                                        // intentionally not consulted.
+                                                        let resolve_key = |info: &ltbox_patch::avb::AvbImageInfo,
+                                                                           label: &str|
+                                                         -> std::result::Result<&'static str, String> {
+                                                            ltbox_patch::key_map::key_spec_for_pubkey(
+                                                                info.public_key_sha1.as_deref(),
+                                                            )
+                                                            .ok_or_else(|| {
+                                                                format!(
+                                                                    "{label}: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
+                                                                    info.public_key_sha1
+                                                                )
+                                                            })
+                                                        };
+                                                        let boot_key = resolve_key(&boot_info, "boot.img")?;
+                                                        let vbmeta_key =
+                                                            resolve_key(&vbmeta_info, "vbmeta_system.img")?;
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
+                                                                .replace("{name}", "boot.img")
+                                                                .replace("{key}", boot_key)
+                                                        );
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_patch_arb_signing_key")
+                                                                .replace("{name}", "vbmeta_system.img")
+                                                                .replace("{key}", vbmeta_key)
+                                                        );
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
+                                                                .replace("{name}", "boot.img")
+                                                                .replace("{old}", &boot_info.rollback_index.to_string())
+                                                                .replace("{new}", &target.to_string())
+                                                        );
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_patch_arb_rollback_change")
+                                                                .replace("{name}", "vbmeta_system.img")
+                                                                .replace("{old}", &vbmeta_info.rollback_index.to_string())
+                                                                .replace("{new}", &target.to_string())
+                                                        );
+                                                        let boot_out = output_dir.join("boot.img");
+                                                        let vbmeta_out = output_dir.join("vbmeta_system.img");
+                                                        // boot.img: NONE → add_hash_footer; signed → resign.
+                                                        std::fs::copy(&boot, &boot_out)
+                                                            .map_err(|e| format!("copy boot.img: {e}"))?;
+                                                        if boot_info.algorithm == "NONE" {
+                                                            ltbox_patch::avb::add_hash_footer(
+                                                                &boot_out,
+                                                                &boot_info,
+                                                                Some(boot_key),
+                                                                Some(target),
+                                                            )
+                                                            .map_err(|e| format!("boot ARB add_hash_footer failed: {e}"))?;
+                                                        } else {
+                                                            ltbox_patch::avb::resign_image(
+                                                                &boot_out,
+                                                                boot_key,
+                                                                &boot_info.algorithm,
+                                                                Some(target),
+                                                            )
+                                                            .map_err(|e| format!("boot ARB resign failed: {e}"))?;
+                                                        }
+                                                        // vbmeta_system.img: always resign (chains require sig).
+                                                        std::fs::copy(&vbmeta, &vbmeta_out)
+                                                            .map_err(|e| format!("copy vbmeta_system.img: {e}"))?;
+                                                        ltbox_patch::avb::resign_image(
+                                                            &vbmeta_out,
+                                                            vbmeta_key,
+                                                            &vbmeta_info.algorithm,
+                                                            Some(target),
+                                                        )
+                                                        .map_err(|e| format!("vbmeta_system ARB resign failed: {e}"))?;
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ARB] {}",
+                                                            ltbox_core::i18n::tr("live_advanced_output_folder")
+                                                                .replace("{path}", &output_dir.display().to_string())
+                                                        );
+                                                    }
+                                                    AdvAction::RebuildVbmeta => {
+                                                        // `resign_image` alone won't work — chain
+                                                        // hashes go stale once dtbo / init_boot /
+                                                        // vendor_boot move.
+                                                        let info = ltbox_patch::avb::extract_image_avb_info(input)
+                                                            .map_err(|e| format!("VBMeta inspect failed: {e}"))?;
+                                                        // Only the two stock testkeys embedded in
+                                                        // avbtool-rs are supported.
+                                                        let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(
+                                                            info.public_key_sha1.as_deref(),
+                                                        )
+                                                        .ok_or_else(|| {
+                                                            format!(
+                                                                "Rebuild vbmeta: signing key not recognized (pubkey {:?}); only testkey_rsa2048 / testkey_rsa4096 are supported",
+                                                                info.public_key_sha1
+                                                            )
+                                                        })?;
+                                                        let alg: Option<&str> = if info.algorithm == "NONE" {
+                                                            // NONE → infer from the resolved key spec.
+                                                            Some(if key_spec.contains("2048") {
+                                                                "SHA256_RSA2048"
+                                                            } else {
+                                                                "SHA256_RSA4096"
+                                                            })
+                                                        } else {
+                                                            Some(info.algorithm.as_str())
+                                                        };
+
+                                                        // Advanced is file-only — user supplies
+                                                        // the chained images (v2 dumps them).
+                                                        let candidates: &[&str] = &[
+                                                            "dtbo.img", "dtbo_a.img", "dtbo_b.img",
+                                                            "init_boot.img", "init_boot_a.img", "init_boot_b.img",
+                                                            "vendor_boot.img", "vendor_boot_a.img", "vendor_boot_b.img",
+                                                            "boot.img", "boot_a.img", "boot_b.img",
+                                                        ];
+                                                        let mut chained: Vec<std::path::PathBuf> = Vec::new();
+                                                        for name in candidates {
+                                                            let p = parent.join(name);
+                                                            if p.exists() {
+                                                                chained.push(p);
+                                                            }
+                                                        }
+                                                        if chained.is_empty() {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[AVB] {}",
+                                                                ltbox_core::i18n::tr("live_avb_no_chained_fallback")
+                                                            );
+                                                            if let Err(e) = ltbox_patch::avb::resign_image(
+                                                                input,
+                                                                key_spec,
+                                                                alg.unwrap_or("SHA256_RSA4096"),
+                                                                Some(info.rollback_index),
+                                                            ) {
+                                                                return Err(format!("Rebuild vbmeta fallback resign failed: {e}"));
+                                                            }
+                                                        } else {
+                                                            if chained.iter().any(|p| {
+                                                                p.file_name()
+                                                                    .and_then(|s| s.to_str())
+                                                                    .map(|s| s.starts_with("vendor_boot"))
+                                                                    .unwrap_or(false)
+                                                            }) {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[AVB] {}",
+                                                                    ltbox_core::i18n::tr("live_avb_rebuild_warning")
+                                                                );
+                                                            }
+                                                            let output = output_dir.join("vbmeta.rebuilt.img");
+                                                            let chained_refs: Vec<&std::path::Path> =
+                                                                chained.iter().map(|p| p.as_path()).collect();
+                                                            let chained_names = chained
+                                                                .iter()
+                                                                .map(|p| {
+                                                                    p.file_name()
+                                                                        .and_then(|s| s.to_str())
+                                                                        .unwrap_or("")
+                                                                })
+                                                                .collect::<Vec<_>>()
+                                                                .join(", ");
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[AVB] {}",
+                                                                ltbox_core::i18n::tr("live_avb_rebuild_chained")
+                                                                    .replace("{count}", &chained.len().to_string())
+                                                                    .replace("{names}", &chained_names)
+                                                            );
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[AVB] {}",
+                                                                ltbox_core::i18n::tr("live_avb_rebuild_key_alg")
+                                                                    .replace("{key}", key_spec)
+                                                                    .replace("{alg}", alg.unwrap_or("(from original vbmeta)"))
+                                                            );
+                                                            if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                                                                &output,
+                                                                input,
+                                                                &chained_refs,
+                                                                key_spec,
+                                                                alg,
+                                                            ) {
+                                                                return Err(format!("Rebuild vbmeta failed: {e}"));
+                                                            }
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[AVB] {}",
+                                                                ltbox_core::i18n::tr("live_avb_rebuilt_written")
+                                                                    .replace("{path}", &output.display().to_string())
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Advanced] {}",
+                                                    ltbox_core::i18n::tr("live_advanced_completed")
+                                                        .replace("{action}", &action_label)
+                                                );
+                                                Ok(log)
+                                                }).and_then(|r| r)
+                                            }).await.unwrap_or(Err("Task failed".to_string()))
+                        },
+                        |result| match result {
+                            Ok(lines) => Message::Adv(AdvMsg::AdvExecDone(lines)),
+                            Err(e) => Message::OperationError(e),
+                        },
+                    );
+                }
+                self.adv_confirm = None;
+                Task::none()
+            }
+            AdvMsg::AdvExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                // Leave adv_wizard / adv_confirm* intact so the exec
+                // screen stays visible with Done/Failed until StartOver.
+                self.end_op();
+                Task::none()
+            }
+            AdvMsg::AdvImageInfoExecStart => {
+                let paths: Vec<std::path::PathBuf> = self
+                    .adv_wizard
+                    .file_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let scanning = self
+                    .t("adv_image_info_scanning")
+                    .replace("{count}", &paths.len().to_string());
+                self.set_image_info_log(scanning);
+                self.begin_silent_op(View::Advanced);
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || {
+                                ltbox_patch::avb::image_info_report(&paths)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .and_then(|r| r)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Task failed: {e}")))
+                    },
+                    |__v| Message::Adv(AdvMsg::AdvImageInfoExecDone(__v)),
+                );
+                Task::none()
+            }
+            AdvMsg::AdvImageInfoExecDone(result) => {
+                self.end_silent_op();
+                match result {
+                    Ok(report) => {
+                        self.error_msg = None;
+                        self.set_image_info_log(report);
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(e.clone());
+                        self.set_image_info_log(format!("ERROR: {e}"));
+                    }
+                }
+                Task::none()
+            }
+            AdvMsg::AdvDetectArbExecStart => {
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                let device_model = self.device_model.clone();
+                let loader_path = self.adv_wizard.file_path.clone();
+                let i_anti = self.t("arb_detect_is_anti_rollback").to_string();
+                let i_not = self.t("arb_detect_no_anti_rollback").to_string();
+                let i_reboot_fastboot = self.t("live_arb_reboot_to_fastboot").to_string();
+                let i_reboot_system = self.t("live_arb_reboot_to_system").to_string();
+                let i_tb320fc_edl = self.t("live_arb_tb320fc_edl_dump").to_string();
+                return task_heavy(
+                    move || {
+                        let mut log = Vec::new();
+                        match detect_arb_run(
+                            conn,
+                            device_model,
+                            loader_path,
+                            &i_anti,
+                            &i_not,
+                            &i_reboot_fastboot,
+                            &i_reboot_system,
+                            &i_tb320fc_edl,
+                            &mut log,
+                        ) {
+                            Ok(()) => Ok(log),
+                            Err(e) => Err(e),
+                        }
+                    },
+                    |__v| Message::Adv(AdvMsg::AdvDetectArbExecDone(__v)),
+                    Err,
+                );
+                Task::none()
+            }
+            AdvMsg::AdvDetectArbExecDone(result) => {
+                match result {
+                    Ok(lines) => {
+                        self.flush_exec_done_log(lines);
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(e.clone());
+                        self.log_push(format!("ERROR: {e}"));
+                    }
+                }
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    /// Dispatch for `Message::Root(...)`. Extracted from
+    /// `fn update` so the per-variant arm bodies don't bloat
+    /// the top-level match.
+    ///
+    /// `#[allow(unreachable_code)]` — many arms end with a
+    /// `return Task::perform(...);` and the trailing fall-
+    /// through `Task::none()` is intentionally unreachable;
+    /// it just satisfies the match-arm signature when the
+    /// arm above runs to its return early.
+    #[allow(unreachable_code)]
+    fn update_root(&mut self, msg: RootMsg) -> Task<Message> {
+        match msg {
+            RootMsg::RootFamily(f) => {
+                // Defense in depth: the family card UI grays out the
+                // Magisk option on TB320FC, but a stale message from a
+                // pre-poll click could still land here. Drop it so the
+                // wizard never enters a configuration we know boot-loops.
+                if self.is_tb320fc() && f == Family::Magisk {
+                    return Task::none();
+                }
+                self.root.family = Some(f);
+                self.root.provider = None;
+                self.root.mode = None;
+                self.root.file_path = None;
+                self.root.kernel_version = None;
+                Task::none()
+            }
+            RootMsg::RootProvider(p) => {
+                self.root.provider = Some(p);
+                self.root.file_path = None;
+                // ReSukiSU has no Stable channel — if the user had Stable
+                // picked before switching to ReSukiSU, force Nightly so the
+                // hidden-Stable version step lands on the sole valid choice
+                // instead of showing an orphan "no selection" state.
+                if p == Provider::ReSukiSU && self.root.version == Some(VerChoice::Stable) {
+                    self.root.version = Some(VerChoice::Nightly);
+                    self.root.nightly_source = None;
+                    self.root.run_id = None;
+                    self.root.run_id_buffer.clear();
+                }
+                Task::none()
+            }
+            RootMsg::RootMode(m) => {
+                // TB320FC: KernelSU LKM bootloops on this kernel. Block
+                // the message even if a stale dispatch slips past the
+                // disabled card so the wizard funnels to GKI only.
+                if self.is_tb320fc() && m == RootMode::Lkm {
+                    return Task::none();
+                }
+                self.root.mode = Some(m);
+                self.root.file_path = None;
+                self.root.kernel_version = None;
+                Task::none()
+            }
+            RootMsg::RootVersion(v) => {
+                self.root.version = Some(v);
+                self.root.nightly_source = None;
+                self.root.run_id = None;
+                self.root.run_id_buffer.clear();
+                Task::none()
+            }
+            RootMsg::RootNightlySource(s) => {
+                self.root.nightly_source = Some(s);
+                match s {
+                    NightlySource::AutoDetect => {
+                        // Leaving ManualInput — drop the committed run ID.
+                        self.root.run_id = None;
+                        self.root.run_id_buffer.clear();
+                    }
+                    NightlySource::ManualInput => {
+                        // Prefill from any previous commit so re-entry is painless.
+                        self.root.run_id_buffer = self.root.run_id.clone().unwrap_or_default();
+                        self.root.run_id_popup_open = true;
+                    }
+                }
+                Task::none()
+            }
+            RootMsg::RootSelectFile => {
+                self.picker_target = PickerTarget::RootFile;
+                let spec = if self.root.is_gki() {
+                    pickers::FilePickSpec::single("picker_target_kernelsu_zip")
+                        .with_filter("ZIP", &["zip"])
+                } else {
+                    pickers::FilePickSpec::single("picker_target_apatch_apk")
+                        .with_filter("APK", &["apk"])
+                };
+                pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected)
+            }
+            RootMsg::RootSelectFolder => {
+                // Name kept for backwards compat with existing view code;
+                // the picker is now a single-file dialog for the EDL
+                // loader (`.melf`) since root no longer needs a full
+                // firmware folder — partitions resolve via the device's
+                // GPT, not `rawprogram*.xml`.
+                if let Some(path) = self.default_loader_path.clone() {
+                    // Settings-level default loader → bypass picker, store
+                    // in `folder_path` (historical field name) so the rest
+                    // of the wizard reads it as if the user picked it.
+                    self.root.folder_path = Some(path);
+                    return Task::none();
+                }
+                self.picker_target = PickerTarget::RootLoader;
+                return pickers::pick_file_for(
+                    loader_file_spec("picker_target_edl_loader"),
+                    &self.recent_paths,
+                    Message::FileSelected,
+                );
+                Task::none()
+            }
+            RootMsg::RootNext => {
+                if self.root.step == 6 {
+                    if self.root.needs_ksu_lkm_kernel_version() {
+                        // ADB probe is blocking — push to the heavy pool so
+                        // the UI doesn't freeze on a slow / unresponsive
+                        // device. Continuation lands in
+                        // `RootKernelVersionProbeDone`.
+                        return task_heavy(
+                            || {
+                                ltbox_device::adb::AdbManager::new_if_connected().and_then(|adb| {
+                                    adb.get_kernel_version().ok().flatten().and_then(|kv| {
+                                        ltbox_patch::root_pipeline::normalize_ksu_kernel_version(
+                                            &kv,
+                                        )
+                                    })
+                                })
+                            },
+                            |__v| Message::Root(RootMsg::RootKernelVersionProbeDone(__v)),
+                            |_e| None,
+                        );
+                    }
+                    self.root.next();
+                    return self.update(Message::Root(RootMsg::RootExecStart));
+                }
+                // APatch KPM step: open superkey popup — advance is
+                // gated on a valid commit, not this press. Always start
+                // on the first-entry stage; the existing committed key
+                // (if any) isn't pre-filled because the user has to
+                // re-type it twice anyway, which is the whole point of
+                // the verification flow.
+                if self.root.step == 8 {
+                    self.root.superkey_buffer.clear();
+                    self.root.superkey_first_entry = None;
+                    self.root.superkey_popup_open = true;
+                    return Task::none();
+                }
+                self.root.next();
+                // After advancing, if the wizard landed on the loader
+                // (folder) step and a Settings-level default loader is
+                // configured + still on disk, pre-fill the folder slot
+                // and skip to the Confirm step. The loader-step picker
+                // becomes invisible to single-device users while staying
+                // available to anyone with `default_loader_path = None`.
+                if self.root.step == 5
+                    && self.root.folder_path.is_none()
+                    && let Some(path) = self.resolved_default_loader()
+                {
+                    self.root.folder_path = Some(path);
+                    self.root.next();
+                }
+                Task::none()
+            }
+            RootMsg::RootBack => {
+                self.root.back();
+                Task::none()
+            }
+            RootMsg::RootSelectKpm => {
+                // Multi-select; paths merge-dedup into the list so
+                // the user can Browse multiple times.
+                let spec = pickers::FilePickSpec::multi("picker_target_kpm_modules")
+                    .with_filter("KPM modules", &["kpm"]);
+                return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
+                    Message::Root(RootMsg::RootKpmSelected(__v))
+                });
+                Task::none()
+            }
+            RootMsg::RootKpmSelected(paths) => {
+                if let Some(paths) = paths {
+                    if let Some(first) = paths.first() {
+                        self.remember_recent(pickers::PickerKind::File, first);
+                    }
+                    for p in paths {
+                        if !self.root.kpm_paths.iter().any(|existing| existing == &p) {
+                            self.root.kpm_paths.push(p);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            RootMsg::RootKpmRemove(path) => {
+                self.root.kpm_paths.retain(|p| p != &path);
+                Task::none()
+            }
+            RootMsg::RootSuperkeyInput(text) => {
+                self.root.superkey_buffer = text;
+                Task::none()
+            }
+            RootMsg::RootSuperkeyConfirm => {
+                let key = self.root.superkey_buffer.trim().to_string();
+                match self.root.superkey_first_entry.take() {
+                    None => {
+                        // Stage 1 — first entry. Validate the format
+                        // up-front so the user finds out about a too-short
+                        // / non-alnum key on the first round, not after
+                        // re-typing it. Upstream rule: 8–63 alphanumeric.
+                        let valid = (8..=63).contains(&key.len())
+                            && key.chars().all(|c| c.is_ascii_alphanumeric());
+                        if !valid {
+                            self.error_msg = Some(self.t("apatch_superkey_invalid").to_string());
+                            return Task::none();
+                        }
+                        // Stash the validated first entry, blank the
+                        // field, and stay open for the verification
+                        // round. View flips to the "re-enter" prompt
+                        // because `superkey_first_entry.is_some()`.
+                        self.root.superkey_first_entry = Some(key);
+                        self.root.superkey_buffer.clear();
+                        self.error_msg = None;
+                    }
+                    Some(first) => {
+                        // Stage 2 — verification entry. Mismatch resets
+                        // the whole flow so the user types both rounds
+                        // again from scratch (no "edit second field"
+                        // shortcut, since the typo could be in either).
+                        if key != first {
+                            self.error_msg = Some(self.t("apatch_superkey_mismatch").to_string());
+                            self.root.superkey_buffer.clear();
+                            // `superkey_first_entry` already cleared by
+                            // the `.take()` above — stage flips back to
+                            // first-entry automatically.
+                            return Task::none();
+                        }
+                        self.root.superkey = Some(key);
+                        self.root.superkey_buffer.clear();
+                        self.root.superkey_popup_open = false;
+                        self.error_msg = None;
+                        self.root.next();
+                    }
+                }
+                Task::none()
+            }
+            RootMsg::RootSuperkeyCancel => {
+                self.root.superkey_buffer.clear();
+                self.root.superkey_first_entry = None;
+                self.root.superkey_popup_open = false;
+                self.error_msg = None;
+                Task::none()
+            }
+            RootMsg::RootRunIdInput(text) => {
+                // GH Actions run IDs are 10 digits; cap at 12 for headroom.
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .take(12)
+                    .collect();
+                self.root.run_id_buffer = filtered;
+                Task::none()
+            }
+            RootMsg::RootRunIdConfirm => {
+                let id = self.root.run_id_buffer.trim().to_string();
+                if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+                    self.error_msg = Some(self.t("nightly_manual_invalid").to_string());
+                    return Task::none();
+                }
+                self.root.run_id = Some(id);
+                self.root.run_id_popup_open = false;
+                self.error_msg = None;
+                Task::none()
+            }
+            RootMsg::RootRunIdCancel => {
+                self.root.run_id_buffer.clear();
+                self.root.run_id_popup_open = false;
+                // Roll back NightlySource so the step gate forces a re-pick.
+                if self.root.run_id.is_none() {
+                    self.root.nightly_source = None;
+                }
+                Task::none()
+            }
+            RootMsg::RootKernelVersionInput(text) => {
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                    .take(16)
+                    .collect();
+                self.root.kernel_version_buffer = filtered;
+                Task::none()
+            }
+            RootMsg::RootKernelVersionConfirm => {
+                let input = self.root.kernel_version_buffer.trim();
+                let Some(kv) = ltbox_patch::root_pipeline::normalize_ksu_kernel_version(input)
+                else {
+                    self.error_msg = Some(self.t("root_kernel_version_invalid").to_string());
+                    return Task::none();
+                };
+                self.root.kernel_version = Some(kv);
+                self.root.kernel_version_buffer.clear();
+                self.root.kernel_version_popup_open = false;
+                self.error_msg = None;
+                if self.root.step == 6 {
+                    self.root.next();
+                    return self.update(Message::Root(RootMsg::RootExecStart));
+                }
+                Task::none()
+            }
+            RootMsg::RootKernelVersionCancel => {
+                self.root.kernel_version_buffer.clear();
+                self.root.kernel_version_popup_open = false;
+                Task::none()
+            }
+            RootMsg::RootKernelVersionProbeDone(detected) => {
+                // Wizard may have moved off step 6 by the time the probe
+                // returns (user clicked Back); only act if still at the
+                // same gating point.
+                if self.root.step != 6 || !self.root.needs_ksu_lkm_kernel_version() {
+                    return Task::none();
+                }
+                if let Some(kv) = detected {
+                    self.root.kernel_version = Some(kv);
+                    self.root.next();
+                    return self.update(Message::Root(RootMsg::RootExecStart));
+                }
+                self.root.kernel_version_buffer =
+                    self.root.kernel_version.clone().unwrap_or_default();
+                self.root.kernel_version_popup_open = true;
+                Task::none()
+            }
+            RootMsg::RootExecStart => {
+                if self
+                    .validate_loader_path(&self.root.folder_path.clone())
+                    .is_err()
+                {
+                    return Task::none();
+                }
+                self.begin_op(View::Root);
+                self.op_steps = self.derive_root_op_steps();
+                self.error_msg = None;
+                let family = self.root.family;
+                let mode = self.root.mode;
+                let provider = self.root.provider;
+                let version = self.root.version;
+                let file_path = self.root.file_path.clone();
+                let gui_kernel_version = self.root.kernel_version.clone();
+                let conn = self.connection;
+                // Folder must contain `xbl_s_devprg_ns.melf`; optional
+                // `keys/testkey_rsa{2048,4096}.pem` as KEY_MAP fallback.
+                let fw_folder = self.root.folder_path.clone();
+                // APatch-only; empty / default elsewhere.
+                let kpm_paths: Vec<std::path::PathBuf> = self
+                    .root
+                    .kpm_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let superkey = self.root.superkey.clone().unwrap_or_default();
+                let nightly_run_id: Option<u64> =
+                    if self.root.nightly_source == Some(NightlySource::ManualInput) {
+                        self.root.run_id.as_deref().and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+
+                let fam_label = family
+                    .map(|f| self.t(f.label_key()).to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                self.log_push(format!(
+                    "[Root] {}",
+                    tr_args!("log_op_starting", what = fam_label)
+                ));
+                // Resolve Magisk preinit device via /proc/self/mountinfo
+                // before ADB vanishes past EDL. Gates /data on the device's
+                // encryption state — metadata-encrypted devices land preinit
+                // on userdata otherwise and boot-loop after first wipe.
+                let preinit_device: String = if matches!(family, Some(Family::Magisk))
+                    && matches!(
+                        self.connection,
+                        ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
+                    ) {
+                    let (mountinfo, encrypt_type) = if let Some(adb) =
+                        ltbox_device::adb::AdbManager::new_if_connected()
+                    {
+                        let mi = adb.shell("cat /proc/self/mountinfo").unwrap_or_default();
+                        let cs = adb.shell("getprop ro.crypto.state").unwrap_or_default();
+                        let ct = adb.shell("getprop ro.crypto.type").unwrap_or_default();
+                        let cme = adb
+                            .shell("getprop ro.crypto.metadata.enabled")
+                            .unwrap_or_default();
+                        (
+                            mi,
+                            ltbox_patch::magisk::derive_encrypt_type(&cs, &ct, &cme).to_string(),
+                        )
+                    } else {
+                        (String::new(), String::from("file"))
+                    };
+                    if mountinfo.is_empty() {
+                        self.log_push(format!(
+                            "[Magisk] {}",
+                            ltbox_core::i18n::tr("log_magisk_preinit_adb_unavailable")
+                        ));
+                        String::new()
+                    } else {
+                        self.log_push(format!(
+                            "[Magisk] {}",
+                            tr_args!("log_magisk_crypto_state", encrypt_type = encrypt_type)
+                        ));
+                        match ltbox_patch::magisk::resolve_preinit_device(&mountinfo, &encrypt_type)
+                        {
+                            Some(name) => {
+                                self.log_push(format!(
+                                    "[Magisk] {}",
+                                    tr_args!("log_magisk_preinit_resolved", name = name)
+                                ));
+                                name
+                            }
+                            None => {
+                                self.log_push(format!(
+                                    "[Magisk] {}",
+                                    ltbox_core::i18n::tr("log_magisk_preinit_none")
+                                ));
+                                String::new()
+                            }
+                        }
+                    }
+                } else {
+                    String::new()
+                };
+                let ll = self.live_labels();
+
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                                            ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
+                                            let mut log = Vec::new();
+                                            let skip_adb = conn.skip_adb();
+
+                                            // GKI route: AnyKernel3 zip is the full input —
+                                            // no provider / version / GitHub fetch.
+                                            let is_gki_route = mode == Some(RootMode::Gki);
+                                            let family = family.ok_or_else(|| "No root family selected".to_string())?;
+                                            let (provider, version) = if is_gki_route {
+                                                // `Magisk` stand-in — picks magiskboot as
+                                                // the backend for unpack/repack.
+                                                (Provider::Magisk, VerChoice::Stable)
+                                            } else {
+                                                let prov = provider.ok_or_else(|| "No provider selected".to_string())?;
+                                                let ver = version.ok_or_else(|| "No version selected".to_string())?;
+                                                (prov, ver)
+                                            };
+
+                                            use ltbox_patch::root_pipeline::{
+                                                RootFamily, RootPipelineConfig, RootProvider, RootVersion,
+                                                build_patched_artifacts, ensure_nightly_run_id,
+                                                stage_root_manager_apk, stage_root_payload,
+                                            };
+
+                                            let pipe_family = match family {
+                                                Family::Magisk => RootFamily::Magisk,
+                                                Family::KernelSU => RootFamily::KernelSU,
+                                                Family::APatch => RootFamily::APatch,
+                                            };
+                                            let pipe_provider = match provider {
+                                                Provider::Magisk => RootProvider::Magisk,
+                                                Provider::MagiskForks => RootProvider::MagiskFork,
+                                                Provider::KernelSU => RootProvider::KernelSU,
+                                                Provider::KernelSUNext => RootProvider::KernelSUNext,
+                                                Provider::SukiSU => RootProvider::SukiSU,
+                                                Provider::ReSukiSU => RootProvider::ReSukiSU,
+                                                Provider::APatch => RootProvider::APatch,
+                                                Provider::FolkPatch => RootProvider::FolkPatch,
+                                            };
+                                            let pipe_version = match version {
+                                                VerChoice::Stable => RootVersion::Stable,
+                                                VerChoice::Nightly => RootVersion::Nightly,
+                                            };
+                                            let file_path_buf: Option<std::path::PathBuf> =
+                                                file_path.as_ref().map(std::path::PathBuf::from);
+
+                                            let loader_path = fw_folder.ok_or_else(|| {
+                                                "No EDL loader selected. Pick an xbl_s_devprg_ns.melf \
+                (or equivalent `.melf`) file on the Loader step and retry."
+                                                    .to_string()
+                                            })?;
+                                            let loader = std::path::PathBuf::from(&loader_path);
+                                            if !loader.is_file() {
+                                                return Err(format!(
+                                                    "Selected loader does not exist: {}",
+                                                    loader.display()
+                                                ));
+                                            }
+                                            // User spec: match on `.melf` extension only —
+                                            // filename itself is free-form, so no
+                                            // `xbl_s_devprg_ns`-equals check.
+                                            let is_melf = loader
+                                                .extension()
+                                                .and_then(|e| e.to_str())
+                                                .is_some_and(|e| e.eq_ignore_ascii_case("melf"));
+                                            if !is_melf {
+                                                return Err(format!(
+                                                    "Selected loader must be a .melf file, got: {}",
+                                                    loader.display()
+                                                ));
+                                            }
+                                            // Signing key: pipeline resolves via KEY_MAP
+                                            // + `public_key_sha1`; PEM is `include_str!`'d
+                                            // in avbtool-rs. No on-disk key consulted here.
+                                            ltbox_core::live!(
+                                                log,
+                                                "[Root] {}",
+                                                ltbox_core::i18n::tr("log_root_loader")
+                                                    .replace("{path}", &loader.display().to_string())
+                                            );
+
+                                            let base = ltbox_core::app_paths::work_dir_for("root");
+                                            let work_dir = base.join("work");
+                                            let output_dir = base.join("out");
+                                            let _ = std::fs::remove_dir_all(&work_dir);
+                                            std::fs::create_dir_all(&work_dir)
+                                                .map_err(|e| format!("work dir: {e}"))?;
+                                            std::fs::create_dir_all(&output_dir)
+                                                .map_err(|e| format!("out dir: {e}"))?;
+
+                                            // Phase 1/7 — ADB connect + slot/kver detect.
+                                            // Front-loaded so the user sees something happen
+                                            // before the long manager-APK / payload download.
+                                            live!(log, "[Root] {}", phase_marker(1, 7, &ll.op_root_phase[0]));
+                                            // Slot detection MUST succeed — root flashes
+                                            // boot_<slot> + vbmeta_<slot> + init_boot_<slot>,
+                                            // and silently defaulting to `_a` previously
+                                            // landed flashes on the wrong slot when the
+                                            // device was actually running on `_b`. Poll
+                                            // both ADB + Fastboot up to 30 s; on failure,
+                                            // the helper returns a diagnostic that names
+                                            // which transport last failed and what to do
+                                            // (re-plug into normal/recovery, reboot to
+                                            // bootloader, fix unauthorized ADB, …).
+                                            let slot_suffix = ltbox_device::controller::poll_active_slot(
+                                                std::time::Duration::from_secs(30),
+                                                &mut log,
+                                            )?;
+                                            // Kernel version probe (KSU LKM) needs ADB
+                                            // shell; runs only when ADB is currently
+                                            // usable so the slot-resolved-via-Fastboot
+                                            // path doesn't waste 30 s waiting for a
+                                            // shell that won't come.
+                                            let mut kernel_version: Option<String> = gui_kernel_version.clone();
+                                            let mut adb_ready_at_start = false;
+                                            if !skip_adb
+                                                && let Some(adb) =
+                                                    ltbox_device::adb::AdbManager::new_if_connected()
+                                            {
+                                                adb_ready_at_start = true;
+                                                if mode == Some(RootMode::Lkm) {
+                                                    if let Ok(Some(kv)) = adb.get_kernel_version() {
+                                                        let normalized =
+                                                            ltbox_patch::root_pipeline::normalize_ksu_kernel_version(&kv);
+                                                        live!(
+                                                            log,
+                                                            "[ADB] {}",
+                                                            ltbox_core::i18n::tr("live_adb_kernel_version")
+                                                                .replace(
+                                                                    "{version}",
+                                                                    normalized.as_deref().unwrap_or(&kv),
+                                                                )
+                                                        );
+                                                        if let Some(kv) = normalized {
+                                                            kernel_version = Some(kv);
+                                                        }
+                                                    } else {
+                                                        live!(log, "[ADB] {}", ll.adb_no_kver);
+                                                    }
+                                                }
+                                            }
+                                            if mode == Some(RootMode::Lkm) && kernel_version.is_none() {
+                                                return Err(
+                                                    "KernelSU LKM requires kernel version before EDL; enter it manually and retry."
+                                                        .to_string(),
+                                                );
+                                            }
+
+                                            let mut manager_cfg = RootPipelineConfig {
+                                                family: pipe_family,
+                                                provider: pipe_provider,
+                                                version: pipe_version,
+                                                work_dir: work_dir.clone(),
+                                                output_dir: output_dir.clone(),
+                                                loader: loader.clone(),
+                                                slot_suffix: slot_suffix.clone(),
+                                                preinit_device: preinit_device.clone(),
+                                                kernel_version: kernel_version.clone(),
+                                                gki_kernel_zip: if is_gki_route { file_path_buf.clone() } else { None },
+                                                gki_mode: is_gki_route,
+                                                kpm_paths: kpm_paths.clone(),
+                                                superkey: superkey.clone(),
+                                                magisk_forks_apk: if matches!(pipe_provider, RootProvider::MagiskFork) {
+                                                    file_path_buf.clone()
+                                                } else {
+                                                    None
+                                                },
+                                                nightly_run_id,
+                                            };
+                                            // Phase 2/7 — Download EVERY root file before
+                                            // EDL: manager APK + per-family payload
+                                            // (Magisk APK extract / KSU `.ko`+`init` /
+                                            // APatch APK→kpimg). Used to split the .ko +
+                                            // ksuinit fetch into Phase 5; that hid a
+                                            // multi-second network stall behind a
+                                            // "patching" label and blocked the user
+                                            // from copying the device serial. Single
+                                            // download burst now, then offline patch.
+                                            live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
+                                            // Pin the nightly workflow run ID once so
+                                            // every fetch in this Phase 2 pulls from
+                                            // the SAME upstream build. Without this,
+                                            // a new workflow landing between the
+                                            // ~minute-long manager APK download and
+                                            // the .ko/ksuinit fetch would split the
+                                            // installed manager APK across two
+                                            // different builds.
+                                            ensure_nightly_run_id(&mut manager_cfg, &mut log)
+                                                .map_err(|e| format!("Nightly run resolve: {e}"))?;
+                                            let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
+                                                .map_err(|e| format!("Manager APK: {e}"))?;
+                                            stage_root_payload(&manager_cfg, &mut log)
+                                                .map_err(|e| format!("Root payload: {e}"))?;
+                                            let manager_installed_pre_edl = if adb_ready_at_start {
+                                                if let Some(path) = manager_apk.as_ref() {
+                                                    install_root_manager_apk(path, &mut log)?;
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            } else {
+                                                false
+                                            };
+
+                                            // Wrap the device-interaction phase (phase 1/6 onwards)
+                                            // so any error triggers a best-effort EDL → system reset
+                                            // before we bubble the error up. Without this, a failure
+                                            // mid-pipeline (e.g. patch errors out) leaves the device
+                                            // stuck in 9008 mode and the user has to yank the cable
+                                            // + battery to recover. `log` / `loader` are captured by
+                                            // reference so both the success and failure paths still
+                                            // see the accumulated lines.
+                                            let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
+                                            // Phase 3/7 — Reboot to EDL (was Phase 1/6).
+                                            live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
+                                            transition_to_edl(conn, &ll, &mut log)?;
+
+                                            // Partition naming: `boot{_a|_b}` for GKI + APatch
+                                            // (kernel-blob patching) and `init_boot{_a|_b}` for
+                                            // Magisk / KSU (ramdisk injection). Slot is derived
+                                            // from ADB/Fastboot pre-EDL; on devices without an
+                                            // active-slot getvar we default to `_a`.
+                                            //
+                                            // Root pipeline no longer consumes `rawprogram*.xml`
+                                            // — `EdlSession::{dump,flash}_partition` resolves
+                                            // geometry via the device's on-storage GPT using
+                                            // these names, matching the equivalent one-shot
+                                            // `qdl-rs dump-part <name>` / `write <name> <img>`
+                                            // invocations a user would run by hand.
+                                            let is_gki_mode = is_gki_route;
+                                            let base_name = ltbox_patch::root_pipeline::boot_partition_base(pipe_family, is_gki_mode);
+                                            // `slot_suffix` was poll-resolved at Phase 1
+                                            // and propagated through `RootPipelineConfig`;
+                                            // it is guaranteed to be `_a` or `_b` here.
+                                            let boot_primary = format!("{base_name}{slot_suffix}");
+                                            let vbmeta_primary = format!("vbmeta{slot_suffix}");
+                                            // Lenovo devices on Qualcomm UFS place
+                                            // boot / init_boot / vbmeta on LUN 4 (userdata
+                                            // LUN), same index used by the reference
+                                            // `qdl-rs --phys-part-idx 4` recipe.
+                                            const ROOT_PARTITIONS_LUN: u8 = 4;
+                                            live!(
+                                                log,
+                                                "[Root] {} {} / {} (LUN {ROOT_PARTITIONS_LUN})",
+                                                ll.root_resolved_prefix,
+                                                boot_primary,
+                                                vbmeta_primary,
+                                            );
+
+                                            // Phase 4/7 — Read stock images (was Phase 2/6).
+                                            live!(log, "[Root] {}", phase_marker(4, 7, &ll.op_root_phase[3]));
+                                            // Hoisted so Phase 6 can echo the path.
+                                            // Routed through `app_paths::backup_dir_for`
+                                            // so AppImage / distro Linux installs don't
+                                            // try to write next to the executable.
+                                            let backup_dir = ltbox_core::app_paths::backup_dir_for(
+                                                &format!("backup_{base_name}"),
+                                            );
+                                            {
+                                                let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
+                                                    .map_err(|e| format!("EDL session: {e}"))?;
+                                                // Patch pipeline hardcodes `init_boot.img` /
+                                                // `vbmeta.img` regardless of device label.
+                                                let boot_out = if base_name == "boot" { "boot.img" } else { "init_boot.img" };
+                                                let dumped_boot = work_dir.join(boot_out);
+                                                let dumped_vbmeta = work_dir.join("vbmeta.img");
+                                                // `dump_partition` scans the LUN's GPT for the
+                                                // named partition — matches the shell-level
+                                                // `qdl-rs --phys-part-idx 4 dump-part <name>`.
+                                                session.dump_partition(&boot_primary, &dumped_boot, 0, ROOT_PARTITIONS_LUN, &mut log)
+                                                    .map_err(|e| format!("Dump {boot_primary}: {e}"))?;
+                                                session.dump_partition(&vbmeta_primary, &dumped_vbmeta, 0, ROOT_PARTITIONS_LUN, &mut log)
+                                                    .map_err(|e| format!("Dump {vbmeta_primary}: {e}"))?;
+                                                // Dump backup next to `ltbox.exe` for Unroot.
+                                                let _ = std::fs::create_dir_all(&backup_dir);
+                                                let _ = std::fs::copy(&dumped_boot, backup_dir.join(boot_out));
+                                                let _ = std::fs::copy(&dumped_vbmeta, backup_dir.join("vbmeta.img"));
+                                                live!(
+                                                    log,
+                                                    "[Root] {} {} + vbmeta.img → {}",
+                                                    ll.root_backup_copy_prefix,
+                                                    boot_out,
+                                                    backup_dir.display()
+                                                );
+                                                // Bounce to Sahara — otherwise the second
+                                                // session's sahara_run times out because
+                                                // the device is still in Firehose.
+                                                session.reset_to_edl(&mut log)
+                                                    .map_err(|e| format!("reset_to_edl: {e}"))?;
+                                                // Terminate any dangling pbr `\r`-only
+                                                // line so the next message gets a fresh row.
+                                                println!();
+                                                live!(log, "[EDL] {}", ll.closing_dump);
+                                                // Drop session — serial port closes so
+                                                // the post-patch open gets a fresh handle.
+                                            }
+
+                                            // Phase 5/7 — Offline patch + AVB resign +
+                                            // vbmeta rebuild. Network downloads moved
+                                            // up to Phase 2; this step never touches
+                                            // the network so progress now matches the
+                                            // "patching" label.
+                                            live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
+
+                                            // The patch phase reuses the same config the
+                                            // download phase built — none of the input
+                                            // locals mutate between Phase 2 and Phase 5
+                                            // (only `nightly_run_id` was hoisted out of
+                                            // `manager_cfg` for logging). Clone the cfg
+                                            // instead of re-cloning every field, which
+                                            // keeps the two phases in lockstep automatically
+                                            // if a future field gets added to the struct.
+                                            let cfg = manager_cfg.clone();
+                                            let artifacts = build_patched_artifacts(&cfg, &mut log)
+                                                .map_err(|e| format!("Root patch: {e}"))?;
+                                            if manager_apk.is_none() {
+                                                manager_apk = artifacts.manager_apk.clone();
+                                            }
+                                            // Phase 6/7 — Write patched images (was Phase
+                                            // 5/6). Old standalone Phase 4 marker dropped
+                                            // since there was no real work between it and
+                                            // flash open — collapsed into this one phase.
+                                            live!(log, "[Root] {}", phase_marker(6, 7, &ll.op_root_phase[5]));
+                                            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+                                                .map_err(|e| format!("EDL session (flash): {e}"))?;
+                                            // Mirror of the equivalent one-shot `qdl-rs
+                                            // --phys-part-idx 4 write <name> <img>` — GPT
+                                            // resolves the start sector, so no rawprogram
+                                            // sector attrs to thread through.
+                                            session
+                                                .flash_partition(&boot_primary, &artifacts.patched_boot, 0, ROOT_PARTITIONS_LUN, &mut log)
+                                                .map_err(|e| format!("Flash {boot_primary}: {e}"))?;
+                                            if let Some(vbpath) = &artifacts.patched_vbmeta {
+                                                session
+                                                    .flash_partition(&vbmeta_primary, vbpath, 0, ROOT_PARTITIONS_LUN, &mut log)
+                                                    .map_err(|e| format!("Flash {vbmeta_primary}: {e}"))?;
+                                            }
+                                            println!();
+                                            // Phase 7/7 — Reboot to system (was Phase 6/6).
+                                            live!(log, "[Root] {}", phase_marker(7, 7, &ll.op_root_phase[6]));
+                                            // Surface the backup folder before the reset
+                                            // so the user doesn't have to scroll.
+                                            if backup_dir.exists() {
+                                                live!(
+                                                    log,
+                                                    "[Root] {} {}",
+                                                    ll.backup_saved_prefix,
+                                                    backup_dir.display()
+                                                );
+                                            }
+                                            session.reset_tolerant(&mut log);
+                                            if !manager_installed_pre_edl
+                                                && let Some(path) = manager_apk.as_ref()
+                                            {
+                                                wait_and_install_root_manager_apk(
+                                                    path,
+                                                    std::time::Duration::from_secs(60),
+                                                    &mut log,
+                                                )
+                                                .map_err(|e| format!("Manager APK install after reboot failed: {e}"))?;
+                                            }
+                                            live!(log, "[Root] {}", ll.root_completed);
+                                            Ok(())
+                                            })();
+                                            match device_phase_result {
+                                                Ok(()) => {
+                                                    // Success path only: drop the
+                                                    // `AppData\Roaming\ltbox\root`
+                                                    // staging tree (work_dir + out)
+                                                    // so a stale ~30 MB Magisk APK +
+                                                    // dumped boot/vbmeta blobs from a
+                                                    // previous run don't accumulate
+                                                    // on disk indefinitely. On error
+                                                    // we KEEP it — having the dumped
+                                                    // stock images, downloaded payload
+                                                    // and intermediate patched files
+                                                    // around makes post-mortem
+                                                    // debugging tractable.
+                                                    let _ = std::fs::remove_dir_all(&base);
+                                                    Ok(log)
+                                                }
+                                                Err(e) => {
+                                                    // Best-effort: open a fresh session on the same
+                                                    // loader and ask the device to boot. `reset_tolerant`
+                                                    // already swallows the post-handoff error some
+                                                    // devices return, so this never masks the real
+                                                    // error — failures here are only logged.
+                                                    let mut reset_log: Vec<String> = Vec::new();
+                                                    reset_log.push(format!(
+                                                        "[EDL] attempting device reset after error: {e}"
+                                                    ));
+                                                    if let Ok(mut s) = ltbox_device::edl::EdlSession::open(
+                                                        &loader,
+                                                        false,
+                                                        &mut reset_log,
+                                                    ) {
+                                                        s.reset_tolerant(&mut reset_log);
+                                                    } else {
+                                                        reset_log.push(
+                                                            "[EDL] reset skipped — could not re-open EDL session".into(),
+                                                        );
+                                                    }
+                                                    for line in reset_log {
+                                                        println!("{line}");
+                                                    }
+                                                    Err(e)
+                                                }
+                                            }
+                                            }).and_then(|r| r)
+                                        }).await.unwrap_or(Err("Task failed".to_string()))
+                    },
+                    |result| match result {
+                        Ok(lines) => Message::Root(RootMsg::RootExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                );
+                Task::none()
+            }
+            RootMsg::RootExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
     }
 }
 
