@@ -945,7 +945,29 @@ impl EdlSession {
 
         let mut file = std::fs::File::open(&image_path)?;
         if file_sector_offset > 0 {
-            file.seek(SeekFrom::Start(sector_size * file_sector_offset))?;
+            // `file_sector_offset * sector_size` can overflow u64 if the
+            // rawprogram XML carries a hostile or corrupted value (untrusted
+            // input — the same XML that names the partition). On overflow the
+            // wrap-around lands at a tiny offset and we'd flash bytes from the
+            // wrong region of `image_path` to the device. Reject overflow and
+            // require the resulting byte offset to fit inside the image file
+            // so we never seek past EOF and feed Firehose stale read data.
+            let byte_offset = sector_size.checked_mul(file_sector_offset).ok_or_else(|| {
+                EdlError::Session(format!(
+                    "{ctx}: file_sector_offset {file_sector_offset} \
+                         × sector_size {sector_size} overflows u64"
+                ))
+            })?;
+            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            if byte_offset >= file_len {
+                return Err(EdlError::Session(format!(
+                    "{ctx}: file_sector_offset {file_sector_offset} \
+                     (byte offset {byte_offset}) >= image length {file_len} \
+                     for {}",
+                    image_path.display(),
+                )));
+            }
+            file.seek(SeekFrom::Start(byte_offset))?;
         }
 
         ltbox_core::live!(
