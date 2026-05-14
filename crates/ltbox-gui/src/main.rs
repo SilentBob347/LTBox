@@ -2100,6 +2100,48 @@ impl Wizard for UnrootWizard {
 }
 
 // =========================================================================
+// Device classification
+// =========================================================================
+
+/// Classifies the device model into a known SKU so wizard gates ask
+/// "what device class are we on?" once instead of comparing the raw
+/// `device_model` string at each call site.
+///
+/// `Generic` covers every supported Lenovo tablet that doesn't need a
+/// special branch — Y700 2nd / 3rd / 4th gen, the Yoga / Xiaoxin
+/// rebrands, etc. They share the standard `xbl_s_devprg_ns.melf`
+/// loader and full ROW + OtherRegion flash flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceClass {
+    /// TB320FC — Lenovo Yoga Pad Pro AI / Yoga Tab Plus AI. Root flow
+    /// limited to KernelSU GKI + APatch family.
+    TB320FC,
+    /// TB322FC — Lenovo Xiaoxin Pad Pro GT (PRC-only SKU). Flash
+    /// wizard hides ROW + OtherRegion + non-CN country picks.
+    TB322FC,
+    /// TB323FU — Lenovo Legion Tab Y700 5th Gen (Kaanapali). Requires
+    /// the multi-image `qsahara_device_programmer.xml` Sahara manifest
+    /// rather than a single `.melf` loader.
+    TB323FU,
+    /// Any other supported model. No special-case gates apply.
+    Generic,
+}
+
+impl DeviceClass {
+    fn from_model(model: &str) -> Self {
+        if model.eq_ignore_ascii_case("TB320FC") {
+            Self::TB320FC
+        } else if model.eq_ignore_ascii_case("TB322FC") {
+            Self::TB322FC
+        } else if model.eq_ignore_ascii_case("TB323FU") {
+            Self::TB323FU
+        } else {
+            Self::Generic
+        }
+    }
+}
+
+// =========================================================================
 // Flash wizard state
 // =========================================================================
 
@@ -10879,11 +10921,21 @@ impl App {
         true
     }
 
+    /// Classification of the polled device — the wizard's gating
+    /// branches (Root family availability, EDL loader manifest path,
+    /// region-flash availability) ask this enum directly instead of
+    /// pattern-matching the raw `device_model` string at every call
+    /// site. New SKUs add a variant here once; the existing `is_tbXXX`
+    /// methods are thin shims that delegate to this classifier.
+    fn device_class(&self) -> DeviceClass {
+        DeviceClass::from_model(&self.device_model)
+    }
+
     /// Whether the polled device is a TB320FC. Drives the Root wizard
     /// gating (Magisk family disabled, KernelSU LKM mode disabled —
     /// only KernelSU GKI + APatch family work cleanly on this kernel).
     fn is_tb320fc(&self) -> bool {
-        self.device_model.eq_ignore_ascii_case("TB320FC")
+        self.device_class() == DeviceClass::TB320FC
     }
 
     /// Whether the polled device is a TB323FU. Drives the multi-image
@@ -10895,7 +10947,7 @@ impl App {
     /// the same folder; if not, it aborts up front rather than
     /// failing mid-Sahara.
     fn is_tb323fu(&self) -> bool {
-        self.device_model.eq_ignore_ascii_case("TB323FU")
+        self.device_class() == DeviceClass::TB323FU
     }
 
     /// Whether the polled device is a TB322FC. PRC-only SKU — the Flash
@@ -10903,7 +10955,7 @@ impl App {
     /// cannot pick a region or cross-region flash target that the
     /// hardware doesn't ship with.
     fn is_tb322fc(&self) -> bool {
-        self.device_model.eq_ignore_ascii_case("TB322FC")
+        self.device_class() == DeviceClass::TB322FC
     }
 
     /// True when the dashboard poll has placed the device in a mode
