@@ -401,9 +401,11 @@ fn main() -> iced::Result {
     app.run()
 }
 
-fn is_dark(t: &Theme) -> bool {
-    t.palette().background.r < 0.5
-}
+/// Re-export so existing call sites keep their short `is_dark(t)`
+/// usage; the canonical definition now lives in `theme::is_dark` so
+/// helpers inside that module can also use it without re-implementing
+/// the probe.
+use theme::is_dark;
 
 /// Global tracing subscriber writing daily-rotated files under
 /// `%APPDATA%\ltbox\logs\`. Caller must hold the returned `WorkerGuard`
@@ -10772,58 +10774,28 @@ impl App {
             list = list.push(btn);
         }
 
-        let popup_content = container(
-            column![
-                row![
-                    text(self.t("popup_select_country").to_string()).size(16),
-                    Space::new().width(Length::Fill),
-                    button(
-                        text(self.t("btn_cancel").to_string())
-                            .size(12)
-                            .style(muted_style)
-                    )
-                    .on_press(Message::DismissCountryPopup)
-                    .padding([4, 12])
-                    .style(neutral_pill_btn_style),
-                ]
-                .align_y(iced::Alignment::Center),
-                widget::rule::horizontal(1),
-                scrollable(list).height(300),
+        let popup_content: Element<'_, Message> = column![
+            row![
+                text(self.t("popup_select_country").to_string()).size(16),
+                Space::new().width(Length::Fill),
+                button(
+                    text(self.t("btn_cancel").to_string())
+                        .size(12)
+                        .style(muted_style)
+                )
+                .on_press(Message::DismissCountryPopup)
+                .padding([4, 12])
+                .style(neutral_pill_btn_style),
             ]
-            .spacing(10)
-            .padding(20)
-            .width(400),
-        )
-        .style(|t: &Theme| {
-            let p = pal_of(t);
-            container::Style {
-                background: Some(p.surface_container.into()),
-                border: iced::Border {
-                    color: p.outline_variant,
-                    width: 1.0,
-                    radius: theme::shape::MD.into(),
-                },
-                shadow: iced::Shadow {
-                    color: with_alpha(p.shadow, 0.3),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 20.0,
-                },
-                ..Default::default()
-            }
-        });
-
-        container(
-            container(popup_content)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_t: &Theme| container::Style {
-            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
-            ..Default::default()
-        })
-        .into()
+            .align_y(iced::Alignment::Center),
+            widget::rule::horizontal(1),
+            scrollable(list).height(300),
+        ]
+        .spacing(10)
+        .padding(20)
+        .width(400)
+        .into();
+        m3_dialog(popup_content)
     }
 
     /// PRC / ROW radio popup for the Advanced RegionConvert wizard.
@@ -10867,58 +10839,28 @@ impl App {
             );
         }
 
-        let popup_content = container(
-            column![
-                row![
-                    text(self.t("popup_select_region_target").to_string()).size(16),
-                    Space::new().width(Length::Fill),
-                    button(
-                        text(self.t("btn_cancel").to_string())
-                            .size(12)
-                            .style(muted_style)
-                    )
-                    .on_press(Message::DismissRegionTargetPopup)
-                    .padding([4, 12])
-                    .style(neutral_pill_btn_style),
-                ]
-                .align_y(iced::Alignment::Center),
-                widget::rule::horizontal(1),
-                list,
+        let popup_content: Element<'_, Message> = column![
+            row![
+                text(self.t("popup_select_region_target").to_string()).size(16),
+                Space::new().width(Length::Fill),
+                button(
+                    text(self.t("btn_cancel").to_string())
+                        .size(12)
+                        .style(muted_style)
+                )
+                .on_press(Message::DismissRegionTargetPopup)
+                .padding([4, 12])
+                .style(neutral_pill_btn_style),
             ]
-            .spacing(10)
-            .padding(20)
-            .width(320),
-        )
-        .style(|t: &Theme| {
-            let p = pal_of(t);
-            container::Style {
-                background: Some(p.surface_container.into()),
-                border: iced::Border {
-                    color: p.outline_variant,
-                    width: 1.0,
-                    radius: theme::shape::MD.into(),
-                },
-                shadow: iced::Shadow {
-                    color: with_alpha(p.shadow, 0.3),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 20.0,
-                },
-                ..Default::default()
-            }
-        });
-
-        container(
-            container(popup_content)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_t: &Theme| container::Style {
-            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
-            ..Default::default()
-        })
-        .into()
+            .align_y(iced::Alignment::Center),
+            widget::rule::horizontal(1),
+            list,
+        ]
+        .spacing(10)
+        .padding(20)
+        .width(320)
+        .into();
+        m3_dialog(popup_content)
     }
 
     // -- Sidebar ----------------------------------------------------------
@@ -11758,20 +11700,7 @@ impl App {
             container(text(default_loader_help).size(11))
                 .padding([6, 10])
                 .max_width(280)
-                .style(|t: &Theme| {
-                    let p = pal_of(t);
-                    container::Style {
-                        background: Some(p.surface_container_high.into()),
-                        text_color: Some(p.on_surface),
-                        border: iced::Border {
-                            color: p.outline_variant,
-                            width: 1.0,
-                            radius: theme::shape::SM.into(),
-                        },
-                        shadow: theme::elevation(2, is_dark(t)),
-                        ..Default::default()
-                    }
-                }),
+                .style(|t: &Theme| theme::tooltip_style(t, theme::shape::SM)),
             widget::tooltip::Position::Right,
         );
 
@@ -11824,20 +11753,7 @@ impl App {
             browse_btn,
             container(text(self.t("settings_default_loader_browse").to_string()).size(11))
                 .padding([6, 10])
-                .style(|t: &Theme| {
-                    let p = pal_of(t);
-                    container::Style {
-                        background: Some(p.surface_container_high.into()),
-                        text_color: Some(p.on_surface),
-                        border: iced::Border {
-                            color: p.outline_variant,
-                            width: 1.0,
-                            radius: theme::shape::XS.into(),
-                        },
-                        shadow: theme::elevation(2, is_dark(t)),
-                        ..Default::default()
-                    }
-                }),
+                .style(|t: &Theme| theme::tooltip_style(t, theme::shape::XS)),
             widget::tooltip::Position::Top,
         );
 
@@ -11881,20 +11797,7 @@ impl App {
                 clear_btn,
                 container(text(self.t("settings_default_loader_clear").to_string()).size(11))
                     .padding([6, 10])
-                    .style(|t: &Theme| {
-                        let p = pal_of(t);
-                        container::Style {
-                            background: Some(p.surface_container_high.into()),
-                            text_color: Some(p.on_surface),
-                            border: iced::Border {
-                                color: p.outline_variant,
-                                width: 1.0,
-                                radius: theme::shape::XS.into(),
-                            },
-                            shadow: theme::elevation(2, is_dark(t)),
-                            ..Default::default()
-                        }
-                    }),
+                    .style(|t: &Theme| theme::tooltip_style(t, theme::shape::XS)),
                 widget::tooltip::Position::Top,
             );
             default_loader_actions = default_loader_actions.push(clear_tip);
@@ -12621,61 +12524,32 @@ impl App {
                 }
             })
         };
-        let popup_content = container(
-            column![
-                row![
-                    text(self.t("rescue_region_popup_title").to_string()).size(16),
-                    Space::new().width(Length::Fill),
-                    button(
-                        text(self.t("btn_cancel").to_string())
-                            .size(12)
-                            .style(muted_style)
-                    )
-                    .on_press(Message::Sys(SysMsg::SysRescueRegionPopupDismiss))
-                    .padding([4, 12])
-                    .style(neutral_pill_btn_style),
-                ]
-                .align_y(iced::Alignment::Center),
-                widget::rule::horizontal(1),
-                text(self.t("rescue_region_popup_subtitle").to_string())
-                    .size(12)
-                    .style(muted_style),
-                mk_option(RescueRegion::Prc, "rescue_region_prc_desc"),
-                mk_option(RescueRegion::Row, "rescue_region_row_desc"),
+        let popup_content: Element<'_, Message> = column![
+            row![
+                text(self.t("rescue_region_popup_title").to_string()).size(16),
+                Space::new().width(Length::Fill),
+                button(
+                    text(self.t("btn_cancel").to_string())
+                        .size(12)
+                        .style(muted_style)
+                )
+                .on_press(Message::Sys(SysMsg::SysRescueRegionPopupDismiss))
+                .padding([4, 12])
+                .style(neutral_pill_btn_style),
             ]
-            .spacing(10)
-            .padding(20)
-            .width(420),
-        )
-        .style(|t: &Theme| {
-            let p = pal_of(t);
-            container::Style {
-                background: Some(p.surface_container.into()),
-                border: iced::Border {
-                    color: p.outline_variant,
-                    width: 1.0,
-                    radius: theme::shape::MD.into(),
-                },
-                shadow: iced::Shadow {
-                    color: with_alpha(p.shadow, 0.3),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 20.0,
-                },
-                ..Default::default()
-            }
-        });
-        // Dim-scrim under the dialog so the wizard behind it doesn't
-        // visually compete with the choice.
-        container(popup_content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_t: &Theme| container::Style {
-                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
-                ..Default::default()
-            })
-            .into()
+            .align_y(iced::Alignment::Center),
+            widget::rule::horizontal(1),
+            text(self.t("rescue_region_popup_subtitle").to_string())
+                .size(12)
+                .style(muted_style),
+            mk_option(RescueRegion::Prc, "rescue_region_prc_desc"),
+            mk_option(RescueRegion::Row, "rescue_region_row_desc"),
+        ]
+        .spacing(10)
+        .padding(20)
+        .width(420)
+        .into();
+        m3_dialog(popup_content)
     }
 
     fn sysupdate_exec_step(&self) -> Element<'_, Message> {
@@ -16179,12 +16053,7 @@ fn md_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
             ..Default::default()
         };
     }
-    let state_alpha = match status {
-        button::Status::Hovered => theme::state::HOVER,
-        button::Status::Pressed => theme::state::PRESSED,
-        _ => 0.0,
-    };
-    let bg = blend(p.primary, p.on_primary, state_alpha);
+    let bg = blend(p.primary, p.on_primary, theme::state_alpha(status));
     button::Style {
         background: Some(bg.into()),
         text_color: p.on_primary,
@@ -16199,11 +16068,7 @@ fn md_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
 /// M3 text button — no fill, state layer on hover/press.
 fn md_text_btn_style(t: &Theme, status: button::Status) -> button::Style {
     let p = pal_of(t);
-    let bg_alpha = match status {
-        button::Status::Hovered => theme::state::HOVER,
-        button::Status::Pressed => theme::state::PRESSED,
-        _ => 0.0,
-    };
+    let bg_alpha = theme::state_alpha(status);
     button::Style {
         background: if bg_alpha > 0.0 {
             Some(with_alpha(p.primary, bg_alpha).into())
@@ -16400,15 +16265,7 @@ fn nav_btn<'a>(
             // icon) is the sole "selected" marker, and state layers
             // only stack on top during interaction. Idle active items
             // therefore get no row background.
-            let bg = match status {
-                button::Status::Hovered => {
-                    Some(with_alpha(p.on_surface, theme::state::HOVER).into())
-                }
-                button::Status::Pressed => {
-                    Some(with_alpha(p.on_surface, theme::state::PRESSED).into())
-                }
-                _ => None,
-            };
+            let bg = theme::state_layer_bg(status, p.on_surface).map(|c| c.into());
             button::Style {
                 background: bg,
                 text_color: if active {

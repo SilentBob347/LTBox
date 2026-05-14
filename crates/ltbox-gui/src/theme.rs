@@ -155,6 +155,16 @@ pub const fn palette(dark_mode: bool) -> &'static Palette {
     if dark_mode { &DARK } else { &LIGHT }
 }
 
+/// Probe `iced::Theme` for the active mode. We don't store a flag on
+/// the theme directly, so the heuristic looks at `palette().background`
+/// — light backgrounds have a high red channel (M3 surface tones land
+/// at `0xFB+` on light), dark ones at `0x13+`. Centralised so both
+/// `theme::tooltip_style` (and the rest of this module) and the GUI
+/// call sites agree on a single source of truth.
+pub fn is_dark(t: &iced::Theme) -> bool {
+    t.palette().background.r < 0.5
+}
+
 /// Overlay a color with alpha — used for M3 state layers.
 pub const fn with_alpha(c: Color, a: f32) -> Color {
     Color { a, ..c }
@@ -181,6 +191,56 @@ pub mod state {
     pub const FOCUS: f32 = 0.10;
     pub const PRESSED: f32 = 0.12;
     pub const DRAGGED: f32 = 0.16;
+}
+
+/// M3 state-layer alpha for an `iced::widget::button::Status` — `0.0`
+/// when idle, `HOVER` on hover, `PRESSED` while pressed. Centralises
+/// the inline `match status { Hovered => HOVER, Pressed => PRESSED,
+/// _ => 0.0 }` pattern that was scattered across the GUI's button
+/// style closures.
+pub fn state_alpha(status: iced::widget::button::Status) -> f32 {
+    use iced::widget::button::Status;
+    match status {
+        Status::Hovered => state::HOVER,
+        Status::Pressed => state::PRESSED,
+        _ => 0.0,
+    }
+}
+
+/// Combine [`state_alpha`] with [`with_alpha`] to produce the M3
+/// state-layer tint for a button's background overlay. Returns
+/// `None` when the button is idle so callers can use
+/// `Option<Background>` directly.
+///
+/// `layer_color` is the M3 "on-X" color of the surface the button
+/// sits on (usually `palette.on_surface`).
+pub fn state_layer_bg(status: iced::widget::button::Status, layer_color: Color) -> Option<Color> {
+    let alpha = state_alpha(status);
+    if alpha == 0.0 {
+        None
+    } else {
+        Some(with_alpha(layer_color, alpha))
+    }
+}
+
+/// Standard M3 tooltip container style — `surface_container_high`
+/// background, `outline_variant` 1 px border, level-2 elevation.
+/// `radius` lets the caller pick `shape::XS` / `shape::SM` to match
+/// the surrounding component scale.
+pub fn tooltip_style(t: &iced::Theme, radius: f32) -> iced::widget::container::Style {
+    let dark = is_dark(t);
+    let p = palette(dark);
+    iced::widget::container::Style {
+        background: Some(p.surface_container_high.into()),
+        text_color: Some(p.on_surface),
+        border: iced::Border {
+            color: p.outline_variant,
+            width: 1.0,
+            radius: radius.into(),
+        },
+        shadow: elevation(2, dark),
+        ..Default::default()
+    }
 }
 
 /// M3 motion tokens — easing curves (cubic-bezier control points) and
