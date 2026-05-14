@@ -279,15 +279,70 @@ impl EdlSession {
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_uploading"));
         // qdl `sahara_run` indexes `img_arr` by image-id when len>1, else slot 0.
-        qdl::sahara::sahara_run(
+        // First attempt: trust PBL to emit Sahara HELLO. `sahara_run`'s loop
+        // blocks on the first `channel.read` waiting for the HELLO packet,
+        // then replies with HELLO_RESP (qdl `sahara.rs:489-509`).
+        let first_attempt = qdl::sahara::sahara_run(
             &mut dev,
             qdl::sahara::SaharaMode::WaitingForImage,
             None,
             &mut slots,
             vec![],
             false,
-        )
-        .map_err(|e| EdlError::Session(format!("Sahara failed: {e}")))?;
+        );
+        match first_attempt {
+            Ok(_) => {}
+            Err(e) => {
+                // Skip-HELLO fallback: mirrors qdl CLI's
+                // `--skip-hello-wait` (cli/src/main.rs:246-248): send an
+                // unsolicited HELLO_RESP to nudge the PBL state machine
+                // forward, then retry `sahara_run`. Only triggered on a
+                // timeout-shaped error so happy-path devices keep using the
+                // standard handshake (no behavior change unless the first
+                // attempt already failed).
+                //
+                // Primary check: structured downcast to
+                // `io::ErrorKind::TimedOut` (qdl-rs propagates the
+                // serialport read timeout as an `io::Error` wrapped in
+                // `anyhow::Error`). String fallback is defense-in-depth in
+                // case a future qdl-rs revision changes the wrapping.
+                let timed_out = e
+                    .downcast_ref::<std::io::Error>()
+                    .map(|io| io.kind() == std::io::ErrorKind::TimedOut)
+                    .unwrap_or(false)
+                    || {
+                        let emsg = e.to_string();
+                        emsg.contains("timed out")
+                            || emsg.contains("TimedOut")
+                            || emsg.contains("timeout")
+                    };
+                if !timed_out {
+                    return Err(EdlError::Session(format!("Sahara failed: {e}")));
+                }
+                ltbox_core::live!(
+                    log,
+                    "[EDL] Sahara HELLO timed out — retrying with skip-hello fallback (PBL HELLO may be consumed / not emitted on this firmware)"
+                );
+                qdl::sahara::sahara_send_hello_rsp(
+                    &mut dev,
+                    qdl::sahara::SaharaMode::WaitingForImage,
+                )
+                .map_err(|e| {
+                    EdlError::Session(format!("Sahara skip-hello HELLO_RESP send failed: {e}"))
+                })?;
+                qdl::sahara::sahara_run(
+                    &mut dev,
+                    qdl::sahara::SaharaMode::WaitingForImage,
+                    None,
+                    &mut slots,
+                    vec![],
+                    false,
+                )
+                .map_err(|e| {
+                    EdlError::Session(format!("Sahara failed after skip-hello retry: {e}"))
+                })?;
+            }
+        }
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_uploaded"));
 
         // See `open` doc: reset_on_drop stays false to dodge qdl's recursive reset.
