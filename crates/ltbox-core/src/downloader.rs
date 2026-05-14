@@ -4,7 +4,6 @@
 //! lines to a caller-owned log. Pairs with [`crate::github::GitHubClient`]
 //! for release-asset URL resolution.
 
-use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::error::{LtboxError, Result};
@@ -42,29 +41,53 @@ pub(crate) fn build_agent() -> ureq::Agent {
     shared_agent().clone()
 }
 
-/// Download `url` to `out_path` in 64 KiB chunks. Progress is throttled to
-/// one log line per 10%. Creates missing parent dirs; overwrites existing file.
-pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Result<()> {
+/// Event emitted by [`stream_with_progress`] at each progress
+/// throttle gate. Callers map these into log lines (and / or telemetry
+/// counters) — the streamer keeps no opinions about formatting or
+/// i18n.
+pub enum DownloadEvent {
+    /// Stream opened, before any bytes have been read.
+    Start,
+    /// Known `Content-Length`: a new 5 % bucket boundary fired.
+    ProgressPct {
+        downloaded_mb: f64,
+        total_mb: f64,
+        pct: i32,
+        speed_mbps: f64,
+    },
+    /// Unknown length (chunked or no header): 750 ms tick fired.
+    ProgressChunked { downloaded_mb: f64, speed_mbps: f64 },
+    /// Body fully read + flushed to disk.
+    Done { downloaded_mb: f64, elapsed_s: f64 },
+}
+
+/// Stream `url` to `out_path` in 64 KiB chunks; the caller's
+/// `on_event` closure handles all progress logging / formatting.
+/// Centralises the byte loop + 5 %-bucket + 750 ms-tick throttle so
+/// secondary consumers (e.g. the Windows driver installer) don't
+/// re-implement the streaming logic just to swap the log prefix and
+/// i18n keys.
+///
+/// Creates missing parent dirs; overwrites existing file.
+pub fn stream_with_progress<F>(
+    agent: &ureq::Agent,
+    url: &str,
+    out_path: &Path,
+    log: &mut Vec<String>,
+    mut on_event: F,
+) -> Result<()>
+where
+    F: FnMut(&mut Vec<String>, DownloadEvent),
+{
+    use std::io::{Read, Write};
+
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-
-    let mut resp = build_agent()
+    let mut resp = agent
         .get(url)
         .call()
         .map_err(|e| LtboxError::Download(format!("GET {url}: {e}")))?;
-
-    let display_name = out_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download");
-    // `live!` (vs the previous `log.push`) routes through the live
-    // sink so the GUI streams every progress tick in real time —
-    // otherwise long downloads (LKM nightly payloads, KSU manager
-    // APKs) sat invisible until `*ExecDone` flushed the Vec.
-    crate::live!(log, "[dl] {display_name} ← {url}");
-
-    // None on chunked responses.
     let total: Option<u64> = resp
         .headers()
         .get(ureq::http::header::CONTENT_LENGTH)
@@ -75,8 +98,10 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
     let mut buf = [0u8; 64 * 1024];
     let mut downloaded: u64 = 0;
     let mut last_pct_bucket: i32 = -1;
-    let mut last_emit_at = std::time::Instant::now();
-    let started_at = last_emit_at;
+    let started_at = std::time::Instant::now();
+    let mut last_emit_at = started_at;
+
+    on_event(log, DownloadEvent::Start);
 
     loop {
         let n = reader
@@ -88,11 +113,6 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
         file.write_all(&buf[..n])?;
         downloaded += n as u64;
 
-        // Two emit gates so the GUI gets steady progress without log
-        // spam:
-        //   * Known content-length: every 5% bucket.
-        //   * Unknown length (chunked) or just slow links: at least
-        //     once every 750 ms with a running KB count + speed.
         let now = std::time::Instant::now();
         let dl_mb = downloaded as f64 / 1_000_000.0;
         let elapsed = now.duration_since(started_at).as_secs_f64().max(0.001);
@@ -106,32 +126,92 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
                 last_pct_bucket = bucket;
                 last_emit_at = now;
                 let total_mb = total as f64 / 1_000_000.0;
-                let bar = render_progress_bar(pct as u32, 24);
-                crate::live!(
+                on_event(
                     log,
-                    "[dl] {display_name} {bar} {pct:>3}% ({dl_mb:.1}/{total_mb:.1} MB, {speed_mbps:.1} MB/s)"
+                    DownloadEvent::ProgressPct {
+                        downloaded_mb: dl_mb,
+                        total_mb,
+                        pct,
+                        speed_mbps,
+                    },
                 );
             }
         } else if now.duration_since(last_emit_at) >= std::time::Duration::from_millis(750) {
             last_emit_at = now;
-            crate::live!(
+            on_event(
                 log,
-                "[dl] {display_name} {dl_mb:.1} MB ({speed_mbps:.1} MB/s)"
+                DownloadEvent::ProgressChunked {
+                    downloaded_mb: dl_mb,
+                    speed_mbps,
+                },
             );
         }
     }
 
+    let elapsed_s = started_at.elapsed().as_secs_f64().max(0.001);
     let dl_mb = downloaded as f64 / 1_000_000.0;
-    let elapsed = std::time::Instant::now()
-        .duration_since(started_at)
-        .as_secs_f64()
-        .max(0.001);
-    let speed_mbps = dl_mb / elapsed;
-    crate::live!(
+    on_event(
         log,
-        "[dl] {display_name} done ({dl_mb:.1} MB in {elapsed:.1}s, avg {speed_mbps:.1} MB/s)"
+        DownloadEvent::Done {
+            downloaded_mb: dl_mb,
+            elapsed_s,
+        },
     );
     Ok(())
+}
+
+/// Download `url` to `out_path` in 64 KiB chunks. Progress is throttled to
+/// one log line per 5 %. Creates missing parent dirs; overwrites existing file.
+pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Result<()> {
+    let display_name = out_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let url_for_start = url.to_string();
+    let agent = build_agent();
+    stream_with_progress(&agent, url, out_path, log, move |log, event| {
+        // `live!` (vs the previous `log.push`) routes through the live
+        // sink so the GUI streams every progress tick in real time —
+        // otherwise long downloads (LKM nightly payloads, KSU manager
+        // APKs) sat invisible until `*ExecDone` flushed the Vec.
+        match event {
+            DownloadEvent::Start => {
+                crate::live!(log, "[dl] {display_name} ← {url_for_start}");
+            }
+            DownloadEvent::ProgressPct {
+                downloaded_mb,
+                total_mb,
+                pct,
+                speed_mbps,
+            } => {
+                let bar = render_progress_bar(pct as u32, 24);
+                crate::live!(
+                    log,
+                    "[dl] {display_name} {bar} {pct:>3}% ({downloaded_mb:.1}/{total_mb:.1} MB, {speed_mbps:.1} MB/s)"
+                );
+            }
+            DownloadEvent::ProgressChunked {
+                downloaded_mb,
+                speed_mbps,
+            } => {
+                crate::live!(
+                    log,
+                    "[dl] {display_name} {downloaded_mb:.1} MB ({speed_mbps:.1} MB/s)"
+                );
+            }
+            DownloadEvent::Done {
+                downloaded_mb,
+                elapsed_s,
+            } => {
+                let avg = downloaded_mb / elapsed_s.max(0.001);
+                crate::live!(
+                    log,
+                    "[dl] {display_name} done ({downloaded_mb:.1} MB in {elapsed_s:.1}s, avg {avg:.1} MB/s)"
+                );
+            }
+        }
+    })
 }
 
 /// 24-cell ASCII progress bar — `[████████····]`.  Renders nicely in

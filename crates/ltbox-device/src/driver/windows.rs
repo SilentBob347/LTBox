@@ -11,7 +11,6 @@
 //! `cfg!(windows)` runtime check from the pre-rename module folds
 //! into compile-time guarantees here.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -283,11 +282,11 @@ fn decode_console(bytes: &[u8]) -> String {
     }
 }
 
-/// Stream `url` to `out_path` in 64 KiB chunks, emitting a progress line
-/// every 5 % bucket (or every 750 ms for chunked / unknown-length
-/// responses). Mirrors `ltbox_core::downloader::download_to_file` but
-/// kept local to the driver crate so this stays self-contained for the
-/// Windows-only `pnputil` install path.
+/// Stream `url` to `out_path` via the shared
+/// [`ltbox_core::downloader::stream_with_progress`] streamer, formatting
+/// progress lines with the driver-flow i18n keys (`live_driver_*`) and
+/// the `[Driver]` log prefix. The byte loop + 5 % bucket + 750 ms tick
+/// throttle live in core; only the per-event log formatting stays here.
 fn download_with_progress(
     agent: &ureq::Agent,
     url: &str,
@@ -295,90 +294,67 @@ fn download_with_progress(
     out_path: &Path,
     log: &mut Vec<String>,
 ) -> Result<()> {
-    live!(
-        log,
-        "[Driver] {}",
-        tr_args!("live_driver_downloading", name = display_name)
-    );
-    let mut resp = agent.get(url).call()?;
-    let total: Option<u64> = resp
-        .headers()
-        .get(ureq::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
-    let mut reader = resp.body_mut().as_reader();
-    let mut file = std::fs::File::create(out_path)?;
-    let mut buf = [0u8; 64 * 1024];
-    let mut downloaded: u64 = 0;
-    let mut last_pct_bucket: i32 = -1;
-    let started_at = std::time::Instant::now();
-    let mut last_emit_at = started_at;
-
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| DriverError::Http(format!("download read: {e}")))?;
-        if n == 0 {
-            break;
+    use ltbox_core::downloader::{DownloadEvent, stream_with_progress};
+    let display_name = display_name.to_string();
+    stream_with_progress(agent, url, out_path, log, move |log, event| match event {
+        DownloadEvent::Start => {
+            live!(
+                log,
+                "[Driver] {}",
+                tr_args!("live_driver_downloading", name = &display_name)
+            );
         }
-        file.write_all(&buf[..n])?;
-        downloaded += n as u64;
-
-        let now = std::time::Instant::now();
-        let dl_mb = downloaded as f64 / 1_000_000.0;
-        let elapsed = now.duration_since(started_at).as_secs_f64().max(0.001);
-        let speed = dl_mb / elapsed;
-        if let Some(total) = total
-            && total > 0
-        {
-            let pct = (downloaded * 100 / total) as i32;
-            let bucket = pct / 5;
-            if bucket > last_pct_bucket {
-                last_pct_bucket = bucket;
-                last_emit_at = now;
-                let total_mb = total as f64 / 1_000_000.0;
-                live!(
-                    log,
-                    "[Driver] {}",
-                    tr_args!(
-                        "live_driver_progress_pct",
-                        name = display_name,
-                        pct = format!("{pct:>3}"),
-                        downloaded = format!("{dl_mb:.1}"),
-                        total = format!("{total_mb:.1}"),
-                        speed = format!("{speed:.1}"),
-                    )
-                );
-            }
-        } else if now.duration_since(last_emit_at) >= std::time::Duration::from_millis(750) {
-            last_emit_at = now;
+        DownloadEvent::ProgressPct {
+            downloaded_mb,
+            total_mb,
+            pct,
+            speed_mbps,
+        } => {
+            live!(
+                log,
+                "[Driver] {}",
+                tr_args!(
+                    "live_driver_progress_pct",
+                    name = &display_name,
+                    pct = format!("{pct:>3}"),
+                    downloaded = format!("{downloaded_mb:.1}"),
+                    total = format!("{total_mb:.1}"),
+                    speed = format!("{speed_mbps:.1}"),
+                )
+            );
+        }
+        DownloadEvent::ProgressChunked {
+            downloaded_mb,
+            speed_mbps,
+        } => {
             live!(
                 log,
                 "[Driver] {}",
                 tr_args!(
                     "live_driver_progress_chunked",
-                    name = display_name,
-                    downloaded = format!("{dl_mb:.1}"),
-                    speed = format!("{speed:.1}"),
+                    name = &display_name,
+                    downloaded = format!("{downloaded_mb:.1}"),
+                    speed = format!("{speed_mbps:.1}"),
                 )
             );
         }
-    }
-
-    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
-    let dl_mb = downloaded as f64 / 1_000_000.0;
-    live!(
-        log,
-        "[Driver] {}",
-        tr_args!(
-            "live_driver_dl_done",
-            name = display_name,
-            size = format!("{dl_mb:.1}"),
-            elapsed = format!("{elapsed:.1}"),
-        )
-    );
-    Ok(())
+        DownloadEvent::Done {
+            downloaded_mb,
+            elapsed_s,
+        } => {
+            live!(
+                log,
+                "[Driver] {}",
+                tr_args!(
+                    "live_driver_dl_done",
+                    name = &display_name,
+                    size = format!("{downloaded_mb:.1}"),
+                    elapsed = format!("{elapsed_s:.1}"),
+                )
+            );
+        }
+    })
+    .map_err(|e| DriverError::Http(format!("download: {e}")))
 }
 
 fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
