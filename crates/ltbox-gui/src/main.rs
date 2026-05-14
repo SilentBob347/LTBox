@@ -5440,12 +5440,51 @@ impl App {
                             // ARB analysis above is diagnostic only — flash plan unchanged.
 
                             // 6. XML
+                            //
+                            // Decrypt every `.x` in place — output sits next
+                            // to its source as `<stem>.xml` so the catalog
+                            // scan below picks it up and the EDL flash can
+                            // still resolve image paths via `xml_dir.join`.
                             if x_count > 0 {
                                 ltbox_core::live!(
                                     log,
                                     "[XML] {}",
                                     ltbox_core::i18n::tr("live_xml_decrypt_pending")
                                         .replace("{count}", &x_count.to_string())
+                                );
+                                let x_entries: Vec<std::path::PathBuf> =
+                                    std::fs::read_dir(fw_dir)
+                                        .map_err(|e| {
+                                            format!("read_dir {}: {e}", fw_dir.display())
+                                        })?
+                                        .filter_map(|r| r.ok().map(|e| e.path()))
+                                        .filter(|p| {
+                                            p.is_file()
+                                                && p.extension()
+                                                    .and_then(|s| s.to_str())
+                                                    .map(|s| s.eq_ignore_ascii_case("x"))
+                                                    .unwrap_or(false)
+                                        })
+                                        .collect();
+                                let mut decrypted = 0usize;
+                                for src in &x_entries {
+                                    let stem = src.file_stem().unwrap_or_default();
+                                    let output = fw_dir.join(stem).with_extension("xml");
+                                    ltbox_core::crypto::decrypt_file(src, &output).map_err(
+                                        |e| {
+                                            format!(
+                                                "Decrypt failed for {}: {e}",
+                                                src.display()
+                                            )
+                                        },
+                                    )?;
+                                    decrypted += 1;
+                                }
+                                ltbox_core::live!(
+                                    log,
+                                    "[XML] {}",
+                                    ltbox_core::i18n::tr("live_xml_decrypt_done")
+                                        .replace("{count}", &decrypted.to_string())
                                 );
                             }
                             if !cfg.wipe && xml_count > 0 {

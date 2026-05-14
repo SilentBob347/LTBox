@@ -407,6 +407,7 @@
   "live_unroot_loader_path": "加载器: {path}",
   "live_unroot_resolved_from_rawprogram": "根据 rawprogram 解析 {boot_primary} → {boot_label} (LUN {boot_lun}) / {vbmeta_primary} → {vbmeta_label} (LUN {vbmeta_lun})",
   "live_wait_edl_port": "等待 Qualcomm 9008 端口出现...",
+  "live_xml_decrypt_done": "已解密 {count} 个 .x 文件 → .xml",
   "live_xml_decrypt_pending": "{count} 个加密 .x 文件 — 将进行解密",
   "live_xml_keep_excludes": "保留数据模式 — 排除 userdata/metadata",
   "log_apatch_extracted_kpimg": "已提取 assets/kpimg → {path}({bytes} 字节)",

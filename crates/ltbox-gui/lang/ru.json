@@ -407,6 +407,7 @@
   "live_unroot_loader_path": "Загрузчик: {path}",
   "live_unroot_resolved_from_rawprogram": "По rawprogram: {boot_primary} → {boot_label} (LUN {boot_lun}) / {vbmeta_primary} → {vbmeta_label} (LUN {vbmeta_lun})",
   "live_wait_edl_port": "Ожидание появления порта Qualcomm 9008...",
+  "live_xml_decrypt_done": "Расшифровано {count} файлов .x → .xml",
   "live_xml_decrypt_pending": "{count} зашифрованных .x — будет выполнено расшифрование",
   "live_xml_keep_excludes": "Режим Keep data — userdata/metadata исключены",
   "log_apatch_extracted_kpimg": "извлечён assets/kpimg → {path} ({bytes} байт)",

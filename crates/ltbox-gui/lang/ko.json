@@ -407,6 +407,7 @@
   "live_unroot_loader_path": "로더: {path}",
   "live_unroot_resolved_from_rawprogram": "rawprogram 기준 해석 {boot_primary} → {boot_label} (LUN {boot_lun}) / {vbmeta_primary} → {vbmeta_label} (LUN {vbmeta_lun})",
   "live_wait_edl_port": "퀄컴 9008 포트 감지 대기 중...",
+  "live_xml_decrypt_done": ".x 파일 {count}개 복호화 완료 → .xml",
   "live_xml_decrypt_pending": "암호화된 .x 파일 {count}개 — 복호화 예정",
   "live_xml_keep_excludes": "데이터 유지 모드 — userdata/metadata 제외",
   "log_apatch_extracted_kpimg": "assets/kpimg 추출 완료 → {path} ({bytes} 바이트)",
