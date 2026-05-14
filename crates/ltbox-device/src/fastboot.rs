@@ -203,15 +203,23 @@ impl FastbootDevice {
     }
 
     /// Active slot suffix (`_a` / `_b`).
+    ///
+    /// Whitelisted against `["a", "b", "_a", "_b"]` to match the ADB
+    /// path's [`adb::AdbManager::get_slot_suffix`] contract. Some
+    /// bootloaders return an empty or garbage `current-slot` on
+    /// non-A/B devices; feeding that into downstream
+    /// `vendor_boot{suffix}` partition lookups produced e.g.
+    /// `vendor_bootxyz` lookups that failed with misleading errors.
     pub fn get_slot_suffix(&mut self) -> Result<Option<String>> {
         match self.getvar("current-slot") {
-            Ok(slot) if !slot.is_empty() => {
-                let suffix = if slot.starts_with('_') {
-                    slot
-                } else {
-                    format!("_{slot}")
+            Ok(slot) => {
+                let trimmed = slot.trim();
+                let normalized = match trimmed {
+                    "a" | "_a" => Some("_a".to_string()),
+                    "b" | "_b" => Some("_b".to_string()),
+                    _ => None,
                 };
-                Ok(Some(suffix))
+                Ok(normalized)
             }
             _ => Ok(None),
         }
