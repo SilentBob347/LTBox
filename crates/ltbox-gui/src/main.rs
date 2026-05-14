@@ -7386,7 +7386,6 @@ impl App {
                             // different builds.
                             ensure_nightly_run_id(&mut manager_cfg, &mut log)
                                 .map_err(|e| format!("Nightly run resolve: {e}"))?;
-                            let nightly_run_id = manager_cfg.nightly_run_id;
                             let mut manager_apk = stage_root_manager_apk(&manager_cfg, &mut log)
                                 .map_err(|e| format!("Manager APK: {e}"))?;
                             stage_root_payload(&manager_cfg, &mut log)
@@ -7502,27 +7501,15 @@ impl App {
                             // "patching" label.
                             live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
 
-                            let cfg = RootPipelineConfig {
-                                family: pipe_family,
-                                provider: pipe_provider,
-                                version: pipe_version,
-                                work_dir: work_dir.clone(),
-                                output_dir: output_dir.clone(),
-                                loader: loader.clone(),
-                                slot_suffix: slot_suffix.clone(),
-                                preinit_device: preinit_device.clone(),
-                                kernel_version: kernel_version.clone(),
-                                gki_kernel_zip: if is_gki_route { file_path_buf.clone() } else { None },
-                                gki_mode: is_gki_route,
-                                kpm_paths: kpm_paths.clone(),
-                                superkey: superkey.clone(),
-                                magisk_forks_apk: if matches!(pipe_provider, RootProvider::MagiskFork) {
-                                    file_path_buf.clone()
-                                } else {
-                                    None
-                                },
-                                nightly_run_id,
-                            };
+                            // The patch phase reuses the same config the
+                            // download phase built — none of the input
+                            // locals mutate between Phase 2 and Phase 5
+                            // (only `nightly_run_id` was hoisted out of
+                            // `manager_cfg` for logging). Clone the cfg
+                            // instead of re-cloning every field, which
+                            // keeps the two phases in lockstep automatically
+                            // if a future field gets added to the struct.
+                            let cfg = manager_cfg.clone();
                             let artifacts = build_patched_artifacts(&cfg, &mut log)
                                 .map_err(|e| format!("Root patch: {e}"))?;
                             if manager_apk.is_none() {

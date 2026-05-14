@@ -92,6 +92,12 @@ pub enum RootVersion {
 }
 
 /// Root pipeline input — GUI wizard state converted into a flat struct.
+///
+/// `Clone` so the GUI can hand the same configuration to the
+/// download phase and the patch phase without re-cloning every field
+/// at the second call site (large `.clone()` block previously
+/// duplicated between Phase 2 and Phase 5 of the wizard worker).
+#[derive(Clone)]
 pub struct RootPipelineConfig {
     pub family: RootFamily,
     pub provider: RootProvider,
