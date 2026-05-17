@@ -3330,12 +3330,11 @@ fn wait_and_install_root_manager_apk(
     loop {
         match install_root_manager_apk(manager_apk, log) {
             Ok(()) => return Ok(()),
-            Err(last) if std::time::Instant::now() >= deadline => {
-                return Err(format!(
-                    "{last}. Install the manager APK manually: {}",
-                    manager_apk.display()
-                ));
-            }
+            // Return the raw install error only — the caller wraps it
+            // with the manual-install reminder template (avoids the
+            // "Install manually: {path}" hint showing up twice in the
+            // same log line).
+            Err(last) if std::time::Instant::now() >= deadline => return Err(last),
             Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
         }
     }
@@ -16067,10 +16066,38 @@ impl App {
                                                 .map_err(|e| format!("Manager APK: {e}"))?;
                                             stage_root_payload(&manager_cfg, &mut log)
                                                 .map_err(|e| format!("Root payload: {e}"))?;
+                                            // Manager-APK install failures are non-fatal — the
+                                            // patcher / flasher work still produces a usable
+                                            // root install; only the manager UI is missing.
+                                            // Record the donor path so we can surface a
+                                            // "install manually" reminder at the end of the
+                                            // run instead of aborting the whole pipeline (e.g.
+                                            // `INSTALL_FAILED_VERSION_DOWNGRADE` when the user
+                                            // already has a newer manager installed).
+                                            let mut manager_install_failed_path:
+                                                Option<std::path::PathBuf> = None;
                                             let manager_installed_pre_edl = if adb_ready_at_start {
                                                 if let Some(path) = manager_apk.as_ref() {
-                                                    install_root_manager_apk(path, &mut log)?;
-                                                    true
+                                                    match install_root_manager_apk(path, &mut log) {
+                                                        Ok(()) => true,
+                                                        Err(e) => {
+                                                            live!(
+                                                                log,
+                                                                "[Root] {}",
+                                                                ltbox_core::i18n::tr(
+                                                                    "log_root_manager_apk_install_failed_manual"
+                                                                )
+                                                                .replace("{error}", &e)
+                                                                .replace(
+                                                                    "{path}",
+                                                                    &path.display().to_string(),
+                                                                )
+                                                            );
+                                                            manager_install_failed_path =
+                                                                Some(path.clone());
+                                                            false
+                                                        }
+                                                    }
                                                 } else {
                                                     false
                                                 }
@@ -16225,15 +16252,47 @@ impl App {
                                                 );
                                             }
                                             session.reset_tolerant(&mut log);
+                                            // Skip post-reboot retry if the pre-EDL install
+                                            // already failed for a deterministic reason
+                                            // (e.g. `INSTALL_FAILED_VERSION_DOWNGRADE`) — the
+                                            // 60 s wait + reinstall would just hit the same
+                                            // error after the user's burned a minute waiting.
+                                            // The end-of-run reminder still fires from the
+                                            // pre-EDL `manager_install_failed_path` stamp.
                                             if !manager_installed_pre_edl
+                                                && manager_install_failed_path.is_none()
                                                 && let Some(path) = manager_apk.as_ref()
-                                            {
-                                                wait_and_install_root_manager_apk(
+                                                && let Err(e) = wait_and_install_root_manager_apk(
                                                     path,
                                                     std::time::Duration::from_secs(60),
                                                     &mut log,
                                                 )
-                                                .map_err(|e| format!("Manager APK install after reboot failed: {e}"))?;
+                                            {
+                                                // Same non-fatal handling as the pre-EDL path —
+                                                // log the warning, record the donor path for the
+                                                // post-run reminder, keep going so the user
+                                                // doesn't lose the success summary just because
+                                                // the manager package couldn't auto-install.
+                                                live!(
+                                                    log,
+                                                    "[Root] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "log_root_manager_apk_install_failed_manual"
+                                                    )
+                                                    .replace("{error}", &e)
+                                                    .replace("{path}", &path.display().to_string())
+                                                );
+                                                manager_install_failed_path = Some(path.clone());
+                                            }
+                                            if let Some(path) = manager_install_failed_path.as_ref() {
+                                                live!(
+                                                    log,
+                                                    "[Root] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "log_root_manager_apk_manual_reminder"
+                                                    )
+                                                    .replace("{path}", &path.display().to_string())
+                                                );
                                             }
                                             live!(log, "[Root] {}", ll.root_completed);
                                             Ok(())
