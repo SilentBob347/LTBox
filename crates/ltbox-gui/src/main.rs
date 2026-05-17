@@ -2063,17 +2063,17 @@ struct UnrootWizard {
     step: usize,
     unroot_type: Option<UnrootType>,
     folder_path: Option<String>,
-    /// Loader file (`xbl_s_devprg_ns.melf`) for the EDL flash. Decoupled
-    /// from the backup folder — a typical Unroot workflow points
-    /// `folder_path` at a folder that holds only `boot.img` + `vbmeta.img`,
-    /// with no loader inside. The wizard pre-fills this from the
-    /// Settings-level default loader when one is configured + on disk;
-    /// otherwise the folder step exposes a separate loader picker.
+    /// Loader file (`xbl_s_devprg_ns.melf`) for the EDL flash. Has
+    /// its own wizard step. The Settings-level default loader
+    /// auto-fills + auto-advances the loader step on Next from the
+    /// method step (mirrors the Root wizard's step-5 fold-through);
+    /// anyone without a default sees the explicit loader picker.
     loader_path: Option<String>,
 }
 
 const UNROOT_STEPS: &[&str] = &[
     "unroot_step_method",
+    "unroot_step_loader",
     "unroot_step_folder",
     "unroot_step_confirm",
     "unroot_step_restore",
@@ -2090,10 +2090,14 @@ impl Wizard for UnrootWizard {
         UNROOT_STEPS.len()
     }
     fn can_next(&self) -> bool {
+        // Step indexes match `UNROOT_STEPS` — loader is its own step
+        // (#1) so the folder step (#2) only gates on the backup folder
+        // pick and doesn't have to bundle a loader sub-row.
         match self.step {
             0 => self.unroot_type.is_some(),
-            1 => self.folder_path.is_some() && self.loader_path.is_some(),
-            2 => true,
+            1 => self.loader_path.is_some(),
+            2 => self.folder_path.is_some(),
+            3 => true,
             _ => false,
         }
     }
@@ -4961,14 +4965,14 @@ impl App {
                 }
                 if v == View::Unroot && !busy && !self.unroot.is_in_exec() {
                     self.unroot.reset();
-                    // Pre-fill the new loader slot from Settings so the
-                    // user with a default loader configured doesn't see
-                    // a "Pick loader" prompt — the folder step's loader
-                    // sub-row hides itself once `loader_path` is `Some`.
-                    if let Some(path) = self.resolved_default_loader() {
-                        self.unroot.loader_path = Some(path);
-                    }
                 }
+                // Loader pre-fill happens on the Next-into-loader-step
+                // transition in `UnrootNext` (mirrors the Root wizard's
+                // step-5 fill + advance pattern), not on view entry — an
+                // entry-time pre-fill would make the loader step
+                // unreachable when a default is set, hiding it from
+                // anyone wanting to back-nav and pick a different
+                // loader.
                 // Advanced view: reset every sub-wizard + the generic
                 // adv wizard's action / file selection on entry, so a
                 // sidebar bounce mid-flow doesn't reopen the same
@@ -8635,12 +8639,13 @@ impl App {
         let step_bar = wizard_step_bar(&step_labels, self.unroot.step);
         let body = match self.unroot.step {
             0 => self.unroot_type_step(),
-            1 => self.unroot_folder_step(),
-            2 => self.unroot_confirm_step(),
+            1 => self.unroot_loader_step(),
+            2 => self.unroot_folder_step(),
+            3 => self.unroot_confirm_step(),
             _ => self.unroot_exec_step(),
         };
-        let nav = if self.unroot.step < 3 {
-            let is_start = self.unroot.step == 2;
+        let nav = if self.unroot.step < 4 {
+            let is_start = self.unroot.step == 3;
             let label_owned = if is_start {
                 self.t("btn_start").to_string()
             } else {
@@ -8710,6 +8715,62 @@ impl App {
             .into()
     }
 
+    fn unroot_loader_step(&self) -> Element<'_, Message> {
+        let selected = self.unroot.loader_path.is_some();
+        let status = if let Some(p) = &self.unroot.loader_path {
+            p.clone()
+        } else {
+            self.t("dump_parts_loader_placeholder").to_string()
+        };
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_loader").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.t("unroot_loader_subtitle").to_string())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(280)
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .on_press(Message::Unroot(UnrootMsg::UnrootSelectLoader))
+        .padding(0)
+        .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
+        let col = column![
+            text(self.t("unroot_loader_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            btn,
+            text(status)
+                .size(12)
+                .style(move |t: &Theme| {
+                    let p = pal_of(t);
+                    iced::widget::text::Style {
+                        color: Some(if selected { p.success } else { p.outline }),
+                    }
+                })
+                .center(),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
     fn unroot_folder_step(&self) -> Element<'_, Message> {
         let selected = self.unroot.folder_path.is_some();
         let desc_owned = self
@@ -8748,7 +8809,7 @@ impl App {
             "picker_recents",
             false,
         );
-        let mut col = column![
+        let col = column![
             text(self.t("unroot_folder_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
@@ -8768,44 +8829,6 @@ impl App {
         .padding(28)
         .width(Length::Fill)
         .align_x(iced::Alignment::Center);
-
-        // Loader sub-row — separate from the backup folder picker
-        // because Unroot's folder is for boot.img + vbmeta.img only.
-        // Hidden when the wizard already has a loader (typically
-        // pre-filled from the Settings default at view enter time);
-        // otherwise the user picks a loader file here.
-        if self.unroot.loader_path.is_none() {
-            let loader_btn = button(
-                container(
-                    column![
-                        text(self.t("btn_browse_loader").to_string())
-                            .size(14)
-                            .center(),
-                        text(self.t("dump_parts_loader_desc").to_string())
-                            .size(11)
-                            .style(muted_style)
-                            .center(),
-                    ]
-                    .spacing(6)
-                    .width(Length::Fill)
-                    .align_x(iced::Alignment::Center),
-                )
-                .padding([16, 24])
-                .width(280)
-                .style(move |t: &Theme| sel_card_style(t, false)),
-            )
-            .on_press(Message::Unroot(UnrootMsg::UnrootSelectLoader))
-            .padding(0)
-            .style(|t: &Theme, status| sel_card_btn_style(t, status, false));
-            col = col.push(loader_btn);
-        } else if let Some(p) = self.unroot.loader_path.as_deref() {
-            col = col.push(
-                text(format!("{}: {}", self.t("btn_browse_loader"), p))
-                    .size(11)
-                    .style(muted_style)
-                    .center(),
-            );
-        }
         container(col)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -8820,6 +8843,11 @@ impl App {
             .unroot
             .unroot_type
             .map(|t| self.t(t.label_key()).to_string())
+            .unwrap_or_else(|| dash.clone());
+        let loader = self
+            .unroot
+            .loader_path
+            .clone()
             .unwrap_or_else(|| dash.clone());
         let folder = self
             .unroot
@@ -8836,6 +8864,7 @@ impl App {
                 .center(),
             widget::rule::horizontal(1),
             info_kv_center(self.t("unroot_step_method"), &method),
+            info_kv_center(self.t("unroot_loader_title"), &loader),
             info_kv_center(self.t("unroot_folder_title"), &folder),
         ]
         .spacing(10)
@@ -11912,11 +11941,23 @@ impl App {
                 Task::none()
             }
             UnrootMsg::UnrootNext => {
-                if self.unroot.step == 2 {
+                if self.unroot.step == 3 {
                     self.unroot.next();
                     return self.update(Message::Unroot(UnrootMsg::UnrootExecStart));
                 }
                 self.unroot.next();
+                // If we just advanced onto the loader step and a
+                // Settings-level default loader is configured + still
+                // on disk, pre-fill it + skip straight to the folder
+                // step — matches the Root wizard's loader-skip pattern
+                // (see `RootNext` step-5 fill + advance).
+                if self.unroot.step == 1
+                    && self.unroot.loader_path.is_none()
+                    && let Some(path) = self.resolved_default_loader()
+                {
+                    self.unroot.loader_path = Some(path);
+                    self.unroot.next();
+                }
                 Task::none()
             }
             UnrootMsg::UnrootBack => {
