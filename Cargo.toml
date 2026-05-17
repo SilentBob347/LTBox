@@ -70,6 +70,12 @@ tracing-appender = "0.2"
 
 # ADB
 adb_client = { version = "3", features = ["usb"] }
+# Pulled transitively by `adb_client`; declared directly so the RSA
+# key persistence helper in `ltbox-device::adb` can call
+# `to_pkcs8_pem` to write the LTBox-owned `adbkey` to disk on first
+# launch (avoids re-triggering the on-device "Allow USB debugging?"
+# prompt every run).
+rsa = { version = "0.9", features = ["pem"] }
 
 # USB (for Fastboot).
 nusb = "0.2"

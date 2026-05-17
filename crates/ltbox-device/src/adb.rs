@@ -1,11 +1,10 @@
-//! ADB client via `adb_client` crate (ADB server at localhost:5037).
+//! ADB client via `adb_client` crate's `usb` feature — direct libusb
+//! transport, no background `adb.exe` daemon on `localhost:5037`.
 
-use adb_client::ADBDeviceExt;
-use adb_client::RebootType;
-use adb_client::server::ADBServer;
-use adb_client::server_device::ADBServerDevice;
-use std::net::{Ipv4Addr, SocketAddrV4};
-use std::path::Path;
+use adb_client::usb::{ADBUSBDevice, find_all_connected_adb_devices};
+use adb_client::{ADBDeviceExt, RebootType};
+use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,6 +17,9 @@ pub enum AdbError {
     CommandFailed(String),
     #[error("Timeout waiting for device")]
     Timeout,
+    /// Failed to read or write the LTBox-owned ADB RSA private key.
+    #[error("Failed to prepare ADB key: {0}")]
+    Key(String),
 }
 
 type Result<T> = std::result::Result<T, AdbError>;
@@ -26,20 +28,43 @@ type Result<T> = std::result::Result<T, AdbError>;
 /// `DeviceController` ~120s expectation for post-reboot re-detection.
 const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// libusb interface-claim retry budget. Two short-lived `AdbManager`
+/// instances racing for the same Android USB endpoint (e.g. the
+/// Dashboard's 3 s polling tick still draining one or two
+/// `getprop` shells when the user clicks Reboot) hit
+/// `LIBUSB_ERROR_BUSY` on the second claim because the first
+/// holder's drop hasn't propagated through the kernel-side USB
+/// release yet. The retry window has to comfortably exceed the
+/// longest Dashboard polling cycle — empirically a few `getprop`
+/// shells + model / slot / boardid reads finish under 1 s, so 10
+/// attempts × 150 ms = 1.5 s gives a margin.
+const CONNECT_RETRY_ATTEMPTS: u32 = 10;
+const CONNECT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(150);
+
 pub struct AdbManager {
-    server_addr: SocketAddrV4,
     serial: Option<String>,
     pub skip_adb: bool,
     pub connected_once: bool,
+    /// Cached USB device handle — lazy, populated on first successful
+    /// `connect_device`. Reused so the RSA auth handshake only fires
+    /// once per `AdbManager` lifetime. Dropped on any I/O error so a
+    /// replug always recovers.
+    device: Option<ADBUSBDevice>,
+    /// Cached `getprop ro.bootmode` from the first successful connect.
+    /// `Some("recovery")` promotes the reported state from "device" to
+    /// "recovery" so `poll_active_slot` and the Dashboard chip see the
+    /// distinction. Cleared whenever `device` is dropped.
+    cached_bootmode: Option<&'static str>,
 }
 
 impl AdbManager {
     pub fn new() -> Self {
         Self {
-            server_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5037),
             serial: None,
             skip_adb: false,
             connected_once: false,
+            device: None,
+            cached_bootmode: None,
         }
     }
 
@@ -58,10 +83,6 @@ impl AdbManager {
         }
     }
 
-    fn server(&self) -> ADBServer {
-        ADBServer::new(self.server_addr)
-    }
-
     /// Last-known serial captured by `check_device` /
     /// `check_device_state` / `wait_for_device`. `None` until the first
     /// successful probe; never cleared by `AdbManager`.
@@ -69,65 +90,154 @@ impl AdbManager {
         self.serial.as_deref()
     }
 
-    fn device(&self) -> Result<ADBServerDevice> {
-        let serial = self.serial.clone().ok_or(AdbError::DeviceNotFound)?;
-        Ok(ADBServerDevice::new(serial, Some(self.server_addr)))
+    /// Resolve LTBox's owned ADB private key, generating + persisting
+    /// a fresh PKCS8 PEM if the file is missing. 2048-bit modulus is
+    /// what modern adbd's public key validation requires.
+    fn ensure_key_path() -> Result<PathBuf> {
+        let path = ltbox_core::app_paths::adb_key_path();
+        if path.exists() {
+            return Ok(path);
+        }
+        let parent = path.parent().ok_or_else(|| {
+            AdbError::Key(format!("adb key path has no parent: {}", path.display()))
+        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AdbError::Key(format!("create_dir_all {}: {e}", parent.display())))?;
+        let private_key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
+            .map_err(|e| AdbError::Key(format!("RSA keygen: {e}")))?;
+        let pem = private_key
+            .to_pkcs8_pem(LineEnding::LF)
+            .map_err(|e| AdbError::Key(format!("PKCS8 encode: {e}")))?;
+        std::fs::write(&path, pem.as_bytes())
+            .map_err(|e| AdbError::Key(format!("write {}: {e}", path.display())))?;
+        Ok(path)
+    }
+
+    /// Open (or reuse) the cached `ADBUSBDevice`. On a fresh open,
+    /// also populates `self.serial` from `getprop ro.serialno` so
+    /// device-info popups + log lines show the user-visible Android
+    /// serial (`HA...` on Lenovo / Samsung, hex-string on Pixel) the
+    /// way the legacy server path did. USB descriptor VID:PID is too
+    /// coarse to identify a specific device when multiple of the same
+    /// model are around.
+    fn connect_device(&mut self) -> Result<&mut ADBUSBDevice> {
+        if self.device.is_none() {
+            let key_path = Self::ensure_key_path()?;
+            // Retry the libusb claim a few times — see
+            // `CONNECT_RETRY_ATTEMPTS` for the race rationale. A fresh
+            // `autodetect_with_custom_private_key` per attempt also
+            // re-runs Android-descriptor filtering so a replug between
+            // attempts is picked up automatically.
+            let mut last_err: Option<String> = None;
+            for attempt in 0..CONNECT_RETRY_ATTEMPTS {
+                match ADBUSBDevice::autodetect_with_custom_private_key(key_path.clone()) {
+                    Ok(mut dev) => {
+                        // Stamp the user-facing serial inline on the
+                        // freshly opened handle. Calling out to
+                        // `shell_inner` would route through
+                        // `drop_device` on any shell-side failure
+                        // (recovery adbd that auth-handshakes but
+                        // doesn't respond to shell), which would
+                        // invalidate the device we just opened before
+                        // we'd had a chance to hand it back. Pulling
+                        // the shell directly here keeps the
+                        // `self.device = Some(dev)` move atomic with
+                        // the `return Ok(...)`.
+                        let mut stdout = Vec::new();
+                        let _ = dev.shell_command(
+                            &"getprop ro.serialno",
+                            Some(&mut stdout as &mut dyn std::io::Write),
+                            None,
+                        );
+                        let serial = String::from_utf8_lossy(&stdout).trim().to_string();
+                        if !serial.is_empty() {
+                            self.serial = Some(serial);
+                        }
+                        self.cached_bootmode = None;
+                        self.device = Some(dev);
+                        return Ok(self.device.as_mut().expect("device just set"));
+                    }
+                    Err(e) => {
+                        last_err = Some(e.to_string());
+                        if attempt + 1 < CONNECT_RETRY_ATTEMPTS {
+                            std::thread::sleep(CONNECT_RETRY_BACKOFF);
+                        }
+                    }
+                }
+            }
+            return Err(AdbError::Client(
+                last_err.unwrap_or_else(|| "ADB USB open failed".into()),
+            ));
+        }
+        Ok(self.device.as_mut().expect("device cached"))
+    }
+
+    /// Drop the cached USB device handle. Called after any I/O error
+    /// so the next probe re-runs the auth handshake against a freshly
+    /// enumerated device (handles replug and adbd restart).
+    fn drop_device(&mut self) {
+        self.device = None;
+        self.cached_bootmode = None;
     }
 
     /// Probe for a *fully-authorized* ADB device; updates stored serial.
     ///
-    /// Only devices in state `Device` are treated as connected. v2
-    /// `device/adb.py::wait_for_device` used `state == "device"` for the
-    /// same reason: an `unauthorized` / `offline` / `authorizing` device
-    /// shows up in `adb devices` but every `shell` call will fail, so
-    /// treating it as connected sends destructive operations into a
-    /// guaranteed mid-flow failure. Callers that *want* to see non-Device
-    /// states should use [`check_device_state`](Self::check_device_state).
+    /// Returns `true` only when libusb sees at least one Android device
+    /// AND the auth handshake succeeds. Both shell-able states (the
+    /// regular "device" boot mode and "recovery") map to `true`
+    /// because every LTBox caller treats them identically.
     pub fn check_device(&mut self) -> Result<bool> {
-        let mut server = self.server();
-        match server.devices() {
-            Ok(devices) => {
-                if let Some(dev) = devices
-                    .iter()
-                    .find(|d| matches!(d.state, adb_client::server::DeviceState::Device))
-                {
-                    self.serial = Some(dev.identifier.clone());
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
+        // Cheap presence probe before paying for an auth attempt — if
+        // libusb sees nothing, no point handshaking.
+        let infos =
+            find_all_connected_adb_devices().map_err(|e| AdbError::Client(e.to_string()))?;
+        if infos.is_empty() {
+            self.drop_device();
+            return Ok(false);
+        }
+        match self.connect_device() {
+            Ok(_) => Ok(true),
+            Err(_) => {
+                self.drop_device();
+                Ok(false)
             }
-            Err(_) => Ok(false),
         }
     }
 
-    /// Like `check_device` but returns the raw ADB state token
-    /// (`"device"`, `"unauthorized"`, …) so callers can pattern-match
-    /// without importing `adb_client::DeviceState`.
+    /// Like `check_device` but returns the raw state token
+    /// (`"device"`, `"recovery"`, `"unauthorized"`) so callers can
+    /// pattern-match without importing `adb_client::DeviceState`.
+    ///
+    /// | Probe outcome | Returned |
+    /// |---------------|----------|
+    /// | libusb enumeration empty | `Ok(None)` |
+    /// | Device visible + auth ok + `ro.bootmode == "recovery"` | `Ok(Some("recovery"))` |
+    /// | Device visible + auth ok + any other bootmode | `Ok(Some("device"))` |
+    /// | Device visible + auth fails | `Ok(Some("unauthorized"))` |
     pub fn check_device_state(&mut self) -> Result<Option<&'static str>> {
-        let mut server = self.server();
-        let Ok(devices) = server.devices() else {
+        let infos =
+            find_all_connected_adb_devices().map_err(|e| AdbError::Client(e.to_string()))?;
+        if infos.is_empty() {
+            self.drop_device();
             return Ok(None);
-        };
-        let Some(dev) = devices.into_iter().next() else {
-            return Ok(None);
-        };
-        self.serial = Some(dev.identifier);
-        Ok(Some(match dev.state {
-            adb_client::server::DeviceState::Device => "device",
-            adb_client::server::DeviceState::Unauthorized => "unauthorized",
-            adb_client::server::DeviceState::Authorizing => "authorizing",
-            adb_client::server::DeviceState::Offline => "offline",
-            adb_client::server::DeviceState::Recovery => "recovery",
-            adb_client::server::DeviceState::Bootloader => "bootloader",
-            adb_client::server::DeviceState::Sideload => "sideload",
-            adb_client::server::DeviceState::Rescue => "rescue",
-            adb_client::server::DeviceState::Connecting => "connecting",
-            adb_client::server::DeviceState::NoPerm => "noperm",
-            adb_client::server::DeviceState::Detached => "detached",
-            adb_client::server::DeviceState::Host => "host",
-            adb_client::server::DeviceState::NoDevice => "no device",
-        }))
+        }
+        match self.connect_device() {
+            Ok(_) => {
+                // First successful connect probes bootmode once; cache
+                // hit for subsequent state polls so the Dashboard's 3 s
+                // heartbeat doesn't re-shell every tick.
+                if self.cached_bootmode.is_none() {
+                    let mode = self.shell_inner("getprop ro.bootmode").unwrap_or_default();
+                    self.cached_bootmode = Some(if mode.trim() == "recovery" {
+                        "recovery"
+                    } else {
+                        "device"
+                    });
+                }
+                Ok(self.cached_bootmode)
+            }
+            Err(_) => Ok(Some("unauthorized")),
+        }
     }
 
     /// Wait up to [`WAIT_TIMEOUT`] for a fully-authorized ADB device.
@@ -154,21 +264,35 @@ impl AdbManager {
     }
 
     /// Run shell command; returns trimmed stdout.
-    pub fn shell(&self, cmd: &str) -> Result<String> {
-        let mut dev = self.device()?;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        dev.shell_command(
-            &cmd.to_string(),
-            Some(&mut stdout as &mut dyn std::io::Write),
-            Some(&mut stderr as &mut dyn std::io::Write),
-        )
-        .map_err(|e| AdbError::CommandFailed(e.to_string()))?;
-        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+    pub fn shell(&mut self, cmd: &str) -> Result<String> {
+        self.shell_inner(cmd)
     }
 
-    pub fn get_model(&self) -> Result<Option<String>> {
-        match self.shell("getprop ro.product.model") {
+    fn shell_inner(&mut self, cmd: &str) -> Result<String> {
+        let dev = self.connect_device()?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let res = dev.shell_command(
+            &cmd,
+            Some(&mut stdout as &mut dyn std::io::Write),
+            Some(&mut stderr as &mut dyn std::io::Write),
+        );
+        match res {
+            Ok(_) => Ok(String::from_utf8_lossy(&stdout).trim().to_string()),
+            Err(e) => {
+                // Drop the cached handle so the next probe re-runs the
+                // auth handshake against the (possibly replugged)
+                // device. Otherwise a single broken-pipe leaves every
+                // subsequent shell call returning the same stale
+                // error.
+                self.drop_device();
+                Err(AdbError::CommandFailed(e.to_string()))
+            }
+        }
+    }
+
+    pub fn get_model(&mut self) -> Result<Option<String>> {
+        match self.shell_inner("getprop ro.product.model") {
             Ok(m) if !m.is_empty() => Ok(Some(m)),
             _ => Ok(None),
         }
@@ -181,16 +305,16 @@ impl AdbManager {
     /// garbage prop on non-A/B devices; feeding that into downstream
     /// `vendor_boot{suffix}` partition names produces lookups for e.g.
     /// `vendor_bootxyz` that fail with a misleading error.
-    pub fn get_slot_suffix(&self) -> Result<Option<String>> {
-        match self.shell("getprop ro.boot.slot_suffix") {
+    pub fn get_slot_suffix(&mut self) -> Result<Option<String>> {
+        match self.shell_inner("getprop ro.boot.slot_suffix") {
             Ok(s) if s == "_a" || s == "_b" => Ok(Some(s)),
             _ => Ok(None),
         }
     }
 
-    pub fn get_kernel_version(&self) -> Result<Option<String>> {
+    pub fn get_kernel_version(&mut self) -> Result<Option<String>> {
         const PREFIX: &str = "Linux version ";
-        match self.shell("cat /proc/version") {
+        match self.shell_inner("cat /proc/version") {
             Ok(v) => {
                 // `find` + the rest-slice path used a hardcoded
                 // `start + 14` arithmetic that drifted silently if the
@@ -218,28 +342,95 @@ impl AdbManager {
     }
 
     pub fn reboot(&mut self, target: &str) -> Result<()> {
-        let mut dev = self.device()?;
         let reboot_type = match target {
             "bootloader" => RebootType::Bootloader,
             "recovery" => RebootType::Recovery,
             "sideload" => RebootType::Sideload,
             _ => RebootType::System,
         };
-        // RebootType has no EDL variant; fall back to shell.
+        // RebootType has no EDL variant; fall back to shell. adbd dies
+        // immediately after issuing the reboot, so the shell call
+        // itself may surface as a USB pipe error — treat that as
+        // success since the reboot did fire.
         if target == "edl" {
-            self.shell("reboot edl")?;
-            return Ok(());
+            let res = self.shell_inner("reboot edl");
+            self.drop_device();
+            return match res {
+                Ok(_) => Ok(()),
+                Err(AdbError::CommandFailed(msg)) if is_adbd_dropped_after_reboot(&msg) => Ok(()),
+                Err(e) => Err(e),
+            };
         }
-        dev.reboot(reboot_type)
-            .map_err(|e| AdbError::CommandFailed(e.to_string()))
+        let dev = self.connect_device()?;
+        let res = dev
+            .reboot(reboot_type)
+            .map_err(|e| AdbError::CommandFailed(e.to_string()));
+        self.drop_device();
+        // adbd tears down the USB connection as the reboot fires, so
+        // the in-flight ADB transaction often returns a pipe / EOF
+        // error even though the command was already acknowledged.
+        // The user-visible effect of a "successful" reboot and a
+        // "failed-but-actually-rebooted" reboot is identical (device
+        // re-enumerates), so suppress the spurious error path.
+        match res {
+            Ok(()) => Ok(()),
+            Err(AdbError::CommandFailed(msg)) if is_adbd_dropped_after_reboot(&msg) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
-    pub fn install(&self, apk_path: &str) -> Result<()> {
-        let mut dev = self.device()?;
+    pub fn install(&mut self, apk_path: &str) -> Result<()> {
         let path = Path::new(apk_path);
-        dev.install(path, None)
-            .map_err(|e| AdbError::CommandFailed(e.to_string()))
+        let remote = format!("/data/local/tmp/ltbox-install-{}.apk", std::process::id());
+
+        let push_res = {
+            let mut apk_file = std::fs::File::open(path)
+                .map_err(|e| AdbError::CommandFailed(format!("open {}: {e}", path.display())))?;
+            let dev = self.connect_device()?;
+            // /data/local/tmp is shell-writable on stock Android; hardened
+            // SELinux test images may still reject this staging path.
+            dev.push(&mut apk_file, &remote)
+                .map_err(|e| AdbError::CommandFailed(e.to_string()))
+        };
+        if let Err(e) = push_res {
+            // A push failure usually leaves the cached USB handle in a
+            // partially-drained state — drop it so the next operation
+            // re-runs the libusb claim instead of inheriting the half-
+            // broken transport.
+            self.drop_device();
+            return Err(e);
+        }
+
+        let output = self.shell_inner(&format!("pm install -r '{remote}'; rm -f '{remote}'"))?;
+        if output.contains("Success") {
+            Ok(())
+        } else if output.is_empty() {
+            Err(AdbError::CommandFailed(
+                "pm install failed with empty output".to_string(),
+            ))
+        } else {
+            Err(AdbError::CommandFailed(output))
+        }
     }
+}
+
+/// Heuristic: did the most recent ADB transaction fail because adbd
+/// disconnected mid-call (the typical signature of "reboot fired,
+/// transport dropped before ack made it back")? Matches the wording
+/// `adb_client` / `rusb` surface for `LIBUSB_ERROR_PIPE`,
+/// `LIBUSB_ERROR_IO`, broken-pipe / EOF / NoDevice cases. Kept
+/// narrow on purpose — generic strings like "not found" would also
+/// match unrelated shell errors (e.g. `command not found` echoed back
+/// to a getprop wrapper), which should not be silently swallowed as
+/// success.
+fn is_adbd_dropped_after_reboot(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("pipe")
+        || lower.contains("broken pipe")
+        || lower.contains("no device")
+        || lower.contains("device disconnected")
+        || lower.contains("unexpected eof")
+        || lower.contains("end of file")
 }
 
 impl Default for AdbManager {

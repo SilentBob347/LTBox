@@ -13585,7 +13585,7 @@ impl App {
                                                 );
                                                 // Best-effort reboot — any failure stays
                                                 // in the log; wizard still gets the Err.
-                                                if let Some(adb) =
+                                                if let Some(mut adb) =
                                                     ltbox_device::adb::AdbManager::new_if_connected()
                                                 {
                                                     if let Err(e) = adb.shell("reboot") {
@@ -15555,13 +15555,15 @@ impl App {
                         // `RootKernelVersionProbeDone`.
                         return task_heavy(
                             || {
-                                ltbox_device::adb::AdbManager::new_if_connected().and_then(|adb| {
-                                    adb.get_kernel_version().ok().flatten().and_then(|kv| {
+                                ltbox_device::adb::AdbManager::new_if_connected().and_then(
+                                    |mut adb| {
+                                        adb.get_kernel_version().ok().flatten().and_then(|kv| {
                                         ltbox_patch::root_pipeline::normalize_ksu_kernel_version(
                                             &kv,
                                         )
                                     })
-                                })
+                                    },
+                                )
                             },
                             |__v| Message::Root(RootMsg::RootKernelVersionProbeDone(__v)),
                             |_e| None,
@@ -15813,7 +15815,7 @@ impl App {
                         self.connection,
                         ConnectionStatus::Adb | ConnectionStatus::AdbRecovery
                     ) {
-                    let (mountinfo, encrypt_type) = if let Some(adb) =
+                    let (mountinfo, encrypt_type) = if let Some(mut adb) =
                         ltbox_device::adb::AdbManager::new_if_connected()
                     {
                         let mi = adb.shell("cat /proc/self/mountinfo").unwrap_or_default();
@@ -15982,7 +15984,7 @@ impl App {
                                             let mut kernel_version: Option<String> = gui_kernel_version.clone();
                                             let mut adb_ready_at_start = false;
                                             if !skip_adb
-                                                && let Some(adb) =
+                                                && let Some(mut adb) =
                                                     ltbox_device::adb::AdbManager::new_if_connected()
                                             {
                                                 adb_ready_at_start = true;
@@ -16997,14 +16999,25 @@ fn wait_for_manual_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
     wait_for_edl_ready(tag, log)
 }
 
-fn reboot_adb_to_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
+fn reboot_adb_to_edl(
+    tag: &str,
+    log: &mut Vec<String>,
+    mgr: &mut ltbox_device::adb::AdbManager,
+) -> Result<(), ()> {
     // Command echo (`adb reboot edl`) suppressed — the user only sees the
     // outcome (waiting / reached EDL / failure).
-    let mut mgr = ltbox_device::adb::AdbManager::new();
-    // `AdbManager::reboot` requires a preselected serial. Since
-    // `check_device` now accepts only `Device` state, use
-    // `check_device_state` here so recovery-state ADB can also
-    // seed the serial before issuing `reboot edl`.
+    //
+    // `mgr` is caller-provided so the upstream Fastboot→ADB→EDL path can
+    // reuse the `AdbManager` it already opened in `wait_for_device`.
+    // Constructing a fresh `AdbManager` here would create a second
+    // libusb claimer for the same Android endpoint while the caller's
+    // cached `ADBUSBDevice` is still alive — `LIBUSB_ERROR_BUSY` on the
+    // claim, retried + bucketed into `check_device_state` →
+    // `Some("unauthorized")`, and the worker would bail to
+    // `wait_for_manual_edl` even with the device fully authorized.
+    // `check_device` now accepts only `Device` state, so use
+    // `check_device_state` here — recovery-state ADB can also seed the
+    // serial before issuing `reboot edl`.
     let state = match mgr.check_device_state() {
         Ok(s) => s,
         Err(e) => {
@@ -17092,7 +17105,11 @@ fn fastboot_reboot_then_adb_edl(tag: &str, log: &mut Vec<String>) -> Result<(), 
         );
         return wait_for_manual_edl(tag, log);
     }
-    reboot_adb_to_edl(tag, log)
+    // Hand the same `mgr` (which already holds the cached
+    // `ADBUSBDevice` from `wait_for_device`) to `reboot_adb_to_edl`
+    // instead of letting it open a second one — see the doc comment
+    // on `reboot_adb_to_edl` for the USB-claim race rationale.
+    reboot_adb_to_edl(tag, log, &mut mgr)
 }
 
 fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
@@ -17101,7 +17118,10 @@ fn ensure_edl(conn: ConnectionStatus, tag: &str, log: &mut Vec<String>) -> Resul
             ltbox_core::live!(log, "[{tag}] {}", ltbox_core::i18n::tr("live_edl_already"));
             Ok(())
         }
-        EdlEntryAction::AdbReboot => reboot_adb_to_edl(tag, log),
+        EdlEntryAction::AdbReboot => {
+            let mut mgr = ltbox_device::adb::AdbManager::new();
+            reboot_adb_to_edl(tag, log, &mut mgr)
+        }
         EdlEntryAction::FastbootRebootThenAdb => fastboot_reboot_then_adb_edl(tag, log),
         EdlEntryAction::ManualWait => wait_for_manual_edl(tag, log),
     }

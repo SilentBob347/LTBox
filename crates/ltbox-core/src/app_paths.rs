@@ -101,6 +101,20 @@ pub fn work_dir_for(slug: &str) -> PathBuf {
     }
 }
 
+/// Path to LTBox's owned ADB RSA private key. Persisted so the user
+/// only has to tap "Allow USB debugging?" once per device — `adb_client`'s
+/// `usb` backend mints a fresh in-memory key whenever the key file is
+/// missing, which would re-trigger the on-device prompt on every
+/// `AdbManager::new()` if we let it fall through to the default
+/// `~/.android/adbkey`.
+///
+/// Stored under [`auto_output_root`] / `adb/adbkey` so it inherits the
+/// same OS-specific writable-directory split as every other LTBox
+/// asset.
+pub fn adb_key_path() -> PathBuf {
+    auto_output_root().join("adb").join("adbkey")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
