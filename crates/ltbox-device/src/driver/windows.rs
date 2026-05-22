@@ -36,6 +36,10 @@ struct GithubRelease {
     tag_name: String,
     #[serde(default)]
     assets: Vec<GithubAsset>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -48,8 +52,12 @@ const RELEASES_API: &str =
     "https://api.github.com/repos/qualcomm/qcom-usb-kernel-drivers/releases?per_page=10";
 const WIN_TAG_NEEDLE: &str = "win";
 const ASSET_PREFIX: &str = "qud-win-";
-const ASSET_SUFFIX: &str = "_arm64_amd64.zip";
+const ASSET_SUFFIXES: &[&str] = &["_arm64_amd64.zip", "_x86_64_arm64_signed.zip"];
 const USER_AGENT: &str = concat!("ltbox/", env!("CARGO_PKG_VERSION"));
+
+fn asset_matches(name: &str) -> bool {
+    name.starts_with(ASSET_PREFIX) && ASSET_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
 
 /// Probe whether the Qualcomm USB drivers are installed.
 pub fn check_required_drivers() -> DriverStatus {
@@ -139,13 +147,15 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
 
     let release = releases
         .into_iter()
-        .find(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
+        .find(|r| r.assets.iter().any(|a| asset_matches(&a.name)))
         .ok_or(DriverError::NoAsset)?;
 
     let (asset_name, asset_url) = release
         .assets
         .into_iter()
-        .find(|a| a.name.starts_with(ASSET_PREFIX) && a.name.ends_with(ASSET_SUFFIX))
+        .find(|a| asset_matches(&a.name))
         .map(|a| (a.name, a.browser_download_url))
         .ok_or(DriverError::NoAsset)?;
 
