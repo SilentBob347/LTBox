@@ -539,6 +539,7 @@ impl RebootTarget {
         match (conn, self) {
             (ConnectionStatus::None, _) => false,
             (ConnectionStatus::AdbUnauthorized, _) => false,
+            (ConnectionStatus::AdbServerBlocking, _) => false,
             (ConnectionStatus::Adb, _) => true,
             (ConnectionStatus::AdbRecovery, _) => true,
             (ConnectionStatus::Fastboot, Self::Recovery) => false,
@@ -3289,6 +3290,7 @@ fn probe_connection_for_edl() -> Option<ConnectionStatus> {
     let mut adb = ltbox_device::adb::AdbManager::new();
     match adb.check_device_state().ok().flatten() {
         Some("device" | "recovery") => Some(ConnectionStatus::Adb),
+        Some("adb_server_blocking") => Some(ConnectionStatus::AdbServerBlocking),
         Some("unauthorized" | "authorizing") => Some(ConnectionStatus::AdbUnauthorized),
         _ => None,
     }
@@ -3485,6 +3487,11 @@ enum Message {
     StartOver,
     PollDevice,
     DevicePolled(DevicePollResult),
+    /// Dashboard "Kill Server" button fired when an external adb
+    /// server is holding the Android USB interface — sends `host:kill`
+    /// to `127.0.0.1:5037` so LTBox's libusb claim can succeed on the
+    /// next poll.
+    KillAdbServer,
     /// Click on the dashboard device portrait. Opens the popup; fires
     /// the Lenovo PTSTPD fetch unless the serial is already cached.
     DeviceInfoOpen,
@@ -3791,6 +3798,13 @@ enum ConnectionStatus {
     /// (`unauthorized` / `authorizing`). Shell probes fail; dashboard
     /// shows an authorize-debug prompt.
     AdbUnauthorized,
+    /// An external `adb.exe` server (or anything else listening on
+    /// `127.0.0.1:5037`) is holding the Android USB interface
+    /// exclusively, so LTBox's libusb claim returns `LIBUSB_ERROR_BUSY`
+    /// even though the device is physically authorized. Distinct from
+    /// `AdbUnauthorized` so the dashboard can offer "kill server"
+    /// instead of asking the user to re-tap "Allow USB debugging".
+    AdbServerBlocking,
     Fastboot,
     Edl,
 }
@@ -3801,6 +3815,7 @@ impl ConnectionStatus {
             Self::Adb => "conn_adb",
             Self::AdbRecovery => "conn_adb_recovery",
             Self::AdbUnauthorized => "conn_adb_unauthorized",
+            Self::AdbServerBlocking => "conn_adb_server_blocking",
             Self::Fastboot => "conn_fastboot",
             Self::Edl => "conn_edl",
         }
@@ -3809,15 +3824,18 @@ impl ConnectionStatus {
         match self {
             Self::None => pal.on_surface_variant,
             Self::Adb | Self::AdbRecovery => pal.success,
-            Self::AdbUnauthorized => pal.warning,
+            Self::AdbUnauthorized | Self::AdbServerBlocking => pal.warning,
             Self::Fastboot => pal.warning,
             Self::Edl => pal.tertiary,
         }
     }
     /// True when exec paths should skip the ADB probe. AdbUnauthorized
-    /// counts as "no usable ADB" — shell would fail.
+    /// + AdbServerBlocking count as "no usable ADB" — shell would fail.
     fn skip_adb(self) -> bool {
-        matches!(self, Self::Fastboot | Self::Edl | Self::AdbUnauthorized)
+        matches!(
+            self,
+            Self::Fastboot | Self::Edl | Self::AdbUnauthorized | Self::AdbServerBlocking
+        )
     }
 }
 
@@ -3866,7 +3884,9 @@ fn edl_entry_action(conn: ConnectionStatus) -> EdlEntryAction {
         ConnectionStatus::Edl => EdlEntryAction::AlreadyEdl,
         ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => EdlEntryAction::AdbReboot,
         ConnectionStatus::Fastboot => EdlEntryAction::FastbootRebootThenAdb,
-        ConnectionStatus::AdbUnauthorized | ConnectionStatus::None => EdlEntryAction::ManualWait,
+        ConnectionStatus::AdbUnauthorized
+        | ConnectionStatus::AdbServerBlocking
+        | ConnectionStatus::None => EdlEntryAction::ManualWait,
     }
 }
 
@@ -5122,6 +5142,23 @@ impl App {
                 self.log_push(format!("ERROR: {e}"));
             }
             Message::DismissError => self.error_msg = None,
+            Message::KillAdbServer => {
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(ltbox_device::adb::kill_adb_server)
+                            .await
+                            .unwrap_or_else(|e| {
+                                Err(ltbox_device::adb::AdbError::Client(format!(
+                                    "spawn_blocking join: {e}"
+                                )))
+                            })
+                    },
+                    |res| match res {
+                        Ok(()) => Message::PollDevice,
+                        Err(e) => Message::OperationError(format!("Kill adb server: {e}")),
+                    },
+                );
+            }
             Message::StartOver => {
                 match self.current_view {
                     View::Root => self.root.reset(),
@@ -5230,6 +5267,10 @@ impl App {
                             // authorizing from a ready device.
                             let mut adb = ltbox_device::adb::AdbManager::new();
                             match adb.check_device_state() {
+                                Ok(Some("adb_server_blocking")) => {
+                                    r.status = ConnectionStatus::AdbServerBlocking;
+                                    return r;
+                                }
                                 Ok(Some("unauthorized")) | Ok(Some("authorizing")) => {
                                     r.status = ConnectionStatus::AdbUnauthorized;
                                     return r;
@@ -7186,8 +7227,49 @@ impl App {
 
         // Unauthorized ADB wins over the platform warning — empty
         // `ro.boot.hardware` otherwise reads as "unsupported platform".
-        if self.connection == ConnectionStatus::AdbUnauthorized {
-            let warn_bg = iced::Color::from_rgb(0.95, 0.65, 0.0);
+        let warn_bg = iced::Color::from_rgb(0.95, 0.65, 0.0);
+        if self.connection == ConnectionStatus::AdbServerBlocking {
+            let msg: Element<'_, Message> = text(self.t("dash_adb_server_blocking").to_string())
+                .size(12)
+                .color(iced::Color::WHITE)
+                .width(Length::Fill)
+                .into();
+            let kill_btn: Element<'_, Message> = button(
+                text(self.t("btn_kill_adb_server").to_string())
+                    .size(12)
+                    .color(iced::Color::WHITE),
+            )
+            .on_press(Message::KillAdbServer)
+            .padding([6, 12])
+            .style(|_t: &Theme, _s| button::Style {
+                background: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.18).into()),
+                text_color: iced::Color::WHITE,
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into();
+            content = content.push(
+                container(
+                    row![msg, kill_btn]
+                        .spacing(12)
+                        .width(Length::Fill)
+                        .align_y(iced::Alignment::Center),
+                )
+                .padding([6, 16])
+                .width(Length::Fill)
+                .style(move |_t: &Theme| container::Style {
+                    background: Some(warn_bg.into()),
+                    border: iced::Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        } else if self.connection == ConnectionStatus::AdbUnauthorized {
             content = content.push(
                 container(
                     text(self.t("dash_adb_unauthorized").to_string())
@@ -7206,7 +7288,6 @@ impl App {
                 }),
             );
         } else if self.platform_supported == Some(false) {
-            let warn_bg = iced::Color::from_rgb(0.95, 0.65, 0.0);
             content = content.push(
                 container(
                     text(self.t("dash_unsupported_platform").to_string())
@@ -11812,6 +11893,11 @@ impl App {
                                                 (ConnectionStatus::AdbUnauthorized, _) => {
                                                     return Err(
                                                         "USB debugging is not authorized on the device".into(),
+                                                    );
+                                                }
+                                                (ConnectionStatus::AdbServerBlocking, _) => {
+                                                    return Err(
+                                                        "An external adb server is holding the USB interface. Kill it from the dashboard and retry.".into(),
                                                     );
                                                 }
                                             }

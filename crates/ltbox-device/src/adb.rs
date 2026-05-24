@@ -4,8 +4,83 @@
 use adb_client::usb::{ADBUSBDevice, find_all_connected_adb_devices};
 use adb_client::{ADBDeviceExt, RebootType};
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
+
+const ADB_SERVER_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5037);
+const ADB_SERVER_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Probe whether an `adb.exe` server (or any other process) is bound to
+/// `127.0.0.1:5037`. A live listener there claims the Android USB
+/// interface exclusively, so LTBox's `ADBUSBDevice` claim fails with
+/// `LIBUSB_ERROR_BUSY` and `check_device_state` would otherwise bucket
+/// the failure into `"unauthorized"` — misleading the user into tapping
+/// "Allow USB debugging" again instead of killing the conflicting
+/// server.
+pub fn adb_server_running() -> bool {
+    TcpStream::connect_timeout(&ADB_SERVER_ADDR.into(), ADB_SERVER_PROBE_TIMEOUT).is_ok()
+}
+
+/// Send the raw `host:kill` ADB protocol message to `127.0.0.1:5037` to
+/// stop a running adb server without depending on an `adb.exe` binary
+/// being on `PATH`. ADB host protocol: 4-byte ASCII-hex length prefix +
+/// command. Server replies `OKAY` then exits the process.
+pub fn kill_adb_server() -> Result<()> {
+    let mut stream = TcpStream::connect_timeout(&ADB_SERVER_ADDR.into(), Duration::from_secs(2))
+        .map_err(|e| AdbError::Client(format!("adb server not reachable: {e}")))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| AdbError::Client(format!("set_write_timeout: {e}")))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| AdbError::Client(format!("set_read_timeout: {e}")))?;
+    let payload = b"host:kill";
+    let header = format!("{:04x}", payload.len());
+    stream
+        .write_all(header.as_bytes())
+        .and_then(|_| stream.write_all(payload))
+        .map_err(|e| AdbError::Client(format!("write host:kill: {e}")))?;
+    // `host:kill` is special: the server may reply `OKAY` and then close
+    // the socket, or close immediately without replying because it's
+    // exiting. Treat an EOF / connection-reset before 4 bytes as success
+    // (server died = kill worked); only `FAIL` is a real rejection.
+    let mut reply = [0u8; 4];
+    match stream.read_exact(&mut reply) {
+        Ok(()) => match &reply {
+            b"OKAY" => Ok(()),
+            b"FAIL" => {
+                let mut len_buf = [0u8; 4];
+                let _ = stream.read_exact(&mut len_buf);
+                let n = std::str::from_utf8(&len_buf)
+                    .ok()
+                    .and_then(|s| usize::from_str_radix(s, 16).ok())
+                    .unwrap_or(0);
+                let mut msg_buf = vec![0u8; n.min(1024)];
+                let _ = stream.read_exact(&mut msg_buf);
+                Err(AdbError::Client(format!(
+                    "adb server rejected host:kill: {}",
+                    String::from_utf8_lossy(&msg_buf)
+                )))
+            }
+            other => Err(AdbError::Client(format!(
+                "unexpected reply to host:kill: {:?}",
+                other
+            ))),
+        },
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(AdbError::Client(format!("read host:kill reply: {e}"))),
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum AdbError {
@@ -205,15 +280,17 @@ impl AdbManager {
     }
 
     /// Like `check_device` but returns the raw state token
-    /// (`"device"`, `"recovery"`, `"unauthorized"`) so callers can
-    /// pattern-match without importing `adb_client::DeviceState`.
+    /// (`"device"`, `"recovery"`, `"unauthorized"`,
+    /// `"adb_server_blocking"`) so callers can pattern-match without
+    /// importing `adb_client::DeviceState`.
     ///
     /// | Probe outcome | Returned |
     /// |---------------|----------|
     /// | libusb enumeration empty | `Ok(None)` |
     /// | Device visible + auth ok + `ro.bootmode == "recovery"` | `Ok(Some("recovery"))` |
     /// | Device visible + auth ok + any other bootmode | `Ok(Some("device"))` |
-    /// | Device visible + auth fails | `Ok(Some("unauthorized"))` |
+    /// | Device visible + auth fails AND a process holds `127.0.0.1:5037` | `Ok(Some("adb_server_blocking"))` |
+    /// | Device visible + auth fails AND no adb server present | `Ok(Some("unauthorized"))` |
     pub fn check_device_state(&mut self) -> Result<Option<&'static str>> {
         let infos =
             find_all_connected_adb_devices().map_err(|e| AdbError::Client(e.to_string()))?;
@@ -236,7 +313,19 @@ impl AdbManager {
                 }
                 Ok(self.cached_bootmode)
             }
-            Err(_) => Ok(Some("unauthorized")),
+            Err(_) => {
+                // A live external adb server on 127.0.0.1:5037 holds the
+                // Android USB interface exclusively → our libusb claim
+                // returns `LIBUSB_ERROR_BUSY`. Surface that as a
+                // distinct state so the dashboard can offer "kill
+                // server" instead of misleading the user into tapping
+                // "Allow USB debugging" again.
+                if adb_server_running() {
+                    Ok(Some("adb_server_blocking"))
+                } else {
+                    Ok(Some("unauthorized"))
+                }
+            }
         }
     }
 
