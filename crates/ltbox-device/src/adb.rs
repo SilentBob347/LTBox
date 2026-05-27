@@ -520,10 +520,61 @@ fn is_adbd_dropped_after_reboot(msg: &str) -> bool {
         || lower.contains("device disconnected")
         || lower.contains("unexpected eof")
         || lower.contains("end of file")
+        // `LIBUSB_ERROR_IO` rusb stringifies as "Input/Output Error"
+        // (or "I/O error" in some versions). Observed in v3.0.8 Linux
+        // reports where adbd tore down the USB endpoint a hair earlier
+        // than usual; the reboot did fire, but the in-flight transaction
+        // surfaced as IO instead of PIPE. The doc comment above this
+        // function already claimed `LIBUSB_ERROR_IO` was handled — the
+        // actual matcher just hadn't been widened to include it.
+        || lower.contains("input/output error")
+        || lower.contains("i/o error")
 }
 
 impl Default for AdbManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_adbd_dropped_after_reboot;
+
+    #[test]
+    fn matches_libusb_pipe() {
+        assert!(is_adbd_dropped_after_reboot(
+            "USB Error: LIBUSB_ERROR_PIPE: pipe error"
+        ));
+        assert!(is_adbd_dropped_after_reboot("write failed: broken pipe"));
+    }
+
+    #[test]
+    fn matches_libusb_io() {
+        // Real string from a v3.0.8 Linux user report. `LIBUSB_ERROR_IO`
+        // stringifies as "Input/Output Error" in rusb.
+        assert!(is_adbd_dropped_after_reboot(
+            "Command failed: USB Error: Input/Output Error"
+        ));
+        assert!(is_adbd_dropped_after_reboot("rusb: i/o error"));
+    }
+
+    #[test]
+    fn matches_no_device_and_eof() {
+        assert!(is_adbd_dropped_after_reboot(
+            "USB Error: LIBUSB_ERROR_NO_DEVICE: no device"
+        ));
+        assert!(is_adbd_dropped_after_reboot("Unexpected EOF on socket"));
+        assert!(is_adbd_dropped_after_reboot("end of file reached"));
+    }
+
+    #[test]
+    fn rejects_unrelated_errors() {
+        // Real shell-echoed `command not found` must NOT be swallowed
+        // as a success — the doc comment on the matcher calls this out
+        // explicitly, so guard with a test.
+        assert!(!is_adbd_dropped_after_reboot("command not found"));
+        assert!(!is_adbd_dropped_after_reboot("Protocol error: 4 bytes"));
+        assert!(!is_adbd_dropped_after_reboot(""));
     }
 }

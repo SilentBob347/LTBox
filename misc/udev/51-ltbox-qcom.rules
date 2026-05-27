@@ -22,13 +22,22 @@
 
 # ---- Qualcomm 9008 EDL (qdl + `serialport` crate) -----------------
 # USB endpoint — needed for the libusb open path qdl uses for
-# Sahara/Firehose framing.
+# Sahara/Firehose framing. `ID_MM_DEVICE_IGNORE=1` is the modem-manager
+# opt-out flag: without it, NetworkManager's ModemManager probes
+# `/dev/ttyUSB*` with AT commands on hot-plug (5-30 s window) which
+# either blocks qdl's serial open with `EBUSY` or corrupts the Sahara
+# HELLO handshake by injecting `AT` bytes. The flag is honoured by
+# both ModemManager and udisks/systemd-udevd.
 SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", ATTR{idProduct}=="9008", \
+    ENV{ID_MM_DEVICE_IGNORE}="1", \
     TAG+="uaccess", MODE="0660", GROUP="plugdev"
 # Serial node — the `qcserial` in-tree kernel driver exposes
 # `/dev/ttyUSB*` for the same device; `serialport::available_ports()`
-# walks tty.
+# walks tty. Same ModemManager opt-out applies to the tty subsystem
+# entry — ModemManager actually attaches at the tty level, so the flag
+# on the USB parent alone isn't always enough on older systemd.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="05c6", ATTRS{idProduct}=="9008", \
+    ENV{ID_MM_DEVICE_IGNORE}="1", \
     TAG+="uaccess", MODE="0660", GROUP="plugdev"
 
 # ---- Google Android composite (ADB Recovery / sideload) -----------

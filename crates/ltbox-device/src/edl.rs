@@ -86,6 +86,60 @@ pub fn check_device() -> bool {
     find_edl_port().is_ok()
 }
 
+/// Render a serial-open failure with a platform-aware hint. The qdl-rs
+/// error is short (e.g. `Device or resource busy (os error 16)` /
+/// `Permission denied (os error 13)`) and the underlying cause is
+/// almost always one of three things on Linux:
+///
+///   * `EBUSY` — ModemManager (or another process) already opened the
+///     port to probe for AT modems. Fix: ship the LTBox udev rule with
+///     `ENV{ID_MM_DEVICE_IGNORE}="1"` and reload udev.
+///   * `EACCES` — the desktop user lacks read/write on `/dev/ttyUSB*`
+///     because the udev rule hasn't been installed yet. Fix: install
+///     the udev rule (or run via `sudo`).
+///   * Anything else — surface the raw error verbatim so the user can
+///     paste it into a bug report.
+///
+/// Windows/macOS don't have ModemManager, so the hint stays generic
+/// there. The hint is glued onto the original error so the upstream
+/// failure mode is preserved.
+fn serial_open_error_hint(port: &str, err: &anyhow::Error) -> String {
+    let raw = err.to_string();
+    let lower = raw.to_ascii_lowercase();
+    let base = format!("Transport setup failed: {raw}");
+
+    #[cfg(target_os = "linux")]
+    {
+        let busy = lower.contains("resource busy")
+            || lower.contains("device or resource busy")
+            || lower.contains("os error 16");
+        let denied = lower.contains("permission denied") || lower.contains("os error 13");
+        if busy {
+            return format!(
+                "{base}\n\
+                 hint: another process is holding {port} — typically Ubuntu/Fedora ModemManager \
+                 probing for AT modems on hot-plug. Install the LTBox udev rule \
+                 (`misc/udev/51-ltbox-qcom.rules`, which sets `ID_MM_DEVICE_IGNORE=1`) and \
+                 re-plug the device, or stop ModemManager temporarily: \
+                 `sudo systemctl stop ModemManager`."
+            );
+        }
+        if denied {
+            return format!(
+                "{base}\n\
+                 hint: the desktop user can't open {port}. Install the LTBox udev rule \
+                 (`misc/udev/51-ltbox-qcom.rules`) and re-plug, add yourself to the `dialout` \
+                 group (`sudo usermod -aG dialout $USER` + re-login), or launch via `sudo`."
+            );
+        }
+    }
+    // Both `lower` and `port` are referenced only by Linux branch — keep
+    // them touched on other targets so `-D warnings` stays happy without
+    // a `#[cfg]`-gated parameter dance.
+    let _ = (&lower, port);
+    base
+}
+
 /// Wait for a stable EDL port after a reset. Two phases:
 /// 1. If a port is visible, observe for `EDL_DISCONNECT_OBSERVE`; treat a
 ///    name change or disconnect as stale and fall through.
@@ -260,8 +314,14 @@ impl EdlSession {
             };
 
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_serial_transport"));
-        let rw = qdl::setup_target_device(QdlBackend::Serial, None, Some(port.clone()))
-            .map_err(|e| EdlError::Session(format!("Transport setup failed: {e}")))?;
+        let rw = match qdl::setup_target_device(QdlBackend::Serial, None, Some(port.clone())) {
+            Ok(rw) => rw,
+            Err(e) => {
+                let msg = serial_open_error_hint(&port, &e);
+                ltbox_core::live!(log, "[EDL] {msg}");
+                return Err(EdlError::Session(msg));
+            }
+        };
 
         let mut dev = QdlDevice {
             rw,
