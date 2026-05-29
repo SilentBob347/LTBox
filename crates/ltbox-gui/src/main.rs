@@ -8031,15 +8031,22 @@ impl App {
             .data_mode
             .map(|d| self.t(d.label_key()).to_string())
             .unwrap_or_else(|| dash.clone());
+        // Confirm rows use short value labels (Modify / Auto / Ignore)
+        // instead of the verbose "… rollback index" strings shown in
+        // logs — the review summary is tighter to read that way.
         let modify_region = self
             .t(if self.wf_config.modify_region {
-                "rollback_on"
+                "flash_confirm_rb_on"
             } else {
-                "rollback_off"
+                "flash_confirm_rb_off"
             })
             .to_string();
         let rollback = self
-            .t(self.wf_config.modify_rollback.label_key())
+            .t(match self.wf_config.modify_rollback {
+                RollbackSetting::On => "flash_confirm_rb_on",
+                RollbackSetting::Auto => "flash_confirm_rb_auto",
+                RollbackSetting::Off => "flash_confirm_rb_off",
+            })
             .to_string();
         let mut col = column![
             text(self.t("flash_confirm_title").to_string())
@@ -8050,10 +8057,10 @@ impl App {
                 .style(muted_style)
                 .center(),
             widget::rule::horizontal(1),
-            info_kv_center(self.t("flash_region_title"), &region),
-            info_kv_center(self.t("flash_target_title"), &target),
-            info_kv_center(self.t("flash_data_title"), &data),
-            info_kv_center(self.t("adv_section_region_patch"), &modify_region),
+            info_kv_center(self.t("flash_confirm_region"), &region),
+            info_kv_center(self.t("flash_confirm_target"), &target),
+            info_kv_center(self.t("flash_confirm_data"), &data),
+            info_kv_center(self.t("flash_confirm_region_edit"), &modify_region),
             info_kv_center(self.t("device_arb"), &rollback),
         ]
         .spacing(10)
@@ -8065,10 +8072,10 @@ impl App {
             let label = entry
                 .map(|e| format!("{} — {}", e.code, e.name))
                 .unwrap_or_else(|| cc.to_string());
-            col = col.push(info_kv_center(self.t("popup_select_country"), &label));
+            col = col.push(info_kv_center(self.t("flash_confirm_country"), &label));
         } else if self.wf_config.wipe && self.wf_config.country_action.is_skipped() {
             col = col.push(info_kv_center(
-                self.t("popup_select_country"),
+                self.t("flash_confirm_country"),
                 self.t("flash_confirm_country_skip"),
             ));
         }
@@ -8077,7 +8084,10 @@ impl App {
             .firmware_folder
             .clone()
             .unwrap_or_else(|| dash.clone());
-        col = col.push(info_kv_center(self.t("flash_folder_title"), &folder_owned));
+        col = col.push(info_kv_center(
+            self.t("flash_confirm_folder"),
+            &folder_owned,
+        ));
 
         // Destructive-op callout — parity with v2 `_confirm_full_flash_overwrite`.
         // The wizard's Next button is the trigger, so surface the hazard
