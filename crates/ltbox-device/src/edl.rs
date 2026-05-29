@@ -420,6 +420,25 @@ impl EdlSession {
         Ok(Self { dev })
     }
 
+    /// Max plausible GPT metadata span (protective MBR + header + entry
+    /// array) in sectors. A malformed or hostile GPT can report a huge
+    /// `first_usable_lba`; passing it straight to `firehose_read_storage`
+    /// as a sector count would allocate/read gigabytes. Real GPTs fit in a
+    /// few dozen sectors, so 2048 is a generous ceiling.
+    const MAX_GPT_METADATA_SECTORS: u64 = 2048;
+
+    /// Clamp a GPT header's `first_usable_lba` to a sane Firehose read
+    /// length, rejecting implausible values instead of over-reading.
+    fn gpt_read_sectors(first_usable_lba: u64) -> Result<usize> {
+        if first_usable_lba == 0 || first_usable_lba > Self::MAX_GPT_METADATA_SECTORS {
+            return Err(EdlError::Session(format!(
+                "GPT first_usable_lba {first_usable_lba} outside plausible range 1..={}",
+                Self::MAX_GPT_METADATA_SECTORS
+            )));
+        }
+        Ok(first_usable_lba as usize)
+    }
+
     /// Read the GPT of a single LUN. Returns the parsed `gptman::GPT`.
     /// Used by `scan_partitions` and `find_partition`.
     fn read_gpt_for_lun(&mut self, slot: u8, lun: u8) -> Result<gptman::GPT> {
@@ -429,7 +448,7 @@ impl EdlSession {
         buf.rewind()?;
         let header = gptman::GPTHeader::read_from(&mut buf)
             .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
-        let gpt_len = header.first_usable_lba as usize;
+        let gpt_len = Self::gpt_read_sectors(header.first_usable_lba)?;
         let mut buf = Cursor::new(Vec::<u8>::new());
         qdl::firehose_read_storage(&mut self.dev, &mut buf, gpt_len, slot, lun, 0)
             .map_err(|e| EdlError::Session(format!("GPT read failed: {e}")))?;
@@ -492,7 +511,7 @@ impl EdlSession {
         buf.rewind()?;
         let header = gptman::GPTHeader::read_from(&mut buf)
             .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
-        let gpt_len = header.first_usable_lba as usize;
+        let gpt_len = Self::gpt_read_sectors(header.first_usable_lba)?;
         buf.rewind()?;
         qdl::firehose_read_storage(&mut self.dev, &mut buf, gpt_len, slot, lun, 0)
             .map_err(|e| EdlError::Session(format!("GPT read failed: {e}")))?;
@@ -642,7 +661,12 @@ impl EdlSession {
         buf.rewind()?;
         let header = gptman::GPTHeader::read_from(&mut buf)
             .map_err(|e| EdlError::Session(format!("GPT header parse failed: {e}")))?;
-        let total = header.backup_lba + 1;
+        let total = header.backup_lba.checked_add(1).ok_or_else(|| {
+            EdlError::Session(format!(
+                "GPT backup_lba {} overflows when computing LUN sector count",
+                header.backup_lba
+            ))
+        })?;
         ltbox_core::live!(
             log,
             "[EDL] {}",
@@ -1417,6 +1441,22 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn gpt_read_sectors_bounds_first_usable_lba() {
+        // Plausible GPT metadata spans pass through unchanged.
+        assert_eq!(EdlSession::gpt_read_sectors(6).unwrap(), 6);
+        assert_eq!(EdlSession::gpt_read_sectors(34).unwrap(), 34);
+        assert_eq!(
+            EdlSession::gpt_read_sectors(EdlSession::MAX_GPT_METADATA_SECTORS).unwrap(),
+            EdlSession::MAX_GPT_METADATA_SECTORS as usize
+        );
+        // Zero and implausibly large values (a malformed or hostile GPT) are
+        // rejected before they can drive an unbounded Firehose read.
+        assert!(EdlSession::gpt_read_sectors(0).is_err());
+        assert!(EdlSession::gpt_read_sectors(EdlSession::MAX_GPT_METADATA_SECTORS + 1).is_err());
+        assert!(EdlSession::gpt_read_sectors(u64::MAX).is_err());
+    }
 
     struct TempXml(PathBuf);
 

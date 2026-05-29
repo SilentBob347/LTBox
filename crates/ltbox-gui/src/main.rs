@@ -17610,20 +17610,29 @@ fn dump_parts_execute(
                 .replace("{lun}", &row.lun.to_string())
                 .replace("{bytes}", &row.size_bytes.to_string())
         );
-        if let Err(e) = session.dump_partition_at(
-            &row.label,
-            &out_path,
-            row.lun,
-            row.start_sector as u32,
-            row.num_sectors as usize,
-            &mut log,
+        // GPT sector values are u64; Firehose takes a u32 start + usize
+        // count. Reject out-of-range rather than silently truncating
+        // `as u32` — a start LBA past u32::MAX would wrap and dump the
+        // wrong region of the LUN.
+        let dump_outcome = match (
+            u32::try_from(row.start_sector),
+            usize::try_from(row.num_sectors),
         ) {
+            (Ok(start), Ok(count)) => session
+                .dump_partition_at(&row.label, &out_path, row.lun, start, count, &mut log)
+                .map_err(|e| e.to_string()),
+            _ => Err(format!(
+                "partition geometry out of range (start_sector={}, num_sectors={})",
+                row.start_sector, row.num_sectors
+            )),
+        };
+        if let Err(e) = dump_outcome {
             ltbox_core::live!(
                 log,
                 "[DumpParts] {}",
                 ltbox_core::i18n::tr("live_dumpparts_part_failed")
                     .replace("{label}", &row.label)
-                    .replace("{error}", &e.to_string())
+                    .replace("{error}", &e)
             );
             if is_critical_dump_label(&row.label) {
                 critical_failures.push(row.label.clone());
