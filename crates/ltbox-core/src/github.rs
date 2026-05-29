@@ -105,8 +105,8 @@ impl GitHubClient {
     }
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
-        // Exponential backoff on transport / 5xx (100ms → 400ms → 1600ms).
-        // 4xx short-circuits.
+        // Up to 3 attempts with exponential backoff between retries
+        // (100ms → 400ms); transport errors and 5xx retry, 4xx short-circuits.
         let url = format!("{API_BASE}/repos/{}{endpoint}", self.owner_repo);
 
         if let Some(cached) = RESPONSE_CACHE.get(&url) {
@@ -122,9 +122,9 @@ impl GitHubClient {
             }
             match self.agent.get(&url).call() {
                 Ok(mut resp) => {
-                    // 1 MiB cap — GitHub release + tag JSON payloads we hit
-                    // are well under this; any larger body on these endpoints
-                    // is a red flag.
+                    // GitHub release + tag JSON payloads we hit are small;
+                    // `read_to_string` is bounded by ureq's default body-size
+                    // limit (these endpoints never approach it).
                     let body = resp
                         .body_mut()
                         .read_to_string()
