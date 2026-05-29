@@ -32,6 +32,11 @@ use crate::error::{LtboxError, Result};
 /// Filename Lenovo uses for the multi-image manifest.
 pub const MANIFEST_FILENAME: &str = "qsahara_device_programmer.xml";
 
+/// Encrypted form of [`MANIFEST_FILENAME`] shipped in some Lenovo firmware
+/// packs (the same `.x` AES-CBC container as the rawprogram XMLs). Decrypt
+/// it to [`MANIFEST_FILENAME`] via [`crate::crypto::decrypt_file`] before use.
+pub const ENCRYPTED_MANIFEST_FILENAME: &str = "qsahara_device_programmer.x";
+
 /// One `<image>` entry from the manifest.
 #[derive(Debug, Clone)]
 pub struct SaharaImage {
@@ -47,6 +52,16 @@ pub fn is_manifest_filename(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.eq_ignore_ascii_case(MANIFEST_FILENAME))
+        .unwrap_or(false)
+}
+
+/// Whether `path` is the encrypted manifest form
+/// ([`ENCRYPTED_MANIFEST_FILENAME`]), which must be decrypted to
+/// [`MANIFEST_FILENAME`] before parsing.
+pub fn is_encrypted_manifest_filename(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case(ENCRYPTED_MANIFEST_FILENAME))
         .unwrap_or(false)
 }
 
@@ -175,5 +190,23 @@ mod tests {
         )));
         assert!(!is_manifest_filename(Path::new("foo.xml")));
         assert!(!is_manifest_filename(Path::new("xbl_s_devprg_ns.melf")));
+    }
+
+    #[test]
+    fn encrypted_manifest_filename_matches_case_insensitive() {
+        assert!(is_encrypted_manifest_filename(Path::new(
+            "qsahara_device_programmer.x"
+        )));
+        assert!(is_encrypted_manifest_filename(Path::new(
+            "QSAHARA_DEVICE_PROGRAMMER.X"
+        )));
+        // Plaintext and encrypted forms are mutually exclusive.
+        assert!(!is_encrypted_manifest_filename(Path::new(
+            "qsahara_device_programmer.xml"
+        )));
+        assert!(!is_manifest_filename(Path::new(
+            "qsahara_device_programmer.x"
+        )));
+        assert!(!is_encrypted_manifest_filename(Path::new("foo.x")));
     }
 }

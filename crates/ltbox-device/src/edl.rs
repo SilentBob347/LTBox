@@ -271,6 +271,28 @@ impl EdlSession {
         let port = wait_for_stable_port()?;
         ltbox_core::live!(log, "[EDL] {} {port}", tr("log_edl_found_on"));
 
+        // An encrypted manifest (`qsahara_device_programmer.x`) is decrypted
+        // to the plaintext `.xml` beside it before use, so its per-id images
+        // (referenced relative to that directory) still resolve. Some Lenovo
+        // firmware packs ship the manifest only in this encrypted form. This
+        // is the single point loaders are consumed, so decrypting here covers
+        // every caller (Flash / Unroot / Rescue / DetectArb / Dump).
+        let decrypted_holder;
+        let loader_path: &Path =
+            if ltbox_core::sahara_xml::is_encrypted_manifest_filename(loader_path) {
+                let out = loader_path.with_file_name(ltbox_core::sahara_xml::MANIFEST_FILENAME);
+                ltbox_core::crypto::decrypt_file(loader_path, &out).map_err(|e| {
+                    EdlError::Session(format!(
+                        "Decrypt loader manifest {}: {e}",
+                        loader_path.display()
+                    ))
+                })?;
+                decrypted_holder = out;
+                decrypted_holder.as_path()
+            } else {
+                loader_path
+            };
+
         // Manifest (TB323FU/kaanapali): slot array indexed by Sahara image-id.
         // Single loader (.melf/.mbn/.elf): one-element slice at slot 0.
         let mut slots: Vec<Option<Vec<u8>>> =

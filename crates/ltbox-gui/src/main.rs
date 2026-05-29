@@ -2380,8 +2380,10 @@ impl Wizard for SysUpdateWizard {
                     .rescue_folder
                     .as_deref()
                     .map(std::path::Path::new)
-                    .and_then(find_edl_loader)
-                    .is_some(),
+                    .is_some_and(|p| {
+                        is_loader_file(p)
+                            || ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
+                    }),
                 2 => self.rescue_region.is_some(),
                 _ => false,
             }
@@ -3106,7 +3108,7 @@ impl AdvWizard {
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::RebuildVbmeta) => ("Android partition image (*.img)", &["img"]),
-            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml)", &["melf", "xml"]),
+            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml / .x)", &["melf", "xml", "x"]),
             _ => ("", &[]),
         }
     }
@@ -3462,7 +3464,7 @@ fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
     // resolver upgrades a TB323FU `.melf` selection to the manifest
     // sitting next to it.
     pickers::FilePickSpec::single(target_i18n_key)
-        .with_filter("EDL loader (.melf / .xml)", &["melf", "xml"])
+        .with_filter("EDL loader (.melf / .xml / .x)", &["melf", "xml", "x"])
 }
 
 /// Wrap a heavy blocking flow as a `Task<Message>`. Runs `f` on the
@@ -4754,6 +4756,8 @@ impl App {
             self.error_msg = Some(msg);
             return Err(());
         }
+        // A `.x` loader (encrypted manifest) passes through as-is here;
+        // `EdlSession::open` decrypts it to the sibling `.xml` at load time.
         Ok(p.to_string())
     }
 
@@ -4902,22 +4906,27 @@ impl App {
                 && is_melf_loader(path)
                 && let Some(parent) = path.parent()
             {
-                let manifest = parent.join(ltbox_core::sahara_xml::MANIFEST_FILENAME);
-                if manifest.exists() {
+                if let Some(manifest) = resolve_sahara_manifest(parent) {
                     return Ok(manifest.to_string_lossy().to_string());
                 }
                 return Err(format!(
-                    "TB323FU requires a multi-image loader manifest. \
-                     Pick `qsahara_device_programmer.xml` directly, or \
-                     place it next to the chosen .melf file ({}).",
+                    "TB323FU requires a multi-image loader manifest. Pick \
+                     `qsahara_device_programmer.xml` (or its encrypted `.x`) \
+                     directly, or place it next to the chosen .melf file ({}).",
                     path.display()
                 ));
+            }
+            // Encrypted multi-image manifest picked directly
+            // (`qsahara_device_programmer.x`) passes through as-is;
+            // `EdlSession::open` decrypts it to the sibling `.xml`.
+            if ltbox_core::sahara_xml::is_encrypted_manifest_filename(path) {
+                return Ok(selected_path.to_string());
             }
             if is_loader_file(path) {
                 return Ok(selected_path.to_string());
             }
             return Err(format!(
-                "Unsupported loader file: {selected_path} (expected .melf, .mbn, .elf, or .xml)"
+                "Unsupported loader file: {selected_path} (expected .melf, .mbn, .elf, .xml, or .x manifest)"
             ));
         }
 
@@ -8342,7 +8351,7 @@ impl App {
         // pickers (root, advanced) — filter to the same ext set the
         // dialog itself accepts.
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::Sys(SysMsg::SysRescueFolderChosen(Some(p))),
             "picker_recents",
         );
@@ -9732,7 +9741,7 @@ impl App {
         .padding(0)
         .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::RecentFilePicked(PickerTarget::RootLoader, p),
             "picker_recents",
         );
@@ -10755,7 +10764,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(Some(p))),
             "picker_recents",
         );
@@ -11122,7 +11131,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(Some(p))),
             "picker_recents",
         );
@@ -11339,7 +11348,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(Some(p))),
             "picker_recents",
         );
@@ -11500,7 +11509,7 @@ impl App {
             LABEL
         };
         let chips = self.recent_file_chips(
-            &["melf"],
+            &["melf", "xml", "x"],
             |p| Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(Some(p))),
             "picker_recents",
         );
@@ -12548,21 +12557,22 @@ impl App {
                                                             loader.display()
                                                         ));
                                                     }
-                                                    // User spec: extension-only check —
-                                                    // accept `.melf` / `.mbn` / `.elf`
-                                                    // single-blob loaders OR `.xml`
-                                                    // (TB323FU multi-image manifest)
-                                                    // regardless of filename.
+                                                    // Extension-only check — accept `.melf` /
+                                                    // `.mbn` / `.elf` single-blob loaders, the
+                                                    // `.xml` multi-image manifest, or its
+                                                    // encrypted `.x` form (decrypted in
+                                                    // `EdlSession::open`). Filename is free-form.
                                                     let ext_ok = loader
                                                         .extension()
                                                         .and_then(|e| e.to_str())
                                                         .is_some_and(|e| {
                                                             let l = e.to_ascii_lowercase();
                                                             l == "melf" || l == "mbn" || l == "elf" || l == "xml"
-                                                        });
+                                                        })
+                                                        || ltbox_core::sahara_xml::is_encrypted_manifest_filename(&loader);
                                                     if !ext_ok {
                                                         return Err(format!(
-                                                            "Boot Recovery: loader must be .melf / .mbn / .elf / .xml, got: {}",
+                                                            "Boot Recovery: loader must be .melf / .mbn / .elf / .xml / .x, got: {}",
                                                             loader.display()
                                                         ));
                                                     }
@@ -13914,9 +13924,23 @@ impl App {
                                             }
 
                                             // Count .x and .xml files
-                                            let x_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
-                                                e.as_ref().ok().map(|e| e.path().extension().map(|ext| ext == "x").unwrap_or(false)).unwrap_or(false)
-                                            }).count()).unwrap_or(0);
+                                            // Count flashable `.x` (rawprogram) files. The
+                                            // encrypted Sahara manifest
+                                            // (`qsahara_device_programmer.x`) is a loader, not a
+                                            // flash image, so it is excluded here and left for
+                                            // `EdlSession::open` to decrypt at load time.
+                                            let x_count = std::fs::read_dir(fw_dir)
+                                                .map(|rd| {
+                                                    rd.filter_map(|e| e.ok().map(|e| e.path()))
+                                                        .filter(|p| {
+                                                            p.extension()
+                                                                .map(|ext| ext.eq_ignore_ascii_case("x"))
+                                                                .unwrap_or(false)
+                                                                && !ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
+                                                        })
+                                                        .count()
+                                                })
+                                                .unwrap_or(0);
                                             let xml_count = std::fs::read_dir(fw_dir).map(|rd| rd.filter(|e| {
                                                 e.as_ref().ok().map(|e| {
                                                     let p = e.path();
@@ -14102,6 +14126,7 @@ impl App {
                                                                     .and_then(|s| s.to_str())
                                                                     .map(|s| s.eq_ignore_ascii_case("x"))
                                                                     .unwrap_or(false)
+                                                                && !ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
                                                         })
                                                         .collect();
                                                 let mut decrypted = 0usize;
@@ -16141,16 +16166,21 @@ impl App {
                                                     loader.display()
                                                 ));
                                             }
-                                            // User spec: match on `.melf` extension only —
-                                            // filename itself is free-form, so no
-                                            // `xbl_s_devprg_ns`-equals check.
-                                            let is_melf = loader
+                                            // Accept single-blob loaders (`.melf` / `.mbn` /
+                                            // `.elf`), the `.xml` multi-image manifest, or its
+                                            // encrypted `.x` form (TB323FU; decrypted in
+                                            // `EdlSession::open`). Filename is free-form.
+                                            let loader_ok = loader
                                                 .extension()
                                                 .and_then(|e| e.to_str())
-                                                .is_some_and(|e| e.eq_ignore_ascii_case("melf"));
-                                            if !is_melf {
+                                                .is_some_and(|e| {
+                                                    let l = e.to_ascii_lowercase();
+                                                    l == "melf" || l == "mbn" || l == "elf" || l == "xml"
+                                                })
+                                                || ltbox_core::sahara_xml::is_encrypted_manifest_filename(&loader);
+                                            if !loader_ok {
                                                 return Err(format!(
-                                                    "Selected loader must be a .melf file, got: {}",
+                                                    "Selected loader must be .melf / .mbn / .elf / .xml / .x, got: {}",
                                                     loader.display()
                                                 ));
                                             }
@@ -17864,14 +17894,36 @@ fn flash_physical_execute(
     log
 }
 
-/// Locate a testkey PEM. Checks the image's folder, then `./keys/`.
+/// Locate the multi-image Sahara manifest in `dir`, case-insensitively.
+/// Prefers the plaintext `qsahara_device_programmer.xml`; otherwise returns
+/// the encrypted `qsahara_device_programmer.x` form, which
+/// [`ltbox_device::edl::EdlSession::open`] decrypts at load time. `None`
+/// when neither is present.
+///
+/// This only *locates* — it never decrypts or writes — so it is safe to
+/// call from cheap UI gates (`can_next`) without side effects.
+fn resolve_sahara_manifest(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let (mut plaintext, mut encrypted) = (None, None);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if ltbox_core::sahara_xml::is_manifest_filename(&p) {
+                plaintext = Some(p);
+            } else if ltbox_core::sahara_xml::is_encrypted_manifest_filename(&p) {
+                encrypted = Some(p);
+            }
+        }
+    }
+    plaintext.or(encrypted)
+}
+
+/// Locate the EDL loader inside `dir`: the multi-image Sahara manifest
+/// (plaintext `.xml` or encrypted `.x`) takes precedence over a single
+/// `xbl_s_devprg_ns.melf`, since on a manifest device a stray `.melf` is
+/// the wrong loader. Returns the path only — decryption of a `.x` manifest
+/// happens in `EdlSession::open`.
 fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    // TB323FU multi-image manifest takes precedence over the
-    // single-.melf form when both are present (the manifest references
-    // the per-id payloads and a stray `xbl_s_devprg_ns.melf` next to
-    // it would not be the right loader for that device).
-    let manifest = dir.join(ltbox_core::sahara_xml::MANIFEST_FILENAME);
-    if manifest.exists() {
+    if let Some(manifest) = resolve_sahara_manifest(dir) {
         return Some(manifest);
     }
     let candidate = dir.join("xbl_s_devprg_ns.melf");
@@ -17880,11 +17932,11 @@ fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     }
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_lowercase();
-            if name == ltbox_core::sahara_xml::MANIFEST_FILENAME {
-                return Some(entry.path());
-            }
-            if name == "xbl_s_devprg_ns.melf" {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("xbl_s_devprg_ns.melf")
+            {
                 return Some(entry.path());
             }
         }
