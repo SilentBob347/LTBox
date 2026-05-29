@@ -259,10 +259,9 @@ pub fn patch_vendor_boot(
 
     let mut total_count = 0;
     for (from, to) in replacements {
-        let count = count_occurrences(&data, from);
+        let count = replace_in_place(&mut data, from, to)?;
         if count > 0 {
             info!("Replacing pattern {} ({count} occurrences)", hex_str(from));
-            data = replace_all(&data, from, to)?;
             total_count += count;
         }
     }
@@ -339,13 +338,11 @@ pub fn patch_country_code(
     let mut total_count = 0usize;
     for old_suffix in ["XE", "XX"] {
         let from = format!("{old_code}{old_suffix}");
-        let n = count_occurrences(&data, from.as_bytes());
-        if n == 0 {
-            continue;
+        let n = replace_in_place(&mut data, from.as_bytes(), to.as_bytes())?;
+        if n > 0 {
+            info!("Replacing country code {from} → {to} ({n} occurrences)");
+            total_count += n;
         }
-        info!("Replacing country code {from} → {to} ({n} occurrences)");
-        data = replace_all(&data, from.as_bytes(), to.as_bytes())?;
-        total_count += n;
     }
     if total_count == 0 {
         fs::copy(input, output).map_err(|e| LtboxError::Patch(format!("Copy failed: {e}")))?;
@@ -376,15 +373,19 @@ fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// In-place pattern substitution, same-length only.
+/// In-place same-length pattern substitution; returns the replacement count.
+///
+/// Mutates `data` directly (no per-pattern clone) and counts matches in the
+/// same pass, so a multi-pattern run over a large `vendor_boot` makes one
+/// scan per pattern instead of a count scan plus a clone-and-replace scan.
 ///
 /// Unequal-length replacement would shift every byte after the match and
-/// break AVB digests of the containing image — safer to refuse than to
-/// let the caller ship a corrupt vendor_boot. Python v2 used
-/// `bytes.replace` which accepts unequal lengths silently; the Rust port
-/// surfaces the mismatch instead of panicking (the prior `assert_eq!`
-/// took down the GUI thread on a user-edited `config.json`).
-fn replace_all(data: &[u8], from: &[u8], to: &[u8]) -> Result<Vec<u8>> {
+/// break AVB digests of the containing image — safer to refuse than to let
+/// the caller ship a corrupt vendor_boot. Python v2 used `bytes.replace`,
+/// which accepts unequal lengths silently; the Rust port surfaces the
+/// mismatch instead (the prior `assert_eq!` took down the GUI thread on a
+/// user-edited `config.json`).
+fn replace_in_place(data: &mut [u8], from: &[u8], to: &[u8]) -> Result<usize> {
     if from.len() != to.len() {
         return Err(LtboxError::Patch(format!(
             "region pattern length mismatch: from={} to={}",
@@ -392,17 +393,21 @@ fn replace_all(data: &[u8], from: &[u8], to: &[u8]) -> Result<Vec<u8>> {
             to.len()
         )));
     }
-    let mut result = data.to_vec();
+    if from.is_empty() || from.len() > data.len() {
+        return Ok(0);
+    }
+    let mut count = 0;
     let mut pos = 0;
-    while pos + from.len() <= result.len() {
-        if &result[pos..pos + from.len()] == from {
-            result[pos..pos + from.len()].copy_from_slice(to);
+    while pos + from.len() <= data.len() {
+        if &data[pos..pos + from.len()] == from {
+            data[pos..pos + from.len()].copy_from_slice(to);
             pos += from.len();
+            count += 1;
         } else {
             pos += 1;
         }
     }
-    Ok(result)
+    Ok(count)
 }
 
 fn hex_str(data: &[u8]) -> String {
@@ -414,16 +419,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replace_all_works() {
-        let data = b"hello.PRC.world.PRC.end";
-        let result = replace_all(data, b".PRC", b".ROW").unwrap();
-        assert_eq!(&result, b"hello.ROW.world.ROW.end");
+    fn replace_in_place_works() {
+        let mut data = b"hello.PRC.world.PRC.end".to_vec();
+        let n = replace_in_place(&mut data, b".PRC", b".ROW").unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(&data, b"hello.ROW.world.ROW.end");
     }
 
     #[test]
-    fn replace_all_rejects_length_mismatch() {
-        let data = b"hello.PRC.end";
-        let err = replace_all(data, b".PRC", b".RO").unwrap_err();
+    fn replace_in_place_rejects_length_mismatch() {
+        let mut data = b"hello.PRC.end".to_vec();
+        let err = replace_in_place(&mut data, b".PRC", b".RO").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("length mismatch"), "unexpected: {msg}");
     }
