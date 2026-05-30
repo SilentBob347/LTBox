@@ -1,5 +1,16 @@
-//! EDL (Emergency Download) — Qualcomm 9008 serial port detection and
+//! EDL (Emergency Download) — Qualcomm 9008 USB device detection and
 //! session management (Sahara → Firehose configure → operations).
+//!
+//! Transport is `QdlBackend::Usb` (WinUSB stub on Windows via
+//! `qcom-usb-userspace-drivers` / libusb on Linux). The previous
+//! `QdlBackend::Serial` path went through the kernel-mode usbser COM
+//! port — upstream `qdl::serial` set no read/write timeout (literal
+//! `// TODO: timeouts?` in the source), so any device-side stall larger
+//! than the OS-default serial timeout punched through qdl's
+//! `firehose_program_storage` `.expect("Error sending data")` and aborted
+//! the whole flash mid-partition. `QdlBackend::Usb` sets explicit 10 s
+//! endpoint timeouts at the `nusb` layer so the same stall surfaces as a
+//! recoverable `io::Error` instead.
 
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -15,6 +26,16 @@ use qdl::types::{
 
 const QUALCOMM_VID: u16 = 0x05C6;
 const QUALCOMM_EDL_PID: u16 = 0x9008;
+
+/// Stable identifier returned by [`find_edl_device`] / [`wait_for_edl_device`]
+/// when the EDL endpoint is visible via libusb. The actual `nusb::Device`
+/// is opened later by qdl's USB backend (`qdl::usb::setup_usb_device`);
+/// LTBox only needs a presence marker for logging + post-reset stability
+/// checks, so we return a small synthetic string instead of plumbing a
+/// raw `nusb` handle through the wait loop (which would tie the abstract
+/// `wait_for_stable_port_with` helper to a concrete USB type and break
+/// the unit tests that drive it with `String` ports).
+const EDL_DEVICE_MARKER: &str = "USB:VID_05C6&PID_9008";
 
 /// Build + send a Firehose `<erase>` XML to the device.
 ///
@@ -68,76 +89,31 @@ pub enum EdlError {
 
 type Result<T> = std::result::Result<T, EdlError>;
 
-/// Scan for the Qualcomm 9008 serial port.
-pub fn find_edl_port() -> Result<String> {
-    let ports = serialport::available_ports().map_err(|e| EdlError::Serial(e.to_string()))?;
-    for port in &ports {
-        if let serialport::SerialPortType::UsbPort(usb) = &port.port_type
-            && usb.vid == QUALCOMM_VID
-            && usb.pid == QUALCOMM_EDL_PID
-        {
-            return Ok(port.port_name.clone());
+/// Scan for the Qualcomm 9008 EDL endpoint via libusb. Returns
+/// [`EDL_DEVICE_MARKER`] when at least one matching device is enumerated,
+/// otherwise [`EdlError::PortNotFound`].
+///
+/// Implemented with `nusb::list_devices()` to mirror the discovery path
+/// `qdl::usb::setup_usb_device` will take when actually opening the
+/// transport — keeping both probes on the same enumeration source avoids
+/// "visible to probe, invisible to open" mismatch (the classic failure
+/// mode of the previous code, which probed `serialport::available_ports`
+/// and then opened a totally different transport on top of it).
+pub fn find_edl_device() -> Result<String> {
+    use nusb::MaybeFuture;
+    let devices = nusb::list_devices()
+        .wait()
+        .map_err(|e| EdlError::Serial(format!("USB device enumeration failed: {e}")))?;
+    for d in devices {
+        if d.vendor_id() == QUALCOMM_VID && d.product_id() == QUALCOMM_EDL_PID {
+            return Ok(EDL_DEVICE_MARKER.to_string());
         }
     }
     Err(EdlError::PortNotFound)
 }
 
 pub fn check_device() -> bool {
-    find_edl_port().is_ok()
-}
-
-/// Render a serial-open failure with a platform-aware hint. The qdl-rs
-/// error is short (e.g. `Device or resource busy (os error 16)` /
-/// `Permission denied (os error 13)`) and the underlying cause is
-/// almost always one of three things on Linux:
-///
-///   * `EBUSY` — ModemManager (or another process) already opened the
-///     port to probe for AT modems. Fix: ship the LTBox udev rule with
-///     `ENV{ID_MM_DEVICE_IGNORE}="1"` and reload udev.
-///   * `EACCES` — the desktop user lacks read/write on `/dev/ttyUSB*`
-///     because the udev rule hasn't been installed yet. Fix: install
-///     the udev rule (or run via `sudo`).
-///   * Anything else — surface the raw error verbatim so the user can
-///     paste it into a bug report.
-///
-/// Windows/macOS don't have ModemManager, so the hint stays generic
-/// there. The hint is glued onto the original error so the upstream
-/// failure mode is preserved.
-fn serial_open_error_hint(port: &str, err: &anyhow::Error) -> String {
-    let raw = err.to_string();
-    let lower = raw.to_ascii_lowercase();
-    let base = format!("Transport setup failed: {raw}");
-
-    #[cfg(target_os = "linux")]
-    {
-        let busy = lower.contains("resource busy")
-            || lower.contains("device or resource busy")
-            || lower.contains("os error 16");
-        let denied = lower.contains("permission denied") || lower.contains("os error 13");
-        if busy {
-            return format!(
-                "{base}\n\
-                 hint: another process is holding {port} — typically Ubuntu/Fedora ModemManager \
-                 probing for AT modems on hot-plug. Install the LTBox udev rule \
-                 (`misc/udev/51-ltbox-qcom.rules`, which sets `ID_MM_DEVICE_IGNORE=1`) and \
-                 re-plug the device, or stop ModemManager temporarily: \
-                 `sudo systemctl stop ModemManager`."
-            );
-        }
-        if denied {
-            return format!(
-                "{base}\n\
-                 hint: the desktop user can't open {port}. Install the LTBox udev rule \
-                 (`misc/udev/51-ltbox-qcom.rules`) and re-plug, add yourself to the `dialout` \
-                 group (`sudo usermod -aG dialout $USER` + re-login), or launch via `sudo`."
-            );
-        }
-    }
-    // Both `lower` and `port` are referenced only by Linux branch — keep
-    // them touched on other targets so `-D warnings` stays happy without
-    // a `#[cfg]`-gated parameter dance.
-    let _ = (&lower, port);
-    base
+    find_edl_device().is_ok()
 }
 
 /// Wait for a stable EDL port after a reset. Two phases:
@@ -207,14 +183,18 @@ where
 fn wait_for_stable_port() -> Result<String> {
     let deadline = Instant::now() + EDL_SESSION_OPEN_TIMEOUT;
     wait_for_stable_port_with(
-        find_edl_port,
+        find_edl_device,
         std::thread::sleep,
         move || Instant::now() >= deadline,
         EDL_SESSION_OPEN_TIMEOUT,
     )
 }
 
-/// Wait for an EDL device; returns port name.
+/// Wait for an EDL device; returns the stable-device marker string.
+///
+/// Name kept (`wait_for_device`) to avoid an extra rename churn through
+/// `controller.rs`; the underlying transport just moved from a COM port
+/// name to a libusb VID/PID marker.
 pub fn wait_for_device() -> Result<String> {
     wait_for_stable_port()
 }
@@ -269,6 +249,9 @@ impl EdlSession {
         let _ = auto_reset;
         ltbox_core::live!(log, "[EDL] {}", tr("log_edl_scanning"));
         let port = wait_for_stable_port()?;
+        // `port` is now a libusb marker string ("USB:VID_05C6&PID_9008"),
+        // not a COM port name — the log line wording is generic enough
+        // ("found on …") that the swap doesn't require an i18n update.
         ltbox_core::live!(log, "[EDL] {} {port}", tr("log_edl_found_on"));
 
         // An encrypted manifest (`qsahara_device_programmer.x`) is decrypted
@@ -335,15 +318,16 @@ impl EdlSession {
                 vec![Some(mbn)]
             };
 
-        ltbox_core::live!(log, "[EDL] {}", tr("log_edl_serial_transport"));
-        let rw = match qdl::setup_target_device(QdlBackend::Serial, None, Some(port.clone())) {
-            Ok(rw) => rw,
-            Err(e) => {
-                let msg = serial_open_error_hint(&port, &e);
-                ltbox_core::live!(log, "[EDL] {msg}");
-                return Err(EdlError::Session(msg));
-            }
-        };
+        ltbox_core::live!(log, "[EDL] {}", tr("log_edl_transport_setup"));
+        // `QdlBackend::Usb` — see module-level doc for the rationale on
+        // migrating off the Serial COM-port path. `setup_target_device`
+        // discovers the device via libusb (VID 05C6 + PID 9008 / 900E)
+        // and claims the bulk-in / bulk-out endpoints with explicit
+        // 10 s read + write timeouts; no port name or serial number is
+        // required when only one EDL device is plugged in.
+        let _ = &port; // port marker retained for logging only
+        let rw = qdl::setup_target_device(QdlBackend::Usb, None, None)
+            .map_err(|e| EdlError::Session(format!("Transport setup failed: {e}")))?;
 
         let mut dev = QdlDevice {
             rw,
@@ -351,7 +335,7 @@ impl EdlSession {
                 storage_type: FirehoseStorageType::Ufs,
                 storage_sector_size: 4096,
                 bypass_storage: false,
-                backend: QdlBackend::Serial,
+                backend: QdlBackend::Usb,
                 skip_firehose_log: true,
                 verbose_firehose: false,
                 ..Default::default()

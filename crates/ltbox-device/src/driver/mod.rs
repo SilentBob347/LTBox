@@ -10,8 +10,8 @@
 //!
 //! | Host    | Module                  | Strategy |
 //! |---------|-------------------------|----------|
-//! | Windows | `driver::windows`       | `pnputil /enum-drivers` + DriverStore probe; install via `pnputil /add-driver` after fetching the latest `qcom-usb-kernel-drivers` release. |
-//! | Linux   | `driver::linux` (stub)  | Returns `NotWindows` for now. Hardware-validated probe (udev rule presence + `/sys/bus/usb/devices` walk for `05c6:9008` + serial-node permission test) lands once a Lenovo Qualcomm target is in reach to test against. |
+//! | Windows | `driver::windows`       | `pnputil /enum-drivers` + DriverStore probe for `qcserlib.inf` (the WinUSB stub for PID 9008); install by downloading the signed per-arch `qcom_usb_userspace_drivers_<arch>.exe` from the latest `qcom-usb-userspace-drivers` release and launching it via UAC (`Start-Process -Verb RunAs`). The installer self-elevates, so LTBox itself does not need to run as Administrator. |
+//! | Linux   | `driver::linux` (stub)  | Returns `NotWindows` for now. Hardware-validated probe (udev rule presence + `/sys/bus/usb/devices` walk for `05c6:9008` + serial-node permission test) lands once a Qualcomm target is in reach to test against. |
 //! | macOS   | `driver::linux` (reused) | Same `NotWindows` stub; LTBox has no macOS driver story today. |
 //!
 //! The shared `DriverStatus` / `DriverError` / `Result` types live
@@ -46,24 +46,25 @@ pub enum DriverError {
     // ureq has no thiserror-friendly root error, so collapse transport + status.
     #[error("Network error: {0}")]
     Http(String),
-    #[error("GitHub release parse error: {0}")]
-    Parse(String),
-    #[error("No matching driver asset found in the latest release")]
-    NoAsset,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Zip extraction error: {0}")]
-    Zip(#[from] zip::result::ZipError),
-    #[error("No .inf files found under a Windows10 subdirectory in the archive")]
-    NoInf,
-    /// `pnputil /add-driver /install` rejected every `.inf` — usually
-    /// because LTBox is not running elevated. Carries the count so the
-    /// GUI can surface "0/N succeeded" without knowing how many INFs
-    /// the archive shipped.
-    #[error(
-        "pnputil failed for all {count} driver(s). LTBox needs to run as Administrator to install drivers."
-    )]
-    PnputilAllFailed { count: usize },
+    /// GitHub release JSON could not be parsed.
+    #[error("GitHub release parse error: {0}")]
+    Parse(String),
+    /// The latest `qcom-usb-userspace-drivers` release shipped no signed
+    /// installer `.exe` for the host architecture.
+    #[error("No matching signed installer found in the latest release")]
+    NoAsset,
+    /// The user dismissed the Windows UAC elevation prompt, so the signed
+    /// installer never ran. Distinct from `InstallerFailed` so the GUI can
+    /// say "approve the prompt and try again" instead of a generic error.
+    /// The installer `.exe` self-elevates, so LTBox itself does NOT need to
+    /// run as Administrator — the UAC prompt is the only elevation step.
+    #[error("Driver install was cancelled at the Windows elevation prompt.")]
+    InstallCancelled,
+    /// The signed installer `.exe` exited with a non-zero status.
+    #[error("Driver installer exited with code {exit_code}.")]
+    InstallerFailed { exit_code: i32 },
 }
 
 impl From<ureq::Error> for DriverError {

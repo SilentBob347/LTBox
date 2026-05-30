@@ -1,9 +1,33 @@
 //! Qualcomm 9008 EDL USB driver detection + auto-install on Windows.
 //!
-//! Needs `qcadb.inf` (ADB composite) and `qcwdfser.inf` (WDF serial) from
-//! `qualcomm/qcom-usb-kernel-drivers` releases. Presence probed via
-//! `pnputil /enum-drivers`, then the DriverStore FileRepository as fallback.
-//! Install: download → extract → `pnputil /add-driver` per `.inf`.
+//! Switched from `qcom-usb-kernel-drivers` (kernel-mode usbser COM port,
+//! consumed via `serialport` / `QdlBackend::Serial`) to
+//! `qcom-usb-userspace-drivers` (WinUSB stub via `qcserlib.inf`, consumed
+//! via `nusb` / `QdlBackend::Usb`). The kernel-mode COM path had no read /
+//! write timeout configured upstream (`qdl::serial` literal
+//! `// TODO: timeouts?`) and `qdl::firehose_program_storage` panics via
+//! `.expect("Error sending data")` on the first write hiccup, which surfaced
+//! as a hard mid-flash process abort on stalled large-partition writes.
+//! `QdlBackend::Usb` already configures explicit 10 s read / write timeouts
+//! at the `nusb` endpoint level (`qdl::usb::setup_usb_device`) so the same
+//! stall surfaces as a recoverable `io::Error` instead.
+//!
+//! Install path: download the signed, per-architecture
+//! `qcom_usb_userspace_drivers_<arch>.exe` from the latest
+//! `qcom-usb-userspace-drivers` GitHub release and launch it through
+//! `Start-Process -Verb RunAs`. The installer carries a
+//! `requireAdministrator` manifest and self-elevates via the Windows UAC
+//! prompt, so **LTBox itself does not need to run as Administrator** — the
+//! UAC prompt is the only elevation step. A dismissed prompt surfaces as a
+//! distinct [`DriverError::InstallCancelled`] (vs a generic installer
+//! failure) so the GUI can ask the user to approve and retry.
+//!
+//! Required-driver probe ("is EDL ready?") checks for `qcserlib.inf` —
+//! that's the INF that binds `USB\VID_05C6&PID_9008` to the WinUSB stub
+//! (the other INFs in the bundle cover ADB / modem / WWAN endpoints
+//! LTBox does not drive directly). Presence probed via
+//! `pnputil /enum-drivers`, then the DriverStore FileRepository as
+//! fallback.
 //!
 //! Cross-platform `DriverStatus` / `DriverError` / `Result` types
 //! live in `driver/mod.rs`; this file is only compiled on Windows
@@ -11,7 +35,7 @@
 //! `cfg!(windows)` runtime check from the pre-rename module folds
 //! into compile-time guarantees here.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use ltbox_core::i18n::tr;
@@ -19,7 +43,9 @@ use ltbox_core::{live, tr_args};
 
 use super::{DriverError, DriverStatus, Result};
 
-/// `Command::new` + `CREATE_NO_WINDOW` so `pnputil` does not flash a console.
+/// `Command::new` + `CREATE_NO_WINDOW` so `pnputil` / `powershell` do not
+/// flash a console. The elevated installer child spawned by
+/// `Start-Process` shows its own UAC prompt + window regardless.
 fn silent_command(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -28,7 +54,12 @@ fn silent_command(program: &str) -> Command {
     cmd
 }
 
-const REQUIRED_INFS: &[&str] = &["qcadb.inf", "qcwdfser.inf"];
+/// INFs whose absence triggers a "missing driver" banner. Only the WinUSB
+/// stub for EDL (`qcserlib.inf` — the INF that maps PID 9008 to
+/// `libusb_Install → winusb.inf`) is required for LTBox's EDL path;
+/// every other INF in the userspace bundle is installed alongside as a
+/// quality-of-life bonus but not gating.
+const REQUIRED_INFS: &[&str] = &["qcserlib.inf"];
 
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
@@ -38,8 +69,6 @@ struct GithubRelease {
     assets: Vec<GithubAsset>,
     #[serde(default)]
     draft: bool,
-    #[serde(default)]
-    prerelease: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -49,14 +78,22 @@ struct GithubAsset {
 }
 
 const RELEASES_API: &str =
-    "https://api.github.com/repos/qualcomm/qcom-usb-kernel-drivers/releases?per_page=10";
+    "https://api.github.com/repos/qualcomm/qcom-usb-userspace-drivers/releases?per_page=10";
+/// Windows release tags carry a `win` token (`release-win-v1.0.2.0`); the
+/// repo also publishes Linux-only tags that ship no `.exe` installer.
 const WIN_TAG_NEEDLE: &str = "win";
-const ASSET_PREFIX: &str = "qud-win-";
-const ASSET_SUFFIXES: &[&str] = &["_arm64_amd64.zip", "_x86_64_arm64_signed.zip"];
 const USER_AGENT: &str = concat!("ltbox/", env!("CARGO_PKG_VERSION"));
 
-fn asset_matches(name: &str) -> bool {
-    name.starts_with(ASSET_PREFIX) && ASSET_SUFFIXES.iter().any(|s| name.ends_with(s))
+/// Signed installer asset name for the host architecture. The release
+/// ships one self-extracting `.exe` per arch.
+fn arch_installer_asset() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "qcom_usb_userspace_drivers_arm64.exe"
+    } else if cfg!(target_arch = "x86") {
+        "qcom_usb_userspace_drivers_x86.exe"
+    } else {
+        "qcom_usb_userspace_drivers_x64.exe"
+    }
 }
 
 /// Probe whether the Qualcomm USB drivers are installed.
@@ -116,8 +153,8 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
     false
 }
 
-/// Download the latest `qcom-usb-kernel-drivers` release and `pnputil`-install
-/// each `.inf` under a `Windows10/` folder.
+/// Download the signed userspace-driver installer for the host arch from
+/// the latest `qcom-usb-userspace-drivers` release and run it elevated.
 ///
 /// Every milestone routes through `live!` so the GUI streams progress in
 /// real time — the previous `log.push` only surfaced after the whole task
@@ -127,9 +164,12 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
 /// Two ureq agents:
 ///   * `meta_agent` — 30 s global, used for the small JSON release listing.
 ///   * `dl_agent` — no global cap; per-stage `connect` / `recv-response` /
-///     `recv-body` timeouts so a slow link can finish a multi-MB ZIP
-///     without the previous 30-s "timeout: global" guillotine cutting the
-///     body read partway through.
+///     `recv-body` timeouts so a slow link can finish the ~700 KB installer
+///     without a global-timeout guillotine cutting the body read partway
+///     through.
+///
+/// The downloaded `.exe` self-elevates via UAC ([`run_installer_elevated`]),
+/// so this whole flow runs without LTBox holding Administrator rights.
 pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
     live!(log, "[Driver] {}", tr("live_driver_fetch_meta"));
     let meta_agent = ureq::Agent::config_builder()
@@ -145,18 +185,23 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         .read_json()
         .map_err(|e| DriverError::Parse(e.to_string()))?;
 
+    let asset_name = arch_installer_asset();
     let release = releases
         .into_iter()
-        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| !r.draft)
         .filter(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
-        .find(|r| r.assets.iter().any(|a| asset_matches(&a.name)))
+        .find(|r| {
+            r.assets
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case(asset_name))
+        })
         .ok_or(DriverError::NoAsset)?;
 
-    let (asset_name, asset_url) = release
+    let asset_url = release
         .assets
         .into_iter()
-        .find(|a| asset_matches(&a.name))
-        .map(|a| (a.name, a.browser_download_url))
+        .find(|a| a.name.eq_ignore_ascii_case(asset_name))
+        .map(|a| a.browser_download_url)
         .ok_or(DriverError::NoAsset)?;
 
     live!(
@@ -167,10 +212,8 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
 
     let tmp_dir = std::env::temp_dir().join(format!("ltbox_qcom_drv_{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir)?;
-    let zip_path = tmp_dir.join(&asset_name);
+    let exe_path = tmp_dir.join(asset_name);
 
-    // No global cap — stalls/slow links should still finish a 10–20 MB
-    // ZIP without the previous "timeout: global" guillotine.
     let dl_agent = ureq::Agent::config_builder()
         .user_agent(USER_AGENT)
         .timeout_connect(Some(std::time::Duration::from_secs(15)))
@@ -179,116 +222,67 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         .build()
         .new_agent();
 
-    download_with_progress(&dl_agent, &asset_url, &asset_name, &zip_path, log)?;
+    download_with_progress(&dl_agent, &asset_url, asset_name, &exe_path, log)?;
 
-    live!(log, "[Driver] {}", tr("live_driver_extracting"));
-    let extract_dir = tmp_dir.join("extracted");
-    std::fs::create_dir_all(&extract_dir)?;
-    extract_zip(&zip_path, &extract_dir)?;
-
-    let mut inf_files: Vec<PathBuf> = Vec::new();
-    walk_collect_infs(&extract_dir, &mut inf_files);
-    if inf_files.is_empty() {
-        cleanup(&tmp_dir);
-        return Err(DriverError::NoInf);
-    }
-
-    let mut succeeded = 0usize;
-    let mut failed = 0usize;
-    for inf in &inf_files {
-        let name = inf
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        live!(
-            log,
-            "[Driver] {}",
-            tr_args!("live_driver_installing_inf", name = name)
-        );
-        let out = silent_command("pnputil")
-            .arg("/add-driver")
-            .arg(inf)
-            .arg("/install")
-            .output();
-        match out {
-            Ok(o) if o.status.success() => {
-                succeeded += 1;
-            }
-            Ok(o) => {
-                failed += 1;
-                // pnputil writes its diagnostics to stdout, not stderr,
-                // so logging only stderr left every failure as a blank
-                // "failed: " line. Decode both, prefer stdout when
-                // populated, fall back to a friendly hint when both are
-                // empty (typical when pnputil bails on UAC before
-                // emitting any text).
-                let exit = o.status.code().unwrap_or(-1);
-                let stdout = decode_console(&o.stdout);
-                let stderr = decode_console(&o.stderr);
-                let detail = if !stdout.trim().is_empty() {
-                    stdout.trim().to_string()
-                } else if !stderr.trim().is_empty() {
-                    stderr.trim().to_string()
-                } else {
-                    tr("live_driver_pnputil_no_diag")
-                };
-                live!(
-                    log,
-                    "[Driver] {}",
-                    tr_args!(
-                        "live_driver_pnputil_failed",
-                        name = name,
-                        exit = exit,
-                        detail = detail,
-                    )
-                );
-            }
-            Err(e) => {
-                failed += 1;
-                live!(
-                    log,
-                    "[Driver] {}",
-                    tr_args!("live_driver_pnputil_spawn_failed", name = name, error = e,)
-                );
-            }
-        }
-    }
-
+    live!(log, "[Driver] {}", tr("live_driver_running_installer"));
+    let result = run_installer_elevated(&exe_path, log);
     cleanup(&tmp_dir);
+    result?;
 
-    // All installs flopped → surface as hard failure so the GUI shows
-    // the red banner instead of the green "install complete" toast.
-    if succeeded == 0 && failed > 0 {
-        live!(
-            log,
-            "[Driver] {}",
-            tr_args!("live_driver_all_failed", count = failed)
-        );
-        return Err(DriverError::PnputilAllFailed { count: failed });
-    }
-
-    let total = succeeded + failed;
-    live!(
-        log,
-        "[Driver] {}",
-        tr_args!(
-            "live_driver_install_finished",
-            succeeded = succeeded,
-            total = total,
-        )
-    );
+    live!(log, "[Driver] {}", tr("live_driver_install_finished"));
     Ok(())
 }
 
-/// Decode bytes captured from a Windows console subprocess. Tries UTF-8
-/// first, then falls back to lossy UTF-8 (which keeps ASCII intact and
-/// only mangles the high-byte ranges) so localized pnputil output at
-/// least surfaces something instead of a blank "failed: " tail.
-fn decode_console(bytes: &[u8]) -> String {
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        s.to_string()
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+/// Launch the signed installer `.exe` elevated via PowerShell
+/// `Start-Process -Verb RunAs`, blocking until it exits.
+///
+/// `-Verb RunAs` raises the Windows UAC prompt, so the installer runs with
+/// Administrator rights while LTBox stays in its original (non-elevated)
+/// context. `-Wait` blocks until the installer finishes; `-PassThru`
+/// exposes the child's exit code. A dismissed UAC prompt makes
+/// `Start-Process` throw a terminating error; the `try/catch` maps that to
+/// exit `1223` (`ERROR_CANCELLED`) so the caller can distinguish a user
+/// cancel from a real installer failure.
+fn run_installer_elevated(exe: &Path, log: &mut Vec<String>) -> Result<()> {
+    // Escape for a PowerShell single-quoted string literal (`'` → `''`).
+    // The temp path is process-id-derived so quotes are not expected, but
+    // escape defensively rather than trust the environment.
+    let exe_str = exe.to_string_lossy().replace('\'', "''");
+    // `$p.ExitCode` can be `$null` for some self-extracting installers that
+    // hand off to a detached child; `exit $null` would silently become exit
+    // 0 and report a false success. Treat a null exit code as a failure
+    // (exit 1) so the caller surfaces `InstallerFailed` instead of a green
+    // toast over a driver that never actually installed.
+    let script = format!(
+        "try {{ $p = Start-Process -FilePath '{exe_str}' -Verb RunAs -Wait -PassThru \
+         -ErrorAction Stop; if ($null -eq $p.ExitCode) {{ exit 1 }} else {{ exit $p.ExitCode }} }} \
+         catch {{ exit 1223 }}"
+    );
+
+    let out = silent_command("powershell")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&script)
+        .output()
+        .map_err(DriverError::Io)?;
+
+    let code = out.status.code().unwrap_or(-1);
+    match code {
+        0 => Ok(()),
+        // ERROR_CANCELLED — the user dismissed the UAC elevation prompt.
+        1223 => {
+            live!(log, "[Driver] {}", tr("live_driver_install_cancelled"));
+            Err(DriverError::InstallCancelled)
+        }
+        other => {
+            live!(
+                log,
+                "[Driver] {}",
+                tr_args!("live_driver_installer_failed", exit = other)
+            );
+            Err(DriverError::InstallerFailed { exit_code: other })
+        }
     }
 }
 
@@ -367,49 +361,6 @@ fn download_with_progress(
     .map_err(|e| DriverError::Http(format!("download: {e}")))
 }
 
-fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let Some(rel) = entry.enclosed_name() else {
-            continue;
-        };
-        let out_path = dest.join(rel);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut out_file = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut entry, &mut out_file)?;
-        }
-    }
-    Ok(())
-}
-
-fn walk_collect_infs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_collect_infs(&path, out);
-        } else if let Some(ext) = path.extension()
-            && ext.eq_ignore_ascii_case("inf")
-            && path.components().any(|c| {
-                c.as_os_str()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("Windows10")
-            })
-        {
-            out.push(path);
-        }
-    }
-}
-
 fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -426,5 +377,21 @@ mod tests {
         if let DriverStatus::Missing(list) = check_required_drivers() {
             assert!(!list.is_empty());
         }
+    }
+
+    /// Host-arch installer asset name resolves to one of the three
+    /// shipped variants.
+    #[test]
+    fn arch_asset_is_known() {
+        let name = arch_installer_asset();
+        assert!(
+            matches!(
+                name,
+                "qcom_usb_userspace_drivers_x64.exe"
+                    | "qcom_usb_userspace_drivers_arm64.exe"
+                    | "qcom_usb_userspace_drivers_x86.exe"
+            ),
+            "unexpected asset name: {name}"
+        );
     }
 }
