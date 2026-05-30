@@ -5,6 +5,9 @@ members = [
     "crates/ltbox-patch",
     "crates/ltbox-gui",
 ]
+# Vendored third-party crate — built as a path dependency, not a member,
+# so it keeps its own edition/lints and doesn't inherit workspace config.
+exclude = ["vendor/qdl"]
 resolver = "2"
 
 [workspace.package]
@@ -101,7 +104,9 @@ os_pipe = "1"
 avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", branch = "main" }
 magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
 kptools = { git = "https://github.com/miner7222/kptools-rs", branch = "master" }
-qdl = { git = "https://github.com/qualcomm/qdlrs", branch = "main", features = ["serial", "usb"] }
+# Vendored under vendor/qdl — qualcomm/qdlrs + a local ZLP fix. See
+# vendor/qdl/VENDORING.md.
+qdl = { path = "vendor/qdl", features = ["serial", "usb"] }
 # Build-time Lucide icon subsetter — generates `src/icon.rs` at build
 # time with one Text-returning function per icon declared in
 # `fonts/lucide.toml`. No runtime dependency on the crate itself; the

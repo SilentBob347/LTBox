@@ -4629,7 +4629,6 @@ checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 [[package]]
 name = "qdl"
 version = "0.1.0"
-source = "git+https://github.com/qualcomm/qdlrs?branch=main#cdec5ea2b7415b5b45742f240983f1425777a44e"
 dependencies = [
  "anstream 0.6.21",
  "anyhow",
