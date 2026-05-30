@@ -11,7 +11,7 @@
 pub fn lun_for_partition(label: &str) -> Option<u8> {
     let base = strip_slot_suffix(label).to_ascii_lowercase();
     match base.as_str() {
-        "persist" | "frp" | "userdata" | "metadata" | "vbmeta_system" => Some(0),
+        "persist" | "frp" | "userdata" | "metadata" | "vbmeta_system" | "oemowninfo" => Some(0),
         "boot" | "init_boot" | "vbmeta" | "vendor_boot" | "devinfo" | "dtbo" => Some(4),
         _ => None,
     }

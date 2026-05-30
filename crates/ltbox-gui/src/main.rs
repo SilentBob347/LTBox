@@ -14492,10 +14492,14 @@ impl App {
                                                 }
                                             }
 
-                                            // Country code patch: dump → patch → flash devinfo
-                                            // + persist. Skipped when the user picked "Do not
-                                            // change" (`country_action` is `Skip`) — the
-                                            // device's existing region images stay put.
+                                            // Country code patch: dump → patch → flash the
+                                            // country-code partition + persist. Skipped when the
+                                            // user picked "Do not change" (`country_action` is
+                                            // `Skip`). The country-code partition is `oemowninfo`
+                                            // (LUN 0) on TB320FC / TB323FU and `devinfo` (LUN 4)
+                                            // on every other SKU. A failed/partial patch is a
+                                            // warning, not a hard error — the firmware is already
+                                            // flashed, so the run still resets to system.
                                             if cfg.wipe
                                                 && let Some(target_code) = cfg.country_action.target() {
                                                     live!(
@@ -14541,8 +14545,26 @@ impl App {
                                                         "DE","GR","HU","IE","IT","LV","LT","LU","MT","NL",
                                                         "PL","PT","RO","SK","SI","ES","SE",
                                                     ];
-                                                    let mut country_progress = CountryPatchProgress::default();
-                                                    for label in ["devinfo", "persist"] {
+                                                    // TB320FC / TB323FU keep the country code in
+                                                    // `oemowninfo` (LUN 0), not `devinfo` (LUN 4).
+                                                    // Detect via the vendor_boot fingerprint (works
+                                                    // on EDL-start) or the probe-reported model.
+                                                    let country_label = if ["TB320FC", "TB323FU"]
+                                                        .iter()
+                                                        .any(|m| {
+                                                            vendor_boot_fingerprint
+                                                                .as_deref()
+                                                                .map(|fp| fingerprint_token_match(fp, m))
+                                                                .unwrap_or(false)
+                                                                || fingerprint_token_match(&device_model, m)
+                                                        }) {
+                                                        "oemowninfo"
+                                                    } else {
+                                                        "devinfo"
+                                                    };
+                                                    let mut country_progress =
+                                                        CountryPatchProgress::new(&[country_label, "persist"]);
+                                                    for label in [country_label, "persist"] {
                                                         let Some(lun) =
                                                             ltbox_core::partition_lun::lun_for_partition(label)
                                                         else {
@@ -14708,13 +14730,17 @@ impl App {
                                                         }
                                                     }
                                                     if let Err(e) = country_progress.finish() {
+                                                        // Non-fatal: the firmware itself is already
+                                                        // flashed, so warn and STILL reset to system
+                                                        // rather than aborting and leaving the device
+                                                        // stuck in EDL. The country code just stays
+                                                        // whatever was already on the partition.
                                                         ltbox_core::live!(
                                                             log,
                                                             "[Country] {}",
-                                                            ltbox_core::i18n::tr("live_country_error")
+                                                            ltbox_core::i18n::tr("live_country_warning")
                                                                 .replace("{error}", &e)
                                                         );
-                                                        return Err(e);
                                                     }
                                                     // Surface the backup location once
                                                     // per run. Empty dir = every label
@@ -17566,11 +17592,22 @@ fn is_critical_dump_label(label: &str) -> bool {
 
 #[derive(Debug, Default)]
 struct CountryPatchProgress {
+    /// Labels that must be patched for the run to count as complete. Set
+    /// per-run because the country-code partition differs by model
+    /// (`devinfo` on most SKUs, `oemowninfo` on TB320FC / TB323FU).
+    expected: Vec<String>,
     flashed_or_confirmed: Vec<String>,
     failures: Vec<String>,
 }
 
 impl CountryPatchProgress {
+    fn new(expected: &[&str]) -> Self {
+        Self {
+            expected: expected.iter().map(|s| s.to_string()).collect(),
+            ..Self::default()
+        }
+    }
+
     fn mark_flashed(&mut self, label: &str) {
         if !self.flashed_or_confirmed.iter().any(|seen| seen == label) {
             self.flashed_or_confirmed.push(label.to_string());
@@ -17582,10 +17619,11 @@ impl CountryPatchProgress {
     }
 
     fn finish(&self) -> std::result::Result<(), String> {
-        let missing = CRITICAL_DUMP_BASES
+        let missing = self
+            .expected
             .iter()
-            .filter(|label| !self.flashed_or_confirmed.iter().any(|seen| seen == **label))
-            .copied()
+            .filter(|label| !self.flashed_or_confirmed.iter().any(|seen| seen == *label))
+            .cloned()
             .collect::<Vec<_>>();
 
         if self.failures.is_empty() && missing.is_empty() {
@@ -18757,8 +18795,8 @@ mod tests {
     }
 
     #[test]
-    fn country_patch_progress_requires_devinfo_and_persist() {
-        let mut progress = CountryPatchProgress::default();
+    fn country_patch_progress_requires_all_expected() {
+        let mut progress = CountryPatchProgress::new(&["devinfo", "persist"]);
         progress.mark_flashed("devinfo");
 
         let err = progress.finish().expect_err("persist must be required");
@@ -18766,8 +18804,17 @@ mod tests {
     }
 
     #[test]
+    fn country_patch_progress_oemowninfo_expected() {
+        // TB320FC / TB323FU patch oemowninfo instead of devinfo.
+        let mut progress = CountryPatchProgress::new(&["oemowninfo", "persist"]);
+        progress.mark_flashed("oemowninfo");
+        progress.mark_flashed("persist");
+        assert!(progress.finish().is_ok());
+    }
+
+    #[test]
     fn country_patch_progress_surfaces_partition_failures() {
-        let mut progress = CountryPatchProgress::default();
+        let mut progress = CountryPatchProgress::new(&["devinfo", "persist"]);
         progress.mark_flashed("devinfo");
         progress.mark_failed("persist", "no known country code");
 
