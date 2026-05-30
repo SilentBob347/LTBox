@@ -14573,7 +14573,7 @@ impl App {
                                                     // `oemowninfo` (LUN 0), not `devinfo` (LUN 4).
                                                     // Detect via the vendor_boot fingerprint (works
                                                     // on EDL-start) or the probe-reported model.
-                                                    let country_label = if ["TB320FC", "TB323FU"]
+                                                    let oemowninfo_sku = ["TB320FC", "TB323FU"]
                                                         .iter()
                                                         .any(|m| {
                                                             vendor_boot_fingerprint
@@ -14581,11 +14581,16 @@ impl App {
                                                                 .map(|fp| fingerprint_token_match(fp, m))
                                                                 .unwrap_or(false)
                                                                 || fingerprint_token_match(&device_model, m)
-                                                        }) {
-                                                        "oemowninfo"
-                                                    } else {
-                                                        "devinfo"
-                                                    };
+                                                        });
+                                                    let country_label =
+                                                        if oemowninfo_sku { "oemowninfo" } else { "devinfo" };
+                                                    // The /persist fingerprint sync is TB323FU only —
+                                                    // TB320FC does not need it.
+                                                    let persist_fp_sync = vendor_boot_fingerprint
+                                                        .as_deref()
+                                                        .map(|fp| fingerprint_token_match(fp, "TB323FU"))
+                                                        .unwrap_or(false)
+                                                        || fingerprint_token_match(&device_model, "TB323FU");
                                                     let mut country_progress =
                                                         CountryPatchProgress::new(&[country_label, "persist"]);
                                                     for label in [country_label, "persist"] {
@@ -14661,8 +14666,155 @@ impl App {
                                                                 None
                                                             }
                                                         };
-                                                        let Some(old_code) = detected else {
-                                                            let reason = "no known code detected";
+                                                        let patched_path =
+                                                            work_dir.join(format!("{label}.patched.img"));
+                                                        // Patch the country code first (when the partition
+                                                        // carries one); `persist` has no real country code (its
+                                                        // only matches live in captured logs), so copy it
+                                                        // verbatim when none is found so the fingerprint pass
+                                                        // still has a file to edit.
+                                                        let mut changed = false;
+                                                        match detected {
+                                                            Some(ref old_code) => {
+                                                                live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_patch_transition")
+                                                                        .replace("{label}", label)
+                                                                        .replace("{from}", old_code)
+                                                                        .replace("{to}", target_code)
+                                                                );
+                                                                match ltbox_patch::region::patch_country_code(
+                                                                    &dump_path,
+                                                                    &patched_path,
+                                                                    old_code,
+                                                                    target_code,
+                                                                    EU_CODES,
+                                                                ) {
+                                                                    Ok(c) => changed |= c,
+                                                                    Err(e) => {
+                                                                        let reason = format!("patch failed: {e}");
+                                                                        ltbox_core::live!(
+                                                                            log,
+                                                                            "[Country] {}",
+                                                                            ltbox_core::i18n::tr("live_country_partition_status")
+                                                                                .replace("{label}", label)
+                                                                                .replace("{reason}", &reason)
+                                                                        );
+                                                                        country_progress.mark_failed(label, reason);
+                                                                        continue;
+                                                                    }
+                                                                }
+                                                            }
+                                                            None => {
+                                                                if label != "persist" {
+                                                                    let reason = "no known code detected";
+                                                                    ltbox_core::live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_country_partition_status")
+                                                                            .replace("{label}", label)
+                                                                            .replace("{reason}", reason)
+                                                                    );
+                                                                    country_progress.mark_failed(label, reason);
+                                                                    continue;
+                                                                }
+                                                                // persist: copy the dump verbatim so the fingerprint
+                                                                // pass has a file to edit.
+                                                                if let Err(e) = std::fs::copy(&dump_path, &patched_path) {
+                                                                    let reason = format!("copy failed: {e}");
+                                                                    ltbox_core::live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_country_partition_status")
+                                                                            .replace("{label}", label)
+                                                                            .replace("{reason}", &reason)
+                                                                    );
+                                                                    country_progress.mark_failed(label, reason);
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Fingerprint sync — persist only, on the SKUs that
+                                                        // carry it. Overwrite /persist/fingerprint.txt with the
+                                                        // flashed firmware's vendor_boot fingerprint (length-
+                                                        // aware; edits the ext4 inode size). Best-effort: a
+                                                        // failure warns rather than aborting the run.
+                                                        if label == "persist" && persist_fp_sync {
+                                                            match vendor_boot_fingerprint.as_deref().filter(|fp| !fp.is_empty()) {
+                                                                Some(fp) => {
+                                                                    match ltbox_patch::fingerprint::patch_persist_fingerprint(&patched_path, fp) {
+                                                                        Ok(true) => {
+                                                                            changed = true;
+                                                                            live!(
+                                                                                log,
+                                                                                "[Country] {}",
+                                                                                ltbox_core::i18n::tr("live_persist_fp_synced").replace("{fp}", fp)
+                                                                            );
+                                                                        }
+                                                                        Ok(false) => {
+                                                                            live!(log, "[Country] {}", ltbox_core::i18n::tr("live_persist_fp_already"));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            live!(
+                                                                                log,
+                                                                                "[Country] {}",
+                                                                                ltbox_core::i18n::tr("live_persist_fp_skip")
+                                                                                    .replace("{reason}", &e.to_string())
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                                None => {
+                                                                    live!(
+                                                                        log,
+                                                                        "[Country] {}",
+                                                                        ltbox_core::i18n::tr("live_persist_fp_skip").replace(
+                                                                            "{reason}",
+                                                                            &ltbox_core::i18n::tr("live_persist_fp_no_source"),
+                                                                        )
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Flash once if the country code or the fingerprint changed.
+                                                        if changed {
+                                                            if let Err(e) = session.flash_partition(label, &patched_path, 0, lun, &mut log)
+                                                            {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_flash_failed")
+                                                                        .replace("{label}", label)
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                                country_progress.mark_failed(label, format!("flash failed: {e}"));
+                                                            } else {
+                                                                live!(
+                                                                    log,
+                                                                    "[Country] {}",
+                                                                    ltbox_core::i18n::tr("live_country_patched_flashed").replace("{label}", label)
+                                                                );
+                                                                country_progress.mark_flashed(label);
+                                                            }
+                                                        } else if detected.as_deref() == Some(target_code) {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr("live_country_partition_already")
+                                                                    .replace("{label}", label)
+                                                                    .replace("{target}", target_code)
+                                                            );
+                                                            country_progress.mark_flashed(label);
+                                                        } else if label == "persist" {
+                                                            // Nothing to change (no country code; fingerprint already
+                                                            // current or unavailable) — treat as handled so the run
+                                                            // still resets to system.
+                                                            country_progress.mark_flashed(label);
+                                                        } else {
+                                                            let reason = "no replacements";
                                                             ltbox_core::live!(
                                                                 log,
                                                                 "[Country] {}",
@@ -14671,86 +14823,6 @@ impl App {
                                                                     .replace("{reason}", reason)
                                                             );
                                                             country_progress.mark_failed(label, reason);
-                                                            continue;
-                                                        };
-                                                        live!(
-                                                            log,
-                                                            "[Country] {}",
-                                                            ltbox_core::i18n::tr("live_country_patch_transition")
-                                                                .replace("{label}", label)
-                                                                .replace("{from}", &old_code)
-                                                                .replace("{to}", target_code)
-                                                        );
-                                                        let patched_path =
-                                                            work_dir.join(format!("{label}.patched.img"));
-                                                        match ltbox_patch::region::patch_country_code(
-                                                            &dump_path,
-                                                            &patched_path,
-                                                            &old_code,
-                                                            target_code,
-                                                            EU_CODES,
-                                                        ) {
-                                                            Ok(true) => {
-                                                                if let Err(e) = session.flash_partition(
-                                                                    label,
-                                                                    &patched_path,
-                                                                    0,
-                                                                    lun,
-                                                                    &mut log,
-                                                                ) {
-                                                                    ltbox_core::live!(
-                                                                        log,
-                                                                        "[Country] {}",
-                                                                        ltbox_core::i18n::tr("live_country_flash_failed")
-                                                                            .replace("{label}", label)
-                                                                            .replace("{error}", &e.to_string())
-                                                                    );
-                                                                    country_progress.mark_failed(
-                                                                        label,
-                                                                        format!("flash failed: {e}"),
-                                                                    );
-                                                                } else {
-                                                                    live!(
-                                                                        log,
-                                                                        "[Country] {}",
-                                                                        ltbox_core::i18n::tr("live_country_patched_flashed")
-                                                                            .replace("{label}", label)
-                                                                    );
-                                                                    country_progress.mark_flashed(label);
-                                                                }
-                                                            }
-                                                            Ok(false) if old_code == target_code => {
-                                                                ltbox_core::live!(
-                                                                    log,
-                                                                    "[Country] {}",
-                                                                    ltbox_core::i18n::tr("live_country_partition_already")
-                                                                        .replace("{label}", label)
-                                                                        .replace("{target}", target_code)
-                                                                );
-                                                                country_progress.mark_flashed(label);
-                                                            }
-                                                            Ok(false) => {
-                                                                let reason = "no replacements";
-                                                                ltbox_core::live!(
-                                                                log,
-                                                                "[Country] {}",
-                                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                                    .replace("{label}", label)
-                                                                    .replace("{reason}", reason)
-                                                            );
-                                                                country_progress.mark_failed(label, reason);
-                                                            }
-                                                            Err(e) => {
-                                                                let reason = format!("patch failed: {e}");
-                                                                ltbox_core::live!(
-                                                                log,
-                                                                "[Country] {}",
-                                                                ltbox_core::i18n::tr("live_country_partition_status")
-                                                                    .replace("{label}", label)
-                                                                    .replace("{reason}", &reason)
-                                                            );
-                                                                country_progress.mark_failed(label, reason);
-                                                            }
                                                         }
                                                     }
                                                     if let Err(e) = country_progress.finish() {

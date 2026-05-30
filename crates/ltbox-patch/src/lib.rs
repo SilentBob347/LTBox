@@ -5,6 +5,7 @@
 pub mod apatch;
 pub mod avb;
 pub mod boot;
+pub mod fingerprint;
 pub mod gki;
 pub mod key_map;
 pub mod ksu;
