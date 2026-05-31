@@ -1,39 +1,7 @@
-//! Qualcomm 9008 EDL USB driver detection + auto-install on Windows.
+//! Qualcomm 9008 EDL WinUSB driver detection + auto-install on Windows.
 //!
-//! Switched from `qcom-usb-kernel-drivers` (kernel-mode usbser COM port,
-//! consumed via `serialport` / `QdlBackend::Serial`) to
-//! `qcom-usb-userspace-drivers` (WinUSB stub via `qcserlib.inf`, consumed
-//! via `nusb` / `QdlBackend::Usb`). The kernel-mode COM path had no read /
-//! write timeout configured upstream (`qdl::serial` literal
-//! `// TODO: timeouts?`) and `qdl::firehose_program_storage` panics via
-//! `.expect("Error sending data")` on the first write hiccup, which surfaced
-//! as a hard mid-flash process abort on stalled large-partition writes.
-//! `QdlBackend::Usb` already configures explicit 10 s read / write timeouts
-//! at the `nusb` endpoint level (`qdl::usb::setup_usb_device`) so the same
-//! stall surfaces as a recoverable `io::Error` instead.
-//!
-//! Install path: download the signed, per-architecture
-//! `qcom_usb_userspace_drivers_<arch>.exe` from the latest
-//! `qcom-usb-userspace-drivers` GitHub release and launch it through
-//! `Start-Process -Verb RunAs`. The installer carries a
-//! `requireAdministrator` manifest and self-elevates via the Windows UAC
-//! prompt, so **LTBox itself does not need to run as Administrator** — the
-//! UAC prompt is the only elevation step. A dismissed prompt surfaces as a
-//! distinct [`DriverError::InstallCancelled`] (vs a generic installer
-//! failure) so the GUI can ask the user to approve and retry.
-//!
-//! Required-driver probe ("is EDL ready?") checks for `qcserlib.inf` —
-//! that's the INF that binds `USB\VID_05C6&PID_9008` to the WinUSB stub
-//! (the other INFs in the bundle cover ADB / modem / WWAN endpoints
-//! LTBox does not drive directly). Presence probed via
-//! `pnputil /enum-drivers`, then the DriverStore FileRepository as
-//! fallback.
-//!
-//! Cross-platform `DriverStatus` / `DriverError` / `Result` types
-//! live in `driver/mod.rs`; this file is only compiled on Windows
-//! (gated by `#[cfg(windows)]` in `driver/mod.rs`) so every
-//! `cfg!(windows)` runtime check from the pre-rename module folds
-//! into compile-time guarantees here.
+//! LTBox requires `qcserlib.inf` from Qualcomm's userspace driver bundle,
+//! then runs the signed per-arch installer through Windows UAC.
 
 use std::path::Path;
 use std::process::Command;
@@ -43,9 +11,7 @@ use ltbox_core::{live, tr_args};
 
 use super::{DriverError, DriverStatus, Result};
 
-/// `Command::new` + `CREATE_NO_WINDOW` so `pnputil` / `powershell` do not
-/// flash a console. The elevated installer child spawned by
-/// `Start-Process` shows its own UAC prompt + window regardless.
+/// `Command::new` with no console window.
 fn silent_command(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -54,11 +20,7 @@ fn silent_command(program: &str) -> Command {
     cmd
 }
 
-/// INFs whose absence triggers a "missing driver" banner. Only the WinUSB
-/// stub for EDL (`qcserlib.inf` — the INF that maps PID 9008 to
-/// `libusb_Install → winusb.inf`) is required for LTBox's EDL path;
-/// every other INF in the userspace bundle is installed alongside as a
-/// quality-of-life bonus but not gating.
+/// INFs whose absence triggers a missing-driver banner.
 const REQUIRED_INFS: &[&str] = &["qcserlib.inf"];
 
 #[derive(Debug, serde::Deserialize)]
@@ -153,23 +115,7 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
     false
 }
 
-/// Download the signed userspace-driver installer for the host arch from
-/// the latest `qcom-usb-userspace-drivers` release and run it elevated.
-///
-/// Every milestone routes through `live!` so the GUI streams progress in
-/// real time — the previous `log.push` only surfaced after the whole task
-/// returned, so a stalled download looked indistinguishable from a fast
-/// success until the final timeout error fired.
-///
-/// Two ureq agents:
-///   * `meta_agent` — 30 s global, used for the small JSON release listing.
-///   * `dl_agent` — no global cap; per-stage `connect` / `recv-response` /
-///     `recv-body` timeouts so a slow link can finish the ~700 KB installer
-///     without a global-timeout guillotine cutting the body read partway
-///     through.
-///
-/// The downloaded `.exe` self-elevates via UAC ([`run_installer_elevated`]),
-/// so this whole flow runs without LTBox holding Administrator rights.
+/// Download the host-arch userspace-driver installer and run it elevated.
 pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
     live!(log, "[Driver] {}", tr("live_driver_fetch_meta"));
     let meta_agent = ureq::Agent::config_builder()
@@ -233,16 +179,7 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Launch the signed installer `.exe` elevated via PowerShell
-/// `Start-Process -Verb RunAs`, blocking until it exits.
-///
-/// `-Verb RunAs` raises the Windows UAC prompt, so the installer runs with
-/// Administrator rights while LTBox stays in its original (non-elevated)
-/// context. `-Wait` blocks until the installer finishes; `-PassThru`
-/// exposes the child's exit code. A dismissed UAC prompt makes
-/// `Start-Process` throw a terminating error; the `try/catch` maps that to
-/// exit `1223` (`ERROR_CANCELLED`) so the caller can distinguish a user
-/// cancel from a real installer failure.
+/// Run the signed installer through UAC and map cancel vs failure.
 fn run_installer_elevated(exe: &Path, log: &mut Vec<String>) -> Result<()> {
     // Escape for a PowerShell single-quoted string literal (`'` → `''`).
     // The temp path is process-id-derived so quotes are not expected, but
@@ -286,11 +223,7 @@ fn run_installer_elevated(exe: &Path, log: &mut Vec<String>) -> Result<()> {
     }
 }
 
-/// Stream `url` to `out_path` via the shared
-/// [`ltbox_core::downloader::stream_with_progress`] streamer, formatting
-/// progress lines with the driver-flow i18n keys (`live_driver_*`) and
-/// the `[Driver]` log prefix. The byte loop + 5 % bucket + 750 ms tick
-/// throttle live in core; only the per-event log formatting stays here.
+/// Stream the installer download with driver-flow log formatting.
 fn download_with_progress(
     agent: &ureq::Agent,
     url: &str,

@@ -1,13 +1,4 @@
-//! Redirects process stdout/stderr to a reader thread so native-crate
-//! `println!` / `eprintln!` (qdl Firehose progress, magiskboot, ...)
-//! surface in the GUI log panel.
-//!
-//! LTBox is a Windows GUI subsystem binary — no attached console, so
-//! native output would otherwise be dropped. We swap `STD_OUTPUT_HANDLE`
-//! + `STD_ERROR_HANDLE` for a pipe write end; reader thread drains into
-//!   a bounded queue; iced subscription polls on its drain tick.
-//!
-//! No-op on non-Windows.
+//! Capture native stdout/stderr into the GUI log on Windows.
 
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(windows)]
@@ -15,29 +6,15 @@ use std::time::{Duration, Instant};
 
 type Queue = Arc<Mutex<Vec<String>>>;
 
-/// Min gap between interim `\r`-only progress emits. `pbr` repaints
-/// many times per second; 800 ms pairs with the 500 ms drain tick
-/// without hammering the GPU.
+/// Min gap between interim `\r` progress emits.
 #[cfg(windows)]
 const INTERIM_EMIT_INTERVAL: Duration = Duration::from_millis(800);
 
-/// Cap on queued lines between drain ticks. A runaway native crate can
-/// outpace the drain and a 50k-line `log_extend` stalls the main
-/// thread into "Not Responding". Keep only the newest lines.
-///
-/// Only consumed by the `#[cfg(windows)]` reader thread; on every
-/// other OS the tap is a no-op so the constant is dead code under
-/// `-D warnings`.
+/// Cap queued lines; keep only the newest when native output runs ahead.
 #[cfg(windows)]
 const TAP_QUEUE_MAX: usize = 512;
 
-/// Cap on the in-flight `pending` byte buffer between line emits.
-/// Without a hard ceiling, a stream that never emits `\n` and never
-/// hits the `\r` interim path (e.g. raw binary on the tap) grows the
-/// buffer without bound and burns memory until the process exits.
-/// 64 KiB comfortably exceeds any single legitimate log line; older
-/// bytes are dropped from the front so the most recent tail stays
-/// recognisable to the next `\n`.
+/// Cap the in-flight byte buffer when no newline arrives.
 #[cfg(windows)]
 const PENDING_BUFFER_CAP: usize = 64 * 1024;
 
@@ -171,12 +148,7 @@ fn install_inner() -> Queue {
     Arc::new(Mutex::new(Vec::new()))
 }
 
-/// Emit the most recent `\r`-delimited progress segment from `pending`
-/// without draining it. Dedup against the last queue entry. Returns
-/// `true` iff something was pushed.
-///
-/// Live-progress fallback for `pbr::ProgressBar`, which emits
-/// `\r<bar>\r<bar>…` with no `\n` between firehose partitions.
+/// Emit the latest `\r` progress segment without draining `pending`.
 #[cfg(windows)]
 fn emit_interim_progress(pending: &[u8], queue: &Queue) -> bool {
     if pending.is_empty() || !pending.contains(&b'\r') {

@@ -91,12 +91,7 @@ pub enum RootVersion {
     Nightly,
 }
 
-/// Root pipeline input — GUI wizard state converted into a flat struct.
-///
-/// `Clone` so the GUI can hand the same configuration to the
-/// download phase and the patch phase without re-cloning every field
-/// at the second call site (large `.clone()` block previously
-/// duplicated between Phase 2 and Phase 5 of the wizard worker).
+/// Root pipeline input from the GUI wizard.
 #[derive(Clone)]
 pub struct RootPipelineConfig {
     pub family: RootFamily,
@@ -211,24 +206,7 @@ pub(super) fn resolve_nightly_run(
     Ok((repo, run_id))
 }
 
-/// Resolve the nightly workflow run ID once and cache it back into
-/// `cfg.nightly_run_id`. Called at the start of Phase 2 so every
-/// subsequent fetch (`stage_root_manager_apk` →
-/// `stage_root_payload` → any later headless retry) lines up on the
-/// SAME workflow run.
-///
-/// Without this, each fetch independently called `resolve_nightly_run`
-/// and re-queried "latest successful run". A new run landing between
-/// the manager-APK download (a long ~minutes step) and the
-/// `.ko`+`ksuinit` payload download would split the artifacts across
-/// two different workflow builds — the LKM and ksuinit could come
-/// from a workflow that never even produced the APK we're about to
-/// install.
-///
-/// No-op when:
-/// * Stable channel — no nightly resolution needed.
-/// * `cfg.nightly_run_id` is already `Some(_)` (manual override).
-/// * Provider has no nightly workflow (`MagiskFork`).
+/// Resolve and cache one nightly run ID so all artifacts match.
 pub fn ensure_nightly_run_id(cfg: &mut RootPipelineConfig, log: &mut Vec<String>) -> Result<()> {
     if !matches!(cfg.version, RootVersion::Nightly) {
         return Ok(());
@@ -281,18 +259,7 @@ pub fn provider_repo(provider: RootProvider) -> Option<&'static str> {
     })
 }
 
-/// Pre-fetch every per-family root payload into `cfg.work_dir` so the
-/// long network steps live in Phase 2 (before the EDL reboot)
-/// alongside the manager APK download. The GUI calls this back-to-back
-/// with [`stage_root_manager_apk`] before transitioning to EDL —
-/// `build_patched_artifacts` then runs offline.
-///
-/// Idempotent on the per-family payload files we own:
-/// * Magisk: `magisk.apk` + extracted `magiskinit` / `magisk` / etc.
-/// * KSU LKM: `kernelsu.ko` + `init`.
-/// * APatch: handled by [`stage_root_manager_apk`] (downloads the APK
-///   and extracts `kpimg` in one shot), so we no-op here.
-/// * GKI: AnyKernel3 zip is the user's input, no fetch needed.
+/// Pre-fetch root payloads before EDL; `build_patched_artifacts` runs offline.
 pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Result<()> {
     fs::create_dir_all(&cfg.work_dir)?;
     if cfg.gki_mode {

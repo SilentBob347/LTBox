@@ -1,15 +1,7 @@
 //! File/folder picker categories and rfd helpers.
 //!
-//! Each *folder* picker kind owns its own MRU list in
-//! [`settings_store::RecentPaths`] keyed by [`PickerKind::storage_key`].
-//! File picks share a single `File` bucket — they're parameterised by
-//! [`FilePickSpec`] at the call site (ext filter / single-multi /
-//! description target) per user spec ("unify into one kind with only the
-//! ext filter, single/multi, and `[X]을 선택하세요` description
-//! customisable"), so per-spec buckets would fragment recents needlessly.
-//!
-//! `pick_folder_for` / `pick_files_for` seed the native dialog with the
-//! kind's most-recent path so users land where they last worked.
+//! Folder picker kinds have separate recents; file picks share one bucket
+//! and vary through [`FilePickSpec`].
 
 use iced::Task;
 use rfd::AsyncFileDialog;
@@ -17,14 +9,7 @@ use std::path::PathBuf;
 
 use crate::settings_store::RecentPaths;
 
-/// Picker category. Determines which recents bucket is used + which
-/// dialog flavour (folder vs file) opens.
-///
-/// The 4 folder kinds map 1:1 to the user-facing Browse-button semantics:
-/// "loader only", "loader + rawprogram", "full QFIL firmware", "encrypted
-/// rawprogram (.x)". `OutputFolder` is a 5th convenience kind for
-/// dump/save destinations — previously memory-less. `File` is the
-/// unified file pick with per-call [`FilePickSpec`].
+/// Picker category for recents and dialog type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PickerKind {
     /// Folder containing the fixed-name EDL loader `xbl_s_devprg_ns.melf`.
@@ -89,10 +74,7 @@ impl PickerKind {
     }
 }
 
-/// File-picker call parameters. Only these fields vary between file
-/// pickers (per user: "ext filter + single/multi + `[X]을 선택하세요`
-/// description — unify the rest"); the dialog itself is always the same
-/// `File` kind so recents stay in one bucket.
+/// File-picker parameters; recents stay in the shared `File` bucket.
 #[derive(Debug, Clone)]
 pub struct FilePickSpec {
     /// Extensions without the leading dot, e.g. `["img", "bin"]`.
@@ -141,9 +123,7 @@ impl FilePickSpec {
     }
 }
 
-/// `Task<Message>` that opens a folder-picker for `kind`, seeded with
-/// that kind's most-recent path (falls back to OS default). Sends
-/// `on_pick(Some(path))` / `on_pick(None)` on close.
+/// Open a folder picker seeded from that kind's most-recent path.
 pub fn pick_folder_for<M: 'static + Send>(
     kind: PickerKind,
     recents: &RecentPaths,
@@ -169,9 +149,7 @@ pub fn pick_folder_for<M: 'static + Send>(
     )
 }
 
-/// Build the rfd dialog with `spec`'s filter + the `File` kind's last
-/// directory as starting dir. Extracted so single and multi variants
-/// share identical setup.
+/// Build an rfd file dialog from `spec`.
 fn build_file_dialog(spec: &FilePickSpec, recents: &RecentPaths) -> AsyncFileDialog {
     let mut dialog = AsyncFileDialog::new();
     if !spec.exts.is_empty() && !spec.filter_label.is_empty() {
@@ -198,9 +176,7 @@ fn build_file_dialog(spec: &FilePickSpec, recents: &RecentPaths) -> AsyncFileDia
     dialog
 }
 
-/// Single-file pick — delivers `Option<String>`. Preferred over
-/// [`pick_files_for`] when `spec.multi == false` so callers don't have
-/// to unwrap a 1-element Vec.
+/// Single-file pick, `None` on cancel.
 pub fn pick_file_for<M: 'static + Send>(
     spec: FilePickSpec,
     recents: &RecentPaths,
@@ -222,9 +198,7 @@ pub fn pick_file_for<M: 'static + Send>(
     )
 }
 
-/// Multi-file pick — delivers `Option<Vec<String>>`. `None` on cancel;
-/// an empty Vec should be treated as "no selection" too (rfd on some
-/// platforms reports empty selection as `Some(vec![])`).
+/// Multi-file pick, `None` on cancel.
 pub fn pick_files_for<M: 'static + Send>(
     spec: FilePickSpec,
     recents: &RecentPaths,

@@ -4816,20 +4816,7 @@ impl App {
         Task::none()
     }
 
-    /// Pre-flight check for the loader path captured by every EDL-using
-    /// wizard. Returns `Ok(path_string)` when the path is set and the
-    /// file exists on disk; otherwise sets `error_msg` to a localized
-    /// string and returns `Err(())` so the caller can early-return out
-    /// of the exec start without firing the device-side work.
-    ///
-    /// Catches the failure mode the new "Default EDL loader" Settings
-    /// option introduces: a single-device user sets a default loader
-    /// once, the loader file is later moved/deleted, and every wizard
-    /// silently inherits the stale path. Without this guard the failure
-    /// surfaces as an `EDL session open failed: ...` line buried in the
-    /// live log; with it, the user sees a clear "Loader file not found"
-    /// banner and the wizard stays on the Confirm step instead of
-    /// uselessly rebooting the device into Sahara.
+    /// Validate a picked/default EDL loader before device work starts.
     fn validate_loader_path(&mut self, path: &Option<String>) -> Result<String, ()> {
         let Some(p) = path.as_deref() else {
             self.error_msg = Some(self.t("err_loader_not_selected").to_string());
@@ -5867,16 +5854,7 @@ impl App {
         Task::none()
     }
 
-    /// Eight invisible resize handles (4 edges + 4 corners) overlaid
-    /// on the root Stack. Each handle is a `mouse_area` wrapping a
-    /// fixed-size empty container, aligned to the corresponding edge
-    /// or corner of an outer `Length::Fill` positioner. Events outside
-    /// each handle's bounding box pass through to the layers below so
-    /// normal UI clicks aren't intercepted.
-    ///
-    /// Corner handles render after edge handles so a click in the
-    /// 8x8 corner square triggers a diagonal resize cursor rather
-    /// than the orthogonal edge cursor that overlaps it.
+    /// Invisible edge/corner handles for the borderless window.
     fn resize_handles(&self) -> Element<'_, Message> {
         const EDGE: f32 = 4.0;
         const CORNER: f32 = 8.0;
@@ -7663,11 +7641,7 @@ impl App {
         ]
         .align_y(iced::Alignment::Center);
 
-        // Default EDL loader row — single-device convenience that
-        // makes every loader picker auto-fill from this stored path.
-        // The (?) icon is rendered as a `widget::tooltip` so the
-        // explanation only takes screen real estate when the user is
-        // actively pointing at it.
+        // Default EDL loader used to auto-fill loader pickers.
         let default_loader_help = self.t("settings_default_loader_help").to_string();
         let help_icon = widget::tooltip(
             container(text("?").size(11).style(label_style))
@@ -7690,14 +7664,7 @@ impl App {
             widget::tooltip::Position::Right,
         );
 
-        // M3 "filled tonal" icon buttons: 36 x 36 circular surface in
-        // the secondary container family (or error family for the
-        // destructive Clear action), 18 px Lucide glyph centered, full
-        // shape radius, hover/pressed state layers on top of the base
-        // tonal fill. Each button is wrapped in a `tooltip` carrying
-        // the original "불러오기" / "지우기" label so the icon-only
-        // affordance still reads — M3 mandates a tooltip for
-        // unlabelled icon buttons.
+        // Icon-only actions keep tooltips for accessibility.
         let browse_btn = button(
             container(lucide_icon(icon::settings_browse(), 18.0, |t: &Theme| {
                 pal_of(t).on_secondary_container
@@ -8577,13 +8544,7 @@ impl App {
         let is_error = self.error_msg.is_some();
         let is_busy = self.busy;
 
-        // Current-step card: spinner while running, static glyph
-        // on terminal states. Every wizard funnels through this view,
-        // so swapping the running glyph for an animated `Spinner`
-        // here unifies the in-progress visual across Flash / Root /
-        // Unroot / SystemUpdate / Advanced — previously a couple of
-        // them showed a static lucide glyph (the firmware-flash one
-        // rendered as a sun) and looked frozen.
+        // Shared progress/result card for wizard exec steps.
         let step_icon: Element<'_, Message> = if is_error {
             lucide_icon(icon::op_failed(), 72.0, |t: &Theme| pal_of(t).error)
         } else if is_busy {
@@ -9718,16 +9679,7 @@ impl App {
             .into()
     }
 
-    /// Recents panel — up to three chips, greyed out when stale.
-    /// Per-ext-filtered recents strip for file pickers.
-    ///
-    /// The `File` recents bucket is shared across every file picker
-    /// (APK, ZIP, KPM, `.melf`, `.img`, …) because a per-picker bucket
-    /// explosion wasn't worth the storage-key churn. The strip itself
-    /// would still look noisy though — a user opening the KPM picker
-    /// shouldn't see their last Magisk APK. Filter at render time by
-    /// the ext list the picker dialog itself accepts; empty list means
-    /// "show everything" (legacy behaviour).
+    /// Per-extension recents strip for file pickers.
     fn recent_file_chips<F>(
         &self,
         accepted_exts: &[&str],
@@ -10986,12 +10938,7 @@ impl App {
 
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
         for (idx, r) in self.flash_parts.rows.iter().enumerate() {
-            // Tri-state indicator. Unchecked uses a real iced checkbox so
-            // its empty box matches the M3 sizing the user already sees on
-            // DumpParts; Flash overlays the checkbox at `is_checked=true`;
-            // Erase swaps to a red ⛔ so the destructive state pops.
-            // All glyphs render through a fixed 20-px container so the
-            // marker column never shifts vertically across state changes.
+            // Fixed-width tri-state marker: skip, flash, or erase.
             let marker: Element<'_, Message> = match r.state {
                 FlashRowState::Unchecked => iced::widget::checkbox(false)
                     .on_toggle(move |_| {
@@ -11978,15 +11925,6 @@ impl App {
         .into()
     }
 
-    /// Dispatch for `Message::Reboot(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_reboot(&mut self, msg: RebootMsg) -> Task<Message> {
         match msg {
@@ -12186,15 +12124,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::Unroot(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_unroot(&mut self, msg: UnrootMsg) -> Task<Message> {
         match msg {
@@ -12446,15 +12375,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::Sys(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_sys(&mut self, msg: SysMsg) -> Task<Message> {
         match msg {
@@ -13146,15 +13066,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::DumpPhys(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_dump_phys(&mut self, msg: DumpPhysMsg) -> Task<Message> {
         match msg {
@@ -13244,15 +13155,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::FlashPhys(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_flash_phys(&mut self, msg: FlashPhysMsg) -> Task<Message> {
         match msg {
@@ -13346,15 +13248,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::DumpParts(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_dump_parts(&mut self, msg: DumpPartsMsg) -> Task<Message> {
         match msg {
@@ -13501,15 +13394,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::FlashParts(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_flash_parts(&mut self, msg: FlashPartsMsg) -> Task<Message> {
         match msg {
@@ -13666,15 +13550,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::Flash(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_flash(&mut self, msg: FlashMsg) -> Task<Message> {
         match msg {
@@ -13990,21 +13865,8 @@ impl App {
                                                 )
                                             );
 
-                                            // Cross-check folder vendor_boot.img AVB
-                                            // fingerprint vs polled device model. Mismatch
-                                            // aborts BEFORE EDL so the user doesn't write
-                                            // firmware built for other models onto the
-                                            // device. Skipped entirely on EDL-start —
-                                            // ADB/Fastboot never ran so `device_model`
-                                            // is empty and the comparison would
-                                            // false-positive. Single umbrella warning
-                                            // already emitted at worker start.
-                                            //
-                                            // Also captures the fingerprint string so a
-                                            // downstream TB323FU detection can force-OFF
-                                            // the region + rollback-index passes (TB323FU
-                                            // doesn't accept the region byte-patch or the
-                                            // boot/vbmeta_system rollback overlay).
+                                            // Cross-check vendor_boot against the probed model
+                                            // before EDL, and retain its fingerprint for SKU gates.
                                             let mut vendor_boot_fingerprint: Option<String> = None;
                                             if has_vendor_boot {
                                                 match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
@@ -14080,15 +13942,8 @@ impl App {
                                                 }
                                             }
 
-                                            // TB323FU SKU lacks both the binary region
-                                            // marker the byte-patch targets AND the
-                                            // boot/vbmeta_system layout the ARB overlay
-                                            // depends on — patching either bricks the
-                                            // device. Detect via vendor_boot fingerprint
-                                            // (works on EDL-start) OR the probe-reported
-                                            // device model (covers AVB read failures), and
-                                            // use word-boundary matching so a future SKU
-                                            // suffix doesn't false-trigger.
+                                            // TB323FU cannot take region or ARB overlays.
+                                            // Detect from vendor_boot first, then probe model.
                                             let tb323fu_skip = vendor_boot_fingerprint
                                                 .as_deref()
                                                 .map(|fp| fingerprint_token_match(fp, "TB323FU"))
@@ -14105,13 +13960,8 @@ impl App {
                                                 rb_mode = ltbox_patch::rollback::RollbackMode::Off;
                                             }
 
-                                            // efisp / GBL handling — gated strictly on the *target*
-                                            // firmware's vendor_boot fingerprint (not the connected
-                                            // device). For a TB323FU different-region wipe, fetch the
-                                            // GBL EFI now, before EDL entry, so a download or asset-
-                                            // selection failure aborts the flash while the device is
-                                            // still safely in system. The same-region wipe needs no
-                                            // download (it erases efisp later).
+                                            // TB323FU GBL work follows the target firmware, not
+                                            // the connected device. Download EFI before EDL.
                                             let target_is_tb323fu = vendor_boot_fingerprint
                                                 .as_deref()
                                                 .map(|fp| fingerprint_token_match(fp, "TB323FU"))
@@ -14456,14 +14306,7 @@ impl App {
                                                     "No flashable rawprogram*.xml found in {fw_folder}"
                                                 ));
                                             }
-                                            // ARB-patched copies are flashed *after* rawprogram
-                                            // so the user's firmware folder stays untouched.
-                                            // LUN comes from the hardcoded map; start sector
-                                            // resolves through GPT-by-name in
-                                            // `flash_partition`. Slot `_a` matches the prior
-                                            // first-hit `catalog.require(..._a, ..._b, …)`
-                                            // semantics — overwrites A on top of the
-                                            // full-firmware flash that already wrote both.
+                                            // Stage ARB copies; flash them after rawprogram.
                                             let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
                                                 Vec::new();
                                             if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
@@ -14654,10 +14497,7 @@ impl App {
                                                 )
                                                 .map_err(|e| format!("Firmware flash failed: {e}"))?;
 
-                                            // Overwrite rawprogram's stock boot + vbmeta_system
-                                            // with the ARB-patched copies. GPT-by-name lookup
-                                            // resolves the slot's start sector from the device,
-                                            // not the firmware folder's rawprogram XML.
+                                            // Overlay ARB-patched boot/vbmeta_system by GPT name.
                                             for (label, lun, patched) in &arb_patched {
                                                 live!(
                                                     log,
@@ -14713,14 +14553,8 @@ impl App {
                                                 }
                                             }
 
-                                            // Country code patch: dump → patch → flash the
-                                            // country-code partition + persist. Skipped when the
-                                            // user picked "Do not change" (`country_action` is
-                                            // `Skip`). The country-code partition is `oemowninfo`
-                                            // (LUN 0) on TB320FC / TB323FU and `devinfo` (LUN 4)
-                                            // on every other SKU. A failed/partial patch is a
-                                            // warning, not a hard error — the firmware is already
-                                            // flashed, so the run still resets to system.
+                                            // Country-code patch is best-effort after firmware flash.
+                                            // TB320FC/TB323FU use oemowninfo; others use devinfo.
                                             if cfg.wipe
                                                 && let Some(target_code) = cfg.country_action.target() {
                                                     live!(
@@ -14735,11 +14569,7 @@ impl App {
                                                     if let Err(e) = std::fs::create_dir_all(&work_dir) {
                                                         return Err(format!("country work dir: {e}"));
                                                     }
-                                                    // Critical-image backup: original region
-                                                    // partitions held aside for manual restore.
-                                                    // `app_paths::backup_dir_for` keeps writes
-                                                    // off the read-only AppImage mount on
-                                                    // non-Windows hosts.
+                                                    // Keep original region partitions for manual restore.
                                                     let ts = std::time::SystemTime::now()
                                                         .duration_since(std::time::UNIX_EPOCH)
                                                         .map(|d| d.as_secs())
@@ -14933,11 +14763,8 @@ impl App {
                                                             }
                                                         }
 
-                                                        // Fingerprint sync — persist only, on the SKUs that
-                                                        // carry it. Overwrite /persist/fingerprint.txt with the
-                                                        // flashed firmware's vendor_boot fingerprint (length-
-                                                        // aware; edits the ext4 inode size). Best-effort: a
-                                                        // failure warns rather than aborting the run.
+                                                        // Best-effort /persist fingerprint sync for SKUs that
+                                                        // store it there.
                                                         if label == "persist" && persist_fp_sync {
                                                             match vendor_boot_fingerprint.as_deref().filter(|fp| !fp.is_empty()) {
                                                                 Some(fp) => {
@@ -15051,11 +14878,7 @@ impl App {
                                                     }
                                                 }
 
-                                            // efisp (TB323FU wipe flows) — the firmware is already
-                                            // written, so any failure here logs and still resets to
-                                            // system. Different-region flashes the downloaded GBL
-                                            // EFI; same-region erases efisp (post-flash, so a
-                                            // rawprogram write can't leave stale contents behind).
+                                            // TB323FU wipe: flash or erase efisp after rawprogram.
                                             if target_is_tb323fu && cfg.wipe {
                                                 let efisp_lun =
                                                     ltbox_core::partition_lun::lun_for_partition("efisp")
@@ -15145,27 +14968,11 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::Adv(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_adv(&mut self, msg: AdvMsg) -> Task<Message> {
         match msg {
             AdvMsg::AdvConfirm(a) => {
-                // Flash/Dump Partitions + Physical Storage preempt the
-                // grid with their own dedicated wizards. After the
-                // wizard's `_open` flag flips, pull in the Settings
-                // default loader if one is configured + still on disk;
-                // that pre-fills the wizard's loader slot and advances
-                // past the loader step so the user doesn't have to
-                // re-pick the same `xbl_s_devprg_ns.melf` for every
-                // single-device flow.
+                // Dedicated EDL wizards can skip their loader step via Settings.
                 if matches!(a, AdvAction::FlashPartitions) {
                     self.flash_parts.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::FlashParts;
@@ -15211,22 +15018,14 @@ impl App {
                     self.adv_wizard.next();
                     return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
                 }
-                // DetectArb: source step Next jumps straight to exec.
-                // The source step renders either a loader picker (only
-                // when ADB/fastboot already identified the device as
-                // TB320FC, since that is the model that needs the EDL
-                // fallback) or a plain Start prompt.
+                // DetectArb source step jumps straight to exec.
                 if matches!(self.adv_wizard.action, Some(AdvAction::DetectArb))
                     && self.adv_wizard.step == 0
                 {
                     self.adv_wizard.next();
                     return self.update(Message::Adv(AdvMsg::AdvDetectArbExecStart));
                 }
-                // PatchArb: source step Next reads the AVB rollback
-                // indices from the picked folder + advances to the
-                // inspect step. Inspect step Next opens the timestamp
-                // popup; the popup OK is what advances to the confirm
-                // step.
+                // PatchArb source step inspects rollback indices.
                 if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb)) {
                     if self.adv_wizard.step == 0 {
                         let Some(folder) = self.adv_wizard.file_path.clone() else {
@@ -16066,15 +15865,6 @@ impl App {
         }
     }
 
-    /// Dispatch for `Message::Root(...)`. Extracted from
-    /// `fn update` so the per-variant arm bodies don't bloat
-    /// the top-level match.
-    ///
-    /// `#[allow(unreachable_code)]` — many arms end with a
-    /// `return Task::perform(...);` and the trailing fall-
-    /// through `Task::none()` is intentionally unreachable;
-    /// it just satisfies the match-arm signature when the
-    /// arm above runs to its return early.
     #[allow(unreachable_code)]
     fn update_root(&mut self, msg: RootMsg) -> Task<Message> {
         match msg {
@@ -16167,15 +15957,9 @@ impl App {
                 pickers::pick_file_for(spec, &self.recent_paths, Message::FileSelected)
             }
             RootMsg::RootSelectFolder => {
-                // Name kept for backwards compat with existing view code;
-                // the picker is now a single-file dialog for the EDL
-                // loader (`.melf`) since root no longer needs a full
-                // firmware folder — partitions resolve via the device's
-                // GPT, not `rawprogram*.xml`.
+                // Historical field name; value is now a single EDL loader file.
                 if let Some(path) = self.default_loader_path.clone() {
-                    // Settings-level default loader → bypass picker, store
-                    // in `folder_path` (historical field name) so the rest
-                    // of the wizard reads it as if the user picked it.
+                    // Settings default loader bypasses the picker.
                     self.root.folder_path = Some(path);
                     return Task::none();
                 }
@@ -16213,12 +15997,7 @@ impl App {
                     self.root.next();
                     return self.update(Message::Root(RootMsg::RootExecStart));
                 }
-                // APatch KPM step: open superkey popup — advance is
-                // gated on a valid commit, not this press. Always start
-                // on the first-entry stage; the existing committed key
-                // (if any) isn't pre-filled because the user has to
-                // re-type it twice anyway, which is the whole point of
-                // the verification flow.
+                // APatch KPM step: advance only after superkey confirmation.
                 if self.root.step == 8 {
                     self.root.superkey_buffer.clear();
                     self.root.superkey_first_entry = None;
@@ -16226,12 +16005,7 @@ impl App {
                     return Task::none();
                 }
                 self.root.next();
-                // After advancing, if the wizard landed on the loader
-                // (folder) step and a Settings-level default loader is
-                // configured + still on disk, pre-fill the folder slot
-                // and skip to the Confirm step. The loader-step picker
-                // becomes invisible to single-device users while staying
-                // available to anyone with `default_loader_path = None`.
+                // Skip loader step when a valid Settings default exists.
                 if self.root.step == 5
                     && self.root.folder_path.is_none()
                     && let Some(path) = self.resolved_default_loader()
@@ -16694,15 +16468,7 @@ impl App {
                                                 },
                                                 nightly_run_id,
                                             };
-                                            // Phase 2/7 — Download EVERY root file before
-                                            // EDL: manager APK + per-family payload
-                                            // (Magisk APK extract / KSU `.ko`+`init` /
-                                            // APatch APK→kpimg). Used to split the .ko +
-                                            // ksuinit fetch into Phase 5; that hid a
-                                            // multi-second network stall behind a
-                                            // "patching" label and blocked the user
-                                            // from copying the device serial. Single
-                                            // download burst now, then offline patch.
+                                            // Phase 2/7: download all root payloads before EDL.
                                             live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
                                             // Pin the nightly workflow run ID once so
                                             // every fetch in this Phase 2 pulls from
@@ -16718,14 +16484,8 @@ impl App {
                                                 .map_err(|e| format!("Manager APK: {e}"))?;
                                             stage_root_payload(&manager_cfg, &mut log)
                                                 .map_err(|e| format!("Root payload: {e}"))?;
-                                            // Manager-APK install failures are non-fatal — the
-                                            // patcher / flasher work still produces a usable
-                                            // root install; only the manager UI is missing.
-                                            // Record the donor path so we can surface a
-                                            // "install manually" reminder at the end of the
-                                            // run instead of aborting the whole pipeline (e.g.
-                                            // `INSTALL_FAILED_VERSION_DOWNGRADE` when the user
-                                            // already has a newer manager installed).
+                                            // Manager install is non-fatal; keep the APK path
+                                            // for the post-run manual-install reminder.
                                             let mut manager_install_failed_path:
                                                 Option<std::path::PathBuf> = None;
                                             let manager_installed_pre_edl = if adb_ready_at_start {
@@ -16757,31 +16517,14 @@ impl App {
                                                 false
                                             };
 
-                                            // Wrap the device-interaction phase (phase 1/6 onwards)
-                                            // so any error triggers a best-effort EDL → system reset
-                                            // before we bubble the error up. Without this, a failure
-                                            // mid-pipeline (e.g. patch errors out) leaves the device
-                                            // stuck in 9008 mode and the user has to yank the cable
-                                            // + battery to recover. `log` / `loader` are captured by
-                                            // reference so both the success and failure paths still
-                                            // see the accumulated lines.
+                                            // Device phase errors still attempt an EDL -> system reset.
                                             let device_phase_result: std::result::Result<(), String> = (|| -> std::result::Result<(), String> {
                                             // Phase 3/7 — Reboot to EDL (was Phase 1/6).
                                             live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
                                             transition_to_edl(conn, &ll, &mut log)?;
 
-                                            // Partition naming: `boot{_a|_b}` for GKI + APatch
-                                            // (kernel-blob patching) and `init_boot{_a|_b}` for
-                                            // Magisk / KSU (ramdisk injection). Slot is derived
-                                            // from ADB/Fastboot pre-EDL; on devices without an
-                                            // active-slot getvar we default to `_a`.
-                                            //
-                                            // Root pipeline no longer consumes `rawprogram*.xml`
-                                            // — `EdlSession::{dump,flash}_partition` resolves
-                                            // geometry via the device's on-storage GPT using
-                                            // these names, matching the equivalent one-shot
-                                            // `qdl-rs dump-part <name>` / `write <name> <img>`
-                                            // invocations a user would run by hand.
+                                            // GKI/APatch use boot_<slot>; Magisk/KSU use
+                                            // init_boot_<slot>. Geometry resolves from GPT.
                                             let is_gki_mode = is_gki_route;
                                             let base_name = ltbox_patch::root_pipeline::boot_partition_base(pipe_family, is_gki_mode);
                                             // `slot_suffix` was poll-resolved at Phase 1
@@ -16828,13 +16571,8 @@ impl App {
                                                 session.dump_partition(&boot_primary, &dumped_boot, 0, ROOT_PARTITIONS_LUN, &mut log)
                                                     .map_err(|e| format!("Dump {boot_primary}: {e}"))?;
 
-                                                // TB323FU GBL-root gate. Read the build fingerprint
-                                                // from the *dumped* boot/init_boot AVB metadata (the
-                                                // image being rooted, not the connected device
-                                                // model). On TB323FU, rooting only works once `efisp`
-                                                // carries the GBL EFI: dump it and abort before any
-                                                // patch/flash if it is still empty. Provisioned efisp
-                                                // → skip the AVB footer + vbmeta entirely (Phase 5).
+                                                // TB323FU root needs provisioned efisp; once present,
+                                                // skip AVB footer and vbmeta work.
                                                 is_tb323fu = ltbox_patch::avb::extract_image_avb_info(&dumped_boot)
                                                     .ok()
                                                     .and_then(|info| ltbox_patch::avb::build_fingerprint(&info))
@@ -17003,18 +16741,7 @@ impl App {
                                             })();
                                             match device_phase_result {
                                                 Ok(()) => {
-                                                    // Success path only: drop the
-                                                    // `AppData\Roaming\ltbox\root`
-                                                    // staging tree (work_dir + out)
-                                                    // so a stale ~30 MB Magisk APK +
-                                                    // dumped boot/vbmeta blobs from a
-                                                    // previous run don't accumulate
-                                                    // on disk indefinitely. On error
-                                                    // we KEEP it — having the dumped
-                                                    // stock images, downloaded payload
-                                                    // and intermediate patched files
-                                                    // around makes post-mortem
-                                                    // debugging tractable.
+                                                    // Keep staging files only on error for debugging.
                                                     let _ = std::fs::remove_dir_all(&base);
                                                     Ok(log)
                                                 }
