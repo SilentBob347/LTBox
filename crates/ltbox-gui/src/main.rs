@@ -8079,13 +8079,15 @@ impl App {
             btn,
             text(status)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -8458,13 +8460,15 @@ impl App {
             btn,
             text(status)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -8961,13 +8965,15 @@ impl App {
             btn,
             text(status)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         ]
         .spacing(14)
         .padding(28)
@@ -9026,13 +9032,15 @@ impl App {
             btn,
             text(status)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -9689,13 +9697,15 @@ impl App {
             btn,
             text(status_text)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -9774,6 +9784,7 @@ impl App {
         .align_y(iced::Alignment::Center);
         let mut col = column![label_row]
             .spacing(4)
+            .width(Length::Fill)
             .align_x(iced::Alignment::Center);
         for path in items.iter().take(settings_store::RECENT_MAX) {
             let exists = std::path::Path::new(path).exists();
@@ -9791,13 +9802,21 @@ impl App {
             } else {
                 Message::NoticeRecentMissing(is_file_picker)
             };
-            let btn = button(text(display).size(11).style(muted_style))
-                .padding([4, 10])
-                .style(|_t: &Theme, _s| button::Style {
-                    background: None,
-                    ..Default::default()
-                })
-                .on_press(on_press);
+            let btn = button(
+                text(display)
+                    .size(11)
+                    .style(muted_style)
+                    .width(Length::Fill)
+                    .center()
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            )
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(|_t: &Theme, _s| button::Style {
+                background: None,
+                ..Default::default()
+            })
+            .on_press(on_press);
             col = col.push(btn);
         }
         col.into()
@@ -9852,13 +9871,15 @@ impl App {
             btn,
             text(status)
                 .size(12)
+                .width(Length::Fill)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     iced::widget::text::Style {
                         color: Some(if selected { p.success } else { p.outline }),
                     }
                 })
-                .center(),
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -10357,7 +10378,12 @@ impl App {
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn_row,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -10419,7 +10445,12 @@ impl App {
                 .style(muted_style)
                 .center(),
             btn_row,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         ]
         .spacing(14)
         .padding(28)
@@ -10481,7 +10512,12 @@ impl App {
                 .style(muted_style)
                 .center(),
             btn_row,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         ]
         .spacing(14)
         .padding(28)
@@ -10602,7 +10638,14 @@ impl App {
                 .align_y(iced::Alignment::Center),
             );
             let status_color = if selected { GREEN } else { LABEL };
-            col = col.push(text(status).size(12).color(status_color).center());
+            col = col.push(
+                text(status)
+                    .size(12)
+                    .width(Length::Fill)
+                    .color(status_color)
+                    .center()
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            );
         }
         container(col)
             .width(Length::Fill)
@@ -10869,7 +10912,12 @@ impl App {
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -11236,7 +11284,12 @@ impl App {
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -11453,7 +11506,12 @@ impl App {
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -11614,7 +11672,12 @@ impl App {
                 .size(theme::text_size::WIZARD_STEP_TITLE)
                 .center(),
             btn,
-            text(status).size(12).color(status_color).center(),
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .color(status_color)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
         ]
         .spacing(14)
@@ -17452,10 +17515,13 @@ fn info_kv_center<'a>(label: &str, value: &str) -> Element<'a, Message> {
             .style(label_style)
             .width(Length::Fill)
             .center(),
+        // `WordOrGlyph` so a long, space-less file path wraps at glyph
+        // boundaries within the panel instead of overflowing + clipping.
         text(value.to_string())
             .size(14)
             .width(Length::Fill)
-            .center(),
+            .center()
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
     ]
     .spacing(3)
     .width(Length::Fill)
