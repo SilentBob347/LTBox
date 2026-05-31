@@ -3284,6 +3284,32 @@ fn strip_twrp_prefix(product: &str) -> String {
     }
 }
 
+/// Normalize a raw `getprop` value for display: trim surrounding whitespace
+/// and treat an empty or whitespace-only result (what `getprop` prints for an
+/// absent property) as `None`.
+fn non_empty_prop(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Pick the dashboard device name from the LGSI market-name properties in
+/// priority order, falling back to the legacy `kirby_en` property. `getprop`
+/// is invoked lazily, so the probe stops at the first populated property.
+///
+/// `getprop(name)` returns the raw `getprop <name>` output (empty/whitespace
+/// when the property is absent).
+fn select_device_name<F: FnMut(&str) -> String>(mut getprop: F) -> String {
+    [
+        "ro.vendor.config.lgsi.en.market_name",
+        "ro.vendor.config.lgsi.market_name",
+        "ro.config.lgsi.market_name",
+        "ro.vendor.config.lgsi.kirby_en",
+    ]
+    .into_iter()
+    .find_map(|prop| non_empty_prop(&getprop(prop)))
+    .unwrap_or_default()
+}
+
 /// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.
 ///
 /// Already-EDL: no-op. Fastboot live: continue system boot, wait for ADB,
@@ -5342,15 +5368,9 @@ impl App {
                                         r.ram = ram;
                                         r.storage = storage;
                                     }
-                                    let name = adb
-                                        .shell("getprop ro.vendor.config.lgsi.en.market_name")
-                                        .unwrap_or_default();
-                                    r.market_name = if !name.is_empty() {
-                                        name
-                                    } else {
-                                        adb.shell("getprop ro.vendor.config.lgsi.kirby_en")
-                                            .unwrap_or_default()
-                                    };
+                                    r.market_name = select_device_name(|prop| {
+                                        adb.shell(&format!("getprop {prop}")).unwrap_or_default()
+                                    });
                                     let hw =
                                         adb.shell("getprop ro.boot.hardware").unwrap_or_default();
                                     r.platform_supported = Some(hw.to_lowercase() == "qcom");
@@ -18442,6 +18462,56 @@ mod tests {
     fn unknown_key_falls_back_to_itself() {
         let t = Translations::load(Language::En);
         assert_eq!(t.t("__no_such_key__"), "__no_such_key__");
+    }
+
+    #[test]
+    fn non_empty_prop_treats_blank_as_absent() {
+        assert_eq!(non_empty_prop(""), None);
+        assert_eq!(non_empty_prop("   \n\t"), None);
+        assert_eq!(
+            non_empty_prop("  Tab Plus 14  \n"),
+            Some("Tab Plus 14".to_string())
+        );
+    }
+
+    #[test]
+    fn select_device_name_falls_back_through_lgsi_props() {
+        use std::collections::HashMap;
+        let pick = |map: HashMap<&'static str, &'static str>| {
+            select_device_name(|p| map.get(p).copied().unwrap_or("").to_string())
+        };
+
+        // Primary populated wins.
+        assert_eq!(
+            pick(HashMap::from([(
+                "ro.vendor.config.lgsi.en.market_name",
+                "Tab Plus"
+            )])),
+            "Tab Plus"
+        );
+        // Primary whitespace-only -> vendor LGSI market name.
+        assert_eq!(
+            pick(HashMap::from([
+                ("ro.vendor.config.lgsi.en.market_name", "   "),
+                ("ro.vendor.config.lgsi.market_name", "Tab Vendor"),
+            ])),
+            "Tab Vendor"
+        );
+        // -> system LGSI market name.
+        assert_eq!(
+            pick(HashMap::from([(
+                "ro.config.lgsi.market_name",
+                "Tab System"
+            )])),
+            "Tab System"
+        );
+        // -> legacy kirby_en final fallback (preserved).
+        assert_eq!(
+            pick(HashMap::from([("ro.vendor.config.lgsi.kirby_en", "Kirby")])),
+            "Kirby"
+        );
+        // Nothing populated -> empty string.
+        assert_eq!(pick(HashMap::new()), "");
     }
 
     // ---- parse_phase_marker decimal-point guard ----------------------
