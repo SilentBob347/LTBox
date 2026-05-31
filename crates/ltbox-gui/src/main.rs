@@ -9470,13 +9470,11 @@ impl App {
     }
 
     fn root_family_step(&self) -> Element<'_, Message> {
-        // TB320FC ships a kernel that Magisk's ramdisk-injection path
-        // can't patch cleanly (test devices reliably bootloop), and the
-        // KernelSU LKM mode shares the same constraint. Render the
-        // unsupported cards as disabled cards instead of silently
-        // letting the user pick a configuration that won't boot —
-        // KernelSU is still pickable via GKI, APatch family stays fully
-        // available.
+        // TODO(root): TB320FC has no init_boot for the current Magisk /
+        // KernelSU LKM ramdisk-injection path. Replace it with a
+        // vendor_boot patch once real-device verification is available.
+        // Keep unsupported cards visible but disabled for now; KernelSU
+        // remains pickable through GKI, and APatch stays available.
         let tb320fc = self.is_tb320fc();
         let mk = |f: Family| -> Element<'_, Message> {
             if tb320fc && f == Family::Magisk {
@@ -9903,11 +9901,10 @@ impl App {
         let title = self
             .t("root_mode_title_tmpl")
             .replace("{family}", fam_label);
-        // TB320FC: LKM bootloops on this kernel. Disable the LKM card
-        // so the wizard funnels to GKI (the only working mode for this
-        // model). User still sees both cards so the constraint is
-        // visible — silent skip would have been confusing for users
-        // who came in expecting LKM.
+        // TODO(root): TB320FC has no init_boot for the current KernelSU
+        // LKM path; replace it with a vendor_boot patch once real-device
+        // verification is available. Keep the card disabled for now, but
+        // visible so users can see why LKM is unavailable.
         let tb320fc = self.is_tb320fc();
         let tb323fu = self.is_tb323fu();
         let lkm_card: Element<'_, Message> = if tb320fc {
@@ -16112,9 +16109,10 @@ impl App {
                 Task::none()
             }
             RootMsg::RootMode(m) => {
-                // TB320FC: KernelSU LKM bootloops on this kernel. Block
-                // the message even if a stale dispatch slips past the
-                // disabled card so the wizard funnels to GKI only.
+                // TODO(root): TB320FC has no init_boot for the current
+                // KernelSU LKM path; replace it with a vendor_boot patch
+                // once real-device verification is available. Block stale
+                // messages while the visible card stays disabled.
                 if self.is_tb320fc() && m == RootMode::Lkm {
                     return Task::none();
                 }
