@@ -798,6 +798,39 @@ impl EdlSession {
         Ok(())
     }
 
+    /// Sectors spanned by a GPT partition (`end` is the inclusive last LBA).
+    /// Errors on an inverted range so brick-critical erase/flash refuse bad
+    /// geometry rather than silently touching a wrong, tiny span.
+    fn partition_span_sectors(part_name: &str, start: u64, end: u64) -> Result<usize> {
+        end.checked_sub(start)
+            .map(|delta| delta as usize + 1)
+            .ok_or_else(|| {
+                EdlError::Session(format!(
+                    "{part_name}: invalid GPT range (start {start} > end {end})"
+                ))
+            })
+    }
+
+    /// Erase a whole partition resolved by name from the device GPT. Looks up
+    /// the partition's start/end LBA (like [`Self::flash_partition`]) and erases
+    /// every sector it spans.
+    pub fn erase_partition_by_name(
+        &mut self,
+        part_name: &str,
+        slot: u8,
+        lun: u8,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        ltbox_core::live!(
+            log,
+            "[EDL] {} '{part_name}' on LUN {lun}...",
+            tr("log_edl_lookup_partition")
+        );
+        let (start, end) = self.find_partition(part_name, slot, lun)?;
+        let num_sectors = Self::partition_span_sectors(part_name, start, end)?;
+        self.erase_partition_at(part_name, lun, &start.to_string(), num_sectors, log)
+    }
+
     /// Flash image to a partition (GPT-by-name).
     pub fn flash_partition(
         &mut self,
@@ -812,12 +845,20 @@ impl EdlSession {
             "[EDL] {} '{part_name}' on LUN {lun}...",
             tr("log_edl_lookup_partition")
         );
-        let (start, _end) = self.find_partition(part_name, slot, lun)?;
+        let (start, end) = self.find_partition(part_name, slot, lun)?;
+        let span = Self::partition_span_sectors(part_name, start, end)?;
 
         let mut file = std::fs::File::open(image)?;
         let file_len = file.metadata()?.len();
         let sector_size = self.dev.fh_config().storage_sector_size as u64;
         let num_sectors = file_len.div_ceil(sector_size) as usize;
+        // Refuse to program past the partition — an oversized image would
+        // spill into the next partition and brick the device.
+        if num_sectors > span {
+            return Err(EdlError::Session(format!(
+                "Flash {part_name}: image is {num_sectors} sectors but the partition spans only {span}"
+            )));
+        }
         ltbox_core::live!(
             log,
             "[EDL] {} {part_name} ← {} ({file_len} bytes, {num_sectors} sectors)",
@@ -1463,6 +1504,18 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn partition_span_sectors_counts_inclusive_and_rejects_inverted() {
+        // end is the inclusive last LBA, so span = end - start + 1.
+        assert_eq!(
+            EdlSession::partition_span_sectors("p", 100, 199).unwrap(),
+            100
+        );
+        assert_eq!(EdlSession::partition_span_sectors("p", 5, 5).unwrap(), 1);
+        // Inverted range must error, never produce a tiny bogus span.
+        assert!(EdlSession::partition_span_sectors("p", 200, 100).is_err());
+    }
 
     #[test]
     fn gpt_read_sectors_bounds_first_usable_lba() {

@@ -3310,6 +3310,21 @@ fn select_device_name<F: FnMut(&str) -> String>(mut getprop: F) -> String {
     .unwrap_or_default()
 }
 
+/// GBL EFI asset suffix for a TB323FU target firmware: PRC builds embed
+/// `_PRC` in their vendor_boot fingerprint, everything else is treated as ROW.
+/// Used to pick the `*_prc.efi` / `*_row.efi` asset from the gbl_root_canoe
+/// release.
+fn efisp_asset_suffix(vendor_boot_fp: Option<&str>) -> &'static str {
+    if vendor_boot_fp
+        .map(|fp| fp.contains("_PRC"))
+        .unwrap_or(false)
+    {
+        "_prc.efi"
+    } else {
+        "_row.efi"
+    }
+}
+
 /// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.
 ///
 /// Already-EDL: no-op. Fastboot live: continue system boot, wait for ADB,
@@ -13964,6 +13979,62 @@ impl App {
                                                 rb_mode = ltbox_patch::rollback::RollbackMode::Off;
                                             }
 
+                                            // efisp / GBL handling — gated strictly on the *target*
+                                            // firmware's vendor_boot fingerprint (not the connected
+                                            // device). For a TB323FU different-region wipe, fetch the
+                                            // GBL EFI now, before EDL entry, so a download or asset-
+                                            // selection failure aborts the flash while the device is
+                                            // still safely in system. The same-region wipe needs no
+                                            // download (it erases efisp later).
+                                            let target_is_tb323fu = vendor_boot_fingerprint
+                                                .as_deref()
+                                                .map(|fp| fingerprint_token_match(fp, "TB323FU"))
+                                                .unwrap_or(false);
+                                            let mut efisp_efi: Option<std::path::PathBuf> = None;
+                                            if target_is_tb323fu && cfg.modify_region && cfg.wipe {
+                                                let suffix = efisp_asset_suffix(
+                                                    vendor_boot_fingerprint.as_deref(),
+                                                );
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_efisp_fetch")
+                                                        .replace("{variant}", suffix)
+                                                );
+                                                let gh = ltbox_core::github::GitHubClient::from_url(
+                                                    "github.com/miner7222/gbl_root_canoe",
+                                                )
+                                                .map_err(|e| format!("efisp EFI: GitHub client: {e}"))?;
+                                                let (asset_name, asset_url) = gh
+                                                    .latest_release_asset_where(|n| {
+                                                        n.to_ascii_lowercase().ends_with(suffix)
+                                                    })
+                                                    .map_err(|e| {
+                                                        format!("efisp EFI: no '{suffix}' asset on latest gbl_root_canoe release: {e}")
+                                                    })?;
+                                                let efi_dir =
+                                                    ltbox_core::app_paths::work_dir_for("flash_efisp");
+                                                let _ = std::fs::remove_dir_all(&efi_dir);
+                                                std::fs::create_dir_all(&efi_dir)
+                                                    .map_err(|e| format!("efisp EFI work dir: {e}"))?;
+                                                let efi_path = efi_dir.join(&asset_name);
+                                                ltbox_core::downloader::download_to_file(
+                                                    &asset_url,
+                                                    &efi_path,
+                                                    &mut log,
+                                                )
+                                                .map_err(|e| {
+                                                    format!("efisp EFI: download '{asset_name}' failed: {e}")
+                                                })?;
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_efisp_fetched")
+                                                        .replace("{name}", &asset_name)
+                                                );
+                                                efisp_efi = Some(efi_path);
+                                            }
+
                                             // Count .x and .xml files
                                             // Count flashable `.x` (rawprogram) files. The
                                             // encrypted Sahara manifest
@@ -14853,6 +14924,64 @@ impl App {
                                                         );
                                                     }
                                                 }
+
+                                            // efisp (TB323FU wipe flows) — the firmware is already
+                                            // written, so any failure here logs and still resets to
+                                            // system. Different-region flashes the downloaded GBL
+                                            // EFI; same-region erases efisp (post-flash, so a
+                                            // rawprogram write can't leave stale contents behind).
+                                            if target_is_tb323fu && cfg.wipe {
+                                                let efisp_lun =
+                                                    ltbox_core::partition_lun::lun_for_partition("efisp")
+                                                        .unwrap_or(4);
+                                                if cfg.modify_region {
+                                                    if let Some(efi) = &efisp_efi {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Flash] {}",
+                                                            ltbox_core::i18n::tr("live_flash_efisp_flash")
+                                                        );
+                                                        if let Err(e) = session.flash_partition(
+                                                            "efisp", efi, 0, efisp_lun, &mut log,
+                                                        ) {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Flash] {}",
+                                                                ltbox_core::i18n::tr("live_flash_efisp_flash_failed")
+                                                                    .replace("{error}", &e.to_string())
+                                                            );
+                                                        } else {
+                                                            ltbox_core::live!(
+                                                                log,
+                                                                "[Flash] {}",
+                                                                ltbox_core::i18n::tr("live_flash_efisp_flashed")
+                                                            );
+                                                        }
+                                                    }
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[Flash] {}",
+                                                        ltbox_core::i18n::tr("live_flash_efisp_erase")
+                                                    );
+                                                    if let Err(e) = session.erase_partition_by_name(
+                                                        "efisp", 0, efisp_lun, &mut log,
+                                                    ) {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Flash] {}",
+                                                            ltbox_core::i18n::tr("live_flash_efisp_erase_failed")
+                                                                .replace("{error}", &e.to_string())
+                                                        );
+                                                    } else {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[Flash] {}",
+                                                            ltbox_core::i18n::tr("live_flash_efisp_erased")
+                                                        );
+                                                    }
+                                                }
+                                            }
 
                                             // Mark `_a` active before reset. Lenovo
                                             // firmware rawprograms only target `_a`, so
@@ -18584,6 +18713,23 @@ mod tests {
         );
         // Nothing populated -> empty string.
         assert_eq!(pick(HashMap::new()), "");
+    }
+
+    #[test]
+    fn efisp_asset_suffix_picks_prc_or_row() {
+        assert_eq!(
+            efisp_asset_suffix(Some(
+                "Lenovo/TB323FU_PRC/TB323FU:16/BQ2A.250831.001/10.084W:user/release-keys"
+            )),
+            "_prc.efi"
+        );
+        assert_eq!(
+            efisp_asset_suffix(Some(
+                "Lenovo/TB323FU/TB323FU:16/BQ2A.250831.001/10.084.260421W:user/release-keys"
+            )),
+            "_row.efi"
+        );
+        assert_eq!(efisp_asset_suffix(None), "_row.efi");
     }
 
     // ---- parse_phase_marker decimal-point guard ----------------------
