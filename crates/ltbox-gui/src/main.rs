@@ -13423,7 +13423,10 @@ impl App {
             }
             FlashPartsMsg::FlashPartsPickRowFile(idx) => {
                 let spec = pickers::FilePickSpec::single("picker_target_partition_image")
-                    .with_filter("Partition image", &["img", "bin", "mbn", "melf", "elf"]);
+                    .with_filter(
+                        "Partition image",
+                        &["img", "bin", "mbn", "melf", "elf", "efi"],
+                    );
                 return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
                     Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path))
                 });
