@@ -4706,7 +4706,16 @@ impl App {
             return None;
         }
         if self.advanced_wizard_open.is_open() {
-            return Some(self.t("busy_partition_scan").to_string());
+            // Write Partitions' exec phase is a partition *write*; the loader-
+            // upload + GPT scan preamble (and the other advanced flows) keep
+            // the scan label.
+            let key = if self.advanced_wizard_open.is_flash_parts() && self.flash_parts.is_in_exec()
+            {
+                "busy_partition_write"
+            } else {
+                "busy_partition_scan"
+            };
+            return Some(self.t(key).to_string());
         }
         if self.advanced_operation_label().is_none() {
             return Some(self.t("busy_advanced_generic").to_string());
@@ -13555,7 +13564,10 @@ impl App {
             }
             FlashPartsMsg::FlashPartsExecStart => {
                 self.flash_parts.next(); // advance to Exec screen
-                self.begin_op(View::Flash);
+                // Advanced busy view (not Flash) so the busy dialog shows the
+                // partition-write message via `busy_body_override`, not
+                // "Flash Firmware is in progress".
+                self.begin_op(View::Advanced);
                 self.error_msg = None;
                 let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
                 let rows = self.flash_parts.active_rows();

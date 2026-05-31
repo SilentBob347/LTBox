@@ -103,6 +103,7 @@
   "btn_start_over": "Начать заново",
   "busy_advanced_generic": "Выполняется расширенная операция.",
   "busy_partition_scan": "Чтение информации о разделах…",
+  "busy_partition_write": "Запись разделов…",
   "conn_adb": "ADB",
   "conn_adb_recovery": "ADB (Recovery)",
   "conn_adb_server_blocking": "ADB (Server Conflict)",

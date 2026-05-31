@@ -103,6 +103,7 @@
   "btn_start_over": "처음부터",
   "busy_advanced_generic": "고급 작업 진행 중입니다.",
   "busy_partition_scan": "파티션 정보를 읽는 중입니다.",
+  "busy_partition_write": "파티션을 쓰는 중입니다.",
   "conn_adb": "ADB",
   "conn_adb_recovery": "ADB(복구)",
   "conn_adb_server_blocking": "ADB(서버 충돌)",
