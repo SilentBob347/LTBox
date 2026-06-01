@@ -150,6 +150,112 @@ pub fn rebuild_vbmeta_with_chained_images(
     Ok(())
 }
 
+/// Rebuild `vbmeta.img` from the original template, re-signing with
+/// `vbmeta_key_spec` and swapping the **chain-partition public keys** of
+/// `rechain_partitions` to `chain_key_spec`'s public key.
+///
+/// Needed when chained partitions (boot / recovery / vbmeta_system) are
+/// re-signed with a different key than the stock one: their chain
+/// descriptors in vbmeta carry the *public key*, so the bootloader rejects
+/// the re-signed images unless vbmeta points at the new key. Unlike
+/// [`rebuild_vbmeta_with_chained_images`] (which only recomputes Hash /
+/// Hashtree descriptors and leaves chain pubkeys untouched), this rewrites
+/// the chain descriptors. Hash / Hashtree descriptors and properties for
+/// untouched partitions are preserved verbatim.
+pub fn rebuild_vbmeta_rechained(
+    output_path: &Path,
+    original_vbmeta_path: &Path,
+    rechain_partitions: &[&str],
+    chain_key_spec: &str,
+    vbmeta_key_spec: &str,
+    algorithm: &str,
+) -> Result<()> {
+    use avbtool_rs::builder::{ChainPartitionSpec, PropertySpec, VbmetaImageArgs};
+    use avbtool_rs::info::DescriptorInfo;
+
+    let info = avbtool_rs::image::inspect_avb_image(original_vbmeta_path)
+        .map_err(|e| LtboxError::Avb(format!("inspect {}: {e}", original_vbmeta_path.display())))?;
+    let blob = avbtool_rs::image::load_vbmeta_blob(original_vbmeta_path)
+        .map_err(|e| LtboxError::Avb(format!("load vbmeta blob: {e}")))?;
+    let pkmd = avbtool_rs::image::extract_public_key_metadata(&info.header, &blob)
+        .map_err(|e| LtboxError::Avb(format!("public key metadata: {e}")))?;
+    let new_pubkey = avbtool_rs::crypto::extract_public_key(chain_key_spec)
+        .map_err(|e| LtboxError::Avb(format!("extract public key {chain_key_spec}: {e}")))?;
+
+    let mut properties = Vec::new();
+    let mut extra_descriptors = Vec::new();
+    let mut chain_partitions = Vec::new();
+    let mut rechained = 0usize;
+    for desc in &info.descriptors {
+        match desc {
+            DescriptorInfo::Property { key, value } => properties.push(PropertySpec {
+                key: key.clone(),
+                value: value.clone(),
+            }),
+            DescriptorInfo::ChainPartition {
+                rollback_index_location,
+                partition_name,
+                public_key,
+                flags,
+            } => {
+                let swap = rechain_partitions
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(partition_name));
+                if swap {
+                    rechained += 1;
+                }
+                chain_partitions.push(ChainPartitionSpec {
+                    partition_name: partition_name.clone(),
+                    rollback_index_location: *rollback_index_location,
+                    public_key: if swap {
+                        new_pubkey.clone()
+                    } else {
+                        public_key.clone()
+                    },
+                    flags: *flags,
+                });
+            }
+            // Hash / Hashtree / KernelCmdline / Unknown carried through
+            // verbatim (KernelCmdline via extra_descriptors, not the
+            // builder's `kernel_cmdlines` Vec<String>, so its flags survive).
+            DescriptorInfo::Hash { .. }
+            | DescriptorInfo::Hashtree { .. }
+            | DescriptorInfo::KernelCmdline { .. }
+            | DescriptorInfo::Unknown { .. } => extra_descriptors.push(desc.clone()),
+        }
+    }
+    if rechained != rechain_partitions.len() {
+        return Err(LtboxError::Avb(format!(
+            "rebuild_vbmeta_rechained: expected to rechain {} partitions {:?} but matched {} chain descriptors in {}",
+            rechain_partitions.len(),
+            rechain_partitions,
+            rechained,
+            original_vbmeta_path.display()
+        )));
+    }
+
+    let args = VbmetaImageArgs {
+        algorithm_name: algorithm.to_string(),
+        key_spec: Some(vbmeta_key_spec.to_string()),
+        public_key_metadata: (!pkmd.is_empty()).then_some(pkmd),
+        rollback_index: info.header.rollback_index,
+        flags: info.header.flags,
+        rollback_index_location: info.header.rollback_index_location,
+        properties,
+        kernel_cmdlines: Vec::new(),
+        extra_descriptors,
+        include_descriptors_from_images: Vec::new(),
+        chain_partitions,
+        release_string: Some(info.header.release_string.clone()),
+        append_to_release_string: None,
+        padding_size: 0,
+    };
+    avbtool_rs::builder::make_vbmeta_image(output_path, &args)
+        .map_err(|e| LtboxError::Avb(format!("make_vbmeta_image: {e}")))?;
+    preserve_original_vbmeta_size(output_path, original_vbmeta_path)?;
+    Ok(())
+}
+
 fn preserve_original_vbmeta_size(output_path: &Path, original_vbmeta_path: &Path) -> Result<()> {
     let original_size = fs::metadata(original_vbmeta_path)?.len();
     let output_size = fs::metadata(output_path)?.len();

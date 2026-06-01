@@ -3313,15 +3313,18 @@ fn select_device_name<F: FnMut(&str) -> String>(mut getprop: F) -> String {
 /// GBL EFI asset suffix for a TB323FU target firmware: PRC builds embed
 /// `_PRC` in their vendor_boot fingerprint, everything else is treated as ROW.
 /// Used to pick the `*_prc.efi` / `*_row.efi` asset from the gbl_root_canoe
-/// release.
-fn efisp_asset_suffix(vendor_boot_fp: Option<&str>) -> &'static str {
-    if vendor_boot_fp
+/// release. When `arb` is set the anti-rollback build is requested instead
+/// (`*_prc_arb.efi` / `*_row_arb.efi`) — its GBL roots trust at the testkey
+/// so it accepts the testkey-re-signed boot chain LTBox stages on a downgrade.
+fn efisp_asset_suffix(vendor_boot_fp: Option<&str>, arb: bool) -> &'static str {
+    let prc = vendor_boot_fp
         .map(|fp| fp.contains("_PRC"))
-        .unwrap_or(false)
-    {
-        "_prc.efi"
-    } else {
-        "_row.efi"
+        .unwrap_or(false);
+    match (prc, arb) {
+        (true, false) => "_prc.efi",
+        (true, true) => "_prc_arb.efi",
+        (false, false) => "_row.efi",
+        (false, true) => "_row_arb.efi",
     }
 }
 
@@ -3331,6 +3334,157 @@ fn efisp_asset_suffix(vendor_boot_fp: Option<&str>) -> &'static str {
 /// on an empty `efisp`.
 fn efisp_is_empty(data: &[u8]) -> bool {
     data.iter().all(|&b| b == 0)
+}
+
+/// One staged ARB overlay: (GPT label, UFS LUN, patched image path).
+type ArbOverlay = (String, u8, std::path::PathBuf);
+
+/// TB323FU firmware-flash anti-rollback. Unlike the generic fastboot path,
+/// TB323FU never exposes `stored_rollback_index` so the device-committed
+/// indices are read by dumping `boot_a` + `vbmeta_system_a` over the open
+/// EDL session. When the install images sit BELOW those indices (a downgrade
+/// the bootloader would reject) the four AVB-signed partitions are re-signed
+/// with `testkey_rsa4096` and staged as overlays — boot / vbmeta_system get
+/// their rollback index bumped to the device value, recovery keeps its stock
+/// index (re-signed only), and vbmeta is rebuilt with its boot / recovery /
+/// vbmeta_system chain descriptors repointed at the testkey so the re-signed
+/// trio verifies. recovery + vbmeta are install-image-only (no device dump).
+///
+/// Returns `(overlays, need)`. `need` is true when a downgrade was patched —
+/// the caller swaps the efisp GBL to its `_arb` (testkey-root) variant. When
+/// `need` is false the install images are flashed stock (empty overlays).
+fn build_tb323fu_arb_overlays(
+    session: &mut ltbox_device::edl::EdlSession,
+    fw_dir: &std::path::Path,
+    work_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<(Vec<ArbOverlay>, bool), String> {
+    const KEY: &str = "testkey_rsa4096";
+    const ALGO: &str = "SHA256_RSA4096";
+
+    let lun_of = |label: &str| -> std::result::Result<u8, String> {
+        ltbox_core::partition_lun::lun_for_partition(label)
+            .ok_or_else(|| format!("no hardcoded LUN for {label}"))
+    };
+    let idx_of = |path: &std::path::Path| -> std::result::Result<u64, String> {
+        Ok(ltbox_patch::avb::extract_image_avb_info(path)
+            .map_err(|e| format!("AVB inspect {}: {e}", path.display()))?
+            .rollback_index)
+    };
+
+    // 1. Read device-committed indices (boot_a LUN 4, vbmeta_system_a LUN 0).
+    let dev_boot_img = work_dir.join("dev_boot_a.img");
+    let dev_vbs_img = work_dir.join("dev_vbmeta_system_a.img");
+    session
+        .dump_partition("boot_a", &dev_boot_img, 0, lun_of("boot_a")?, log)
+        .map_err(|e| format!("dump device boot_a: {e}"))?;
+    session
+        .dump_partition(
+            "vbmeta_system_a",
+            &dev_vbs_img,
+            0,
+            lun_of("vbmeta_system_a")?,
+            log,
+        )
+        .map_err(|e| format!("dump device vbmeta_system_a: {e}"))?;
+    let dev_boot_idx = idx_of(&dev_boot_img)?;
+    let dev_vbs_idx = idx_of(&dev_vbs_img)?;
+    let _ = std::fs::remove_file(&dev_boot_img);
+    let _ = std::fs::remove_file(&dev_vbs_img);
+
+    // 2. Install-image indices.
+    let inst_boot = fw_dir.join("boot.img");
+    let inst_vbs = fw_dir.join("vbmeta_system.img");
+    let inst_rec = fw_dir.join("recovery.img");
+    let inst_vbmeta = fw_dir.join("vbmeta.img");
+    for p in [&inst_boot, &inst_vbs, &inst_rec, &inst_vbmeta] {
+        if !p.exists() {
+            return Err(format!("install image missing: {}", p.display()));
+        }
+    }
+    let inst_boot_idx = idx_of(&inst_boot)?;
+    let inst_vbs_idx = idx_of(&inst_vbs)?;
+    ltbox_core::live!(
+        log,
+        "[ARB] {}",
+        ltbox_core::i18n::tr("live_arb_tb323_indices")
+            .replace("{boot_i}", &inst_boot_idx.to_string())
+            .replace("{boot_d}", &dev_boot_idx.to_string())
+            .replace("{vbs_i}", &inst_vbs_idx.to_string())
+            .replace("{vbs_d}", &dev_vbs_idx.to_string())
+    );
+
+    // 3. need = any dumped partition is behind the device-committed index.
+    let need = inst_boot_idx < dev_boot_idx || inst_vbs_idx < dev_vbs_idx;
+    if !need {
+        ltbox_core::live!(
+            log,
+            "[ARB] {}",
+            ltbox_core::i18n::tr("live_arb_tb323_skip_uptodate")
+        );
+        return Ok((Vec::new(), false));
+    }
+
+    // 4. Re-sign overlays (all testkey). boot / vbmeta_system bump to the
+    // device value; never lower the image's own claim, hence the max().
+    let boot_target = inst_boot_idx.max(dev_boot_idx);
+    let vbs_target = inst_vbs_idx.max(dev_vbs_idx);
+    let out_boot = work_dir.join("boot.arb.img");
+    let out_vbs = work_dir.join("vbmeta_system.arb.img");
+    let out_rec = work_dir.join("recovery.arb.img");
+    let out_vbmeta = work_dir.join("vbmeta.arb.img");
+    std::fs::copy(&inst_boot, &out_boot).map_err(|e| format!("copy boot: {e}"))?;
+    std::fs::copy(&inst_vbs, &out_vbs).map_err(|e| format!("copy vbmeta_system: {e}"))?;
+    std::fs::copy(&inst_rec, &out_rec).map_err(|e| format!("copy recovery: {e}"))?;
+
+    let boot_algo = ltbox_patch::avb::extract_image_avb_info(&out_boot)
+        .map_err(|e| format!("boot AVB: {e}"))?
+        .algorithm;
+    ltbox_patch::avb::resign_image(&out_boot, KEY, &boot_algo, Some(boot_target))
+        .map_err(|e| format!("resign boot: {e}"))?;
+    let vbs_algo = ltbox_patch::avb::extract_image_avb_info(&out_vbs)
+        .map_err(|e| format!("vbmeta_system AVB: {e}"))?
+        .algorithm;
+    ltbox_patch::avb::resign_image(&out_vbs, KEY, &vbs_algo, Some(vbs_target))
+        .map_err(|e| format!("resign vbmeta_system: {e}"))?;
+    let rec_algo = ltbox_patch::avb::extract_image_avb_info(&out_rec)
+        .map_err(|e| format!("recovery AVB: {e}"))?
+        .algorithm;
+    ltbox_patch::avb::resign_image(&out_rec, KEY, &rec_algo, None)
+        .map_err(|e| format!("resign recovery: {e}"))?;
+    ltbox_patch::avb::rebuild_vbmeta_rechained(
+        &out_vbmeta,
+        &inst_vbmeta,
+        &["boot", "recovery", "vbmeta_system"],
+        KEY,
+        KEY,
+        ALGO,
+    )
+    .map_err(|e| format!("rebuild vbmeta: {e}"))?;
+    ltbox_core::live!(
+        log,
+        "[ARB] {}",
+        ltbox_core::i18n::tr("live_arb_tb323_resigned")
+            .replace("{boot}", &boot_target.to_string())
+            .replace("{vbs}", &vbs_target.to_string())
+    );
+
+    // 5. Overlays: (GPT label, LUN, patched path). Flashed after rawprogram.
+    // Ordered to shrink the partial-write brick window: leaf images first,
+    // the boot source next, and the root `vbmeta_a` (which ties the whole
+    // chain together) LAST — and the caller flashes the `_arb` GBL only
+    // after every overlay lands.
+    let overlays = vec![
+        ("recovery_a".to_string(), lun_of("recovery_a")?, out_rec),
+        (
+            "vbmeta_system_a".to_string(),
+            lun_of("vbmeta_system_a")?,
+            out_vbs,
+        ),
+        ("boot_a".to_string(), lun_of("boot_a")?, out_boot),
+        ("vbmeta_a".to_string(), lun_of("vbmeta_a")?, out_vbmeta),
+    ];
+    Ok((overlays, true))
 }
 
 /// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.
@@ -13643,24 +13797,18 @@ impl App {
                         .replace("{wipe}", &cfg.wipe.to_string())
                 ));
                 let mut rb_mode = cfg.modify_rollback.to_mode();
-                let edl_start = matches!(conn, ConnectionStatus::Edl);
-                if edl_start {
-                    // EDL-start drops every probe-dependent guard:
-                    // device rollback index (Fastboot vars only) and
-                    // device model (ADB / Fastboot only) are
-                    // unreachable from EDL, so the GUI emits one
-                    // umbrella warning here and downgrades:
-                    //   * ARB On/Auto → Off (silent skip downstream)
-                    //   * vendor_boot fingerprint check → skipped
-                    self.log_push(format!("[Flash] {}", self.t("live_flash_edl_start_skips")));
-                    rb_mode = ltbox_patch::rollback::RollbackMode::Off;
-                }
+                // NOTE: the EDL-start ARB downgrade (On/Auto → Off when the
+                // device can't be Fastboot/ADB-probed) is applied inside the
+                // worker, AFTER the firmware's vendor_boot fingerprint is
+                // known — so a TB323FU target (which reads its rollback index
+                // by dumping partitions over EDL) is exempt and stays on Auto.
                 let ll = self.live_labels();
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
                                             ltbox_core::runtime::run_heavy(move || -> Result<Vec<String>, String> {
                                             let mut log = Vec::new();
+                                            let edl_start = matches!(conn, ConnectionStatus::Edl);
                                             let fw_dir = std::path::Path::new(&fw_folder);
 
                                             // 1. Validate firmware folder
@@ -13793,47 +13941,6 @@ impl App {
                                             }
                                             let (device_rollback_index, fastboot_reachable) = probe;
 
-                                            // Rollback=ON + no fastboot vars → can't target
-                                            // a safe index. Bail before risking a brick.
-                                            if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
-                                                && !fastboot_reachable
-                                            {
-                                                live!(
-                                                    log,
-                                                    "[ARB] {}",
-                                                    ltbox_core::i18n::tr("live_arb_on_fastboot_unreachable")
-                                                );
-                                                // Best-effort reboot — any failure stays
-                                                // in the log; wizard still gets the Err.
-                                                if let Some(mut adb) =
-                                                    ltbox_device::adb::AdbManager::new_if_connected()
-                                                {
-                                                    if let Err(e) = adb.shell("reboot") {
-                                                        ltbox_core::live!(
-                                                            log,
-                                                            "[ADB] {}",
-                                                            ltbox_core::i18n::tr("live_adb_reboot_failed")
-                                                                .replace("{error}", &e.to_string())
-                                                        );
-                                                    } else {
-                                                        ltbox_core::live!(
-                                                            log,
-                                                            "[ADB] {}",
-                                                            ltbox_core::i18n::tr("live_adb_reboot_sent")
-                                                        );
-                                                    }
-                                                } else {
-                                                    ltbox_core::live!(
-                                                        log,
-                                                        "[ADB] {}",
-                                                        ltbox_core::i18n::tr("live_adb_no_reboot_route")
-                                                    );
-                                                }
-                                                return Err(
-                                                    ltbox_core::i18n::tr("err_rollback_on_fastboot_unreachable"),
-                                                );
-                                            }
-
                                             // 3. Scan firmware folder
                                             let vendor_boot = fw_dir.join("vendor_boot.img");
                                             let vbmeta = fw_dir.join("vbmeta.img");
@@ -13945,74 +14052,114 @@ impl App {
                                                 }
                                             }
 
-                                            // TB323FU cannot take region or ARB overlays.
-                                            // Detect from vendor_boot first, then probe model.
-                                            let tb323fu_skip = vendor_boot_fingerprint
+                                            // TB323FU keeps region boot-chain conversion off (it
+                                            // provisions a GBL on efisp instead) but DOES take ARB
+                                            // overlays. Region detect uses fp first, then model.
+                                            let tb323fu_skip_region = vendor_boot_fingerprint
                                                 .as_deref()
                                                 .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                                                 .unwrap_or(false)
                                                 || fingerprint_token_match(&device_model, "TB323FU");
-                                            if tb323fu_skip {
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Flash] {}",
-                                                    ltbox_core::i18n::tr(
-                                                        "live_flash_tb323fu_skip_region_arb"
-                                                    )
-                                                );
-                                                rb_mode = ltbox_patch::rollback::RollbackMode::Off;
-                                            }
 
-                                            // TB323FU GBL work follows the target firmware, not
-                                            // the connected device. Download EFI before EDL.
+                                            // GBL/ARB work follows the TARGET firmware identity
+                                            // (vendor_boot fp), never the connected device.
                                             let target_is_tb323fu = vendor_boot_fingerprint
                                                 .as_deref()
                                                 .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                                                 .unwrap_or(false);
-                                            let mut efisp_efi: Option<std::path::PathBuf> = None;
-                                            if target_is_tb323fu && cfg.modify_region && cfg.wipe {
-                                                let suffix = efisp_asset_suffix(
-                                                    vendor_boot_fingerprint.as_deref(),
-                                                );
-                                                ltbox_core::live!(
+
+                                            // EDL-start can't reach Fastboot vars (the generic ARB
+                                            // index source) or the device model, so non-TB323FU
+                                            // silently downgrades ARB On/Auto → Off. TB323FU is
+                                            // exempt: it reads its index by dumping partitions over
+                                            // this very EDL session, so it keeps On/Auto.
+                                            if edl_start
+                                                && !target_is_tb323fu
+                                                && rb_mode != ltbox_patch::rollback::RollbackMode::Off
+                                            {
+                                                rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+                                                live!(
                                                     log,
                                                     "[Flash] {}",
-                                                    ltbox_core::i18n::tr("live_flash_efisp_fetch")
-                                                        .replace("{variant}", suffix)
+                                                    ltbox_core::i18n::tr("live_flash_edl_start_skips")
                                                 );
-                                                let gh = ltbox_core::github::GitHubClient::from_url(
-                                                    "github.com/miner7222/gbl_root_canoe",
-                                                )
-                                                .map_err(|e| format!("efisp EFI: GitHub client: {e}"))?;
-                                                let (asset_name, asset_url) = gh
-                                                    .latest_release_asset_where(|n| {
-                                                        n.to_ascii_lowercase().ends_with(suffix)
-                                                    })
-                                                    .map_err(|e| {
-                                                        format!("efisp EFI: no '{suffix}' asset on latest gbl_root_canoe release: {e}")
-                                                    })?;
-                                                let efi_dir =
-                                                    ltbox_core::app_paths::work_dir_for("flash_efisp");
-                                                let _ = std::fs::remove_dir_all(&efi_dir);
-                                                std::fs::create_dir_all(&efi_dir)
-                                                    .map_err(|e| format!("efisp EFI work dir: {e}"))?;
-                                                let efi_path = efi_dir.join(&asset_name);
-                                                ltbox_core::downloader::download_to_file(
-                                                    &asset_url,
-                                                    &efi_path,
-                                                    &mut log,
-                                                )
-                                                .map_err(|e| {
-                                                    format!("efisp EFI: download '{asset_name}' failed: {e}")
-                                                })?;
-                                                ltbox_core::live!(
-                                                    log,
-                                                    "[Flash] {}",
-                                                    ltbox_core::i18n::tr("live_flash_efisp_fetched")
-                                                        .replace("{name}", &asset_name)
-                                                );
-                                                efisp_efi = Some(efi_path);
                                             }
+
+                                            // TB323FU must never run a blind ON: ON bumps even
+                                            // matching indices and would force the testkey/_arb
+                                            // chain when no downgrade is in play. Demote to AUTO so
+                                            // the EDL-dumped device index decides per partition.
+                                            if target_is_tb323fu
+                                                && rb_mode == ltbox_patch::rollback::RollbackMode::On
+                                            {
+                                                rb_mode = ltbox_patch::rollback::RollbackMode::Auto;
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "live_flash_tb323fu_force_auto"
+                                                    )
+                                                );
+                                            }
+                                            if tb323fu_skip_region {
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr(
+                                                        "live_flash_tb323fu_region_efisp"
+                                                    )
+                                                );
+                                            }
+
+                                            // Rollback=ON + no fastboot vars → can't target a safe
+                                            // index. Bail before EDL. Runs AFTER the TB323FU On→Auto
+                                            // demotion above, so an EDL-start TB323FU (whose index
+                                            // is read over EDL, not fastboot) is already Auto here
+                                            // and is not aborted.
+                                            if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
+                                                && !fastboot_reachable
+                                            {
+                                                live!(
+                                                    log,
+                                                    "[ARB] {}",
+                                                    ltbox_core::i18n::tr("live_arb_on_fastboot_unreachable")
+                                                );
+                                                // Best-effort reboot — any failure stays
+                                                // in the log; wizard still gets the Err.
+                                                if let Some(mut adb) =
+                                                    ltbox_device::adb::AdbManager::new_if_connected()
+                                                {
+                                                    if let Err(e) = adb.shell("reboot") {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ADB] {}",
+                                                            ltbox_core::i18n::tr("live_adb_reboot_failed")
+                                                                .replace("{error}", &e.to_string())
+                                                        );
+                                                    } else {
+                                                        ltbox_core::live!(
+                                                            log,
+                                                            "[ADB] {}",
+                                                            ltbox_core::i18n::tr("live_adb_reboot_sent")
+                                                        );
+                                                    }
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ADB] {}",
+                                                        ltbox_core::i18n::tr("live_adb_no_reboot_route")
+                                                    );
+                                                }
+                                                return Err(
+                                                    ltbox_core::i18n::tr("err_rollback_on_fastboot_unreachable"),
+                                                );
+                                            }
+
+                                            // efisp GBL download is deferred until after the EDL
+                                            // ARB dump decides `_arb` (testkey-root) vs stock — see
+                                            // the post-rawprogram-staging block below.
+                                            let mut efisp_efi: Option<std::path::PathBuf> = None;
+                                            let mut tb323fu_arb_need = false;
 
                                             // Count .x and .xml files
                                             // Count flashable `.x` (rawprogram) files. The
@@ -14049,7 +14196,7 @@ impl App {
 
                                             // 4. Region conversion
                                             let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
-                                            if cfg.modify_region && !tb323fu_skip {
+                                            if cfg.modify_region && !tb323fu_skip_region {
                                                 if has_vendor_boot && has_vbmeta {
                                                     ltbox_core::live!(
                                                         log,
@@ -14312,7 +14459,43 @@ impl App {
                                             // Stage ARB copies; flash them after rawprogram.
                                             let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> =
                                                 Vec::new();
-                                            if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
+                                            if rb_mode != ltbox_patch::rollback::RollbackMode::Off
+                                                && target_is_tb323fu
+                                            {
+                                                // The testkey ARB chain is only safe when the
+                                                // matching `_arb` GBL is provisioned to efisp —
+                                                // which only happens on a wipe + region flash.
+                                                // Any other mode leaves the stock 8fcb GBL (or
+                                                // none), which would reject a testkey chain and
+                                                // brick. Gate ARB on the exact GBL condition.
+                                                if cfg.modify_region && cfg.wipe {
+                                                    // fastboot never exposes the index — dump it
+                                                    // over EDL, testkey re-sign the four AVB
+                                                    // partitions, stage overlays (or flash stock
+                                                    // when the install isn't a downgrade).
+                                                    let arb_work_dir =
+                                                        ltbox_core::app_paths::work_dir_for("flash_arb");
+                                                    let _ = std::fs::remove_dir_all(&arb_work_dir);
+                                                    std::fs::create_dir_all(&arb_work_dir)
+                                                        .map_err(|e| format!("arb work dir: {e}"))?;
+                                                    let (overlays, need) = build_tb323fu_arb_overlays(
+                                                        &mut session,
+                                                        fw_dir,
+                                                        &arb_work_dir,
+                                                        &mut log,
+                                                    )?;
+                                                    tb323fu_arb_need = need;
+                                                    arb_patched = overlays;
+                                                } else {
+                                                    ltbox_core::live!(
+                                                        log,
+                                                        "[ARB] {}",
+                                                        ltbox_core::i18n::tr(
+                                                            "live_arb_tb323_skip_no_gbl"
+                                                        )
+                                                    );
+                                                }
+                                            } else if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
                                                 let arb_work_dir =
                                                     ltbox_core::app_paths::work_dir_for("flash_arb");
                                                 let _ = std::fs::remove_dir_all(&arb_work_dir);
@@ -14481,6 +14664,54 @@ impl App {
                                                             patched,
                                                         ));
                                                     }
+                                            }
+
+                                            // Download the efisp GBL now that the ARB dump has
+                                            // decided stock vs `_arb` (testkey-root) — the latter
+                                            // is required when a downgrade re-signed the chain.
+                                            if target_is_tb323fu && cfg.modify_region && cfg.wipe {
+                                                let suffix = efisp_asset_suffix(
+                                                    vendor_boot_fingerprint.as_deref(),
+                                                    tb323fu_arb_need,
+                                                );
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_efisp_fetch")
+                                                        .replace("{variant}", suffix)
+                                                );
+                                                let gh = ltbox_core::github::GitHubClient::from_url(
+                                                    "github.com/miner7222/gbl_root_canoe",
+                                                )
+                                                .map_err(|e| format!("efisp EFI: GitHub client: {e}"))?;
+                                                let (asset_name, asset_url) = gh
+                                                    .latest_release_asset_where(|n| {
+                                                        n.to_ascii_lowercase().ends_with(suffix)
+                                                    })
+                                                    .map_err(|e| {
+                                                        format!("efisp EFI: no '{suffix}' asset on latest gbl_root_canoe release: {e}")
+                                                    })?;
+                                                let efi_dir =
+                                                    ltbox_core::app_paths::work_dir_for("flash_efisp");
+                                                let _ = std::fs::remove_dir_all(&efi_dir);
+                                                std::fs::create_dir_all(&efi_dir)
+                                                    .map_err(|e| format!("efisp EFI work dir: {e}"))?;
+                                                let efi_path = efi_dir.join(&asset_name);
+                                                ltbox_core::downloader::download_to_file(
+                                                    &asset_url,
+                                                    &efi_path,
+                                                    &mut log,
+                                                )
+                                                .map_err(|e| {
+                                                    format!("efisp EFI: download '{asset_name}' failed: {e}")
+                                                })?;
+                                                ltbox_core::live!(
+                                                    log,
+                                                    "[Flash] {}",
+                                                    ltbox_core::i18n::tr("live_flash_efisp_fetched")
+                                                        .replace("{name}", &asset_name)
+                                                );
+                                                efisp_efi = Some(efi_path);
                                             }
 
                                             live!(
@@ -14887,27 +15118,50 @@ impl App {
                                                     ltbox_core::partition_lun::lun_for_partition("efisp")
                                                         .unwrap_or(4);
                                                 if cfg.modify_region {
-                                                    if let Some(efi) = &efisp_efi {
-                                                        ltbox_core::live!(
-                                                            log,
-                                                            "[Flash] {}",
-                                                            ltbox_core::i18n::tr("live_flash_efisp_flash")
-                                                        );
-                                                        if let Err(e) = session.flash_partition(
-                                                            "efisp", efi, 0, efisp_lun, &mut log,
-                                                        ) {
+                                                    match &efisp_efi {
+                                                        Some(efi) => {
                                                             ltbox_core::live!(
                                                                 log,
                                                                 "[Flash] {}",
-                                                                ltbox_core::i18n::tr("live_flash_efisp_flash_failed")
-                                                                    .replace("{error}", &e.to_string())
+                                                                ltbox_core::i18n::tr("live_flash_efisp_flash")
                                                             );
-                                                        } else {
-                                                            ltbox_core::live!(
-                                                                log,
-                                                                "[Flash] {}",
-                                                                ltbox_core::i18n::tr("live_flash_efisp_flashed")
-                                                            );
+                                                            if let Err(e) = session.flash_partition(
+                                                                "efisp", efi, 0, efisp_lun, &mut log,
+                                                            ) {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Flash] {}",
+                                                                    ltbox_core::i18n::tr("live_flash_efisp_flash_failed")
+                                                                        .replace("{error}", &e.to_string())
+                                                                );
+                                                                // A staged testkey ARB chain only
+                                                                // boots with this `_arb` GBL. Abort
+                                                                // loudly (device stays in EDL for
+                                                                // retry) rather than resetting into
+                                                                // a rollback brick.
+                                                                if tb323fu_arb_need {
+                                                                    return Err(format!(
+                                                                        "efisp _arb GBL flash failed after staging the testkey ARB chain — left in EDL to avoid a brick: {e}"
+                                                                    ));
+                                                                }
+                                                            } else {
+                                                                ltbox_core::live!(
+                                                                    log,
+                                                                    "[Flash] {}",
+                                                                    ltbox_core::i18n::tr("live_flash_efisp_flashed")
+                                                                );
+                                                            }
+                                                        }
+                                                        None => {
+                                                            // need implies a download ran (same
+                                                            // gate); a missing EFI here is an
+                                                            // internal inconsistency, not a
+                                                            // user-recoverable state — fail safe.
+                                                            if tb323fu_arb_need {
+                                                                return Err(
+                                                                    "internal: testkey ARB chain staged but no efisp GBL was downloaded".to_string(),
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 } else {
@@ -18689,19 +18943,15 @@ mod tests {
 
     #[test]
     fn efisp_asset_suffix_picks_prc_or_row() {
-        assert_eq!(
-            efisp_asset_suffix(Some(
-                "Lenovo/TB323FU_PRC/TB323FU:16/BQ2A.250831.001/10.084W:user/release-keys"
-            )),
-            "_prc.efi"
-        );
-        assert_eq!(
-            efisp_asset_suffix(Some(
-                "Lenovo/TB323FU/TB323FU:16/BQ2A.250831.001/10.084.260421W:user/release-keys"
-            )),
-            "_row.efi"
-        );
-        assert_eq!(efisp_asset_suffix(None), "_row.efi");
+        let prc = "Lenovo/TB323FU_PRC/TB323FU:16/BQ2A.250831.001/10.084W:user/release-keys";
+        let row = "Lenovo/TB323FU/TB323FU:16/BQ2A.250831.001/10.084.260421W:user/release-keys";
+        assert_eq!(efisp_asset_suffix(Some(prc), false), "_prc.efi");
+        assert_eq!(efisp_asset_suffix(Some(row), false), "_row.efi");
+        assert_eq!(efisp_asset_suffix(None, false), "_row.efi");
+        // Anti-rollback downgrade requests the `_arb` GBL (testkey root).
+        assert_eq!(efisp_asset_suffix(Some(prc), true), "_prc_arb.efi");
+        assert_eq!(efisp_asset_suffix(Some(row), true), "_row_arb.efi");
+        assert_eq!(efisp_asset_suffix(None, true), "_row_arb.efi");
     }
 
     #[test]

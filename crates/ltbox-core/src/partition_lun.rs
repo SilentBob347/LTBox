@@ -12,7 +12,8 @@ pub fn lun_for_partition(label: &str) -> Option<u8> {
     let base = strip_slot_suffix(label).to_ascii_lowercase();
     match base.as_str() {
         "persist" | "frp" | "userdata" | "metadata" | "vbmeta_system" | "oemowninfo" => Some(0),
-        "boot" | "init_boot" | "vbmeta" | "vendor_boot" | "devinfo" | "dtbo" | "efisp" => Some(4),
+        "boot" | "init_boot" | "vbmeta" | "vendor_boot" | "devinfo" | "dtbo" | "efisp"
+        | "recovery" => Some(4),
         _ => None,
     }
 }
@@ -51,6 +52,7 @@ mod tests {
             "devinfo",
             "dtbo",
             "efisp",
+            "recovery",
         ] {
             assert_eq!(lun_for_partition(name), Some(4), "{name}");
         }
