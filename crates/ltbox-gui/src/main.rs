@@ -6969,6 +6969,20 @@ impl App {
         self.device_class() == DeviceClass::TB323FU
     }
 
+    /// Loader-picker description, resolved live against the connected
+    /// device. TB323FU (Y700 Gen 5) needs the `qsahara_device_programmer.xml`
+    /// manifest, not the `.melf`; with no recognised model the picker hints
+    /// both. Every loader picker routes its subtitle through this.
+    fn loader_picker_desc(&self) -> String {
+        if self.is_tb323fu() {
+            self.t("loader_desc_tb323fu").to_string()
+        } else if self.device_model.is_empty() {
+            self.t("loader_desc_unknown").to_string()
+        } else {
+            self.t("dump_parts_loader_desc").to_string()
+        }
+    }
+
     /// Whether the polled device is a TB322FC. PRC-only SKU — the Flash
     /// wizard hides ROW + OtherRegion as disabled cards so the user
     /// cannot pick a region or cross-region flash target that the
@@ -8550,7 +8564,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("rescue_folder_subtitle").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -9057,7 +9071,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("unroot_loader_subtitle").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -9943,7 +9957,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("root_folder_desc").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -10724,7 +10738,7 @@ impl App {
                         text(self.t("btn_browse_loader").to_string())
                             .size(14)
                             .center(),
-                        text(self.t("dump_parts_loader_desc").to_string())
+                        text(self.loader_picker_desc())
                             .size(11)
                             .style(muted_style)
                             .center(),
@@ -10991,7 +11005,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("dump_parts_loader_desc").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -11358,7 +11372,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("dump_parts_loader_desc").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -11580,7 +11594,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("dump_parts_loader_desc").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -11746,7 +11760,7 @@ impl App {
                     text(self.t("btn_browse_loader").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("dump_parts_loader_desc").to_string())
+                    text(self.loader_picker_desc())
                         .size(11)
                         .style(muted_style)
                         .center(),
