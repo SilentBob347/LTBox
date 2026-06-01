@@ -14845,9 +14845,10 @@ impl App {
                                                         });
                                                     let country_label =
                                                         if oemowninfo_sku { "oemowninfo" } else { "devinfo" };
-                                                    // The /persist fingerprint sync is TB323FU only —
-                                                    // TB320FC does not need it.
-                                                    let persist_fp_sync = vendor_boot_fingerprint
+                                                    // TB323FU keeps /persist as dump + backup only —
+                                                    // no country-code patch, no fingerprint edit, no
+                                                    // re-flash. Only oemowninfo is modified + flashed.
+                                                    let tb323fu_persist_backup_only = vendor_boot_fingerprint
                                                         .as_deref()
                                                         .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                                                         .unwrap_or(false)
@@ -14909,6 +14910,18 @@ impl App {
                                                             country_progress.mark_failed(label, reason);
                                                             continue;
                                                         }
+                                                        // TB323FU: /persist work stops at dump + backup.
+                                                        if label == "persist" && tb323fu_persist_backup_only {
+                                                            live!(
+                                                                log,
+                                                                "[Country] {}",
+                                                                ltbox_core::i18n::tr(
+                                                                    "live_country_persist_backup_only"
+                                                                )
+                                                            );
+                                                            country_progress.mark_flashed(label);
+                                                            continue;
+                                                        }
                                                         let detected = match ltbox_patch::region::detect_country_code(
                                                             &dump_path,
                                                             KNOWN_CODES,
@@ -14929,11 +14942,10 @@ impl App {
                                                         };
                                                         let patched_path =
                                                             work_dir.join(format!("{label}.patched.img"));
-                                                        // Patch the country code first (when the partition
-                                                        // carries one); `persist` has no real country code (its
-                                                        // only matches live in captured logs), so copy it
-                                                        // verbatim when none is found so the fingerprint pass
-                                                        // still has a file to edit.
+                                                        // Patch the country code when the partition carries
+                                                        // one. `persist` has no real country code (its only
+                                                        // matches live in captured logs), so it is a no-op
+                                                        // pass-through here — dump + backup already happened.
                                                         let mut changed = false;
                                                         match detected {
                                                             Some(ref old_code) => {
@@ -14980,64 +14992,13 @@ impl App {
                                                                     country_progress.mark_failed(label, reason);
                                                                     continue;
                                                                 }
-                                                                // persist: copy the dump verbatim so the fingerprint
-                                                                // pass has a file to edit.
-                                                                if let Err(e) = std::fs::copy(&dump_path, &patched_path) {
-                                                                    let reason = format!("copy failed: {e}");
-                                                                    ltbox_core::live!(
-                                                                        log,
-                                                                        "[Country] {}",
-                                                                        ltbox_core::i18n::tr("live_country_partition_status")
-                                                                            .replace("{label}", label)
-                                                                            .replace("{reason}", &reason)
-                                                                    );
-                                                                    country_progress.mark_failed(label, reason);
-                                                                    continue;
-                                                                }
+                                                                // persist has no country code — nothing to
+                                                                // patch; `changed` stays false and it is
+                                                                // marked handled in the pass-through below.
                                                             }
                                                         }
 
-                                                        // Best-effort /persist fingerprint sync for SKUs that
-                                                        // store it there.
-                                                        if label == "persist" && persist_fp_sync {
-                                                            match vendor_boot_fingerprint.as_deref().filter(|fp| !fp.is_empty()) {
-                                                                Some(fp) => {
-                                                                    match ltbox_patch::fingerprint::patch_persist_fingerprint(&patched_path, fp) {
-                                                                        Ok(true) => {
-                                                                            changed = true;
-                                                                            live!(
-                                                                                log,
-                                                                                "[Country] {}",
-                                                                                ltbox_core::i18n::tr("live_persist_fp_synced").replace("{fp}", fp)
-                                                                            );
-                                                                        }
-                                                                        Ok(false) => {
-                                                                            live!(log, "[Country] {}", ltbox_core::i18n::tr("live_persist_fp_already"));
-                                                                        }
-                                                                        Err(e) => {
-                                                                            live!(
-                                                                                log,
-                                                                                "[Country] {}",
-                                                                                ltbox_core::i18n::tr("live_persist_fp_skip")
-                                                                                    .replace("{reason}", &e.to_string())
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                                None => {
-                                                                    live!(
-                                                                        log,
-                                                                        "[Country] {}",
-                                                                        ltbox_core::i18n::tr("live_persist_fp_skip").replace(
-                                                                            "{reason}",
-                                                                            &ltbox_core::i18n::tr("live_persist_fp_no_source"),
-                                                                        )
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-
-                                                        // Flash once if the country code or the fingerprint changed.
+                                                        // Flash once if the country code changed.
                                                         if changed {
                                                             if let Err(e) = session.flash_partition(label, &patched_path, 0, lun, &mut log)
                                                             {
@@ -15067,9 +15028,9 @@ impl App {
                                                             );
                                                             country_progress.mark_flashed(label);
                                                         } else if label == "persist" {
-                                                            // Nothing to change (no country code; fingerprint already
-                                                            // current or unavailable) — treat as handled so the run
-                                                            // still resets to system.
+                                                            // persist carries no country code — nothing to
+                                                            // patch; treat as handled so the run still
+                                                            // resets to system.
                                                             country_progress.mark_flashed(label);
                                                         } else {
                                                             let reason = "no replacements";
