@@ -91,6 +91,7 @@ rfd = "0.17"
 dirs = "6"
 fs2 = "0.4"
 dark-light = "2"
+sys-locale = "0.3"
 semver = "1"
 open = "5"
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }

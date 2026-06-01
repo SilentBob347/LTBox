@@ -127,6 +127,34 @@ fn default_language() -> String {
     "en".to_string()
 }
 
+/// Map an OS locale tag (e.g. `ko-KR`, `zh-Hant-TW`, `en-US`) to a UI
+/// language code LTBox ships. Every Chinese variant maps to `zh`, Korean to
+/// `ko`; anything else falls back to English.
+fn ui_lang_for_locale(locale: &str) -> &'static str {
+    // Compare only the BCP-47 / POSIX primary language subtag (`ko-KR`,
+    // `ko_KR.UTF-8`, `zh-Hant-TW`), so neighbours like Konkani (`kok`) or
+    // Zhuang (`zha`) aren't mistaken for Korean / Chinese.
+    let primary = locale
+        .split(['-', '_', '.', '@'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match primary.as_str() {
+        "ko" => "ko",
+        "zh" => "zh",
+        _ => "en",
+    }
+}
+
+/// The host OS UI locale mapped to a shipped language, or `en` when the locale
+/// is unavailable / unsupported. Used only on first run (no saved settings).
+fn detect_os_language() -> String {
+    sys_locale::get_locale()
+        .map(|l| ui_lang_for_locale(&l))
+        .unwrap_or("en")
+        .to_string()
+}
+
 fn default_theme() -> String {
     String::new()
 }
@@ -148,7 +176,9 @@ fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_DIR).join(FILE_NAME))
 }
 
-/// Load settings. `Default` on missing / malformed / no config dir.
+/// Load settings. On missing / malformed / no config dir, returns
+/// [`first_run_default`] — the default with the UI language seeded from the
+/// OS locale (Korean / Chinese, else English).
 ///
 /// Legacy `recent_paths.files` / `recent_paths.folders` arrays from
 /// pre-per-category builds are folded into `by_kind` under
@@ -156,14 +186,27 @@ fn config_path() -> Option<PathBuf> {
 /// upgrading.
 pub fn load() -> PersistedSettings {
     let Some(path) = config_path() else {
-        return PersistedSettings::default();
+        return first_run_default();
     };
     let Ok(data) = std::fs::read_to_string(&path) else {
-        return PersistedSettings::default();
+        return first_run_default();
     };
-    let mut settings: PersistedSettings = serde_json::from_str(&data).unwrap_or_default();
+    let mut settings: PersistedSettings =
+        serde_json::from_str(&data).unwrap_or_else(|_| first_run_default());
     settings.recent_paths.migrate_legacy();
     settings
+}
+
+/// First-run default — like [`PersistedSettings::default`] but with the UI
+/// language seeded from the OS locale so a fresh install opens in the user's
+/// language without a manual pick. A saved config (even one missing the
+/// `language` key) is respected as-is; only the no-saved-settings paths hit
+/// this.
+fn first_run_default() -> PersistedSettings {
+    PersistedSettings {
+        language: detect_os_language(),
+        ..PersistedSettings::default()
+    }
 }
 
 /// Persist settings. Errors are swallowed so a read-only config dir
@@ -188,6 +231,31 @@ mod tests {
         assert_eq!(s.language, "en");
         assert_eq!(s.theme, "system");
         assert!(!s.dark_mode);
+    }
+
+    #[test]
+    fn os_locale_maps_to_ui_language() {
+        // Korean (BCP-47 + POSIX forms).
+        for l in ["ko-KR", "ko", "ko_KR.UTF-8", "KO"] {
+            assert_eq!(ui_lang_for_locale(l), "ko", "{l}");
+        }
+        // Chinese variants all collapse to zh.
+        for l in [
+            "zh-CN",
+            "zh-TW",
+            "zh-HK",
+            "zh-Hans",
+            "zh-Hant-TW",
+            "zh_CN.UTF-8",
+            "ZH",
+        ] {
+            assert_eq!(ui_lang_for_locale(l), "zh", "{l}");
+        }
+        // Everything else → English — including neighbours that merely share a
+        // prefix (Konkani `kok`, Zhuang `zha`).
+        for l in ["en-US", "ru-RU", "ja-JP", "de", "kok-IN", "zha-CN", ""] {
+            assert_eq!(ui_lang_for_locale(l), "en", "{l}");
+        }
     }
 
     #[test]
