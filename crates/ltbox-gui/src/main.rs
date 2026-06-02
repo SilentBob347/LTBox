@@ -13265,6 +13265,12 @@ impl App {
                                                                     .replace("{name}", part_name)
                                                                     .replace("{error}", &e.to_string())
                                                             );
+                                                            // Abort before the reset — a failed recovery
+                                                            // write must not be followed by a reboot into
+                                                            // a half-written chain. Stay in EDL for retry.
+                                                            return Err(format!(
+                                                                "Boot Recovery: flashing {part_name} failed: {e}"
+                                                            ));
                                                         }
                                                     }
 
@@ -13468,8 +13474,11 @@ impl App {
                 ));
                 return task_heavy(
                     move || flash_physical_execute(conn, loader, pairs),
-                    |__v| Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(__v)),
-                    |e| vec![format!("[FlashPhys] {e}")],
+                    |result| match result {
+                        Ok(lines) => Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                    |e| Err(format!("[FlashPhys] {e}")),
                 );
                 Task::none()
             }
@@ -13773,8 +13782,11 @@ impl App {
                 ));
                 return task_heavy(
                     move || flash_parts_execute(loader, rows),
-                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(__v)),
-                    |e| vec![format!("[FlashParts] {e}")],
+                    |result| match result {
+                        Ok(lines) => Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                    |e| Err(format!("[FlashParts] {e}")),
                 );
                 Task::none()
             }
@@ -17697,7 +17709,10 @@ fn flash_parts_scan(conn: ConnectionStatus, loader_path: String) -> FlashPartsSc
 
 /// Exec phase. Reopens the EDL session, walks the active rows, flashing
 /// or erasing each, then reboots to system.
-fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<String> {
+fn flash_parts_execute(
+    loader_path: String,
+    rows: Vec<FlashPartRow>,
+) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
@@ -17710,7 +17725,7 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
                 ltbox_core::i18n::tr("live_flashparts_edl_open_failed")
                     .replace("{error}", &e.to_string())
             );
-            return log;
+            return Err(format!("Flash Partitions: EDL open failed: {e}"));
         }
     };
 
@@ -17764,6 +17779,12 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
                             .replace("{label}", &row.label)
                             .replace("{error}", &e.to_string())
                     );
+                    // Abort the remaining writes — a failed write can mean a
+                    // dropped link, and the device is left in EDL for retry.
+                    return Err(format!(
+                        "Flash Partitions: flashing {} failed: {e}",
+                        row.label
+                    ));
                 }
             }
             FlashRowState::Erase => {
@@ -17789,6 +17810,10 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
                             .replace("{label}", &row.label)
                             .replace("{error}", &e.to_string())
                     );
+                    return Err(format!(
+                        "Flash Partitions: erasing {} failed: {e}",
+                        row.label
+                    ));
                 }
             }
             FlashRowState::Unchecked => {}
@@ -17806,7 +17831,7 @@ fn flash_parts_execute(loader_path: String, rows: Vec<FlashPartRow>) -> Vec<Stri
         "[FlashParts] {}",
         ltbox_core::i18n::tr("live_flashparts_done")
     );
-    log
+    Ok(log)
 }
 
 /// Transition the device to EDL from whatever state it is in. Returns
@@ -18365,10 +18390,10 @@ fn flash_physical_execute(
     conn: ConnectionStatus,
     loader_path: String,
     pairs: Vec<(u8, String)>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     if ensure_edl(conn, "FlashPhys", &mut log).is_err() {
-        return log;
+        return Err("Flash Physical: failed to enter EDL".to_string());
     }
 
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -18382,7 +18407,7 @@ fn flash_physical_execute(
                 ltbox_core::i18n::tr("live_flashphys_edl_open_failed")
                     .replace("{error}", &e.to_string())
             );
-            return log;
+            return Err(format!("Flash Physical: EDL open failed: {e}"));
         }
     };
 
@@ -18417,6 +18442,8 @@ fn flash_physical_execute(
                     .replace("{lun}", &lun.to_string())
                     .replace("{error}", &e.to_string())
             );
+            // Abort remaining LUN writes; device stays in EDL for retry.
+            return Err(format!("Flash Physical: writing LUN {lun} failed: {e}"));
         }
     }
 
@@ -18431,7 +18458,7 @@ fn flash_physical_execute(
         "[FlashPhys] {}",
         ltbox_core::i18n::tr("live_flashphys_done")
     );
-    log
+    Ok(log)
 }
 
 /// Locate the multi-image Sahara manifest in `dir`, case-insensitively.
