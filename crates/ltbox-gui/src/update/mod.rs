@@ -7,6 +7,15 @@ use crate::*;
 use iced::Task;
 use ltbox_core::tr_args;
 
+mod advanced;
+mod flash;
+mod reboot;
+mod root;
+mod settings;
+mod sys;
+mod unroot;
+mod window;
+
 impl App {
     pub(crate) fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {

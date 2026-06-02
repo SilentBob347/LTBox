@@ -1,0 +1,896 @@
+//! Advanced-menu handlers: physical/partition dump+flash, wizard nav. Extracted from `main.rs`.
+
+use crate::*;
+use iced::Task;
+use ltbox_core::tr_args;
+
+impl App {
+    #[allow(unreachable_code)]
+    pub(crate) fn update_dump_phys(&mut self, msg: DumpPhysMsg) -> Task<Message> {
+        match msg {
+            DumpPhysMsg::DumpPhysSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpPhys(DumpPhysMsg::DumpPhysLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.dump_phys.loader_path = Some(loader);
+                            self.dump_phys.loader_error = None;
+                        }
+                        Err(msg) => self.dump_phys.loader_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysToggleRow(idx) => {
+                if let Some(slot) = self.dump_phys.selected.get_mut(idx) {
+                    *slot = !*slot;
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysNext => {
+                match self.dump_phys.step {
+                    0 => self.dump_phys.step = 1, // loader → select
+                    1 => return self.update(Message::DumpPhys(DumpPhysMsg::DumpPhysSelectFolder)),
+                    _ => {}
+                };
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysBack => {
+                self.dump_phys.back();
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.dump_phys.reset();
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysSelectFolder => {
+                // Dump destination — see DumpPartsSelectFolder.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysFolderChosen(__v)),
+                );
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysFolderChosen(path) => {
+                if let Some(folder) = path {
+                    let loader =
+                        match self.validate_loader_path(&self.dump_phys.loader_path.clone()) {
+                            Ok(p) => p,
+                            Err(()) => return Task::none(),
+                        };
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
+                    self.dump_phys.output_dir = Some(folder.clone());
+                    self.dump_phys.step = 2;
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let conn = self.connection;
+                    let luns = self.dump_phys.selected_luns();
+                    self.log_push(format!(
+                        "[DumpPhys] {}",
+                        self.t("live_dump_phys_batch_start")
+                            .replace("{count}", &luns.len().to_string())
+                            .replace("{path}", &folder)
+                    ));
+                    return task_heavy(
+                        move || dump_physical_execute(conn, loader, folder, luns),
+                        |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
+                        |e| vec![format!("[DumpPhys] {e}")],
+                    );
+                }
+                Task::none()
+            }
+            DumpPhysMsg::DumpPhysExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    #[allow(unreachable_code)]
+    pub(crate) fn update_flash_phys(&mut self, msg: FlashPhysMsg) -> Task<Message> {
+        match msg {
+            FlashPhysMsg::FlashPhysSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.flash_phys.loader_path = Some(loader);
+                            self.flash_phys.loader_error = None;
+                        }
+                        Err(msg) => self.flash_phys.loader_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysToggleRow(idx) => {
+                if let Some(slot) = self.flash_phys.selected.get_mut(idx) {
+                    *slot = !*slot;
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysPickRowFile(idx) => {
+                let spec = pickers::FilePickSpec::single("picker_target_storage_image")
+                    .with_filter("Storage image", &["img", "bin", "mbn", "melf", "elf"]);
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashPhys(FlashPhysMsg::FlashPhysRowFileChosen(idx, path))
+                });
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysRowFileChosen(idx, path) => {
+                if idx < PHYS_LUN_COUNT
+                    && let Some(p) = path
+                {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    self.flash_phys.file_paths[idx] = Some(p);
+                    // Picking a file implicitly selects the row.
+                    self.flash_phys.selected[idx] = true;
+                }
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysNext => {
+                match self.flash_phys.step {
+                    0 => self.flash_phys.step = 1,
+                    1 => self.flash_phys.next(), // → Confirm
+                    2 => return self.update(Message::FlashPhys(FlashPhysMsg::FlashPhysExecStart)),
+                    _ => {}
+                };
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysBack => {
+                self.flash_phys.back();
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.flash_phys.reset();
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysExecStart => {
+                let loader = match self.validate_loader_path(&self.flash_phys.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                self.flash_phys.next(); // advance to Exec screen
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                let pairs = self.flash_phys.active_pairs();
+                self.log_lines.push(format!(
+                    "[FlashPhys] {}",
+                    tr_args!("log_flashphys_starting", count = pairs.len())
+                ));
+                return task_heavy(
+                    move || flash_physical_execute(conn, loader, pairs),
+                    |result| match result {
+                        Ok(lines) => Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                    |e| Err(format!("[FlashPhys] {e}")),
+                );
+                Task::none()
+            }
+            FlashPhysMsg::FlashPhysExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    #[allow(unreachable_code)]
+    pub(crate) fn update_dump_parts(&mut self, msg: DumpPartsMsg) -> Task<Message> {
+        match msg {
+            DumpPartsMsg::DumpPartsSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::DumpParts(DumpPartsMsg::DumpPartsLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.dump_parts.loader_path = Some(loader);
+                            self.dump_parts.scan_error = None;
+                        }
+                        Err(msg) => self.dump_parts.scan_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsToggleRow(idx) => {
+                if let Some(row) = self.dump_parts.rows.get_mut(idx) {
+                    row.selected = !row.selected;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsNext => {
+                match self.dump_parts.step {
+                    0 => return self.update(Message::DumpParts(DumpPartsMsg::DumpPartsScanStart)),
+                    1 => {
+                        return self
+                            .update(Message::DumpParts(DumpPartsMsg::DumpPartsSelectFolder));
+                    }
+                    _ => {}
+                };
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsBack => {
+                self.dump_parts.back();
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.dump_parts.reset();
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsScanStart => {
+                let loader = match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                self.dump_parts.scanning = true;
+                self.dump_parts.scan_error = None;
+                self.dump_parts.rows.clear();
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                self.log_lines
+                    .push("[DumpParts] Scanning partition tables...".to_string());
+                return task_heavy(
+                    move || dump_parts_scan(conn, loader),
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(__v)),
+                    |e| DumpPartsScanResult {
+                        logs: vec![format!("[DumpParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
+                );
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsScanDone(result) => {
+                self.flush_exec_done_log(result.logs);
+                self.end_op();
+                self.dump_parts.scanning = false;
+                self.dump_parts.rows = result.rows;
+                self.dump_parts.apply_sort();
+                if let Some(err) = result.error {
+                    self.dump_parts.scan_error = Some(err);
+                } else if self.dump_parts.rows.is_empty() {
+                    self.dump_parts.scan_error =
+                        Some("No partitions returned from device".to_string());
+                } else {
+                    self.dump_parts.step = 1;
+                    // A successful Firehose GPT scan proves the device is in
+                    // EDL; reflect it immediately (the 3s poll may still show a
+                    // stale ADB/Fastboot state) so a sidebar bounce right after
+                    // the scan keeps the loaded table via `advanced_in_progress`.
+                    self.connection = ConnectionStatus::Edl;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsSortBy(col) => {
+                self.dump_parts.toggle_sort(col);
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsToggleAll => {
+                let all_selected = !self.dump_parts.rows.is_empty()
+                    && self.dump_parts.rows.iter().all(|r| r.selected);
+                let target = !all_selected;
+                for r in self.dump_parts.rows.iter_mut() {
+                    r.selected = target;
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsSelectFolder => {
+                // Dump destination, not a firmware source — goes to the
+                // `OutputFolder` bucket so the MRU list doesn't mix input
+                // firmware dirs with output dump dirs.
+                return pick_folder_task(
+                    pickers::PickerKind::OutputFolder,
+                    &self.recent_paths,
+                    |__v| Message::DumpParts(DumpPartsMsg::DumpPartsFolderChosen(__v)),
+                );
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsFolderChosen(path) => {
+                if let Some(folder) = path {
+                    self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
+                    self.dump_parts.output_dir = Some(folder.clone());
+                    self.dump_parts.step = 2;
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
+                    let rows = self.dump_parts.selected_rows();
+                    self.log_lines.push(format!(
+                        "[DumpParts] Dumping {} partition(s) to {}",
+                        rows.len(),
+                        folder
+                    ));
+                    return task_heavy(
+                        move || dump_parts_execute(loader, folder, rows),
+                        |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
+                        |e| vec![format!("[DumpParts] {e}")],
+                    );
+                }
+                Task::none()
+            }
+            DumpPartsMsg::DumpPartsExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    #[allow(unreachable_code)]
+    pub(crate) fn update_flash_parts(&mut self, msg: FlashPartsMsg) -> Task<Message> {
+        match msg {
+            FlashPartsMsg::FlashPartsSelectLoader => {
+                return self.pick_loader_with_default(|__v| {
+                    Message::FlashParts(FlashPartsMsg::FlashPartsLoaderChosen(__v))
+                });
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsLoaderChosen(path) => {
+                if let Some(p) = path {
+                    match self.resolve_loader_input(&p) {
+                        Ok(loader) => {
+                            self.flash_parts.loader_path = Some(loader);
+                            self.flash_parts.scan_error = None;
+                        }
+                        Err(msg) => self.flash_parts.scan_error = Some(msg),
+                    }
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsToggleRow(idx) => {
+                if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                    row.state = row.state.cycle();
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsPickRowFile(idx) => {
+                let spec = pickers::FilePickSpec::single("picker_target_partition_image")
+                    .with_filter(
+                        "Partition image",
+                        &["img", "bin", "mbn", "melf", "elf", "efi"],
+                    );
+                return pickers::pick_file_for(spec, &self.recent_paths, move |path| {
+                    Message::FlashParts(FlashPartsMsg::FlashPartsRowFileChosen(idx, path))
+                });
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsRowFileChosen(idx, path) => {
+                if let Some(p) = path {
+                    self.remember_recent(pickers::PickerKind::File, &p);
+                    if let Some(row) = self.flash_parts.rows.get_mut(idx) {
+                        row.file_path = Some(p);
+                        // Picking a file implicitly flips the row to Flash
+                        // so the user doesn't have to also cycle the box.
+                        row.state = FlashRowState::Flash;
+                    }
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsNext => {
+                match self.flash_parts.step {
+                    0 => {
+                        return self
+                            .update(Message::FlashParts(FlashPartsMsg::FlashPartsScanStart));
+                    }
+                    1 => self.flash_parts.next(), // → Confirm
+                    2 => {
+                        return self
+                            .update(Message::FlashParts(FlashPartsMsg::FlashPartsExecStart));
+                    }
+                    _ => {}
+                };
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsBack => {
+                self.flash_parts.back();
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsClose => {
+                self.advanced_wizard_open = AdvancedWizardOpen::None;
+                self.flash_parts.reset();
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsScanStart => {
+                let loader = match self.validate_loader_path(&self.flash_parts.loader_path.clone())
+                {
+                    Ok(p) => p,
+                    Err(()) => return Task::none(),
+                };
+                // Loader-upload + GPT read to enumerate partitions — a
+                // *read*, not a flash. Use the Advanced busy view so the
+                // dialog shows `busy_partition_scan` ("Reading partition
+                // info…") like Read Partitions, not "Flash Firmware".
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                self.flash_parts.scanning = true;
+                self.flash_parts.scan_error = None;
+                self.flash_parts.rows.clear();
+                let conn = self.connection;
+                self.log_lines
+                    .push("[FlashParts] Scanning partitions...".to_string());
+                return task_heavy(
+                    move || flash_parts_scan(conn, loader),
+                    |__v| Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(__v)),
+                    |e| FlashPartsScanResult {
+                        logs: vec![format!("[FlashParts] {e}")],
+                        rows: Vec::new(),
+                        error: Some(e),
+                    },
+                );
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsScanDone(result) => {
+                self.flush_exec_done_log(result.logs);
+                self.flash_parts.scanning = false;
+                self.flash_parts.rows = result.rows;
+                self.flash_parts.apply_sort();
+                self.flash_parts.scan_error = result.error.clone();
+                self.end_op();
+                if result.error.is_none() && !self.flash_parts.rows.is_empty() {
+                    self.flash_parts.next(); // → Select
+                    // A successful Firehose GPT scan proves the device is in
+                    // EDL; reflect it immediately (the 3s poll may still show a
+                    // stale ADB/Fastboot state) so a sidebar bounce right after
+                    // the scan keeps the loaded table via `advanced_in_progress`.
+                    self.connection = ConnectionStatus::Edl;
+                }
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsSortBy(col) => {
+                self.flash_parts.toggle_sort(col);
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsExecStart => {
+                self.flash_parts.next(); // advance to Exec screen
+                // Advanced busy view (not Flash) so the busy dialog shows the
+                // partition-write message via `busy_body_override`, not
+                // "Flash Firmware is in progress".
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
+                let rows = self.flash_parts.active_rows();
+                let flash_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Flash)
+                    .count();
+                let erase_cnt = rows
+                    .iter()
+                    .filter(|r| r.state == FlashRowState::Erase)
+                    .count();
+                self.log_lines.push(format!(
+                    "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
+                ));
+                return task_heavy(
+                    move || flash_parts_execute(loader, rows),
+                    |result| match result {
+                        Ok(lines) => Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(lines)),
+                        Err(e) => Message::OperationError(e),
+                    },
+                    |e| Err(format!("[FlashParts] {e}")),
+                );
+                Task::none()
+            }
+            FlashPartsMsg::FlashPartsExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+
+    #[allow(unreachable_code)]
+    pub(crate) fn update_adv(&mut self, msg: AdvMsg) -> Task<Message> {
+        match msg {
+            AdvMsg::AdvConfirm(a) => {
+                // Dedicated EDL wizards can skip their loader step via Settings.
+                if matches!(a, AdvAction::FlashPartitions) {
+                    self.flash_parts.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::FlashParts;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::DumpPartitions) {
+                    self.dump_parts.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::DumpParts;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::DumpPhysical) {
+                    self.dump_phys.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::DumpPhys;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else if matches!(a, AdvAction::FlashPhysical) {
+                    self.flash_phys.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::FlashPhys;
+                    return self.apply_default_loader_to_advanced_wizard();
+                } else {
+                    return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizOpen(a) => {
+                self.adv_wizard.open(a);
+                // Mirror into legacy fields so AdvFileSelected /
+                // AdvExecDone keep working unchanged.
+                self.adv_confirm = Some(a);
+                self.adv_confirm_path = None;
+                Task::none()
+            }
+            AdvMsg::AdvWizBack => {
+                if self.adv_wizard.step == 0 {
+                    // Back on step 0 closes the wizard.
+                    self.adv_wizard.reset();
+                    self.adv_confirm = None;
+                    self.adv_confirm_path = None;
+                } else {
+                    self.adv_wizard.back();
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizNext => {
+                if self.adv_wizard.is_image_info() && self.adv_wizard.step == 0 {
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvImageInfoExecStart));
+                }
+                // DetectArb source step jumps straight to exec.
+                if matches!(self.adv_wizard.action, Some(AdvAction::DetectArb))
+                    && self.adv_wizard.step == 0
+                {
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvDetectArbExecStart));
+                }
+                // PatchArb source step inspects rollback indices.
+                if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb)) {
+                    if self.adv_wizard.step == 0 {
+                        let Some(folder) = self.adv_wizard.file_path.clone() else {
+                            return Task::none();
+                        };
+                        let dir = std::path::PathBuf::from(&folder);
+                        let boot = dir.join("boot.img");
+                        let vbmeta = dir.join("vbmeta_system.img");
+                        if !boot.is_file() {
+                            self.error_msg = Some(format!("Missing boot.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        if !vbmeta.is_file() {
+                            self.error_msg =
+                                Some(format!("Missing vbmeta_system.img in {}", dir.display()));
+                            return Task::none();
+                        }
+                        let boot_info = match ltbox_patch::avb::extract_image_avb_info(&boot) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg = Some(format!("boot.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        let vbmeta_info = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                self.error_msg =
+                                    Some(format!("vbmeta_system.img inspect failed: {e}"));
+                                return Task::none();
+                            }
+                        };
+                        self.adv_wizard.arb_inspect =
+                            Some((boot_info.rollback_index, vbmeta_info.rollback_index));
+                        self.error_msg = None;
+                        self.adv_wizard.next();
+                        return Task::none();
+                    }
+                    if self.adv_wizard.step == 1 {
+                        self.adv_wizard.arb_index_buffer = self
+                            .adv_wizard
+                            .arb_index_committed
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
+                        self.arb_index_popup_open = true;
+                        return Task::none();
+                    }
+                }
+                if self.adv_wizard.is_confirm_step() {
+                    let Some(action) = self.adv_wizard.action else {
+                        return Task::none();
+                    };
+                    self.adv_confirm_path = self.adv_wizard.file_path.clone();
+                    if let Some(code) = self.adv_wizard.country.clone() {
+                        self.wf_config.country_action = CountryAction::Set(code);
+                    }
+                    // Pre-create output folder so the Done card's
+                    // "Open Folder" pill always points somewhere real.
+                    if action.produces_output() {
+                        let dir = adv_output_dir(action);
+                        let _ = std::fs::create_dir_all(&dir);
+                        self.adv_wizard.output_dir = Some(dir);
+                    } else {
+                        self.adv_wizard.output_dir = None;
+                    }
+                    self.adv_wizard.next();
+                    return self.update(Message::Adv(AdvMsg::AdvExec(action)));
+                }
+                self.adv_wizard.next();
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowse => {
+                if self.adv_wizard.is_image_info() {
+                    let spec =
+                        pickers::FilePickSpec::multi(self.adv_wizard.picker_target_i18n_key())
+                            .with_filter("Android image (*.img)", &["img"]);
+                    return pickers::pick_files_for(spec, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseManyDone(__v))
+                    });
+                }
+                let kind = self.adv_wizard.picker_kind();
+                if kind.is_folder() {
+                    return pick_folder_task(kind, &self.recent_paths, |__v| {
+                        Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                    });
+                }
+                let (filter_label, filter_exts) = self.adv_wizard.accepted_exts();
+                let target_key = self.adv_wizard.picker_target_i18n_key();
+                let mut spec = pickers::FilePickSpec::single(target_key);
+                if !filter_exts.is_empty() {
+                    spec = spec.with_filter(filter_label, filter_exts);
+                }
+                return pickers::pick_file_for(spec, &self.recent_paths, |__v| {
+                    Message::Adv(AdvMsg::AdvWizBrowseDone(__v))
+                });
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowseDone(path) => {
+                if let Some(p) = path {
+                    if std::path::Path::new(&p).exists() {
+                        // Kind is derived from the action (folder ops →
+                        // folder bucket, file ops → File) rather than the
+                        // runtime is_dir() check — trusting the action
+                        // keeps buckets consistent even if rfd returns an
+                        // unexpected path type.
+                        self.remember_recent(self.adv_wizard.picker_kind(), &p);
+                    }
+                    self.adv_wizard.file_path = Some(p);
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizBrowseManyDone(paths) => {
+                if let Some(paths) = paths {
+                    let paths: Vec<String> = paths
+                        .into_iter()
+                        .filter(|p| {
+                            std::path::Path::new(p)
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.eq_ignore_ascii_case("img"))
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    for p in &paths {
+                        if std::path::Path::new(p).exists() {
+                            self.remember_recent(pickers::PickerKind::File, p);
+                        }
+                    }
+                    self.adv_wizard.file_paths = paths;
+                    self.adv_wizard.file_path = None;
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenCountry => {
+                self.adv_needs_country = true;
+                self.country_popup_open = true;
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenRegionTarget => {
+                self.region_target_popup_open = true;
+                Task::none()
+            }
+            AdvMsg::AdvWizOpenOutputFolder => {
+                if let Some(dir) = self.adv_wizard.output_dir.clone()
+                    && let Err(err) = open_in_file_manager(&dir)
+                {
+                    // Surface the failed command + path in the log
+                    // so the user can see what was tried — silent
+                    // no-op was the old behaviour and made missing
+                    // xdg-open invisible on Linux.
+                    self.log_push(format!("[GUI] Open Folder failed: {err}"));
+                }
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexInput(s) => {
+                // Strip non-digits + cap at 10 chars so paste-of-garbage
+                // can't smuggle a longer / non-numeric value past the UI.
+                let cleaned: String = s.chars().filter(|c| c.is_ascii_digit()).take(10).collect();
+                self.adv_wizard.arb_index_buffer = cleaned;
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexConfirm => {
+                let buf = self.adv_wizard.arb_index_buffer.clone();
+                if buf.len() != 10 {
+                    return Task::none();
+                }
+                let Ok(parsed) = buf.parse::<u64>() else {
+                    return Task::none();
+                };
+                self.adv_wizard.arb_index_committed = Some(parsed);
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+                // Advance to Confirm.
+                self.adv_wizard.next();
+                Task::none()
+            }
+            AdvMsg::AdvWizArbIndexCancel => {
+                self.adv_wizard.arb_index_buffer.clear();
+                self.arb_index_popup_open = false;
+                Task::none()
+            }
+            AdvMsg::AdvExec(action) => {
+                // Picker ran in AdvConfirm; replay the saved path.
+                let Some(path) = self.adv_confirm_path.clone() else {
+                    self.adv_confirm = None;
+                    return Task::none();
+                };
+                self.update(Message::Adv(AdvMsg::AdvFileSelected(action, Some(path))))
+            }
+            AdvMsg::AdvFileSelected(action, path) => {
+                if let Some(input_path) = path {
+                    // See AdvWizBrowseDone — trust the action's kind over
+                    // the runtime is_dir() probe.
+                    self.remember_recent(self.adv_wizard.picker_kind(), &input_path);
+                    self.begin_op(View::Advanced);
+                    self.error_msg = None;
+                    let action_label = self.t(action.label_key()).to_string();
+                    self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
+                    let _conn = self.connection;
+                    // PatchDevinfo only — unused otherwise.
+                    let adv_country: Option<String> =
+                        self.wf_config.country_action.target().map(str::to_string);
+                    // RegionConvert only — user-picked target.
+                    let adv_region_target: Option<DeviceRegion> = self.adv_wizard.region_target;
+                    // PatchArb only — committed unix-timestamp index.
+                    let adv_arb_index: Option<u64> = self.adv_wizard.arb_index_committed;
+                    let output_dir: std::path::PathBuf = self
+                        .adv_wizard
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| adv_output_dir(action));
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                ltbox_core::runtime::run_heavy(move || {
+                                    advanced_file_worker(
+                                        input_path,
+                                        action,
+                                        adv_country,
+                                        adv_region_target,
+                                        adv_arb_index,
+                                        output_dir,
+                                        action_label,
+                                    )
+                                })
+                                .and_then(|r| r)
+                            })
+                            .await
+                            .unwrap_or(Err("Task failed".to_string()))
+                        },
+                        |result| match result {
+                            Ok(lines) => Message::Adv(AdvMsg::AdvExecDone(lines)),
+                            Err(e) => Message::OperationError(e),
+                        },
+                    );
+                }
+                self.adv_confirm = None;
+                Task::none()
+            }
+            AdvMsg::AdvExecDone(lines) => {
+                self.flush_exec_done_log(lines);
+                // Leave adv_wizard / adv_confirm* intact so the exec
+                // screen stays visible with Done/Failed until StartOver.
+                self.end_op();
+                Task::none()
+            }
+            AdvMsg::AdvImageInfoExecStart => {
+                let paths: Vec<std::path::PathBuf> = self
+                    .adv_wizard
+                    .file_paths
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let scanning = self
+                    .t("adv_image_info_scanning")
+                    .replace("{count}", &paths.len().to_string());
+                self.set_image_info_log(scanning);
+                self.begin_silent_op(View::Advanced);
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || {
+                                ltbox_patch::avb::image_info_report(&paths)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .and_then(|r| r)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Task failed: {e}")))
+                    },
+                    |__v| Message::Adv(AdvMsg::AdvImageInfoExecDone(__v)),
+                );
+                Task::none()
+            }
+            AdvMsg::AdvImageInfoExecDone(result) => {
+                self.end_silent_op();
+                match result {
+                    Ok(report) => {
+                        self.error_msg = None;
+                        self.set_image_info_log(report);
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(e.clone());
+                        self.set_image_info_log(format!("ERROR: {e}"));
+                    }
+                }
+                Task::none()
+            }
+            AdvMsg::AdvDetectArbExecStart => {
+                self.begin_op(View::Advanced);
+                self.error_msg = None;
+                let conn = self.connection;
+                let device_model = self.device_model.clone();
+                let loader_path = self.adv_wizard.file_path.clone();
+                let i_anti = self.t("arb_detect_is_anti_rollback").to_string();
+                let i_not = self.t("arb_detect_no_anti_rollback").to_string();
+                let i_reboot_fastboot = self.t("live_arb_reboot_to_fastboot").to_string();
+                let i_reboot_system = self.t("live_arb_reboot_to_system").to_string();
+                let i_tb320fc_edl = self.t("live_arb_tb320fc_edl_dump").to_string();
+                return task_heavy(
+                    move || {
+                        let mut log = Vec::new();
+                        match detect_arb_run(
+                            conn,
+                            device_model,
+                            loader_path,
+                            &i_anti,
+                            &i_not,
+                            &i_reboot_fastboot,
+                            &i_reboot_system,
+                            &i_tb320fc_edl,
+                            &mut log,
+                        ) {
+                            Ok(()) => Ok(log),
+                            Err(e) => Err(e),
+                        }
+                    },
+                    |__v| Message::Adv(AdvMsg::AdvDetectArbExecDone(__v)),
+                    Err,
+                );
+                Task::none()
+            }
+            AdvMsg::AdvDetectArbExecDone(result) => {
+                match result {
+                    Ok(lines) => {
+                        self.flush_exec_done_log(lines);
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(e.clone());
+                        self.log_push(format!("ERROR: {e}"));
+                    }
+                }
+                self.end_op();
+                Task::none()
+            }
+        }
+    }
+}
