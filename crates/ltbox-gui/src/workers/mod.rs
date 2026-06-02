@@ -3,3 +3,4 @@
 pub(crate) mod edl_transition;
 pub(crate) mod reboot;
 pub(crate) mod transfer;
+pub(crate) mod unroot;

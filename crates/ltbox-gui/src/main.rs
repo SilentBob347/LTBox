@@ -34,6 +34,7 @@ pub(crate) use model::wizard::*;
 pub(crate) use workers::edl_transition::*;
 pub(crate) use workers::reboot::*;
 pub(crate) use workers::transfer::*;
+pub(crate) use workers::unroot::*;
 
 use std::collections::HashMap;
 
@@ -1066,7 +1067,7 @@ struct OpStep {
 
 /// Localized phase marker text that still includes a stable `N/M` token
 /// for progress parsing.
-fn phase_marker<S: AsRef<str>>(phase: usize, total: usize, label: S) -> String {
+pub(crate) fn phase_marker<S: AsRef<str>>(phase: usize, total: usize, label: S) -> String {
     ltbox_core::i18n::tr("live_phase_marker")
         .replace("{phase}", &phase.to_string())
         .replace("{total}", &total.to_string())
@@ -1939,18 +1940,18 @@ fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
 /// Pre-translated live-log strings for spawn_blocking closures that
 /// can't carry `self` across thread boundaries.
 #[derive(Debug, Clone)]
-struct LiveLabels {
-    op_root_phase: [String; 7],
-    op_unroot_phase: [String; 3],
-    op_flash_phase: [String; 4],
-    closing_dump: String,
-    flash_completed: String,
-    root_completed: String,
-    unroot_completed: String,
-    adb_no_kver: String,
-    backup_saved_prefix: String,
-    root_resolved_prefix: String,
-    root_backup_copy_prefix: String,
+pub(crate) struct LiveLabels {
+    pub(crate) op_root_phase: [String; 7],
+    pub(crate) op_unroot_phase: [String; 3],
+    pub(crate) op_flash_phase: [String; 4],
+    pub(crate) closing_dump: String,
+    pub(crate) flash_completed: String,
+    pub(crate) root_completed: String,
+    pub(crate) unroot_completed: String,
+    pub(crate) adb_no_kver: String,
+    pub(crate) backup_saved_prefix: String,
+    pub(crate) root_resolved_prefix: String,
+    pub(crate) root_backup_copy_prefix: String,
 }
 
 /// Classify a model → ARB bucket i18n key (`arb_yes`/`arb_no`/`arb_unknown`).
@@ -2205,7 +2206,7 @@ fn build_tb323fu_arb_overlays(
 /// (e.g. Flash) may reboot the device themselves between worker spawn
 /// and the EDL transition (ADB → bootloader for variable query), making
 /// the captured `conn` stale.
-fn transition_to_edl(
+pub(crate) fn transition_to_edl(
     conn: ConnectionStatus,
     _ll: &LiveLabels,
     log: &mut Vec<String>,
@@ -10660,153 +10661,9 @@ impl App {
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            ltbox_core::runtime::run_heavy(
-                                move || -> Result<Vec<String>, String> {
-                                    let mut log = Vec::new();
-                                    let dir = std::path::Path::new(&folder);
-
-                                    let (boot_name, base_part) = match unroot_type {
-                                        UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
-                                        UnrootType::APatchGki => ("boot.img", "boot"),
-                                    };
-                                    let boot_path = dir.join(boot_name);
-                                    let vbmeta_path = dir.join("vbmeta.img");
-                                    if !boot_path.exists() {
-                                        return Err(format!(
-                                            "{boot_name} not found in selected folder"
-                                        ));
-                                    }
-                                    if !vbmeta_path.exists() {
-                                        return Err(
-                                            "vbmeta.img not found in selected folder".to_string()
-                                        );
-                                    }
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
-                                            .replace("{boot}", boot_name)
-                                    );
-
-                                    // Slot resolution must succeed —
-                                    // unroot writes init_boot_<slot> +
-                                    // vbmeta_<slot> from the user's
-                                    // backup folder. Defaulting to `_a`
-                                    // when the device was on `_b`
-                                    // restored stale stock blobs to the
-                                    // wrong slot and left the active
-                                    // slot still rooted, with no clear
-                                    // signal to the user.
-                                    let slot = ltbox_device::controller::poll_active_slot(
-                                        std::time::Duration::from_secs(30),
-                                        &mut log,
-                                    )
-                                    .map_err(|e| format!("Unroot slot resolve: {e}"))?;
-
-                                    // Decoupled loader — explicit picker /
-                                    // Settings default takes priority. Fall back
-                                    // to scanning the backup folder only when no
-                                    // override was set, preserving v3-pre-decouple
-                                    // behaviour for users who still ship a loader
-                                    // alongside the backup images.
-                                    let loader = match loader_override.clone() {
-                                        Some(p) => std::path::PathBuf::from(p),
-                                        None => find_edl_loader(dir)
-                                            .or_else(|| dir.parent().and_then(find_edl_loader))
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "xbl_s_devprg_ns.melf not found under {}",
-                                                    dir.display()
-                                                )
-                                            })?,
-                                    };
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        ltbox_core::i18n::tr("live_unroot_loader_path")
-                                            .replace("{path}", &loader.display().to_string())
-                                    );
-
-                                    // Boot + vbmeta resolve through the
-                                    // hardcoded LUN map; GPT-by-name reads
-                                    // the slot's start sector from the
-                                    // device. No rawprogram parse needed —
-                                    // the loader's parent dir may not even
-                                    // contain a firmware XML pair.
-                                    let boot_label = format!("{base_part}{slot}");
-                                    let vbm_label = format!("vbmeta{slot}");
-                                    let boot_lun =
-                                        ltbox_core::partition_lun::lun_for_partition(base_part)
-                                            .ok_or_else(|| {
-                                                format!("No hardcoded LUN for {base_part}")
-                                            })?;
-                                    let vbm_lun =
-                                        ltbox_core::partition_lun::lun_for_partition("vbmeta")
-                                            .ok_or_else(|| {
-                                                "No hardcoded LUN for vbmeta".to_string()
-                                            })?;
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        tr_args!(
-                                            "log_unroot_lun_resolved",
-                                            boot_label = boot_label,
-                                            boot_lun = boot_lun,
-                                            vbm_label = vbm_label,
-                                            vbm_lun = vbm_lun,
-                                        )
-                                    );
-
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        phase_marker(1, 3, &ll.op_unroot_phase[0])
-                                    );
-                                    transition_to_edl(conn, &ll, &mut log)?;
-
-                                    live!(
-                                        log,
-                                        "[Unroot] {} ({})",
-                                        phase_marker(2, 3, &ll.op_unroot_phase[1]),
-                                        ltbox_core::i18n::tr("live_unroot_backup_pair")
-                                            .replace("{boot}", boot_name)
-                                    );
-                                    let mut session = ltbox_device::edl::EdlSession::open(
-                                        &loader, true, &mut log,
-                                    )
-                                    .map_err(|e| format!("EDL session error: {e}"))?;
-                                    session
-                                        .flash_partition(
-                                            &boot_label,
-                                            &boot_path,
-                                            0,
-                                            boot_lun,
-                                            &mut log,
-                                        )
-                                        .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;
-                                    session
-                                        .flash_partition(
-                                            &vbm_label,
-                                            &vbmeta_path,
-                                            0,
-                                            vbm_lun,
-                                            &mut log,
-                                        )
-                                        .map_err(|e| format!("Flash {vbm_label} failed: {e}"))?;
-
-                                    println!();
-                                    live!(
-                                        log,
-                                        "[Unroot] {}",
-                                        phase_marker(3, 3, &ll.op_unroot_phase[2])
-                                    );
-                                    session
-                                        .reset(&mut log)
-                                        .map_err(|e| format!("Reset failed: {e}"))?;
-                                    live!(log, "[Unroot] {}", ll.unroot_completed);
-                                    Ok(log)
-                                },
-                            )
+                            ltbox_core::runtime::run_heavy(move || {
+                                unroot_worker(folder, unroot_type, loader_override, conn, ll)
+                            })
                             .and_then(|r| r)
                         })
                         .await
