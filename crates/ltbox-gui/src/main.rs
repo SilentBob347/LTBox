@@ -987,6 +987,13 @@ trait Wizard: Default {
     fn is_in_exec(&self) -> bool {
         self.step() == self.step_count() - 1
     }
+    /// True on the confirm/start screen — the step immediately before
+    /// exec. A sidebar bounce here preserves the wizard (the user returns
+    /// to the confirm screen) instead of resetting to step 0.
+    fn is_on_confirm_step(&self) -> bool {
+        let n = self.step_count();
+        n >= 2 && self.step() == n - 2
+    }
 }
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
@@ -1109,6 +1116,11 @@ impl RootWizard {
     /// when the user sidebar-bounces mid-operation.
     fn is_in_exec(&self) -> bool {
         self.step == 7
+    }
+    /// True on the confirm screen (step 6, before Flash). A sidebar
+    /// bounce here preserves the wizard instead of resetting to step 0.
+    fn is_on_confirm_step(&self) -> bool {
+        self.step == 6
     }
 
     fn is_gki(&self) -> bool {
@@ -5223,10 +5235,21 @@ impl App {
                 // exec/Done screen — sidebar bounce mid-flash must
                 // not kick back to step 0.
                 let busy = self.busy;
-                if v == View::Root && !busy && !self.root.is_in_exec() {
+                // Skip the entry reset on the exec screen (mid-op) AND on
+                // the confirm/start screen, so a sidebar bounce returns the
+                // user to the confirm screen with their picks intact.
+                if v == View::Root
+                    && !busy
+                    && !self.root.is_in_exec()
+                    && !self.root.is_on_confirm_step()
+                {
                     self.root.reset();
                 }
-                if v == View::Flash && !busy && !self.flash.is_in_exec() {
+                if v == View::Flash
+                    && !busy
+                    && !self.flash.is_in_exec()
+                    && !self.flash.is_on_confirm_step()
+                {
                     self.flash.reset();
                     // Re-apply SaleArea-driven preselect: `flash.reset()`
                     // wipes `device_region` back to `None`, but the user's
@@ -5239,10 +5262,18 @@ impl App {
                         self.flash.device_region = Some(r);
                     }
                 }
-                if v == View::SystemUpdate && !busy && !self.sysupdate.is_in_exec() {
+                if v == View::SystemUpdate
+                    && !busy
+                    && !self.sysupdate.is_in_exec()
+                    && !self.sysupdate.is_on_confirm_step()
+                {
                     self.sysupdate.reset();
                 }
-                if v == View::Unroot && !busy && !self.unroot.is_in_exec() {
+                if v == View::Unroot
+                    && !busy
+                    && !self.unroot.is_in_exec()
+                    && !self.unroot.is_on_confirm_step()
+                {
                     self.unroot.reset();
                 }
                 // Loader pre-fill happens on the Next-into-loader-step
@@ -19043,6 +19074,42 @@ mod tests {
         w.reset();
         assert_eq!(w.step, 0);
         assert!(w.device_region.is_none());
+    }
+
+    #[test]
+    fn confirm_step_is_the_step_before_exec() {
+        // Linear (trait default): confirm = step_count - 2, exec = -1.
+        let mut f = FlashWizard::default();
+        let confirm = f.step_count() - 2;
+        f.step = 0;
+        assert!(!f.is_on_confirm_step());
+        f.step = confirm;
+        assert!(f.is_on_confirm_step());
+        assert!(!f.is_in_exec());
+        f.step = f.step_count() - 1;
+        assert!(!f.is_on_confirm_step());
+        assert!(f.is_in_exec());
+
+        // SysUpdate step count flexes with rescue mode; confirm still tracks
+        // step_count - 2 on both the compact and the longer rescue flow.
+        let mut s = SysUpdateWizard::default();
+        s.step = s.step_count() - 2; // compact: confirm = step 1
+        assert!(s.is_on_confirm_step());
+        s.action = Some(SysUpdateAction::Rescue);
+        s.step = s.step_count() - 2; // rescue: confirm = step 2
+        assert!(s.is_on_confirm_step());
+        s.step = 1; // rescue folder step — not confirm
+        assert!(!s.is_on_confirm_step());
+
+        // Root is non-linear: confirm = step 6, exec = step 7.
+        let mut r = RootWizard::default();
+        r.step = 6;
+        assert!(r.is_on_confirm_step());
+        r.step = 7;
+        assert!(!r.is_on_confirm_step());
+        assert!(r.is_in_exec());
+        r.step = 0;
+        assert!(!r.is_on_confirm_step());
     }
 
     #[test]
