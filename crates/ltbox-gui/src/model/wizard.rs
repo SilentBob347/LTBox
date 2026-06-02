@@ -1,7 +1,7 @@
 //! Wizard model — the per-flow wizard state structs and their
 //! navigation logic, extracted from `main.rs`.
 
-use crate::{Family, NightlySource, Provider, RootMode, VerChoice};
+use crate::{Family, NightlySource, Provider, RootMode, VerChoice, is_loader_file};
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
@@ -393,6 +393,343 @@ impl RootWizard {
             // superkey popup on Next.
             8 => true,
             _ => false,
+        }
+    }
+}
+
+/// Linear-step wizard contract. Wizards whose `next` / `back` simply
+/// walk a 0..step_count range share `reset` / `next` / `back` /
+/// `is_in_exec` via this trait's default impls; only `step`,
+/// `step_mut`, `step_count`, and `can_next` need per-impl bodies.
+///
+/// Not implemented for `RootWizard` because its non-linear step
+/// numbering (steps skip around depending on family/mode) requires
+/// custom navigation logic.
+pub(crate) trait Wizard: Default {
+    fn step(&self) -> usize;
+    fn step_mut(&mut self) -> &mut usize;
+    fn step_count(&self) -> usize;
+    fn can_next(&self) -> bool;
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn next(&mut self) {
+        if self.step() < self.step_count() - 1 {
+            *self.step_mut() += 1;
+        }
+    }
+    fn back(&mut self) {
+        if self.step() > 0 {
+            *self.step_mut() -= 1;
+        }
+    }
+    fn is_in_exec(&self) -> bool {
+        self.step() == self.step_count() - 1
+    }
+    /// True on the confirm/start screen — the step immediately before
+    /// exec. A sidebar bounce here preserves the wizard (the user returns
+    /// to the confirm screen) instead of resetting to step 0.
+    fn is_on_confirm_step(&self) -> bool {
+        let n = self.step_count();
+        n >= 2 && self.step() == n - 2
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnrootType {
+    MagiskLkm,
+    APatchGki,
+}
+impl UnrootType {
+    pub(crate) fn label_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm",
+            Self::APatchGki => "unroottype_apatch_gki",
+        }
+    }
+    pub(crate) fn desc_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm_desc",
+            Self::APatchGki => "unroottype_apatch_gki_desc",
+        }
+    }
+    pub(crate) fn folder_desc_key(&self) -> &'static str {
+        match self {
+            Self::MagiskLkm => "unroottype_magisk_lkm_folderdesc",
+            Self::APatchGki => "unroottype_apatch_gki_folderdesc",
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct UnrootWizard {
+    pub(crate) step: usize,
+    pub(crate) unroot_type: Option<UnrootType>,
+    pub(crate) folder_path: Option<String>,
+    /// Loader file (`xbl_s_devprg_ns.melf`) for the EDL flash. Has
+    /// its own wizard step. The Settings-level default loader
+    /// auto-fills + auto-advances the loader step on Next from the
+    /// method step (mirrors the Root wizard's step-5 fold-through);
+    /// anyone without a default sees the explicit loader picker.
+    pub(crate) loader_path: Option<String>,
+}
+
+pub(crate) const UNROOT_STEPS: &[&str] = &[
+    "unroot_step_method",
+    "unroot_step_loader",
+    "unroot_step_folder",
+    "unroot_step_confirm",
+    "unroot_step_restore",
+];
+
+impl Wizard for UnrootWizard {
+    fn step(&self) -> usize {
+        self.step
+    }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        UNROOT_STEPS.len()
+    }
+    fn can_next(&self) -> bool {
+        // Step indexes match `UNROOT_STEPS` — loader is its own step
+        // (#1) so the folder step (#2) only gates on the backup folder
+        // pick and doesn't have to bundle a loader sub-row.
+        match self.step {
+            0 => self.unroot_type.is_some(),
+            1 => self.loader_path.is_some(),
+            2 => self.folder_path.is_some(),
+            3 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// Flash wizard state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceRegion {
+    Prc,
+    Row,
+}
+impl DeviceRegion {
+    pub(crate) fn label_key(&self) -> &'static str {
+        match self {
+            Self::Prc => "deviceregion_prc",
+            Self::Row => "deviceregion_row",
+        }
+    }
+
+    pub(crate) fn to_region_target(self) -> ltbox_patch::region::RegionTarget {
+        match self {
+            Self::Prc => ltbox_patch::region::RegionTarget::Prc,
+            Self::Row => ltbox_patch::region::RegionTarget::Row,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlashTarget {
+    OtherRegion,
+    SameRegion,
+}
+impl FlashTarget {
+    pub(crate) fn label_key(&self) -> &'static str {
+        match self {
+            Self::OtherRegion => "flashtarget_other",
+            Self::SameRegion => "flashtarget_same",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataMode {
+    Keep,
+    Wipe,
+}
+impl DataMode {
+    pub(crate) fn label_key(&self) -> &'static str {
+        match self {
+            Self::Keep => "datamode_keep",
+            Self::Wipe => "datamode_wipe",
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct FlashWizard {
+    pub(crate) step: usize,
+    pub(crate) device_region: Option<DeviceRegion>,
+    pub(crate) target: Option<FlashTarget>,
+    pub(crate) data_mode: Option<DataMode>,
+    pub(crate) firmware_folder: Option<String>,
+}
+
+pub(crate) const FLASH_STEPS: &[&str] = &[
+    "flash_step_region",
+    "flash_step_target",
+    "flash_step_data",
+    "flash_step_folder",
+    "flash_step_confirm",
+    "flash_step_flash",
+];
+
+impl Wizard for FlashWizard {
+    fn step(&self) -> usize {
+        self.step
+    }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        FLASH_STEPS.len()
+    }
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.device_region.is_some(),
+            1 => self.target.is_some(),
+            2 => self.data_mode.is_some(),
+            3 => self.firmware_folder.is_some(),
+            4 => true,
+            _ => false,
+        }
+    }
+}
+
+// =========================================================================
+// System Update wizard state
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SysUpdateAction {
+    Disable,
+    Enable,
+    Rescue,
+}
+impl SysUpdateAction {
+    pub(crate) fn label_key(&self) -> &'static str {
+        match self {
+            Self::Disable => "sysupdate_disable",
+            Self::Enable => "sysupdate_enable",
+            Self::Rescue => "sysupdate_rescue",
+        }
+    }
+    pub(crate) fn desc_key(&self) -> &'static str {
+        match self {
+            Self::Disable => "sysupdate_disable_desc",
+            Self::Enable => "sysupdate_enable_desc",
+            Self::Rescue => "sysupdate_rescue_desc",
+        }
+    }
+}
+
+/// Region target for Boot Recovery (Rescue). PRC/ROW hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RescueRegion {
+    Prc,
+    Row,
+}
+
+impl RescueRegion {
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::Prc => "rescue_region_prc",
+            Self::Row => "rescue_region_row",
+        }
+    }
+    pub(crate) fn to_target(self) -> ltbox_patch::region::RegionTarget {
+        match self {
+            Self::Prc => ltbox_patch::region::RegionTarget::Prc,
+            Self::Row => ltbox_patch::region::RegionTarget::Row,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SysUpdateWizard {
+    pub(crate) step: usize,
+    pub(crate) action: Option<SysUpdateAction>,
+    /// Rescue: firmware folder containing loader (`xbl_s_devprg_ns.melf`).
+    pub(crate) rescue_folder: Option<String>,
+    /// Rescue: selected target region. Set via popup between Folder and
+    /// Confirm steps. May be pre-seeded from `inferred_flash_region`
+    /// (PTSTPD `SaleArea`) before the popup opens — `rescue_region_confirmed`
+    /// tracks whether the user explicitly clicked through.
+    pub(crate) rescue_region: Option<RescueRegion>,
+    /// Rescue: region popup overlay flag. Opens on Next press from the
+    /// Folder step when the user hasn't yet confirmed a region pick.
+    pub(crate) rescue_region_popup_open: bool,
+    /// Rescue: true once the user has clicked a region radio in the
+    /// popup. Distinguishes a pre-seeded `rescue_region` (initial
+    /// preselect from `inferred_flash_region`) from a user-confirmed
+    /// pick — preselect alone shouldn't skip the popup.
+    pub(crate) rescue_region_confirmed: bool,
+}
+
+pub(crate) const SYSUPDATE_STEPS_COMPACT: &[&str] = &[
+    "sysupdate_step_action",
+    "sysupdate_step_confirm",
+    "sysupdate_step_execute",
+];
+
+pub(crate) const SYSUPDATE_STEPS_RESCUE: &[&str] = &[
+    "sysupdate_step_action",
+    "sysupdate_step_folder",
+    "sysupdate_step_confirm",
+    "sysupdate_step_execute",
+];
+
+impl SysUpdateWizard {
+    /// Rescue gets an extra Folder step — distinct step list keeps the
+    /// other actions (Disable/Enable) on their short 3-step flow.
+    pub(crate) fn steps(&self) -> &'static [&'static str] {
+        if matches!(self.action, Some(SysUpdateAction::Rescue)) {
+            SYSUPDATE_STEPS_RESCUE
+        } else {
+            SYSUPDATE_STEPS_COMPACT
+        }
+    }
+    pub(crate) fn is_rescue(&self) -> bool {
+        matches!(self.action, Some(SysUpdateAction::Rescue))
+    }
+}
+
+impl Wizard for SysUpdateWizard {
+    fn step(&self) -> usize {
+        self.step
+    }
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+    fn step_count(&self) -> usize {
+        self.steps().len()
+    }
+    fn can_next(&self) -> bool {
+        if self.is_rescue() {
+            // Rescue flow: Action → Folder → Confirm → Exec.
+            match self.step {
+                0 => self.action.is_some(),
+                1 => self
+                    .rescue_folder
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .is_some_and(|p| {
+                        is_loader_file(p)
+                            || ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
+                    }),
+                2 => self.rescue_region.is_some(),
+                _ => false,
+            }
+        } else {
+            match self.step {
+                0 => self.action.is_some(),
+                1 => true,
+                _ => false,
+            }
         }
     }
 }
