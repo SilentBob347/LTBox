@@ -8438,8 +8438,17 @@ impl App {
     fn sysupdate_action_step(&self) -> Element<'_, Message> {
         let off_icon = lucide_primary(icon::tile_update_off(), 57.6);
         let on_icon = lucide_primary(icon::tile_update_on(), 57.6);
-        let rescue_icon = lucide_primary(icon::tile_rescue(), 57.6);
-        let rescue_disabled = self.platform_supported == Some(false);
+        // TB323FU's vendor_boot/vbmeta sit on a different UFS LUN than the
+        // Boot Recovery worker targets, so the flow can't run on it — disable
+        // the card (alongside the non-Qualcomm platform gate).
+        let rescue_disabled = self.platform_supported == Some(false) || self.is_tb323fu();
+        // Gray the icon when disabled, matching the other wizards' disabled
+        // option cards (region ROW / OtherRegion).
+        let rescue_icon = if rescue_disabled {
+            lucide_disabled(icon::tile_rescue(), 57.6)
+        } else {
+            lucide_primary(icon::tile_rescue(), 57.6)
+        };
         let mut cards = row![
             icon_option_card_sub(
                 off_icon,
@@ -8468,11 +8477,18 @@ impl App {
                     .width(Length::Fill)
                     .center()
                     .style(label_style),
-                text(self.t("sysupdate_rescue_req").to_string())
-                    .size(11)
-                    .width(Length::Fill)
-                    .center()
-                    .style(label_style),
+                text(
+                    self.t(if self.is_tb323fu() {
+                        "root_family_unsupported_tb323fu"
+                    } else {
+                        "sysupdate_rescue_req"
+                    })
+                    .to_string(),
+                )
+                .size(11)
+                .width(Length::Fill)
+                .center()
+                .style(label_style),
             ]
             .spacing(8)
             .align_x(iced::Alignment::Center);
@@ -12578,6 +12594,12 @@ impl App {
     fn update_sys(&mut self, msg: SysMsg) -> Task<Message> {
         match msg {
             SysMsg::SysAction(a) => {
+                // TB323FU can't run Boot Recovery (vendor_boot/vbmeta LUN
+                // mismatch). The card is disabled, but drop a stale dispatch
+                // here too so the action can never latch.
+                if a == SysUpdateAction::Rescue && self.is_tb323fu() {
+                    return Task::none();
+                }
                 // Switching action resets Rescue-specific state so a stale
                 // folder/region can't leak into a fresh flow.
                 self.sysupdate.action = Some(a);
@@ -12672,6 +12694,12 @@ impl App {
                 let Some(action) = self.sysupdate.action else {
                     return Task::none();
                 };
+                // Final guard: never start Boot Recovery on TB323FU even if a
+                // stale Rescue selection slipped past the disabled card.
+                if action == SysUpdateAction::Rescue && self.is_tb323fu() {
+                    self.error_msg = Some(self.t("root_family_unsupported_tb323fu").to_string());
+                    return Task::none();
+                }
                 // Rescue captures folder + region into the blocking task.
                 // Cloning here keeps `self` untouched while the async move
                 // takes ownership.
@@ -12960,10 +12988,16 @@ impl App {
                                                         }
                                                     }
 
+                                                    // Model-agnostic safety net for the EDL-first
+                                                    // path where `device_model` is unknown so the
+                                                    // TB323FU action gate can't fire: if none of
+                                                    // vendor_boot/vbmeta resolved on LUN 0, the
+                                                    // device doesn't have the layout Boot Recovery
+                                                    // assumes (e.g. TB323FU keeps them on LUN 4).
+                                                    // Abort before any write — nothing was flashed.
                                                     if dumped.is_empty() {
                                                         return Err(
-                                                            "Boot Recovery: no partitions dumped — aborting"
-                                                                .into(),
+                                                            "Boot Recovery: no vendor_boot/vbmeta found on LUN 0 — unsupported device layout (e.g. TB323FU); aborted before any write".into(),
                                                         );
                                                     }
 
