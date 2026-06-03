@@ -880,10 +880,6 @@ impl NightlySource {
 }
 
 // =========================================================================
-// Messages
-// =========================================================================
-
-// =========================================================================
 // Settings state
 // =========================================================================
 
@@ -1776,7 +1772,7 @@ fn format_bytes_auto(bytes: u64) -> String {
 }
 
 // =========================================================================
-// Messages
+// Async poll results + popup UI state
 // =========================================================================
 
 #[derive(Debug, Clone, Default)]
@@ -4185,8 +4181,10 @@ mod tests {
         assert!(!s.is_on_confirm_step());
 
         // Root is non-linear: confirm = step 6, exec = step 7.
-        let mut r = RootWizard::default();
-        r.step = 6;
+        let mut r = RootWizard {
+            step: 6,
+            ..Default::default()
+        };
         assert!(r.is_on_confirm_step());
         r.step = 7;
         assert!(!r.is_on_confirm_step());
