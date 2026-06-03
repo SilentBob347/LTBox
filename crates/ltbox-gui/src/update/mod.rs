@@ -199,6 +199,7 @@ impl App {
                 match target {
                     PickerTarget::RootFile => self.root.file_path = Some(path),
                     PickerTarget::RootLoader => self.root.folder_path = Some(path),
+                    PickerTarget::UnrootLoader => self.unroot.loader_path = Some(path),
                     _ => {}
                 }
             }

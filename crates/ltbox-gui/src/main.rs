@@ -2499,6 +2499,10 @@ enum PickerTarget {
     /// `qdl-rs write` against a GPT-resolved partition name on LUN 4.
     RootLoader,
     UnrootFolder,
+    /// Unroot EDL loader (.melf / .xml file) — routes a recent pick into
+    /// `unroot.loader_path`. Shares the `File` recents bucket like the other
+    /// loader pickers (Root loader, dump/flash loaders).
+    UnrootLoader,
     FlashFolder,
 }
 
@@ -2522,7 +2526,7 @@ impl PickerTarget {
             // Root loader is also a file pick (.melf) — shares the File
             // bucket so the user sees recent .melf picks in the recents
             // strip regardless of which wizard they came from.
-            Self::None | Self::RootFile | Self::RootLoader => PickerKind::File,
+            Self::None | Self::RootFile | Self::RootLoader | Self::UnrootLoader => PickerKind::File,
             // Firmware folders all share the "full QFIL" bucket — Unroot
             // and Flash typically point the user at the same dump/archive
             // they extracted from `ltbox dump full`.

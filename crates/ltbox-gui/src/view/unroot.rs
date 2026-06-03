@@ -118,6 +118,14 @@ impl App {
         .on_press(Message::Unroot(UnrootMsg::UnrootSelectLoader))
         .padding(0)
         .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
+        // Recent loader picks — same shared `File` bucket (filtered to loader
+        // extensions) as the Root / dump / flash loader pickers. This was the
+        // only loader step missing its recents strip.
+        let chips = self.recent_file_chips(
+            LOADER_PICKER_EXTS,
+            |p| Message::RecentFilePicked(PickerTarget::UnrootLoader, p),
+            "picker_recents",
+        );
         let col = column![
             text(self.t("unroot_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -134,6 +142,7 @@ impl App {
                 })
                 .center()
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            chips,
         ]
         .spacing(14)
         .padding(28)
