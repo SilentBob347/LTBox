@@ -1,7 +1,7 @@
 //! Root wizard view + steps + superkey/run-id/kernel-version popups. Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use ltbox_core::tr_args;
 use theme::with_alpha;
@@ -890,31 +890,21 @@ impl App {
             .map(|m| self.t(m.label_key()).to_string())
             .unwrap_or_else(|| dash.clone());
 
-        let mut col = column![
-            text(self.t("root_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE),
-            text(self.t("root_confirm_subtitle").to_string())
-                .size(13)
-                .style(muted_style),
-            widget::rule::horizontal(1),
+        let mut rows = vec![
             info_kv_center(self.t("root_step_type"), &fam),
             info_kv_center(self.t("root_step_mode"), &mode),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
+        ];
 
         if self.root.is_gki() {
             let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
-            col = col.push(info_kv_center(self.t("root_step_kernel"), &path));
+            rows.push(info_kv_center(self.t("root_step_kernel"), &path));
         } else if self.root.is_forks() {
             let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
-            col = col.push(info_kv_center(
+            rows.push(info_kv_center(
                 self.t("root_step_provider"),
                 self.t("provider_magisk_forks"),
             ));
-            col = col.push(info_kv_center(self.t("root_step_apk"), &path));
+            rows.push(info_kv_center(self.t("root_step_apk"), &path));
         } else {
             let prov = self
                 .root
@@ -926,18 +916,18 @@ impl App {
                 .version
                 .map(|v| self.t(v.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            col = col.push(info_kv_center(self.t("root_step_provider"), &prov));
-            col = col.push(info_kv_center(self.t("root_step_version"), &ver));
+            rows.push(info_kv_center(self.t("root_step_provider"), &prov));
+            rows.push(info_kv_center(self.t("root_step_version"), &ver));
             if self.root.is_nightly() {
                 let src = self
                     .root
                     .nightly_source
                     .map(|s| self.t(s.label_key()).to_string())
                     .unwrap_or_else(|| dash.clone());
-                col = col.push(info_kv_center(self.t("root_step_source"), &src));
+                rows.push(info_kv_center(self.t("root_step_source"), &src));
                 if self.root.nightly_source == Some(NightlySource::ManualInput) {
                     let id = self.root.run_id.clone().unwrap_or_else(|| dash.clone());
-                    col = col.push(info_kv_center(self.t("nightly_run_id_label"), &id));
+                    rows.push(info_kv_center(self.t("nightly_run_id_label"), &id));
                 }
             }
         }
@@ -950,7 +940,7 @@ impl App {
                 self.t("root_kpm_count_tmpl")
                     .replace("{n}", &self.root.kpm_paths.len().to_string())
             };
-            col = col.push(info_kv_center(self.t("root_step_kpm"), &kpm_summary));
+            rows.push(info_kv_center(self.t("root_step_kpm"), &kpm_summary));
         }
 
         let folder = self
@@ -958,12 +948,13 @@ impl App {
             .folder_path
             .clone()
             .unwrap_or_else(|| dash.clone());
-        col = col.push(info_kv_center(self.t("root_step_folder"), &folder));
+        rows.push(info_kv_center(self.t("root_step_folder"), &folder));
 
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view(
+            "root_confirm_title",
+            self.t("root_confirm_subtitle").to_string(),
+            rows,
+        )
     }
 
     pub(crate) fn root_flash_step(&self) -> Element<'_, Message> {

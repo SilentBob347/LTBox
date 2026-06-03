@@ -319,20 +319,7 @@ impl App {
             .filter(|r| r.state == FlashRowState::Flash)
             .collect();
 
-        let mut col = column![
-            text(self.t("flash_parts_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE)
-                .center(),
-            text(self.t("flash_parts_confirm_subtitle").to_string())
-                .size(13)
-                .style(muted_style)
-                .center(),
-            widget::rule::horizontal(1),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
 
         // ERASE block first, red and loud.
         if !erase_rows.is_empty() {
@@ -355,7 +342,7 @@ impl App {
                     .color(red),
                 );
             }
-            let erase_card =
+            rows.push(
                 container(erase_col)
                     .padding(14)
                     .style(move |t: &Theme| container::Style {
@@ -367,8 +354,9 @@ impl App {
                         },
                         text_color: Some(pal_of(t).on_surface),
                         ..Default::default()
-                    });
-            col = col.push(erase_card);
+                    })
+                    .into(),
+            );
         }
 
         // FLASH block.
@@ -396,13 +384,14 @@ impl App {
                         .style(muted_style),
                 );
             }
-            col = col.push(container(flash_col).padding(14).width(Length::Fill));
+            rows.push(container(flash_col).padding(14).width(Length::Fill).into());
         }
 
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view(
+            "flash_parts_confirm_title",
+            self.t("flash_parts_confirm_subtitle").to_string(),
+            rows,
+        )
     }
 
     pub(crate) fn view_dump_parts_wizard(&self) -> Element<'_, Message> {
@@ -749,20 +738,7 @@ impl App {
     pub(crate) fn flash_phys_confirm_step(&self) -> Element<'_, Message> {
         let pairs = self.flash_phys.active_pairs();
 
-        let mut col = column![
-            text(self.t("flash_parts_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE)
-                .center(),
-            text(self.t("flash_phys_confirm_subtitle").to_string())
-                .size(13)
-                .style(muted_style)
-                .center(),
-            widget::rule::horizontal(1),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
 
         if !pairs.is_empty() {
             let mut list = column![
@@ -782,12 +758,13 @@ impl App {
                         .style(muted_style),
                 );
             }
-            col = col.push(container(list).padding(14).width(Length::Fill));
+            rows.push(container(list).padding(14).width(Length::Fill).into());
         }
 
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view(
+            "flash_parts_confirm_title",
+            self.t("flash_phys_confirm_subtitle").to_string(),
+            rows,
+        )
     }
 }

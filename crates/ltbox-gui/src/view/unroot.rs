@@ -1,7 +1,7 @@
 //! Unroot wizard view + steps. Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length, Theme};
 
 impl App {
@@ -232,27 +232,15 @@ impl App {
             .folder_path
             .clone()
             .unwrap_or_else(|| dash.clone());
-        let col = column![
-            text(self.t("unroot_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE)
-                .center(),
-            text(self.t("unroot_confirm_subtitle").to_string())
-                .size(13)
-                .style(muted_style)
-                .center(),
-            widget::rule::horizontal(1),
-            info_kv_center(self.t("unroot_step_method"), &method),
-            info_kv_center(self.t("unroot_loader_title"), &loader),
-            info_kv_center(self.t("unroot_folder_title"), &folder),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view(
+            "unroot_confirm_title",
+            self.t("unroot_confirm_subtitle").to_string(),
+            vec![
+                info_kv_center(self.t("unroot_step_method"), &method),
+                info_kv_center(self.t("unroot_loader_title"), &loader),
+                info_kv_center(self.t("unroot_folder_title"), &folder),
+            ],
+        )
     }
 
     pub(crate) fn unroot_exec_step(&self) -> Element<'_, Message> {

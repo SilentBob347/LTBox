@@ -515,3 +515,41 @@ impl NightlySource {
         lucide_primary(glyph, 57.6)
     }
 }
+
+impl App {
+    /// Shared wizard confirm-screen frame: centered title, muted subtitle,
+    /// a divider, then the caller's summary `rows` — all inside a fill
+    /// scrollable so long summaries (ARB + country + region modify, rescue
+    /// folder/region, the flash warning, …) can grow past the viewport.
+    /// The wizard's sticky nav row is composed separately by the parent
+    /// `view_*_wizard`. Only the title key, subtitle, and rows vary.
+    pub(crate) fn confirm_view<'a>(
+        &'a self,
+        title_key: &str,
+        subtitle: String,
+        rows: Vec<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let mut col = column![
+            text(self.t(title_key).to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(subtitle).size(13).style(muted_style).center(),
+            widget::rule::horizontal(1),
+        ]
+        .spacing(10)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        for r in rows {
+            col = col.push(r);
+        }
+        container(
+            iced::widget::scrollable(col)
+                .height(Length::Fill)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+}

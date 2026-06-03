@@ -1,7 +1,7 @@
 //! System-update wizard view + steps + the shared exec-step view. Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use iced_aw::widget::Spinner;
 use theme::is_dark;
@@ -189,18 +189,7 @@ impl App {
             .action
             .map(|a| self.t(a.desc_key()).to_string())
             .unwrap_or_default();
-        let mut col = column![
-            text(self.t("sysupdate_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE)
-                .center(),
-            text(desc).size(13).style(muted_style).center(),
-            widget::rule::horizontal(1),
-            info_kv_center(self.t("sysupdate_step_action"), &action),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
+        let mut rows = vec![info_kv_center(self.t("sysupdate_step_action"), &action)];
         // Rescue: echo the chosen firmware folder + region so the user
         // confirms exactly what's about to flash.
         if self.sysupdate.is_rescue() {
@@ -214,13 +203,10 @@ impl App {
                 .rescue_region
                 .map(|r| self.t(r.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            col = col.push(info_kv_center(self.t("rescue_folder_label"), &folder));
-            col = col.push(info_kv_center(self.t("rescue_region_label"), &region));
+            rows.push(info_kv_center(self.t("rescue_folder_label"), &folder));
+            rows.push(info_kv_center(self.t("rescue_region_label"), &region));
         }
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view("sysupdate_confirm_title", desc, rows)
     }
 
     pub(crate) fn sysupdate_rescue_folder_step(&self) -> Element<'_, Message> {

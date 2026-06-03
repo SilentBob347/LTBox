@@ -1,7 +1,7 @@
 //! Flash wizard view + steps (region, target, data, folder, confirm, exec). Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, button, column, container, row, scrollable, text};
+use iced::widget::{self, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 
 impl App {
@@ -293,33 +293,21 @@ impl App {
                 RollbackSetting::Off => "flash_confirm_rb_off",
             })
             .to_string();
-        let mut col = column![
-            text(self.t("flash_confirm_title").to_string())
-                .size(theme::text_size::WIZARD_STEP_TITLE)
-                .center(),
-            text(self.t("flash_confirm_subtitle").to_string())
-                .size(13)
-                .style(muted_style)
-                .center(),
-            widget::rule::horizontal(1),
+        let mut rows = vec![
             info_kv_center(self.t("flash_confirm_region"), &region),
             info_kv_center(self.t("flash_confirm_target"), &target),
             info_kv_center(self.t("flash_confirm_data"), &data),
             info_kv_center(self.t("flash_confirm_region_edit"), &modify_region),
             info_kv_center(self.t("device_arb"), &rollback),
-        ]
-        .spacing(10)
-        .padding(28)
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
+        ];
         if let Some(cc) = self.wf_config.country_action.target() {
             let entry = COUNTRY_CODES.iter().find(|e| e.code == cc);
             let label = entry
                 .map(|e| format!("{} — {}", e.code, e.name))
                 .unwrap_or_else(|| cc.to_string());
-            col = col.push(info_kv_center(self.t("flash_confirm_country"), &label));
+            rows.push(info_kv_center(self.t("flash_confirm_country"), &label));
         } else if self.wf_config.wipe && self.wf_config.country_action.is_skipped() {
-            col = col.push(info_kv_center(
+            rows.push(info_kv_center(
                 self.t("flash_confirm_country"),
                 self.t("flash_confirm_country_skip"),
             ));
@@ -329,7 +317,7 @@ impl App {
             .firmware_folder
             .clone()
             .unwrap_or_else(|| dash.clone());
-        col = col.push(info_kv_center(
+        rows.push(info_kv_center(
             self.t("flash_confirm_folder"),
             &folder_owned,
         ));
@@ -343,23 +331,20 @@ impl App {
         } else {
             "flash_confirm_warning"
         };
-        col = col.push(widget::rule::horizontal(1));
-        col = col.push(
+        rows.push(widget::rule::horizontal(1).into());
+        rows.push(
             text(self.t(warning_key).to_string())
                 .size(13)
                 .style(warning_style)
-                .center(),
+                .center()
+                .into(),
         );
 
-        // Wrap in scrollable so the summary can grow past the viewport
-        // (e.g. ARB ON + country patch + region modify all push extra
-        // info_kv rows). Nav row stays outside this fn — `view_flash_wizard`
-        // composes `[step_bar, body, nav]`, so Back / Start stay sticky at
-        // the bottom even when content scrolls.
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.confirm_view(
+            "flash_confirm_title",
+            self.t("flash_confirm_subtitle").to_string(),
+            rows,
+        )
     }
 
     pub(crate) fn flash_exec_step(&self) -> Element<'_, Message> {
