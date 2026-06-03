@@ -132,6 +132,30 @@ pub(crate) fn md_text_btn_style(t: &Theme, status: button::Status) -> button::St
     }
 }
 
+/// Text button for the amber dashboard banners ("Don't show again"). Fixed
+/// white label + white state layer, matching the banner's white body text, so
+/// it stays legible on the warning-amber container in BOTH themes. The default
+/// `md_text_btn_style` uses the theme `primary`, which is a low-contrast
+/// lavender on amber in dark mode — the visibility bug this fixes. The banner
+/// background is theme-independent, so the on-color is too.
+pub(crate) fn banner_text_btn_style(_t: &Theme, status: button::Status) -> button::Style {
+    let on_banner = iced::Color::WHITE;
+    let bg_alpha = theme::state_alpha(status);
+    button::Style {
+        background: if bg_alpha > 0.0 {
+            Some(with_alpha(on_banner, bg_alpha).into())
+        } else {
+            None
+        },
+        text_color: on_banner,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 /// M3 text button in the error role — red label + error-tinted state layer.
 /// Used for the destructive "Cancel" (start over) action on confirm screens.
 pub(crate) fn md_error_text_btn_style(t: &Theme, status: button::Status) -> button::Style {

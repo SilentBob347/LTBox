@@ -665,7 +665,7 @@ impl App {
                 .wrapping(iced::widget::text::Wrapping::None),
         )
         .padding([8, 18])
-        .style(md_text_btn_style);
+        .style(banner_text_btn_style);
         // Dismiss needs no network — only gate it on an in-flight install.
         if !installing {
             dismiss_btn = dismiss_btn.on_press(Message::DismissDriverUpdate);
@@ -707,7 +707,7 @@ impl App {
                 .wrapping(iced::widget::text::Wrapping::None),
         )
         .padding([8, 18])
-        .style(md_text_btn_style)
+        .style(banner_text_btn_style)
         .on_press(Message::DismissDualUsbAdvisory(model.clone()));
         let close = button(
             text(self.t("btn_close").to_string())
