@@ -816,9 +816,12 @@ pub(crate) fn flash_worker(
     // Download the efisp GBL now that the ARB dump has
     // decided stock vs `_arb` (testkey-root). The `_arb`
     // GBL is fetched whenever a downgrade re-signed the
-    // chain (any region/wipe); the normal GBL is fetched
-    // for a region-provisioning wipe. Both flash below.
-    if target_is_tb323fu && (tb323fu_arb_need || (cfg.modify_region && cfg.wipe)) {
+    // chain; the normal GBL is fetched for a cross-region
+    // ("Other region") provisioning install. Neither is
+    // gated on data wipe — flashing efisp no longer forces
+    // a data reset, so it provisions in data-keep mode too.
+    // Both flash below.
+    if target_is_tb323fu && (tb323fu_arb_need || cfg.modify_region) {
         let suffix = efisp_asset_suffix(vendor_boot_fingerprint.as_deref(), tb323fu_arb_need);
         ltbox_core::live!(
             log,

@@ -3,9 +3,9 @@
 //! Extracted from the update_root handler.
 
 use crate::{
-    ConnectionStatus, Family, LiveLabels, Provider, RootMode, VerChoice, efisp_is_empty,
-    fingerprint_token_match, install_root_manager_apk, phase_marker, transition_to_edl,
-    wait_and_install_root_manager_apk,
+    ConnectionStatus, Family, LiveLabels, Provider, RootMode, VerChoice, efisp_asset_suffix,
+    efisp_is_empty, fingerprint_token_match, install_root_manager_apk, phase_marker,
+    transition_to_edl, wait_and_install_root_manager_apk,
 };
 use ltbox_core::{live, tr_args};
 
@@ -278,6 +278,10 @@ pub(crate) fn root_worker(
             // Set inside the dump block from the dumped boot/init_boot
             // fingerprint; carried to Phase 5 to skip AVB + vbmeta.
             let is_tb323fu;
+            // TB323FU only: when the dumped efisp is empty (stock,
+            // GBL-unprovisioned) we download the region GBL here and
+            // flash it alongside the patched boot at Phase 6.
+            let mut root_efisp_efi: Option<std::path::PathBuf> = None;
             {
                 let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
                     .map_err(|e| format!("EDL session: {e}"))?;
@@ -304,11 +308,14 @@ pub(crate) fn root_worker(
                     .map_err(|e| format!("Dump {boot_primary}: {e}"))?;
 
                 // TB323FU root needs provisioned efisp; once present,
-                // skip AVB footer and vbmeta work.
-                is_tb323fu = ltbox_patch::avb::extract_image_avb_info(&dumped_boot)
+                // skip AVB footer and vbmeta work. Keep the fingerprint
+                // so an empty efisp can fetch the matching region GBL.
+                let boot_fp = ltbox_patch::avb::extract_image_avb_info(&dumped_boot)
                     .ok()
-                    .and_then(|info| ltbox_patch::avb::build_fingerprint(&info))
-                    .map(|fp| fingerprint_token_match(&fp, "TB323FU"))
+                    .and_then(|info| ltbox_patch::avb::build_fingerprint(&info));
+                is_tb323fu = boot_fp
+                    .as_deref()
+                    .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                     .unwrap_or(false);
                 if is_tb323fu {
                     live!(
@@ -324,9 +331,45 @@ pub(crate) fn root_worker(
                         .map(|d| efisp_is_empty(&d))
                         .unwrap_or(true);
                     if efisp_empty {
-                        return Err(ltbox_core::i18n::tr("root_tb323fu_efisp_required"));
+                        // Empty efisp = stock, GBL-unprovisioned, so the
+                        // firmware was never rollback-patched — fetch the
+                        // non-`_arb` region GBL (region from the boot
+                        // fingerprint) and flash it with the patched boot
+                        // at Phase 6. efisp flashing no longer wipes data,
+                        // so provisioning it here is safe in any data mode.
+                        let suffix = efisp_asset_suffix(boot_fp.as_deref(), false);
+                        live!(
+                            log,
+                            "[Root] {}",
+                            tr_args!("live_flash_efisp_fetch", variant = suffix)
+                        );
+                        let gh = ltbox_core::github::GitHubClient::from_url(
+                            "github.com/miner7222/gbl_root_canoe",
+                        )
+                        .map_err(|e| format!("efisp EFI: GitHub client: {e}"))?;
+                        let (asset_name, asset_url) = gh
+                            .latest_release_asset_where(|n| n.to_ascii_lowercase().ends_with(suffix))
+                            .map_err(|e| {
+                                format!(
+                                    "efisp EFI: no '{suffix}' asset on latest gbl_root_canoe release: {e}"
+                                )
+                            })?;
+                        let efi_dir = ltbox_core::app_paths::work_dir_for("root_efisp");
+                        let _ = std::fs::remove_dir_all(&efi_dir);
+                        std::fs::create_dir_all(&efi_dir)
+                            .map_err(|e| format!("efisp EFI work dir: {e}"))?;
+                        let efi_path = efi_dir.join(&asset_name);
+                        ltbox_core::downloader::download_to_file(&asset_url, &efi_path, &mut log)
+                            .map_err(|e| format!("efisp EFI: download '{asset_name}' failed: {e}"))?;
+                        live!(
+                            log,
+                            "[Root] {}",
+                            tr_args!("live_flash_efisp_fetched", name = asset_name)
+                        );
+                        root_efisp_efi = Some(efi_path);
+                    } else {
+                        live!(log, "[Root] {}", ltbox_core::i18n::tr("log_root_efisp_ok"));
                     }
-                    live!(log, "[Root] {}", ltbox_core::i18n::tr("log_root_efisp_ok"));
                 }
 
                 // vbmeta stays untouched on TB323FU (GBL handles
@@ -416,6 +459,28 @@ pub(crate) fn root_worker(
             // --phys-part-idx 4 write <name> <img>` — GPT
             // resolves the start sector, so no rawprogram
             // sector attrs to thread through.
+            // Provision efisp with the region GBL fetched above (only set
+            // when the dumped efisp was empty) BEFORE flashing the patched
+            // boot. Ordering matters for brick-safety: if the GBL flash
+            // fails, boot is still the stock image, so the error-path
+            // `reset_tolerant` below boots stock — not a patched boot left
+            // without its GBL root of trust.
+            if let Some(efi) = &root_efisp_efi {
+                let efisp_lun = ltbox_core::partition_lun::lun_for_partition("efisp").unwrap_or(4);
+                live!(
+                    log,
+                    "[Root] {}",
+                    ltbox_core::i18n::tr("live_flash_efisp_flash")
+                );
+                session
+                    .flash_partition("efisp", efi, 0, efisp_lun, &mut log)
+                    .map_err(|e| format!("efisp GBL provisioning failed (boot left stock): {e}"))?;
+                live!(
+                    log,
+                    "[Root] {}",
+                    ltbox_core::i18n::tr("live_flash_efisp_flashed")
+                );
+            }
             session
                 .flash_partition(
                     &boot_primary,
