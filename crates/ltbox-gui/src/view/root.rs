@@ -658,7 +658,7 @@ impl App {
         .padding(0)
         .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
         let chips = self.recent_file_chips(
-            &["melf", "xml", "x"],
+            LOADER_PICKER_EXTS,
             |p| Message::RecentFilePicked(PickerTarget::RootLoader, p),
             "picker_recents",
         );

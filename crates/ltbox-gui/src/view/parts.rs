@@ -102,7 +102,7 @@ impl App {
         } else {
             LABEL
         };
-        let chips = self.recent_file_chips(&["melf", "xml", "x"], on_chosen, "picker_recents");
+        let chips = self.recent_file_chips(LOADER_PICKER_EXTS, on_chosen, "picker_recents");
         let col = column![
             text(self.t("dump_parts_loader_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)

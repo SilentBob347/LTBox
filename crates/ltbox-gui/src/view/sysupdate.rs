@@ -247,7 +247,7 @@ impl App {
         // pickers (root, advanced) — filter to the same ext set the
         // dialog itself accepts.
         let chips = self.recent_file_chips(
-            &["melf", "xml", "x"],
+            LOADER_PICKER_EXTS,
             |p| Message::Sys(SysMsg::SysRescueFolderChosen(Some(p))),
             "picker_recents",
         );

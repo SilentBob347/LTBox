@@ -2212,7 +2212,7 @@ fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
     // resolver upgrades a TB323FU `.melf` selection to the manifest
     // sitting next to it.
     pickers::FilePickSpec::single(target_i18n_key)
-        .with_filter("EDL loader (.melf / .xml / .x)", &["melf", "xml", "x"])
+        .with_filter("EDL loader (.melf / .xml / .x)", LOADER_PICKER_EXTS)
 }
 
 /// Wrap a heavy blocking flow as a `Task<Message>`. Runs `f` on the

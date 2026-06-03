@@ -2,7 +2,10 @@
 //! navigation logic, extracted from `main.rs`.
 
 use crate::pickers;
-use crate::{AdvAction, Family, NightlySource, Provider, RootMode, VerChoice, is_loader_file};
+use crate::{
+    AdvAction, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode, VerChoice,
+    is_loader_file,
+};
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
@@ -1221,7 +1224,7 @@ impl AdvWizard {
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::RebuildVbmeta) => ("Android partition image (*.img)", &["img"]),
-            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml / .x)", &["melf", "xml", "x"]),
+            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml / .x)", LOADER_PICKER_EXTS),
             _ => ("", &[]),
         }
     }

@@ -992,15 +992,9 @@ pub(crate) fn flash_worker(
         // `dump_partition_by_name`. Avoids re-decrypting
         // `rawprogram*.x` mid-flow when the catalog scratch
         // dir has been cleaned.
-        const KNOWN_CODES: &[&str] = &[
-            "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL", "AT", "BE", "BG", "HR",
-            "CY", "CZ", "DK", "EE", "FI", "GR", "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT",
-            "RO", "SK", "SI", "SE", "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE", "WW",
-        ];
-        const EU_CODES: &[&str] = &[
-            "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
-            "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-        ];
+        use ltbox_patch::region::{
+            EU_COUNTRY_CODES as EU_CODES, KNOWN_COUNTRY_CODES as KNOWN_CODES,
+        };
         // TB320FC / TB323FU keep the country code in
         // `oemowninfo` (LUN 0), not `devinfo` (LUN 4).
         // Detect via the vendor_boot fingerprint (works

@@ -166,15 +166,7 @@ pub(crate) fn advanced_file_worker(
             // Country code lives in both devinfo.img
             // + persist.img — folder picker, at
             // least one must exist.
-            const KNOWN: &[&str] = &[
-                "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL", "AT", "BE", "BG", "HR",
-                "CY", "CZ", "DK", "EE", "FI", "GR", "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT",
-                "RO", "SK", "SI", "SE", "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE", "WW",
-            ];
-            const EU: &[&str] = &[
-                "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
-                "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-            ];
+            use ltbox_patch::region::{EU_COUNTRY_CODES as EU, KNOWN_COUNTRY_CODES as KNOWN};
             let Some(new_code) = adv_country.as_deref() else {
                 return Err(
                     "No target country code selected — pick one in the popup before starting"

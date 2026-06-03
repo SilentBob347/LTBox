@@ -292,6 +292,22 @@ fn detect_region_in_data(data: &[u8], patterns: &RegionPatternSet) -> DetectedRe
     }
 }
 
+/// Canonical Lenovo country / sales-region codes embedded in devinfo /
+/// persist / oemowninfo. Single source of truth for `detect_country_code`
+/// scans and the GUI country picker — callers used to keep private copies.
+pub const KNOWN_COUNTRY_CODES: &[&str] = &[
+    "CN", "KR", "JP", "US", "GB", "DE", "FR", "IT", "ES", "NL", "AT", "BE", "BG", "HR", "CY", "CZ",
+    "DK", "EE", "FI", "GR", "HU", "IE", "LV", "LT", "LU", "MT", "PL", "PT", "RO", "SK", "SI", "SE",
+    "AU", "CA", "IN", "RU", "BR", "MX", "SA", "AE", "WW",
+];
+
+/// EU member codes — `patch_country_code` writes the `XE` (vs `XX`) suffix
+/// for these. Subset of [`KNOWN_COUNTRY_CODES`].
+pub const EU_COUNTRY_CODES: &[&str] = &[
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",
+    "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+];
+
 /// Detect country code in a binary image (devinfo/persist).
 /// Scans for patterns like "CNXX", "KRXX", "CNXE" etc.
 pub fn detect_country_code(image_path: &Path, known_codes: &[&str]) -> Result<Option<String>> {

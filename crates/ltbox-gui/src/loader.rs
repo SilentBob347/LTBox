@@ -1,5 +1,11 @@
 //! EDL loader discovery + validation helpers, extracted from `main.rs`.
 
+/// File-dialog / recent-chip extension filter for the EDL loader picker:
+/// a stock `.melf` Firehose loader, or the `.xml` / encrypted `.x` Sahara
+/// manifest (Y700 Gen 5). Single source so every loader picker + recents
+/// chip row offers the same set.
+pub(crate) const LOADER_PICKER_EXTS: &[&str] = &["melf", "xml", "x"];
+
 /// Locate the multi-image Sahara manifest in `dir`, case-insensitively.
 /// Prefers the plaintext `qsahara_device_programmer.xml`; otherwise returns
 /// the encrypted `qsahara_device_programmer.x` form, which
