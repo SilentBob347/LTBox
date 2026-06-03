@@ -41,6 +41,20 @@ impl DeviceClass {
     }
 }
 
+/// Lenovo tablets that expose two USB-C ports. Only the port on the long
+/// edge carries the USB data lines EDL/ADB need; the short-edge port is
+/// charge-only on these SKUs, so LTBox advises the user to use the long-edge
+/// one. (TB321FU is included here even though it is not a `DeviceClass`
+/// special case — the advisory is about physical ports, not flash flow.)
+pub(crate) const DUAL_USBC_MODELS: [&str; 4] = ["TB320FC", "TB321FU", "TB322FC", "TB323FU"];
+
+/// Whether `model` is one of the [`DUAL_USBC_MODELS`] (case-insensitive).
+pub(crate) fn is_dual_usbc_model(model: &str) -> bool {
+    DUAL_USBC_MODELS
+        .iter()
+        .any(|m| model.eq_ignore_ascii_case(m))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ConnectionStatus {
     #[default]

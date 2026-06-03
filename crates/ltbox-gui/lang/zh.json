@@ -146,6 +146,8 @@
   "driver_update_btn": "更新",
   "driver_update_desc": "已安装高通 USB 驱动 {current}；有可用版本 {latest}。",
   "driver_update_title": "驱动程序更新可用",
+  "dual_usb_advisory_desc": "请通过设备长边的端口连接，操作才能顺利进行。",
+  "dual_usb_advisory_title": "此机型有两个 USB-C 端口",
   "dump_parts_col_size": "容量",
   "dump_parts_loader_desc": "xbl_s_devprg_ns.melf",
   "dump_parts_loader_placeholder": "未选择 loader 文件",

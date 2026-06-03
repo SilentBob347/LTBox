@@ -127,6 +127,11 @@ pub struct PersistedSettings {
     /// banner, which always shows when the driver is absent.
     #[serde(default)]
     pub qcom_driver_update_dismissed: bool,
+    /// Models for which the user chose "don't show again" on the dual-USB-C
+    /// port advisory. Per-model, so a different dual-port model still shows
+    /// the advisory once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dual_usb_advisory_dismissed_models: Vec<String>,
 }
 
 fn default_language() -> String {
@@ -175,6 +180,7 @@ impl Default for PersistedSettings {
             default_loader_path: None,
             window_size: None,
             qcom_driver_update_dismissed: false,
+            dual_usb_advisory_dismissed_models: Vec::new(),
         }
     }
 }

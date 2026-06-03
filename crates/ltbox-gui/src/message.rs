@@ -99,6 +99,12 @@ pub(crate) enum Message {
     /// "Don't show again" on the driver-update banner — persist the
     /// dismissal and drop the banner for the rest of the session.
     DismissDriverUpdate,
+    /// "Don't show again" on the dual-USB-C port advisory for the given
+    /// model — persist it so that model never shows the advisory again.
+    DismissDualUsbAdvisory(String),
+    /// "Close" on the dual-USB-C port advisory for the given model — hide it
+    /// for this session only (returns on the next launch).
+    CloseDualUsbAdvisory(String),
     DrainStdoutTap,
     LogEditorAction(iced::widget::text_editor::Action),
     ImageInfoLogEditorAction(iced::widget::text_editor::Action),

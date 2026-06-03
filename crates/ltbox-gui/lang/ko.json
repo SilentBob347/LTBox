@@ -146,6 +146,8 @@
   "driver_update_btn": "업데이트",
   "driver_update_desc": "설치된 퀄컴 USB 드라이버 {current}; {latest} 사용 가능.",
   "driver_update_title": "드라이버 업데이트 사용 가능",
+  "dual_usb_advisory_desc": "기기의 긴 쪽에 위치한 포트로 연결해야 작업이 원활하게 진행됩니다.",
+  "dual_usb_advisory_title": "USB-C 포트가 2개인 모델",
   "dump_parts_col_size": "용량",
   "dump_parts_loader_desc": "xbl_s_devprg_ns.melf",
   "dump_parts_loader_placeholder": "로더 파일이 선택되지 않음",

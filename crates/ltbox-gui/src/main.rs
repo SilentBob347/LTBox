@@ -2458,6 +2458,12 @@ struct App {
     /// Persisted "don't show again" for the driver-update prompt. Skips the
     /// update check + banner; never affects the missing-driver banner.
     qcom_driver_update_dismissed: bool,
+    /// Models whose dual-USB-C port advisory the user permanently dismissed
+    /// ("don't show again"); loaded from + saved to settings.
+    dual_usb_advisory_dismissed: Vec<String>,
+    /// Models whose advisory was closed this session only ("close"). Not
+    /// persisted, so the advisory returns on the next launch.
+    dual_usb_advisory_closed: Vec<String>,
     /// Newest stable (`prerelease == false && draft == false`) release on
     /// `miner7222/LTBox` whose semver is strictly greater than the
     /// running build's. `None` either before the background probe lands
@@ -2608,6 +2614,8 @@ impl Default for App {
             driver_update: None,
             online: None,
             qcom_driver_update_dismissed: persisted.qcom_driver_update_dismissed,
+            dual_usb_advisory_dismissed: persisted.dual_usb_advisory_dismissed_models.clone(),
+            dual_usb_advisory_closed: Vec::new(),
             update_available: None,
             flash_parts: FlashPartsWizard::default(),
             dump_parts: DumpPartsWizard::default(),
@@ -3259,7 +3267,26 @@ impl App {
             default_loader_path: self.default_loader_path.clone(),
             window_size: Some(self.window_size),
             qcom_driver_update_dismissed: self.qcom_driver_update_dismissed,
+            dual_usb_advisory_dismissed_models: self.dual_usb_advisory_dismissed.clone(),
         });
+    }
+
+    /// The connected dual-USB-C model whose port advisory should currently
+    /// show, or `None`. Shows when the model is one of [`DUAL_USBC_MODELS`]
+    /// and the user has neither permanently dismissed ("don't show again")
+    /// nor session-closed ("close") it.
+    fn dual_usb_advisory_model(&self) -> Option<&str> {
+        let m = self.device_model.as_str();
+        let hidden = |list: &[String]| list.iter().any(|x| x.eq_ignore_ascii_case(m));
+        if !m.is_empty()
+            && is_dual_usbc_model(m)
+            && !hidden(&self.dual_usb_advisory_dismissed)
+            && !hidden(&self.dual_usb_advisory_closed)
+        {
+            Some(m)
+        } else {
+            None
+        }
     }
 
     /// Record `path` in the MRU list for `kind`. Persists on change so

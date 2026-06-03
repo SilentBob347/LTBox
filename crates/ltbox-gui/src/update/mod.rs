@@ -762,6 +762,25 @@ impl App {
                 self.driver_update = None;
                 self.persist_settings();
             }
+            Message::DismissDualUsbAdvisory(model) => {
+                if !self
+                    .dual_usb_advisory_dismissed
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(&model))
+                {
+                    self.dual_usb_advisory_dismissed.push(model);
+                    self.persist_settings();
+                }
+            }
+            Message::CloseDualUsbAdvisory(model) => {
+                if !self
+                    .dual_usb_advisory_closed
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(&model))
+                {
+                    self.dual_usb_advisory_closed.push(model);
+                }
+            }
             Message::UpdateCheckDone(result) => {
                 // `None` means "no banner" — either we're already on the
                 // latest stable, the repo has only prereleases, or the

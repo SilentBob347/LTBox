@@ -146,6 +146,8 @@
   "driver_update_btn": "Обновить",
   "driver_update_desc": "Установлен драйвер Qualcomm USB {current}; доступна версия {latest}.",
   "driver_update_title": "Доступно обновление драйвера",
+  "dual_usb_advisory_desc": "Подключайтесь через порт на длинной стороне устройства, чтобы операции проходили без сбоев.",
+  "dual_usb_advisory_title": "У этой модели два порта USB-C",
   "dump_parts_col_size": "Размер",
   "dump_parts_loader_desc": "xbl_s_devprg_ns.melf",
   "dump_parts_loader_placeholder": "Файл loader не выбран",
