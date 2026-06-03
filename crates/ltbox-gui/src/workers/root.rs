@@ -133,7 +133,8 @@ pub(crate) fn root_worker(
     // (re-plug into normal/recovery, reboot to
     // bootloader, fix unauthorized ADB, …).
     let slot_suffix =
-        ltbox_device::controller::poll_active_slot(std::time::Duration::from_secs(30), &mut log)?;
+        ltbox_device::controller::poll_active_slot(std::time::Duration::from_secs(30), &mut log)
+            .map_err(|e| e.to_string())?;
     // Kernel version probe (KSU LKM) needs ADB
     // shell; runs only when ADB is currently
     // usable so the slot-resolved-via-Fastboot

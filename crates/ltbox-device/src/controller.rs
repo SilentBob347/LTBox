@@ -26,6 +26,8 @@ pub enum ControllerError {
     NoDevice,
     #[error("Operation requires {0} mode")]
     WrongMode(String),
+    #[error("{0}")]
+    SlotResolve(String),
 }
 
 type Result<T> = std::result::Result<T, ControllerError>;
@@ -185,7 +187,7 @@ impl DeviceController {
 pub fn poll_active_slot(
     timeout: std::time::Duration,
     log: &mut Vec<String>,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<String, ControllerError> {
     let deadline = std::time::Instant::now() + timeout;
     let mut adb_attempted = false;
     let mut fastboot_attempted = false;
@@ -282,11 +284,11 @@ pub fn poll_active_slot(
     } else {
         detail.push_str("Fastboot: device never enumerated as a Fastboot endpoint.");
     }
-    Err(format!(
+    Err(ControllerError::SlotResolve(format!(
         "Could not detect active slot via ADB or Fastboot within {timeout:?}. {detail} \
          Connect the device in normal / recovery mode (ADB) or bootloader mode (Fastboot) and retry. \
          Defaulting to slot `_a` was previously silent and led to flashes landing on the wrong slot."
-    ))
+    )))
 }
 
 impl Default for DeviceController {

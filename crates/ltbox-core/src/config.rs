@@ -115,7 +115,9 @@ impl LtboxConfig {
 }
 
 mod hex {
-    pub fn decode(s: &str) -> std::result::Result<Vec<u8>, String> {
+    use crate::LtboxError;
+
+    pub fn decode(s: &str) -> crate::Result<Vec<u8>> {
         // `s[i..i+2]` indexes by *bytes*. If a malformed config value
         // smuggles in a multibyte UTF-8 char (e.g. a fullwidth digit
         // pasted by accident, or a stray BOM), the byte-range split
@@ -123,15 +125,16 @@ mod hex {
         // `Index<Range>`. Reject up front by requiring 7-bit ASCII;
         // hex strings should never be anything else.
         if !s.is_ascii() {
-            return Err("Hex string must be ASCII".into());
+            return Err(LtboxError::Config("Hex string must be ASCII".into()));
         }
         if !s.len().is_multiple_of(2) {
-            return Err("Odd hex length".into());
+            return Err(LtboxError::Config("Odd hex length".into()));
         }
         (0..s.len())
             .step_by(2)
             .map(|i| {
-                u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("Invalid hex at {i}: {e}"))
+                u8::from_str_radix(&s[i..i + 2], 16)
+                    .map_err(|e| LtboxError::Config(format!("Invalid hex at {i}: {e}")))
             })
             .collect()
     }
