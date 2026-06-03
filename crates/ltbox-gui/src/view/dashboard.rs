@@ -147,6 +147,11 @@ impl App {
 
         if let Some(ltbox_device::driver::DriverStatus::Missing(_)) = self.driver_status {
             content = content.push(self.driver_warning_banner());
+        } else if self.driver_update.is_some() {
+            // Driver present but outdated — optional update prompt. Mutually
+            // exclusive with the missing banner above (a missing driver has
+            // no version to compare).
+            content = content.push(self.driver_update_banner());
         }
 
         let mut device_col = column![].spacing(0).width(Length::Fill);

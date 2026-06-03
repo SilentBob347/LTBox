@@ -121,6 +121,12 @@ pub struct PersistedSettings {
     /// `None` on first run → the default 820×620 in `main` applies.
     #[serde(default)]
     pub window_size: Option<(f32, f32)>,
+    /// User dismissed the optional Qualcomm USB driver *update* prompt via
+    /// "don't show again". Suppresses the startup version check + update
+    /// banner from here on. Does NOT affect the missing-driver install
+    /// banner, which always shows when the driver is absent.
+    #[serde(default)]
+    pub qcom_driver_update_dismissed: bool,
 }
 
 fn default_language() -> String {
@@ -168,6 +174,7 @@ impl Default for PersistedSettings {
             recent_paths: RecentPaths::default(),
             default_loader_path: None,
             window_size: None,
+            qcom_driver_update_dismissed: false,
         }
     }
 }

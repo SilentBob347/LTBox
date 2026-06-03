@@ -39,6 +39,19 @@ pub enum DriverStatus {
     Missing(Vec<&'static str>),
 }
 
+/// Result of comparing the locally-installed Qualcomm driver version
+/// against the latest signed release on GitHub. Only produced when a
+/// driver is already present AND a strictly-newer release exists — the
+/// GUI uses its presence to decide whether to show the optional
+/// "update available" banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverUpdate {
+    /// Dotted version parsed from the installed `qcserlib.inf` `DriverVer`.
+    pub current: String,
+    /// Dotted version parsed from the latest Windows release tag.
+    pub latest: String,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum DriverError {
     #[error("Not running on Windows — driver install is only supported on Windows")]
@@ -75,12 +88,26 @@ impl From<ureq::Error> for DriverError {
 
 pub type Result<T> = std::result::Result<T, DriverError>;
 
+/// Best-effort reachability probe for the GitHub host LTBox downloads the
+/// driver installer from. Used to pre-disable the install / update buttons
+/// (with an "internet required" tooltip) instead of letting the user click
+/// into a download that can only fail. A short timeout keeps a dead network
+/// from stalling startup; any transport / non-2xx result reads as offline.
+pub fn probe_connectivity() -> bool {
+    let agent = ureq::Agent::config_builder()
+        .user_agent(concat!("ltbox/", env!("CARGO_PKG_VERSION")))
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .new_agent();
+    agent.get("https://api.github.com/").call().is_ok()
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use self::windows::{check_required_drivers, download_and_install};
+pub use self::windows::{check_driver_update, check_required_drivers, download_and_install};
 
 #[cfg(not(windows))]
 mod linux;
 #[cfg(not(windows))]
-pub use self::linux::{check_required_drivers, download_and_install};
+pub use self::linux::{check_driver_update, check_required_drivers, download_and_install};

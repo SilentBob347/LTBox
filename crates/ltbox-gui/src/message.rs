@@ -89,6 +89,16 @@ pub(crate) enum Message {
     InstallDriversDone(Result<Vec<String>, String>),
     UpdateCheckDone(Option<ltbox_core::github::StableRelease>),
     OpenUpdateUrl,
+    /// Startup GitHub-reachability probe result. Gates the driver
+    /// install/update buttons (offline → disabled + "needs internet" tip).
+    ConnectivityChecked(bool),
+    /// Startup Qualcomm-driver version check result. `Some` → installed
+    /// driver is older than the latest release; drives the optional update
+    /// banner. `None` → up to date / not installed / offline (no banner).
+    DriverUpdateCheckDone(Option<ltbox_device::driver::DriverUpdate>),
+    /// "Don't show again" on the driver-update banner — persist the
+    /// dismissal and drop the banner for the rest of the session.
+    DismissDriverUpdate,
     DrainStdoutTap,
     LogEditorAction(iced::widget::text_editor::Action),
     ImageInfoLogEditorAction(iced::widget::text_editor::Action),

@@ -14,10 +14,16 @@
 //! `pkexec ltbox --install-udev` wrapper. Returning Err here keeps
 //! the GUI's install button safe until that pkexec wiring lands.
 
-use super::{DriverError, DriverStatus, Result};
+use super::{DriverError, DriverStatus, DriverUpdate, Result};
 
 pub fn check_required_drivers() -> DriverStatus {
     DriverStatus::NotWindows
+}
+
+/// No Linux driver-version story yet — the udev-rule flow ships a static
+/// file rather than a versioned release, so there is nothing to compare.
+pub fn check_driver_update() -> Option<DriverUpdate> {
+    None
 }
 
 pub fn download_and_install(_log: &mut Vec<String>) -> Result<()> {

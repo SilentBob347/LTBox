@@ -747,6 +747,21 @@ impl App {
             Message::DriverCheckDone(status) => {
                 self.driver_status = Some(status);
             }
+            Message::ConnectivityChecked(online) => {
+                self.online = Some(online);
+            }
+            Message::DriverUpdateCheckDone(update) => {
+                // Respect a dismissal that may have landed between the
+                // startup spawn and this result arriving.
+                if !self.qcom_driver_update_dismissed {
+                    self.driver_update = update;
+                }
+            }
+            Message::DismissDriverUpdate => {
+                self.qcom_driver_update_dismissed = true;
+                self.driver_update = None;
+                self.persist_settings();
+            }
             Message::UpdateCheckDone(result) => {
                 // `None` means "no banner" — either we're already on the
                 // latest stable, the repo has only prereleases, or the
@@ -814,7 +829,11 @@ impl App {
                 let _ = self.drain_pending_log_streams();
                 match result {
                     Ok(_log) => {
-                        // Re-run the presence check to clear the banner.
+                        // Install/update just brought the driver to the
+                        // latest release, so drop any outstanding update
+                        // banner. The presence re-check below clears the
+                        // missing banner.
+                        self.driver_update = None;
                         return Task::perform(
                             async {
                                 tokio::task::spawn_blocking(

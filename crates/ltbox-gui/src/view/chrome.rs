@@ -527,8 +527,51 @@ impl App {
         .into()
     }
 
+    /// Amber (warning, not error-red) banner shell shared by the
+    /// missing-driver install prompt and the optional update prompt. The
+    /// Qualcomm USB driver is not strictly mandatory for every LTBox
+    /// feature, so both prompts use a warning tone rather than a hard error.
+    fn driver_banner_container<'a>(
+        &self,
+        content: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let amber = iced::Color::from_rgb(0.95, 0.65, 0.0);
+        container(content)
+            .padding([12, 16])
+            .width(Length::Fill)
+            .style(move |_t: &Theme| container::Style {
+                background: Some(amber.into()),
+                border: iced::Border {
+                    color: amber,
+                    width: 1.0,
+                    radius: theme::shape::SM.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// Wrap a (disabled) driver button in a hover tooltip explaining the
+    /// download needs an internet connection — shown while offline so the
+    /// greyed-out button isn't a dead end with no explanation.
+    fn needs_internet_tooltip<'a>(
+        &self,
+        btn: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        widget::tooltip(
+            btn,
+            container(text(self.t("driver_needs_internet_tip").to_string()).size(11))
+                .padding([6, 10])
+                .max_width(240)
+                .style(|t: &Theme| theme::tooltip_style(t, theme::shape::SM)),
+            widget::tooltip::Position::Top,
+        )
+        .into()
+    }
+
     pub(crate) fn driver_warning_banner(&self) -> Element<'_, Message> {
         let installing = self.installing_drivers;
+        let offline = self.online == Some(false);
         let btn_label = if installing {
             self.t("driver_installing_btn").to_string()
         } else {
@@ -546,9 +589,15 @@ impl App {
         let mut btn = button(btn_label_text)
             .padding([8, 18])
             .style(md_filled_btn_style);
-        if !installing {
+        // Offline → the fetch can only fail, so disable + explain on hover.
+        if !installing && !offline {
             btn = btn.on_press(Message::InstallDrivers);
         }
+        let action: Element<'_, Message> = if offline {
+            self.needs_internet_tooltip(btn)
+        } else {
+            btn.into()
+        };
 
         // `body` fills the remainder via `Length::Fill` so the button
         // sits flush right with its natural width — the previous
@@ -568,27 +617,81 @@ impl App {
         .spacing(4)
         .width(Length::Fill);
 
-        let content = row![body, btn]
+        let content = row![body, action]
             .spacing(12)
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
 
-        container(content)
-            .padding([12, 16])
+        self.driver_banner_container(content)
+    }
+
+    /// Optional "driver update available" banner — shown when the installed
+    /// Qualcomm driver is older than the latest release and the user has
+    /// not dismissed it. [Update] reuses the install flow; [Don't show
+    /// again] persists the dismissal and drops the banner.
+    pub(crate) fn driver_update_banner(&self) -> Element<'_, Message> {
+        let installing = self.installing_drivers;
+        let offline = self.online == Some(false);
+        let (current, latest) = self
+            .driver_update
+            .as_ref()
+            .map(|u| (u.current.clone(), u.latest.clone()))
+            .unwrap_or_default();
+
+        let update_label = if installing {
+            self.t("driver_installing_btn").to_string()
+        } else {
+            self.t("driver_update_btn").to_string()
+        };
+        let mut update_btn = button(
+            text(update_label)
+                .size(theme::text_size::LABEL_LARGE)
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .padding([8, 18])
+        .style(md_filled_btn_style);
+        if !installing && !offline {
+            update_btn = update_btn.on_press(Message::InstallDrivers);
+        }
+        let update_action: Element<'_, Message> = if offline {
+            self.needs_internet_tooltip(update_btn)
+        } else {
+            update_btn.into()
+        };
+
+        let mut dismiss_btn = button(
+            text(self.t("driver_dont_show_again").to_string())
+                .size(theme::text_size::LABEL_LARGE)
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .padding([8, 18])
+        .style(md_text_btn_style);
+        // Dismiss needs no network — only gate it on an in-flight install.
+        if !installing {
+            dismiss_btn = dismiss_btn.on_press(Message::DismissDriverUpdate);
+        }
+
+        let body = column![
+            text(self.t("driver_update_title").to_string())
+                .size(theme::text_size::TITLE_MEDIUM)
+                .color(iced::Color::WHITE),
+            text(tr_args!(
+                "driver_update_desc",
+                current = current,
+                latest = latest
+            ))
+            .size(theme::text_size::BODY_SMALL)
+            .color(iced::Color::WHITE),
+        ]
+        .spacing(4)
+        .width(Length::Fill);
+
+        let content = row![body, update_action, dismiss_btn]
+            .spacing(8)
             .width(Length::Fill)
-            .style(|t: &Theme| {
-                let p = pal_of(t);
-                container::Style {
-                    background: Some(p.error.into()),
-                    border: iced::Border {
-                        color: p.error,
-                        width: 1.0,
-                        radius: theme::shape::SM.into(),
-                    },
-                    ..Default::default()
-                }
-            })
-            .into()
+            .align_y(iced::Alignment::Center);
+
+        self.driver_banner_container(content)
     }
 
     /// Bottom-of-screen transient toast. Renders a low-attention pill

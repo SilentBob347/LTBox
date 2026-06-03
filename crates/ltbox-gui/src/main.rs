@@ -2446,6 +2446,18 @@ struct App {
     picker_target: PickerTarget,
     driver_status: Option<ltbox_device::driver::DriverStatus>,
     installing_drivers: bool,
+    /// `Some` when the installed Qualcomm driver is older than the latest
+    /// release — drives the optional amber "update available" banner. Held
+    /// `None` when up to date, not installed, offline, or the user chose
+    /// "don't show again".
+    driver_update: Option<ltbox_device::driver::DriverUpdate>,
+    /// Result of the startup GitHub-reachability probe. `None` until the
+    /// probe lands; `Some(false)` disables the driver install/update
+    /// buttons with an "internet required" tooltip.
+    online: Option<bool>,
+    /// Persisted "don't show again" for the driver-update prompt. Skips the
+    /// update check + banner; never affects the missing-driver banner.
+    qcom_driver_update_dismissed: bool,
     /// Newest stable (`prerelease == false && draft == false`) release on
     /// `miner7222/LTBox` whose semver is strictly greater than the
     /// running build's. `None` either before the background probe lands
@@ -2593,6 +2605,9 @@ impl Default for App {
             picker_target: PickerTarget::None,
             driver_status: None,
             installing_drivers: false,
+            driver_update: None,
+            online: None,
+            qcom_driver_update_dismissed: persisted.qcom_driver_update_dismissed,
             update_available: None,
             flash_parts: FlashPartsWizard::default(),
             dump_parts: DumpPartsWizard::default(),
@@ -2609,6 +2624,7 @@ impl Default for App {
 impl App {
     fn new() -> (Self, Task<Message>) {
         // Window-id + driver check + update check all fire in parallel.
+        let app = Self::default();
         let win =
             iced::window::latest().map(|__v| Message::Window(WindowMsg::WindowIdReceived(__v)));
         let driver_check = Task::perform(
@@ -2631,9 +2647,43 @@ impl App {
             },
             Message::UpdateCheckDone,
         );
+        // GitHub-reachability probe — gates the driver install/update
+        // buttons so the user can't click into a guaranteed-to-fail
+        // download while offline.
+        let connectivity = Task::perform(
+            async {
+                tokio::task::spawn_blocking(ltbox_device::driver::probe_connectivity)
+                    .await
+                    .unwrap_or(false)
+            },
+            Message::ConnectivityChecked,
+        );
+        // Qualcomm driver version check. Skipped entirely (no network call)
+        // when the user chose "don't show again" for driver updates. A
+        // silent failure (offline / GitHub down / parse) yields `None`, so
+        // no banner — distinct from the missing-driver banner, which the
+        // separate `driver_check` above always drives.
+        let driver_update_check = if app.qcom_driver_update_dismissed {
+            Task::none()
+        } else {
+            Task::perform(
+                async {
+                    tokio::task::spawn_blocking(ltbox_device::driver::check_driver_update)
+                        .await
+                        .unwrap_or(None)
+                },
+                Message::DriverUpdateCheckDone,
+            )
+        };
         (
-            Self::default(),
-            Task::batch([win, driver_check, update_check]),
+            app,
+            Task::batch([
+                win,
+                driver_check,
+                update_check,
+                connectivity,
+                driver_update_check,
+            ]),
         )
     }
     fn theme(&self) -> Theme {
@@ -3208,6 +3258,7 @@ impl App {
             recent_paths: self.recent_paths.clone(),
             default_loader_path: self.default_loader_path.clone(),
             window_size: Some(self.window_size),
+            qcom_driver_update_dismissed: self.qcom_driver_update_dismissed,
         });
     }
 
