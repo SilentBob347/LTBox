@@ -2,6 +2,7 @@
 
 mod advanced;
 mod chrome;
+pub(crate) mod components;
 mod dashboard;
 mod flash;
 mod parts;
@@ -9,5 +10,6 @@ mod popups;
 mod reboot;
 mod root;
 mod settings;
+pub(crate) mod styles;
 mod sysupdate;
 mod unroot;

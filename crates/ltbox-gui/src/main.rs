@@ -33,6 +33,8 @@ pub(crate) use loader::*;
 pub(crate) use message::*;
 pub(crate) use model::device::*;
 pub(crate) use model::wizard::*;
+pub(crate) use view::components::*;
+pub(crate) use view::styles::*;
 pub(crate) use workers::advanced::*;
 pub(crate) use workers::edl_transition::*;
 pub(crate) use workers::flash::*;
@@ -72,51 +74,6 @@ static TITLE_BAR_ICON_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
         let bytes: &'static [u8] = include_bytes!("../assets/icon_32.bin");
         iced::widget::image::Handle::from_rgba(32, 32, bytes.to_vec())
     });
-
-/// `on_surface_variant` — secondary labels / descriptions.
-fn muted_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).on_surface_variant),
-    }
-}
-
-/// `outline` — captions and sidebar section headers.
-fn label_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).outline),
-    }
-}
-
-/// `on_surface` — primary foreground on surface containers.
-fn on_surface_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).on_surface),
-    }
-}
-
-/// `primary` — accent emphasis (active labels, live-op markers).
-fn accent_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).primary),
-    }
-}
-
-/// `success` — completion markers and "ok" status.
-#[allow(dead_code)]
-fn success_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).success),
-    }
-}
-
-/// `warning` — destructive-action callouts (e.g. full-flash confirm
-/// step). Kept distinct from `error_style` so it reads as "heads up, not
-/// a failure".
-fn warning_style(t: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(pal_of(t).warning),
-    }
-}
 
 /// Reverse-DNS app id. Becomes Wayland `app_id` / X11 `WM_CLASS` via
 /// iced `Settings::id`; matches the shipped `.desktop`'s
@@ -571,15 +528,6 @@ impl RebootTarget {
     fn all() -> &'static [RebootTarget] {
         &[Self::System, Self::Recovery, Self::Bootloader, Self::Edl]
     }
-    fn icon(self) -> Element<'static, Message> {
-        let glyph = match self {
-            Self::System => icon::reboot_system(),
-            Self::Recovery => icon::reboot_recovery(),
-            Self::Bootloader => icon::reboot_bootloader(),
-            Self::Edl => icon::reboot_edl(),
-        };
-        lucide_primary(glyph, 32.0)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -802,16 +750,6 @@ impl Family {
             Self::APatch => "family_apatch_desc",
         }
     }
-    fn icon(self) -> Element<'static, Message> {
-        // Kept as bundled SVG assets — these are per-brand logos, not
-        // monochrome glyphs, so Lucide's icon set doesn't cover them.
-        let bytes: &'static [u8] = match self {
-            Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
-            Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
-            Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
-        };
-        svg_icon(bytes, 72.0)
-    }
     fn icon_disabled(self) -> Element<'static, Message> {
         let bytes: &'static [u8] = match self {
             Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
@@ -872,20 +810,6 @@ impl Provider {
             Self::FolkPatch => Some("provider_folkpatch_desc"),
         }
     }
-    fn icon(self) -> Element<'static, Message> {
-        // Provider brand logos — kept as bespoke SVG, not Lucide.
-        let bytes: &'static [u8] = match self {
-            Self::Magisk => include_bytes!("../assets/icons/magisk.svg"),
-            Self::MagiskForks => include_bytes!("../assets/icons/magisk_forks.svg"),
-            Self::KernelSU => include_bytes!("../assets/icons/kernelsu.svg"),
-            Self::KernelSUNext => include_bytes!("../assets/icons/kernelsu_next.svg"),
-            Self::SukiSU => include_bytes!("../assets/icons/sukisu.svg"),
-            Self::ReSukiSU => include_bytes!("../assets/icons/resukisu.svg"),
-            Self::APatch => include_bytes!("../assets/icons/apatch.svg"),
-            Self::FolkPatch => include_bytes!("../assets/icons/folkpatch.svg"),
-        };
-        svg_icon(bytes, 72.0)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -905,14 +829,6 @@ impl RootMode {
             Self::Lkm => "rootmode_lkm_desc",
             Self::Gki => "rootmode_gki_desc",
         }
-    }
-    fn icon(self) -> Element<'static, Message> {
-        // Lucide chip/layers glyphs in place of the old bespoke SVGs.
-        let glyph = match self {
-            Self::Lkm => icon::root_lkm(),
-            Self::Gki => icon::root_gki(),
-        };
-        lucide_primary(glyph, 57.6)
     }
     fn icon_disabled(self) -> Element<'static, Message> {
         let glyph = match self {
@@ -941,13 +857,6 @@ impl VerChoice {
             Self::Nightly => "verchoice_nightly_desc",
         }
     }
-    fn icon(self) -> Element<'static, Message> {
-        let glyph = match self {
-            Self::Stable => icon::ver_stable(),
-            Self::Nightly => icon::ver_nightly(),
-        };
-        lucide_primary(glyph, 57.6)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -967,13 +876,6 @@ impl NightlySource {
             Self::AutoDetect => "nightly_auto_desc",
             Self::ManualInput => "nightly_manual_desc",
         }
-    }
-    fn icon(self) -> Element<'static, Message> {
-        let glyph = match self {
-            Self::AutoDetect => icon::nightly_auto(),
-            Self::ManualInput => icon::nightly_manual(),
-        };
-        lucide_primary(glyph, 57.6)
     }
 }
 
@@ -2286,72 +2188,6 @@ fn wait_and_install_root_manager_apk(
             Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
         }
     }
-}
-
-fn neutral_pill_btn_style(t: &Theme, _s: button::Status) -> button::Style {
-    let p = pal_of(t);
-    button::Style {
-        background: Some(with_alpha(p.on_surface, 0.08).into()),
-        border: iced::Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        text_color: p.on_surface_variant,
-        ..Default::default()
-    }
-}
-
-/// Transparent button; tinted on hover. Used on dashboard cells.
-fn dash_clickable_btn_style(t: &Theme, status: button::Status) -> button::Style {
-    let p = pal_of(t);
-    let hovered = matches!(status, button::Status::Hovered);
-    button::Style {
-        background: if hovered {
-            Some(with_alpha(p.primary, theme::state::HOVER).into())
-        } else {
-            None
-        },
-        text_color: p.on_surface,
-        border: iced::Border {
-            radius: theme::shape::SM.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-/// Centered M3 dialog card on a scrim. Inner owns padding/width.
-fn m3_dialog(inner: Element<'_, Message>) -> Element<'_, Message> {
-    let card = container(inner).style(|t: &Theme| {
-        let p = pal_of(t);
-        container::Style {
-            background: Some(p.surface_container.into()),
-            border: iced::Border {
-                color: p.outline_variant,
-                width: 1.0,
-                radius: 28.0.into(),
-            },
-            shadow: iced::Shadow {
-                color: with_alpha(p.shadow, 0.3),
-                offset: iced::Vector::new(0.0, 8.0),
-                blur_radius: 24.0,
-            },
-            ..Default::default()
-        }
-    });
-    let scrim = container(Space::new().width(Length::Fill).height(Length::Fill))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_t: &Theme| container::Style {
-            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-            ..Default::default()
-        });
-    let centered = container(card)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill);
-    iced::widget::stack![scrim, centered].into()
 }
 
 /// `Task<Message>` wrapping `rfd::AsyncFileDialog::pick_folder` for
@@ -3761,111 +3597,6 @@ impl App {
     }
 }
 
-// =========================================================================
-// Wizard step bar
-// =========================================================================
-
-fn wizard_step_bar<'a>(steps: &[&str], current: usize) -> Element<'a, Message> {
-    let mut r = row![]
-        .spacing(6)
-        .align_y(iced::Alignment::Center)
-        .padding([14, 24]);
-
-    for (i, &label) in steps.iter().enumerate() {
-        if i > 0 {
-            let completed = i <= current;
-            r = r.push(container(text("")).width(Length::Fill).height(2).style(
-                move |t: &Theme| {
-                    let p = pal_of(t);
-                    let color = if completed {
-                        p.success
-                    } else {
-                        p.outline_variant
-                    };
-                    container::Style {
-                        background: Some(color.into()),
-                        ..Default::default()
-                    }
-                },
-            ));
-        }
-
-        let done = i < current;
-        let active = i == current;
-        let dot_text = if done {
-            "\u{2713}".to_string()
-        } else {
-            (i + 1).to_string()
-        };
-
-        let dot = container(text(dot_text).size(12).center().style(move |t: &Theme| {
-            let p = pal_of(t);
-            let fg = if done || active {
-                iced::Color::WHITE
-            } else {
-                p.on_surface_variant
-            };
-            iced::widget::text::Style { color: Some(fg) }
-        }))
-        .width(28)
-        .height(28)
-        .center_x(28)
-        .center_y(28)
-        .style(move |t: &Theme| {
-            let p = pal_of(t);
-            let bg = if done {
-                p.success
-            } else if active {
-                p.primary
-            } else {
-                p.surface_container_high
-            };
-            let border_color = if done || active {
-                bg
-            } else {
-                p.outline_variant
-            };
-            container::Style {
-                background: Some(bg.into()),
-                border: iced::Border {
-                    color: border_color,
-                    width: 1.0,
-                    radius: 14.0.into(),
-                },
-                ..Default::default()
-            }
-        });
-
-        let lbl_widget = text(label.to_string()).size(12).style(move |t: &Theme| {
-            let p = pal_of(t);
-            let color = if done {
-                p.success
-            } else if active {
-                p.primary
-            } else {
-                p.on_surface_variant
-            };
-            iced::widget::text::Style { color: Some(color) }
-        });
-        r = r.push(
-            row![dot, lbl_widget]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-        );
-    }
-
-    // Bottom-edge divider only — top + sides come from the
-    // surrounding window outline / sidebar rule, so a 4-side
-    // border here would render the bottom + left as a double line.
-    column![
-        container(r)
-            .width(Length::Fill)
-            .style(|t: &Theme| panel_bg(t)),
-        widget::rule::horizontal(1).style(shell_rule_style),
-    ]
-    .into()
-}
-
 /// True for the localized "Start" / "Dump" labels — the primary-action button
 /// shown only on a wizard's confirm/start screen (intermediate steps use
 /// "Next" / "Scan"). Drives the red Cancel button in the footer helpers.
@@ -3926,76 +3657,6 @@ fn wizard_nav<'a>(
     .into()
 }
 
-/// M3 filled button — primary bg + state-layer overlay on hover/press.
-fn md_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
-    let p = pal_of(t);
-    // M3 spec: disabled filled button = `on_surface @ 12%` background +
-    // `on_surface @ 38%` label. Without this branch, dropping `on_press`
-    // left the button looking identical to the active primary fill —
-    // the only cue was the cursor not flipping to a pointer, which
-    // users on touch / stable-pointer setups never noticed.
-    if matches!(status, button::Status::Disabled) {
-        return button::Style {
-            background: Some(with_alpha(p.on_surface, 0.12).into()),
-            text_color: with_alpha(p.on_surface, 0.38),
-            border: iced::Border {
-                radius: theme::shape::FULL.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-    }
-    let bg = blend(p.primary, p.on_primary, theme::state_alpha(status));
-    button::Style {
-        background: Some(bg.into()),
-        text_color: p.on_primary,
-        border: iced::Border {
-            radius: theme::shape::FULL.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-/// M3 text button — no fill, state layer on hover/press.
-fn md_text_btn_style(t: &Theme, status: button::Status) -> button::Style {
-    let p = pal_of(t);
-    let bg_alpha = theme::state_alpha(status);
-    button::Style {
-        background: if bg_alpha > 0.0 {
-            Some(with_alpha(p.primary, bg_alpha).into())
-        } else {
-            None
-        },
-        text_color: p.primary,
-        border: iced::Border {
-            radius: theme::shape::FULL.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-/// M3 text button in the error role — red label + error-tinted state layer.
-/// Used for the destructive "Cancel" (start over) action on confirm screens.
-fn md_error_text_btn_style(t: &Theme, status: button::Status) -> button::Style {
-    let p = pal_of(t);
-    let bg_alpha = theme::state_alpha(status);
-    button::Style {
-        background: if bg_alpha > 0.0 {
-            Some(with_alpha(p.error, bg_alpha).into())
-        } else {
-            None
-        },
-        text_color: p.error,
-        border: iced::Border {
-            radius: theme::shape::FULL.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
 /// Linear mix of two colors by `t` ∈ [0, 1].
 fn blend(base: iced::Color, overlay: iced::Color, t: f32) -> iced::Color {
     let t = t.clamp(0.0, 1.0);
@@ -4016,29 +3677,6 @@ fn blend(base: iced::Color, overlay: iced::Color, t: f32) -> iced::Color {
 /// the nav column from re-flowing vertically as the sidebar tween
 /// crosses its midpoint.
 const SEC_HDR_HEIGHT: f32 = 36.0;
-
-fn sec_hdr<'a>(label: &str, label_alpha: f32) -> Element<'a, Message> {
-    if label_alpha <= 0.0 {
-        return container(text(""))
-            .height(Length::Fixed(SEC_HDR_HEIGHT))
-            .into();
-    }
-    let owned = label.to_string();
-    let alpha = label_alpha;
-    container(
-        text(owned)
-            .size(theme::text_size::LABEL_SMALL)
-            // Same no-wrap rationale as nav_btn — section header text
-            // ("Tools" / "도구") must not flow into two lines mid-tween.
-            .wrapping(iced::widget::text::Wrapping::None)
-            .style(move |t: &Theme| iced::widget::text::Style {
-                color: Some(with_alpha(pal_of(t).on_surface_variant, alpha)),
-            }),
-    )
-    .padding([10, 22])
-    .height(Length::Fixed(SEC_HDR_HEIGHT))
-    .into()
-}
 
 /// Cubic ease-out curve `f(t) = 1 - (1 - t)^3`, mapped to `[0, 1]`.
 /// Used by the sidebar tween so labels fade in faster early and
@@ -4195,88 +3833,6 @@ fn nav_btn<'a>(
     }
 }
 
-fn card<'a>(title: &str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(
-        column![
-            text(title.to_string())
-                .size(13)
-                .style(label_style)
-                .line_height(1.0),
-            content.into(),
-        ]
-        .spacing(6)
-        .padding(iced::Padding {
-            top: 10.0,
-            right: 18.0,
-            bottom: 14.0,
-            left: 18.0,
-        })
-        .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .style(|t: &Theme| {
-        theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
-    })
-    .into()
-}
-
-fn info_kv<'a>(label: &str, value: &str) -> Element<'a, Message> {
-    column![
-        text(label.to_string()).size(11).style(label_style),
-        text(value.to_string()).size(14),
-    ]
-    .spacing(3)
-    .into()
-}
-
-fn info_kv_center<'a>(label: &str, value: &str) -> Element<'a, Message> {
-    column![
-        text(label.to_string())
-            .size(11)
-            .style(label_style)
-            .width(Length::Fill)
-            .center(),
-        // `WordOrGlyph` so a long, space-less file path wraps at glyph
-        // boundaries within the panel instead of overflowing + clipping.
-        text(value.to_string())
-            .size(14)
-            .width(Length::Fill)
-            .center()
-            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-    ]
-    .spacing(3)
-    .width(Length::Fill)
-    .align_x(iced::Alignment::Center)
-    .into()
-}
-
-fn adv_grid_btn<'a>(item: AdvAction, label: &str) -> Element<'a, Message> {
-    // Inner container: border-only via `sel_card_style`. Earlier
-    // version used `theme::surface_card_style` which paints an opaque
-    // bg — that bg sat on top of the button's hover fill, swallowing
-    // the highlight and making the grid feel dead on hover.
-    let content = container(
-        text(label.to_string())
-            .size(12)
-            .center()
-            .width(Length::Fill)
-            .style(|t: &Theme| iced::widget::text::Style {
-                color: Some(pal_of(t).on_surface),
-            }),
-    )
-    .padding([18, 12])
-    .width(Length::Fill)
-    .center_x(Length::Fill)
-    .style(|t: &Theme| sel_card_style(t, false));
-
-    button(content)
-        .on_press(Message::Adv(AdvMsg::AdvConfirm(item)))
-        .padding(0)
-        .width(Length::Fill)
-        .style(|t: &Theme, status| sel_card_btn_style(t, status, false))
-        .into()
-}
-
 // Device portrait handles — built once, cloned each render.
 // Unknown models fall through to `GENERIC_TABLET_SVG_HANDLE`.
 static TB320FC_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
@@ -4340,206 +3896,11 @@ fn device_portrait(model: &str) -> DevicePortrait {
     }
 }
 
-fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
-    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-        .width(size)
-        .height(size)
-        .into()
-}
-
-/// Disabled-state SVG icon — recolours the bitmap to `on_surface` at
-/// 0.38 alpha. Brand colour is intentionally lost so the disabled card
-/// reads as inert. Pair with [`icon_option_card_sub_disabled`].
-fn svg_icon_disabled(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
-    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-        .width(size)
-        .height(size)
-        .style(|t: &Theme, _| iced::widget::svg::Style {
-            color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
-        })
-        .into()
-}
-
-/// Primary-coloured Lucide icon sized to `size`. Matches the colour
-/// role the old per-asset SVG glyphs used for wizard tiles, status
-/// markers, and confirm-step eyebrows.
-fn lucide_primary(
-    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
-    size: f32,
-) -> Element<'static, Message> {
-    icon.size(size)
-        .style(|t: &Theme| iced::widget::text::Style {
-            color: Some(pal_of(t).primary),
-        })
-        .into()
-}
-
-/// Disabled-state Lucide icon — `on_surface` at 0.38 alpha (M3 disabled
-/// content tone). Pair with [`icon_option_card_sub_disabled`] so the
-/// whole card reads as "not pickable on this device".
-fn lucide_disabled(
-    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
-    size: f32,
-) -> Element<'static, Message> {
-    icon.size(size)
-        .style(|t: &Theme| iced::widget::text::Style {
-            color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
-        })
-        .into()
-}
-
-/// Lucide icon coloured by an arbitrary theme-driven closure. Used
-/// where colour depends on widget state (nav active / disabled,
-/// op success / failure, title-bar hover).
-fn lucide_icon(
-    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
-    size: f32,
-    color: impl Fn(&Theme) -> iced::Color + 'static,
-) -> Element<'static, Message> {
-    icon.size(size)
-        .style(move |t: &Theme| iced::widget::text::Style {
-            color: Some(color(t)),
-        })
-        .into()
-}
-
 const WIZARD_CARD_HEIGHT: f32 = 180.0;
 
 /// Fixed sub-row height (~2 lines at size 11) so cards line up across
 /// translations.
 const SUB_ROW_HEIGHT: f32 = 32.0;
-
-fn icon_option_card_sub(
-    icon: Element<'static, Message>,
-    label: &str,
-    sub: &str,
-    selected: bool,
-    msg: Message,
-) -> Element<'static, Message> {
-    // Sub text centres vertically inside the fixed box — top-aligning
-    // left long gaps between short descs and the label above.
-    let sub_text: Element<'static, Message> = if sub.is_empty() {
-        text(" ").size(11).width(Length::Fill).center().into()
-    } else {
-        text(sub.to_string())
-            .size(11)
-            .style(muted_style)
-            .width(Length::Fill)
-            .center()
-            .into()
-    };
-    let sub_row = container(sub_text)
-        .width(Length::Fill)
-        .height(Length::Fixed(SUB_ROW_HEIGHT))
-        .align_y(iced::alignment::Vertical::Center);
-    // Explicit icon→label vs label→desc gaps — a single `spacing` read
-    // unbalanced because the centred sub-row adds ~9 px padding.
-    let content = column![
-        icon_tile(icon),
-        Space::new().height(14),
-        text(label.to_string())
-            .size(13)
-            .style(on_surface_style)
-            .width(Length::Fill)
-            .center(),
-        Space::new().height(4),
-        sub_row,
-    ]
-    .spacing(0)
-    .align_x(iced::Alignment::Center);
-
-    button(
-        container(content)
-            .padding([20, 16])
-            .width(Length::Fill)
-            .height(WIZARD_CARD_HEIGHT)
-            .center_x(Length::Fill)
-            .center_y(WIZARD_CARD_HEIGHT)
-            .style(move |t: &Theme| sel_card_style(t, selected)),
-    )
-    .on_press(msg)
-    .padding(0)
-    .width(Length::Fill)
-    .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected))
-    .into()
-}
-
-/// Disabled twin of [`icon_option_card_sub`]. Same icon / label / sub
-/// layout, but rendered without an `on_press` so the button widget
-/// reports `button::Status::Disabled` and the text reads as muted.
-/// Used by the Root wizard to grey out family / mode cards that the
-/// connected device's model doesn't support (e.g. Magisk on TB320FC).
-fn icon_option_card_sub_disabled(
-    icon: Element<'static, Message>,
-    label: &str,
-    sub: &str,
-) -> Element<'static, Message> {
-    let sub_text: Element<'static, Message> = if sub.is_empty() {
-        text(" ").size(11).width(Length::Fill).center().into()
-    } else {
-        text(sub.to_string())
-            .size(11)
-            .style(muted_style)
-            .width(Length::Fill)
-            .center()
-            .into()
-    };
-    let sub_row = container(sub_text)
-        .width(Length::Fill)
-        .height(Length::Fixed(SUB_ROW_HEIGHT))
-        .align_y(iced::alignment::Vertical::Center);
-    let content = column![
-        icon_tile(icon),
-        Space::new().height(14),
-        text(label.to_string())
-            .size(13)
-            .style(muted_style)
-            .width(Length::Fill)
-            .center(),
-        Space::new().height(4),
-        sub_row,
-    ]
-    .spacing(0)
-    .align_x(iced::Alignment::Center);
-
-    button(
-        container(content)
-            .padding([20, 16])
-            .width(Length::Fill)
-            .height(WIZARD_CARD_HEIGHT)
-            .center_x(Length::Fill)
-            .center_y(WIZARD_CARD_HEIGHT)
-            .style(|t: &Theme| sel_card_style(t, false)),
-    )
-    // No `on_press` — iced reports Status::Disabled, the style hook
-    // below renders the faded surface.
-    .padding(0)
-    .width(Length::Fill)
-    .style(|t: &Theme, _status| {
-        let p = pal_of(t);
-        // Stronger M3 disabled affordance: dimmer surface + a thin
-        // outline_variant border so the inert card reads distinctly
-        // against neighbouring active cards (alpha-only fade was
-        // ambiguous on themes with a dim base surface).
-        button::Style {
-            background: Some(with_alpha(p.surface_container_low, 0.5).into()),
-            text_color: with_alpha(p.on_surface, 0.38),
-            border: iced::Border {
-                color: with_alpha(p.outline_variant, 0.6),
-                width: 1.0,
-                radius: theme::shape::MD.into(),
-            },
-            ..Default::default()
-        }
-    })
-    .into()
-}
-
-/// Wrap a wizard icon. Icons already carry their own rounded-rect bg,
-/// so no outer border.
-fn icon_tile(icon: Element<'static, Message>) -> Element<'static, Message> {
-    container(icon).padding(0).into()
-}
 
 fn wizard_nav_generic<'a>(
     can_back: bool,
@@ -4588,84 +3949,6 @@ fn wizard_nav_generic<'a>(
             .style(|t: &Theme| panel_bg(t)),
     ]
     .into()
-}
-
-// -- Shared styles --------------------------------------------------------
-
-/// Shared `Rule` styling so every shell-level divider (window
-/// outline, title-bar bottom, sidebar-content split, status-bar
-/// top) reads as the same hairline. Default rule color is
-/// `background.strong` from iced's extended palette which is
-/// noticeably darker than the M3 `outline_variant` used elsewhere.
-fn shell_rule_style(t: &Theme) -> iced::widget::rule::Style {
-    iced::widget::rule::Style {
-        color: pal_of(t).outline_variant,
-        radius: 0.0.into(),
-        fill_mode: iced::widget::rule::FillMode::Full,
-        snap: true,
-    }
-}
-
-/// Border-less surface fill for the sidebar / status-bar shell
-/// panels. Adjacent shells double up `iced::Border` lines when
-/// each side has its own 1-px outline; per M3 nav-rail / bottom-app-
-/// bar guidance each shared edge should carry exactly one divider,
-/// drawn as an explicit `Rule` widget so the corners read as
-/// clean T-junctions instead of a 2-px overlap.
-fn panel_bg(t: &Theme) -> container::Style {
-    let p = pal_of(t);
-    container::Style {
-        background: Some(p.surface_container_low.into()),
-        ..Default::default()
-    }
-}
-
-/// Inner container style for option / Browse cards. Transparent
-/// background — the outer button paints a hover-aware fill via
-/// [`sel_card_btn_style`]; this style only renders the rounded border
-/// so the visual outline survives without blocking the button's
-/// interactive bg.
-fn sel_card_style(t: &Theme, selected: bool) -> container::Style {
-    let p = pal_of(t);
-    container::Style {
-        background: None,
-        border: iced::Border {
-            color: if selected {
-                p.primary
-            } else {
-                p.outline_variant
-            },
-            width: if selected { 2.0 } else { 1.0 },
-            radius: theme::shape::MD.into(),
-        },
-        ..Default::default()
-    }
-}
-
-/// Outer button style for option / Browse cards. Drives the per-state
-/// background (resting / hover / selected) so wizard cards visibly
-/// react to mouse hover. Border carries the same MD radius as
-/// [`sel_card_style`] so the bg fill clips to the rounded shape
-/// instead of bleeding out as a square.
-fn sel_card_btn_style(t: &Theme, status: button::Status, selected: bool) -> button::Style {
-    let p = pal_of(t);
-    let hovered = matches!(status, button::Status::Hovered);
-    let bg = if selected {
-        with_alpha(p.primary, 0.12)
-    } else if hovered {
-        with_alpha(p.primary, theme::state::HOVER)
-    } else {
-        p.surface_container
-    };
-    button::Style {
-        background: Some(bg.into()),
-        text_color: p.on_surface,
-        border: iced::Border {
-            radius: theme::shape::MD.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
 }
 
 #[cfg(test)]
