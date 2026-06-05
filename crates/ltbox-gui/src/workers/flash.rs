@@ -9,6 +9,26 @@ use crate::{
 };
 use ltbox_core::{live, tr_args};
 
+fn reboot_fastboot_to_system_after_pre_edl_abort(log: &mut Vec<String>, reason: &str) {
+    if !ltbox_device::fastboot::FastbootDevice::check_device() {
+        return;
+    }
+    ltbox_core::live!(
+        log,
+        "[Fastboot] Abort before EDL; rebooting device to system: {reason}"
+    );
+    match ltbox_device::fastboot::FastbootDevice::open() {
+        Ok(mut dev) => {
+            if let Err(e) = dev.reboot() {
+                ltbox_core::live!(log, "[Fastboot] Reboot to system failed: {e}");
+            }
+        }
+        Err(e) => {
+            ltbox_core::live!(log, "[Fastboot] Reboot skipped: open failed: {e}");
+        }
+    }
+}
+
 pub(crate) fn flash_worker(
     cfg: WorkflowConfig,
     conn: ConnectionStatus,
@@ -223,10 +243,10 @@ pub(crate) fn flash_worker(
                                     fingerprint = fingerprint
                                 )
                             );
-                            return Err(
-                                "Flash: firmware/device model mismatch — aborting before EDL"
-                                    .into(),
-                            );
+                            let err = "Flash: firmware/device model mismatch - aborting before EDL"
+                                .to_string();
+                            reboot_fastboot_to_system_after_pre_edl_abort(&mut log, &err);
+                            return Err(err);
                         }
                     }
                 }
@@ -390,9 +410,10 @@ pub(crate) fn flash_worker(
                 ltbox_core::i18n::tr("live_region_ready")
             );
             let Some(device_region) = cfg.device_region else {
-                return Err(
-                    "Region conversion requested but no device region was selected".to_string(),
-                );
+                let err =
+                    "Region conversion requested but no device region was selected".to_string();
+                reboot_fastboot_to_system_after_pre_edl_abort(&mut log, &err);
+                return Err(err);
             };
             let target = device_region.to_region_target();
             let output_dir = ltbox_core::app_paths::auto_output_dir_for("region_convert");
@@ -458,7 +479,11 @@ pub(crate) fn flash_worker(
                         ltbox_core::i18n::tr("live_region_source_matches_target")
                     );
                 }
-                Err(e) => return Err(format!("Region conversion failed: {e}")),
+                Err(e) => {
+                    let err = format!("Region conversion failed: {e}");
+                    reboot_fastboot_to_system_after_pre_edl_abort(&mut log, &err);
+                    return Err(err);
+                }
             }
         } else {
             ltbox_core::live!(
@@ -705,12 +730,21 @@ pub(crate) fn flash_worker(
                 continue;
             };
 
-            // Signing-key resolution: only the two stock
-            // testkeys embedded in avbtool-rs. Any image
-            // signed by an unknown pubkey is skipped.
-            let key_from_map = ltbox_patch::key_map::key_spec_for_pubkey(
+            // Non-TB323FU rollback bypass only supports stock keys in KEY_MAP.
+            // TB323FU is handled above by the GBL/efisp path.
+            let key_from_map = match ltbox_patch::key_map::key_spec_for_signed_pubkey(
                 analysis.image_info.public_key_sha1.as_deref(),
-            );
+            ) {
+                Ok(spec) => spec,
+                Err(sha) => {
+                    let err = format!(
+                        "{log_name}: signing key pubkey {sha} is not in bundled KEY_MAP; aborting before firmware writes."
+                    );
+                    ltbox_core::live!(log, "[ARB] {err}");
+                    session.reset_tolerant(&mut log);
+                    return Err(err);
+                }
+            };
 
             let patched = arb_work_dir.join(format!("{log_name}.arb.img"));
             let is_vbmeta = log_name.starts_with("vbmeta");
@@ -729,22 +763,11 @@ pub(crate) fn flash_worker(
                         .map_err(|e| format!("resign {log_name}: {e}"))
                     }
                     None => {
-                        ltbox_core::live!(
-                            log,
-                            "[ARB] {}",
-                            tr_args!(
-                                "live_arb_skip_unknown_pubkey",
-                                name = log_name,
-                                key = format!("{:?}", analysis.image_info.public_key_sha1)
-                            )
-                        );
+                        ltbox_core::live!(log, "[ARB] {log_name}: unsigned image; skipping resign");
                         continue;
                     }
                 }
             } else if analysis.image_info.algorithm == "NONE" {
-                // NONE algorithm: add_hash_footer accepts
-                // an Option<&str> spec; pass map result
-                // (None is fine).
                 std::fs::copy(&source, &patched).map_err(|e| format!("copy chained: {e}"))?;
                 ltbox_patch::avb::add_hash_footer(
                     &patched,
@@ -763,15 +786,7 @@ pub(crate) fn flash_worker(
                 )
                 .map_err(|e| format!("resign {log_name}: {e}"))
             } else {
-                ltbox_core::live!(
-                    log,
-                    "[ARB] {}",
-                    tr_args!(
-                        "live_arb_no_signing_key",
-                        name = log_name,
-                        key = format!("{:?}", analysis.image_info.public_key_sha1)
-                    )
-                );
+                ltbox_core::live!(log, "[ARB] {log_name}: unsigned image; skipping resign");
                 continue;
             };
             if let Err(e) = patch_result {

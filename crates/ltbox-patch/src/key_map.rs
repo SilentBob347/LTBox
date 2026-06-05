@@ -29,6 +29,21 @@ pub fn key_spec_for_pubkey(pubkey_sha1: Option<&str>) -> Option<&'static str> {
         .map(|(_, spec)| *spec)
 }
 
+/// Resolve a signed pubkey to a bundled key.
+///
+/// Missing / empty pubkey means unsigned and is allowed. A present but unknown
+/// pubkey is a mismatch and must abort before writes.
+pub fn key_spec_for_signed_pubkey(
+    pubkey_sha1: Option<&str>,
+) -> Result<Option<&'static str>, String> {
+    let Some(sha1) = pubkey_sha1.map(str::trim).filter(|sha| !sha.is_empty()) else {
+        return Ok(None);
+    };
+    key_spec_for_pubkey(Some(sha1))
+        .map(Some)
+        .ok_or_else(|| sha1.to_string())
+}
+
 /// True iff the bundled map knows a key for this pubkey SHA-1.
 pub fn has_key_for(pubkey_sha1: &str) -> bool {
     KEY_MAP
@@ -69,6 +84,24 @@ mod tests {
     fn empty_or_missing_pubkey_returns_none() {
         assert!(key_spec_for_pubkey(Some("")).is_none());
         assert!(key_spec_for_pubkey(None).is_none());
+    }
+
+    #[test]
+    fn signed_pubkey_guard_accepts_key_map_and_allows_unsigned() {
+        assert_eq!(
+            key_spec_for_signed_pubkey(Some("2597c218aae470a130f61162feaae70afd97f011")),
+            Ok(Some("testkey_rsa4096"))
+        );
+        assert_eq!(
+            key_spec_for_signed_pubkey(Some("cdbb77177f731920bbe0a0f94f84d9038ae0617d")),
+            Ok(Some("testkey_rsa2048"))
+        );
+        assert_eq!(key_spec_for_signed_pubkey(None), Ok(None));
+        assert_eq!(key_spec_for_signed_pubkey(Some("")), Ok(None));
+        assert_eq!(
+            key_spec_for_signed_pubkey(Some("deadbeef")),
+            Err("deadbeef".to_string())
+        );
     }
 
     #[test]

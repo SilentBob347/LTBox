@@ -31,33 +31,35 @@ pub use ksu::{
 pub use magisk::{download_latest_magisk_apk, download_magisk_apk_nightly};
 
 /// Pick the avbtool-rs key_spec for re-signing.
-/// `None` → unsigned (NONE algorithm); `Some(sha)` → `KEY_MAP` lookup,
-/// hard error on miss (signing key rolled — add to the map).
+/// Missing pubkey means unsigned; unknown signed pubkeys abort before writes.
 fn resolve_signing_key(
     pubkey_sha1: Option<&str>,
     image_name: &str,
     log: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    let Some(sha) = pubkey_sha1 else {
-        ltbox_core::live!(
-            log,
-            "[AVB] {image_name} {}",
-            tr("log_avb_unsigned_skip_key")
-        );
-        return Ok(None);
-    };
-    if let Some(spec) = key_map::key_spec_for_pubkey(Some(sha)) {
-        ltbox_core::live!(
-            log,
-            "[AVB] {image_name} {} {sha} → {} {spec}",
-            tr("log_avb_pubkey"),
-            tr("log_avb_bundled")
-        );
-        return Ok(Some(spec.to_string()));
+    match key_map::key_spec_for_signed_pubkey(pubkey_sha1) {
+        Ok(Some(spec)) => {
+            let sha = pubkey_sha1.unwrap_or("").trim();
+            ltbox_core::live!(
+                log,
+                "[AVB] {image_name} {} {sha} → {} {spec}",
+                tr("log_avb_pubkey"),
+                tr("log_avb_bundled")
+            );
+            Ok(Some(spec.to_string()))
+        }
+        Ok(None) => {
+            ltbox_core::live!(
+                log,
+                "[AVB] {image_name} {}",
+                tr("log_avb_unsigned_skip_key")
+            );
+            Ok(None)
+        }
+        Err(sha) => Err(LtboxError::Avb(format!(
+            "{image_name}: signing key pubkey {sha} is not in bundled KEY_MAP; aborting before flashing."
+        ))),
     }
-    Err(LtboxError::Avb(format!(
-        "No signing key available for {image_name}: stock pubkey_sha1 = {sha} is not in the bundled KEY_MAP. If the device's signing key has rolled, add it to `ltbox_patch::key_map::KEY_MAP`."
-    )))
 }
 
 /// Provider families carried through the GUI wizard state.
@@ -515,7 +517,7 @@ pub fn build_patched_artifacts(
         );
 
         // Rebuild vbmeta with fresh hash descriptor. vbmeta pubkey may differ
-        // from boot pubkey — second `KEY_MAP` lookup against the stock vbmeta.
+        // from boot pubkey, so verify it separately against KEY_MAP.
         let stock_vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
         let vbmeta_key = resolve_signing_key(
             stock_vbmeta_info.public_key_sha1.as_deref(),

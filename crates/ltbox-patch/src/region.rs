@@ -214,22 +214,29 @@ pub fn build_region_converted_boot_chain(
     );
 
     let vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
-    let key_spec = key_map::key_spec_for_pubkey(vbmeta_info.public_key_sha1.as_deref())
-        .ok_or_else(|| {
-            LtboxError::Avb(format!(
+    let vbmeta_out = output_dir.join("vbmeta.img");
+    match key_map::key_spec_for_signed_pubkey(vbmeta_info.public_key_sha1.as_deref()) {
+        Ok(Some(key_spec)) => {
+            avb::rebuild_vbmeta_with_chained_images(
+                &vbmeta_out,
+                &vbmeta_src,
+                &[vendor_boot_out.as_path()],
+                key_spec,
+                Some(vbmeta_info.algorithm.as_str()),
+            )?;
+            info!("Rebuilt vbmeta chain: {}", vbmeta_out.display());
+        }
+        Ok(None) => {
+            fs::copy(&vbmeta_src, &vbmeta_out)?;
+            info!("vbmeta is unsigned; copied stock blob");
+        }
+        Err(_) => {
+            return Err(LtboxError::Avb(format!(
                 "vbmeta signing key not recognized (pubkey {:?}); only bundled Lenovo testkeys are supported",
                 vbmeta_info.public_key_sha1
-            ))
-        })?;
-    let vbmeta_out = output_dir.join("vbmeta.img");
-    avb::rebuild_vbmeta_with_chained_images(
-        &vbmeta_out,
-        &vbmeta_src,
-        &[vendor_boot_out.as_path()],
-        key_spec,
-        Some(vbmeta_info.algorithm.as_str()),
-    )?;
-    info!("Rebuilt vbmeta chain: {}", vbmeta_out.display());
+            )));
+        }
+    }
 
     Ok(RegionBootChainBuild::Built(RegionBootChainOutput {
         vendor_boot: vendor_boot_out,
