@@ -9,7 +9,14 @@ use crate::{
 };
 use ltbox_core::{live, tr_args};
 
-fn reboot_fastboot_to_system_after_pre_edl_abort(log: &mut Vec<String>) {
+fn should_reboot_fastboot_to_system_after_pre_edl_abort(started_in_fastboot: bool) -> bool {
+    !started_in_fastboot
+}
+
+fn reboot_fastboot_to_system_after_pre_edl_abort(log: &mut Vec<String>, started_in_fastboot: bool) {
+    if !should_reboot_fastboot_to_system_after_pre_edl_abort(started_in_fastboot) {
+        return;
+    }
     if !ltbox_device::fastboot::FastbootDevice::check_device() {
         return;
     }
@@ -48,6 +55,7 @@ pub(crate) fn flash_worker(
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let edl_start = matches!(conn, ConnectionStatus::Edl);
+    let started_in_fastboot = matches!(conn, ConnectionStatus::Fastboot);
     let fw_dir = std::path::Path::new(&fw_folder);
 
     // 1. Validate firmware folder
@@ -256,7 +264,10 @@ pub(crate) fn flash_worker(
                                 )
                             );
                             let err = ltbox_core::i18n::tr("err_flash_model_mismatch_pre_edl");
-                            reboot_fastboot_to_system_after_pre_edl_abort(&mut log);
+                            reboot_fastboot_to_system_after_pre_edl_abort(
+                                &mut log,
+                                started_in_fastboot,
+                            );
                             return Err(err);
                         }
                     }
@@ -422,7 +433,7 @@ pub(crate) fn flash_worker(
             );
             let Some(device_region) = cfg.device_region else {
                 let err = ltbox_core::i18n::tr("err_region_missing_device_region");
-                reboot_fastboot_to_system_after_pre_edl_abort(&mut log);
+                reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
                 return Err(err);
             };
             let target = device_region.to_region_target();
@@ -491,7 +502,7 @@ pub(crate) fn flash_worker(
                 }
                 Err(e) => {
                     let err = tr_args!("err_region_conversion_failed", error = e.to_string());
-                    reboot_fastboot_to_system_after_pre_edl_abort(&mut log);
+                    reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
                     return Err(err);
                 }
             }
@@ -1328,4 +1339,19 @@ pub(crate) fn flash_worker(
     session.reset_tolerant(&mut log);
     live!(log, "[Flash] {}", ll.flash_completed);
     Ok(log)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_reboot_fastboot_to_system_after_pre_edl_abort;
+
+    #[test]
+    fn pre_edl_abort_reboots_when_flash_flow_entered_fastboot() {
+        assert!(should_reboot_fastboot_to_system_after_pre_edl_abort(false));
+    }
+
+    #[test]
+    fn pre_edl_abort_keeps_fastboot_when_flash_started_in_fastboot() {
+        assert!(!should_reboot_fastboot_to_system_after_pre_edl_abort(true));
+    }
 }
