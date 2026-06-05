@@ -596,6 +596,7 @@
   "nav_advanced": "Advanced",
   "nav_dashboard": "Dashboard",
   "nav_flash": "Flash Firmware",
+  "nav_flash_sidebar": "Flash Firmware",
   "nav_reboot": "Reboot",
   "nav_root": "Root Device",
   "nav_section_tools": "TOOLS",

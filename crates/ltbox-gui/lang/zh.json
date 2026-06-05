@@ -596,6 +596,7 @@
   "nav_advanced": "高级",
   "nav_dashboard": "仪表盘",
   "nav_flash": "刷写固件",
+  "nav_flash_sidebar": "刷写固件",
   "nav_reboot": "重启",
   "nav_root": "获取 Root",
   "nav_section_tools": "工具",

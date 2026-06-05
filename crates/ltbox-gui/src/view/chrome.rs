@@ -307,7 +307,7 @@ impl App {
         for &v in NAV_MAIN {
             col = col.push(nav_btn(
                 v,
-                self.t(v.label_key()),
+                self.t(v.sidebar_label_key()),
                 self.current_view == v,
                 self.is_nav_enabled(v),
                 label_alpha,
@@ -317,7 +317,7 @@ impl App {
         for &v in NAV_TOOLS {
             col = col.push(nav_btn(
                 v,
-                self.t(v.label_key()),
+                self.t(v.sidebar_label_key()),
                 self.current_view == v,
                 self.is_nav_enabled(v),
                 label_alpha,

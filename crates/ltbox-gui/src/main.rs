@@ -450,6 +450,13 @@ impl View {
         }
     }
 
+    fn sidebar_label_key(&self) -> &'static str {
+        match self {
+            Self::Flash => "nav_flash_sidebar",
+            _ => self.label_key(),
+        }
+    }
+
     fn nav_icon(&self) -> iced::widget::Text<'static, Theme, iced::Renderer> {
         match self {
             Self::Dashboard => icon::nav_dashboard(),
@@ -4116,6 +4123,23 @@ mod tests {
         assert_eq!(en.t("nav_dashboard"), "Dashboard");
         assert_eq!(ko.t("nav_dashboard"), "대시보드");
         assert_eq!(ja.t("nav_dashboard"), "ダッシュボード");
+    }
+
+    #[test]
+    fn flash_sidebar_uses_sidebar_specific_label_key() {
+        assert_eq!(View::Flash.sidebar_label_key(), "nav_flash_sidebar");
+        assert_eq!(View::Flash.label_key(), "nav_flash");
+        assert_eq!(
+            View::Dashboard.sidebar_label_key(),
+            View::Dashboard.label_key()
+        );
+    }
+
+    #[test]
+    fn japanese_flash_sidebar_label_is_shortened() {
+        let ja = Translations::load(Language::Ja);
+        assert_eq!(ja.t("nav_flash"), "ファームウェアをフラッシュ");
+        assert_eq!(ja.t("nav_flash_sidebar"), "フラッシュ");
     }
 
     #[test]
