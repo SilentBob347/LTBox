@@ -131,17 +131,18 @@ pub(crate) fn flash_worker(
     // ARB=ON abort on every PRC↔ROW flash that
     // started from the ADB-connected state, even
     // though Fastboot is reachable in principle.
-    let probe_fastboot = || -> (Option<u64>, bool, Option<String>) {
+    let probe_fastboot = || -> (Option<u64>, bool, Option<String>, String) {
         match ltbox_device::fastboot::FastbootDevice::open() {
             Ok(mut dev) => match dev.get_all_vars() {
                 Ok(v) => (
                     ltbox_patch::rollback::compute_device_rollback_index(&v.rollback_indices),
                     true,
                     v.current_slot.clone(),
+                    v.raw_getvar_all.clone(),
                 ),
-                Err(_) => (None, false, None),
+                Err(_) => (None, false, None, String::new()),
             },
-            Err(_) => (None, false, None),
+            Err(_) => (None, false, None, String::new()),
         }
     };
     let mut probe = probe_fastboot();
@@ -178,7 +179,7 @@ pub(crate) fn flash_worker(
             }
         }
     }
-    let (device_rollback_index, fastboot_reachable, active_slot) = probe;
+    let (device_rollback_index, fastboot_reachable, active_slot, getvar_raw) = probe;
 
     // 3. Scan firmware folder
     let vendor_boot = fw_dir.join("vendor_boot.img");
@@ -1082,6 +1083,12 @@ pub(crate) fn flash_worker(
             ltbox_core::app_paths::backup_dir_for(&format!("backup_critical_{ts}"));
         std::fs::create_dir_all(&critical_backup)
             .map_err(|e| tr_args!("err_country_backup_dir_failed", error = e.to_string()))?;
+        // Stash the bootloader's `getvar all` (incl. serialno) next to the
+        // backed-up partitions — revives + supersedes v2's `sn.txt`. Empty on
+        // an EDL-start flash (no fastboot probe); best-effort, never fatal.
+        if !getvar_raw.is_empty() {
+            let _ = std::fs::write(critical_backup.join("getvar.txt"), &getvar_raw);
+        }
         // devinfo + persist resolve through the hardcoded
         // LUN map; start/num come from the device GPT via
         // `dump_partition_by_name`. Avoids re-decrypting

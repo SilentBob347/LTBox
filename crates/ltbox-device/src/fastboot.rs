@@ -37,6 +37,10 @@ pub struct FastbootVars {
     pub ram_gb: Option<String>,
     pub storage_gb: Option<String>,
     pub rollback_indices: std::collections::HashMap<u32, u64>,
+    /// Raw `getvar:all` dump (the INFO lines joined), with a `serialno:` line
+    /// guaranteed at the top. Saved as `getvar.txt` in the Flash critical
+    /// backup — revives + supersedes LTBox v2's `sn.txt`.
+    pub raw_getvar_all: String,
 }
 
 pub struct FastbootDevice {
@@ -277,6 +281,16 @@ impl FastbootDevice {
                     }
                 }
             }
+            // Preserve the raw dump for `getvar.txt`. Guarantee a `serialno:`
+            // line at the top (some bootloaders omit it from `getvar:all`, but
+            // it is fetched separately above) so the backup always records it.
+            let mut raw = lines.join("\n");
+            if let Some(sn) = &vars.serialno
+                && !lines.iter().any(|l| l.starts_with("serialno:"))
+            {
+                raw = format!("serialno:{sn}\n{raw}");
+            }
+            vars.raw_getvar_all = raw;
         }
         // product = market_name in GUI
         if let Ok(p) = self.get_model() {
