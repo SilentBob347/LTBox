@@ -240,7 +240,7 @@ impl App {
             Message::OperationError(e) => {
                 self.end_op();
                 self.error_msg = Some(e.clone());
-                self.log_push(format!("ERROR: {e}"));
+                self.log_push(tr_args!("log_operation_error", error = e.to_string()));
             }
             Message::DismissError => self.error_msg = None,
             Message::KillAdbServer => {

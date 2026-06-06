@@ -2621,6 +2621,8 @@ impl Default for App {
         };
         theme::set_runtime_theme(theme_seed, dark_mode);
         install_core_translator(lang);
+        let translations = Translations::load(lang);
+        let ready_log = translations.t("log_ready").to_string();
         Self {
             window_id: None,
             current_view: View::default(),
@@ -2628,7 +2630,7 @@ impl Default for App {
             theme_choice,
             theme_seed,
             settings: SettingsState { language: lang },
-            translations: Translations::load(lang),
+            translations,
             root: RootWizard::default(),
             flash: FlashWizard::default(),
             sysupdate: SysUpdateWizard::default(),
@@ -2674,8 +2676,8 @@ impl Default for App {
             busy_view: None,
             recent_paths: persisted.recent_paths.clone(),
             default_loader_path: persisted.default_loader_path.clone(),
-            log_lines: vec!["Ready.".to_string()],
-            log_editor: iced::widget::text_editor::Content::with_text("Ready."),
+            log_lines: vec![ready_log.clone()],
+            log_editor: iced::widget::text_editor::Content::with_text(&ready_log),
             log_dirty: false,
             image_info_log: String::new(),
             image_info_log_editor: iced::widget::text_editor::Content::with_text(""),

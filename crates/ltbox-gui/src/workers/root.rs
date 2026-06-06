@@ -573,11 +573,17 @@ pub(crate) fn root_worker(
             // devices return, so this never masks the real
             // error — failures here are only logged.
             let mut reset_log: Vec<String> = Vec::new();
-            reset_log.push(format!("[EDL] attempting device reset after error: {e}"));
+            reset_log.push(format!(
+                "[EDL] {}",
+                tr_args!("log_edl_attempt_reset_after_error", error = e.to_string())
+            ));
             if let Ok(mut s) = ltbox_device::edl::EdlSession::open(&loader, false, &mut reset_log) {
                 s.reset_tolerant(&mut reset_log);
             } else {
-                reset_log.push("[EDL] reset skipped — could not re-open EDL session".into());
+                reset_log.push(format!(
+                    "[EDL] {}",
+                    ltbox_core::i18n::tr("log_edl_reset_reopen_skipped")
+                ));
             }
             for line in reset_log {
                 println!("{line}");

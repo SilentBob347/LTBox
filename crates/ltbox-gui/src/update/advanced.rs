@@ -250,8 +250,10 @@ impl App {
                 self.begin_op(View::Advanced);
                 self.error_msg = None;
                 let conn = self.connection;
-                self.log_lines
-                    .push("[DumpParts] Scanning partition tables...".to_string());
+                self.log_push(format!(
+                    "[DumpParts] {}",
+                    ltbox_core::i18n::tr("live_dumpparts_scan_start")
+                ));
                 return task_heavy(
                     move || dump_parts_scan(conn, loader),
                     |__v| Message::DumpParts(DumpPartsMsg::DumpPartsScanDone(__v)),
@@ -317,10 +319,13 @@ impl App {
                     self.error_msg = None;
                     let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
                     let rows = self.dump_parts.selected_rows();
-                    self.log_lines.push(format!(
-                        "[DumpParts] Dumping {} partition(s) to {}",
-                        rows.len(),
-                        folder
+                    self.log_push(format!(
+                        "[DumpParts] {}",
+                        tr_args!(
+                            "live_dumpparts_batch_start",
+                            count = rows.len().to_string(),
+                            path = folder
+                        )
                     ));
                     return task_heavy(
                         move || dump_parts_execute(loader, folder, rows),
@@ -428,8 +433,10 @@ impl App {
                 self.flash_parts.scan_error = None;
                 self.flash_parts.rows.clear();
                 let conn = self.connection;
-                self.log_lines
-                    .push("[FlashParts] Scanning partitions...".to_string());
+                self.log_push(format!(
+                    "[FlashParts] {}",
+                    ltbox_core::i18n::tr("live_flashparts_scan_start")
+                ));
                 return task_heavy(
                     move || flash_parts_scan(conn, loader),
                     |__v| Message::FlashParts(FlashPartsMsg::FlashPartsScanDone(__v)),
@@ -479,8 +486,13 @@ impl App {
                     .iter()
                     .filter(|r| r.state == FlashRowState::Erase)
                     .count();
-                self.log_lines.push(format!(
-                    "[FlashParts] Flashing {flash_cnt} partition(s), erasing {erase_cnt}"
+                self.log_push(format!(
+                    "[FlashParts] {}",
+                    tr_args!(
+                        "live_flashparts_batch_start",
+                        flash_count = flash_cnt.to_string(),
+                        erase_count = erase_cnt.to_string()
+                    )
                 ));
                 return task_heavy(
                     move || flash_parts_execute(loader, rows),
@@ -722,7 +734,10 @@ impl App {
                     // so the user can see what was tried — silent
                     // no-op was the old behaviour and made missing
                     // xdg-open invisible on Linux.
-                    self.log_push(format!("[GUI] Open Folder failed: {err}"));
+                    self.log_push(format!(
+                        "[GUI] {}",
+                        tr_args!("log_gui_open_folder_failed", error = err)
+                    ));
                 }
                 Task::none()
             }
@@ -853,7 +868,10 @@ impl App {
                     }
                     Err(e) => {
                         self.error_msg = Some(e.clone());
-                        self.set_image_info_log(format!("ERROR: {e}"));
+                        self.set_image_info_log(tr_args!(
+                            "log_operation_error",
+                            error = e.to_string()
+                        ));
                     }
                 }
                 Task::none()
@@ -899,7 +917,7 @@ impl App {
                     }
                     Err(e) => {
                         self.error_msg = Some(e.clone());
-                        self.log_push(format!("ERROR: {e}"));
+                        self.log_push(tr_args!("log_operation_error", error = e.to_string()));
                     }
                 }
                 self.end_op();

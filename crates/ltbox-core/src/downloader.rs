@@ -177,7 +177,15 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
         // APKs) sat invisible until `*ExecDone` flushed the Vec.
         match event {
             DownloadEvent::Start => {
-                crate::live!(log, "[dl] {display_name} ← {url_for_start}");
+                crate::live!(
+                    log,
+                    "[dl] {}",
+                    crate::tr_args!(
+                        "live_download_start",
+                        name = &display_name,
+                        url = &url_for_start
+                    )
+                );
             }
             DownloadEvent::ProgressPct {
                 downloaded_mb,
@@ -188,7 +196,16 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
                 let bar = render_progress_bar(pct as u32, 24);
                 crate::live!(
                     log,
-                    "[dl] {display_name} {bar} {pct:>3}% ({downloaded_mb:.1}/{total_mb:.1} MB, {speed_mbps:.1} MB/s)"
+                    "[dl] {}",
+                    crate::tr_args!(
+                        "live_download_progress_pct",
+                        name = &display_name,
+                        bar = &bar,
+                        pct = format!("{pct:>3}"),
+                        downloaded = format!("{downloaded_mb:.1}"),
+                        total = format!("{total_mb:.1}"),
+                        speed = format!("{speed_mbps:.1}")
+                    )
                 );
             }
             DownloadEvent::ProgressChunked {
@@ -197,7 +214,13 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
             } => {
                 crate::live!(
                     log,
-                    "[dl] {display_name} {downloaded_mb:.1} MB ({speed_mbps:.1} MB/s)"
+                    "[dl] {}",
+                    crate::tr_args!(
+                        "live_download_progress_chunked",
+                        name = &display_name,
+                        downloaded = format!("{downloaded_mb:.1}"),
+                        speed = format!("{speed_mbps:.1}")
+                    )
                 );
             }
             DownloadEvent::Done {
@@ -207,7 +230,14 @@ pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Re
                 let avg = downloaded_mb / elapsed_s.max(0.001);
                 crate::live!(
                     log,
-                    "[dl] {display_name} done ({downloaded_mb:.1} MB in {elapsed_s:.1}s, avg {avg:.1} MB/s)"
+                    "[dl] {}",
+                    crate::tr_args!(
+                        "live_download_done",
+                        name = &display_name,
+                        size = format!("{downloaded_mb:.1}"),
+                        elapsed = format!("{elapsed_s:.1}"),
+                        avg = format!("{avg:.1}")
+                    )
                 );
             }
         }

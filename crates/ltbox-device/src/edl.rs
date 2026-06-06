@@ -385,10 +385,7 @@ impl EdlSession {
                 if !timed_out {
                     return Err(EdlError::Session(format!("Sahara failed: {e}")));
                 }
-                ltbox_core::live!(
-                    log,
-                    "[EDL] Sahara HELLO timed out — retrying with skip-hello fallback (PBL HELLO may be consumed / not emitted on this firmware)"
-                );
+                ltbox_core::live!(log, "[EDL] {}", tr("log_edl_sahara_skip_hello_retry"));
                 qdl::sahara::sahara_send_hello_rsp(
                     &mut dev,
                     qdl::sahara::SaharaMode::WaitingForImage,
@@ -908,7 +905,11 @@ impl EdlSession {
     /// remaining action is booting the device back to system.
     pub fn reset_tolerant(&mut self, log: &mut Vec<String>) {
         if let Err(e) = self.reset(log) {
-            ltbox_core::live!(log, "[EDL] Reboot command returned after handoff: {e}");
+            ltbox_core::live!(
+                log,
+                "[EDL] {}",
+                tr("log_edl_reboot_handoff_error").replace("{error}", &e.to_string())
+            );
         }
     }
 

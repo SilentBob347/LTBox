@@ -10,7 +10,7 @@ use kptools::bootimg;
 use kptools::patch::{self, ExtraConfig, PatchArgs};
 use kptools::preset::ExtraType;
 
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 const SUPERKEY_MIN: usize = 8;
 const SUPERKEY_MAX: usize = 63;
@@ -69,9 +69,12 @@ pub fn patch_boot(
 
     ltbox_core::live!(
         log,
-        "[APatch] extract_kernel {} -> {}",
-        boot_in.display(),
-        kernel_ori.display()
+        "[APatch] {}",
+        tr_args!(
+            "log_apatch_extract_kernel",
+            input = boot_in.display(),
+            output = kernel_ori.display()
+        )
     );
     bootimg::extract_kernel(&boot_in, &kernel_ori)
         .map_err(|e| LtboxError::Patch(format!("kptools extract_kernel failed: {e}")))?;
@@ -110,14 +113,20 @@ pub fn patch_boot(
         } else if !has_kallsyms {
             ltbox_core::live!(
                 log,
-                "[APatch] CONFIG_KALLSYMS check inconclusive (no IKCONFIG payload) — proceeding, but patch may fail"
+                "[APatch] {}",
+                ltbox_core::i18n::tr("log_apatch_kallsyms_inconclusive")
             );
         } else {
-            ltbox_core::live!(log, "[APatch] CONFIG_KALLSYMS=y — OK");
+            ltbox_core::live!(
+                log,
+                "[APatch] {}",
+                ltbox_core::i18n::tr("log_apatch_kallsyms_ok")
+            );
             if !has_kallsyms_all {
                 ltbox_core::live!(
                     log,
-                    "[APatch] CONFIG_KALLSYMS_ALL=y missing — non-fatal, but some KPMs may need it"
+                    "[APatch] {}",
+                    ltbox_core::i18n::tr("log_apatch_kallsyms_all_missing")
                 );
             }
         }
@@ -136,9 +145,12 @@ pub fn patch_boot(
         .collect::<Result<_>>()?;
     ltbox_core::live!(
         log,
-        "[APatch] patching kernel (kpm_count={}, superkey_len={})",
-        extras.len(),
-        superkey.len()
+        "[APatch] {}",
+        tr_args!(
+            "log_apatch_patching_kernel",
+            kpm_count = extras.len(),
+            superkey_len = superkey.len()
+        )
     );
 
     patch::patch_update_img(PatchArgs {
@@ -154,10 +166,13 @@ pub fn patch_boot(
 
     ltbox_core::live!(
         log,
-        "[APatch] repack_bootimg {} + {} -> {}",
-        boot_in.display(),
-        kernel_out.display(),
-        boot_out.display()
+        "[APatch] {}",
+        tr_args!(
+            "log_apatch_repack_bootimg",
+            boot = boot_in.display(),
+            kernel = kernel_out.display(),
+            output = boot_out.display()
+        )
     );
     bootimg::repack_bootimg(&boot_in, &kernel_out, &boot_out)
         .map_err(|e| LtboxError::Patch(format!("kptools repack_bootimg failed: {e}")))?;

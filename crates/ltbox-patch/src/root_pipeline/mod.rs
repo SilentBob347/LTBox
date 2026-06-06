@@ -500,7 +500,11 @@ pub fn build_patched_artifacts(
         // but surface a real failure (I/O, corruption) in the log instead of
         // swallowing it silently, since `add_hash_footer` then runs on this image.
         if let Err(e) = avb::erase_footer(&final_boot) {
-            ltbox_core::live!(log, "[AVB] erase_footer skipped: {e}");
+            ltbox_core::live!(
+                log,
+                "[AVB] {}",
+                tr_args!("log_avb_erase_footer_skipped", error = e.to_string())
+            );
         }
         avb::add_hash_footer(
             &final_boot,
