@@ -5,7 +5,8 @@
 
 use crate::{
     ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, build_tb323fu_arb_overlays,
-    efisp_asset_suffix, find_edl_loader, fingerprint_token_match, phase_marker, transition_to_edl,
+    efisp_asset_suffix, find_edl_loader, fingerprint_token_match, is_rollback_protected_model,
+    phase_marker, read_device_rollback_index_via_edl, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
 
@@ -130,16 +131,17 @@ pub(crate) fn flash_worker(
     // ARB=ON abort on every PRC↔ROW flash that
     // started from the ADB-connected state, even
     // though Fastboot is reachable in principle.
-    let probe_fastboot = || -> (Option<u64>, bool) {
+    let probe_fastboot = || -> (Option<u64>, bool, Option<String>) {
         match ltbox_device::fastboot::FastbootDevice::open() {
             Ok(mut dev) => match dev.get_all_vars() {
                 Ok(v) => (
                     ltbox_patch::rollback::compute_device_rollback_index(&v.rollback_indices),
                     true,
+                    v.current_slot.clone(),
                 ),
-                Err(_) => (None, false),
+                Err(_) => (None, false, None),
             },
-            Err(_) => (None, false),
+            Err(_) => (None, false, None),
         }
     };
     let mut probe = probe_fastboot();
@@ -176,7 +178,7 @@ pub(crate) fn flash_worker(
             }
         }
     }
-    let (device_rollback_index, fastboot_reachable) = probe;
+    let (device_rollback_index, fastboot_reachable, active_slot) = probe;
 
     // 3. Scan firmware folder
     let vendor_boot = fw_dir.join("vendor_boot.img");
@@ -682,14 +684,38 @@ pub(crate) fn flash_worker(
         let arb_work_dir = ltbox_core::app_paths::work_dir_for("flash_arb");
         let _ = std::fs::remove_dir_all(&arb_work_dir);
         std::fs::create_dir_all(&arb_work_dir).map_err(|e| format!("arb work dir: {e}"))?;
-        let (overlays, need) =
-            build_tb323fu_arb_overlays(&mut session, fw_dir, &arb_work_dir, &mut log)?;
+        let (overlays, need) = build_tb323fu_arb_overlays(
+            &mut session,
+            fw_dir,
+            &arb_work_dir,
+            active_slot.as_deref(),
+            &mut log,
+        )?;
         tb323fu_arb_need = need;
         arb_patched = overlays;
     } else if rb_mode != ltbox_patch::rollback::RollbackMode::Off {
         let arb_work_dir = ltbox_core::app_paths::work_dir_for("flash_arb");
         let _ = std::fs::remove_dir_all(&arb_work_dir);
         std::fs::create_dir_all(&arb_work_dir).map_err(|e| format!("arb work dir: {e}"))?;
+
+        // Fastboot couldn't report `stored_rollback_index`. Every model but
+        // the no-ARB TB322FC still enforces rollback protection, so read the
+        // committed index from the ACTIVE slot over EDL (same mechanism as the
+        // TB323FU path). TB322FC keeps `None` → the per-partition `else` below
+        // skips patching, which is correct since it has no rollback floor.
+        let device_rollback_index = match device_rollback_index {
+            Some(i) => Some(i),
+            None if is_rollback_protected_model(&device_model) => {
+                ltbox_core::live!(log, "[ARB] {}", ltbox_core::i18n::tr("live_arb_edl_dump"));
+                Some(read_device_rollback_index_via_edl(
+                    &mut session,
+                    active_slot.as_deref(),
+                    &arb_work_dir,
+                    &mut log,
+                )?)
+            }
+            None => None,
+        };
 
         // (base, on-disk filename, slot label)
         let label_pairs: &[(&str, &str, &str)] = &[

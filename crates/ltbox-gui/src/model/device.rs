@@ -55,6 +55,16 @@ pub(crate) fn is_dual_usbc_model(model: &str) -> bool {
         .any(|m| model.eq_ignore_ascii_case(m))
 }
 
+/// Every supported Lenovo tablet enforces AVB rollback protection EXCEPT the
+/// PRC-only TB322FC. Used to decide whether a missing fastboot
+/// `stored_rollback_index` means "no ARB, skip" (TB322FC) or "ARB present but
+/// fastboot can't report it, read it over EDL" (everything else). An unknown
+/// model is treated as protected — safer to read + honour the index than to
+/// skip and risk a rollback-rejected downgrade.
+pub(crate) fn is_rollback_protected_model(model: &str) -> bool {
+    !model.eq_ignore_ascii_case("TB322FC")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ConnectionStatus {
     #[default]

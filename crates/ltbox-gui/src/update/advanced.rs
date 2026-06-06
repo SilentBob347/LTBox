@@ -868,7 +868,7 @@ impl App {
                 let i_not = self.t("arb_detect_no_anti_rollback").to_string();
                 let i_reboot_fastboot = self.t("live_arb_reboot_to_fastboot").to_string();
                 let i_reboot_system = self.t("live_arb_reboot_to_system").to_string();
-                let i_tb320fc_edl = self.t("live_arb_tb320fc_edl_dump").to_string();
+                let i_edl_dump = self.t("live_arb_edl_dump").to_string();
                 return task_heavy(
                     move || {
                         let mut log = Vec::new();
@@ -880,7 +880,7 @@ impl App {
                             &i_not,
                             &i_reboot_fastboot,
                             &i_reboot_system,
-                            &i_tb320fc_edl,
+                            &i_edl_dump,
                             &mut log,
                         ) {
                             Ok(()) => Ok(log),

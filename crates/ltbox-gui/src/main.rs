@@ -1656,7 +1656,7 @@ fn detect_arb_run(
     i_not: &str,
     i_reboot_fastboot: &str,
     i_reboot_system: &str,
-    i_tb320fc_edl: &str,
+    i_edl_dump: &str,
     log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
     use ltbox_device::adb::AdbManager;
@@ -1715,12 +1715,15 @@ fn detect_arb_run(
         return Ok(());
     }
 
-    // Step 3: TB320FC fallback over EDL (boot_a + vbmeta_system_a).
-    if device_model.eq_ignore_ascii_case("TB320FC") {
+    // Step 3: every model except the no-ARB TB322FC enforces rollback
+    // protection but may not expose `stored_rollback_index` over fastboot —
+    // read the ACTIVE-slot boot + vbmeta_system indices over EDL. (TB322FC
+    // falls through to step 4 / "no anti-rollback".)
+    if is_rollback_protected_model(&device_model) {
         let Some(loader) = loader_path else {
-            return Err("TB320FC requires an EDL loader for the deeper rollback inspection".into());
+            return Err("An EDL loader is required for the deeper rollback inspection".into());
         };
-        ltbox_core::live!(log, "[ARB] {i_tb320fc_edl}");
+        ltbox_core::live!(log, "[ARB] {i_edl_dump}");
         if ensure_edl(ConnectionStatus::Fastboot, "ARB", log).is_err() {
             return Err("Failed to enter EDL".into());
         }
@@ -1728,17 +1731,20 @@ fn detect_arb_run(
         let loader_pb = std::path::PathBuf::from(&loader);
         let mut session = ltbox_device::edl::EdlSession::open(&loader_pb, true, log)
             .map_err(|e| format!("EDL open: {e}"))?;
+        // Read the active slot (a first-time user may be on `_b`).
+        let slot = active_slot_suffix(vars.current_slot.as_deref());
+        let boot_part = format!("boot{slot}");
+        let vbm_part = format!("vbmeta_system{slot}");
         let tmp = std::env::temp_dir();
-        let boot_out = tmp.join("ltbox_arb_boot_a.img");
-        let vbm_out = tmp.join("ltbox_arb_vbmeta_system_a.img");
-        // boot_a → LUN 4, vbmeta_system_a → LUN 0 per the
-        // hardcoded LUN map.
+        let boot_out = tmp.join(format!("ltbox_arb_{boot_part}.img"));
+        let vbm_out = tmp.join(format!("ltbox_arb_{vbm_part}.img"));
+        // boot → LUN 4, vbmeta_system → LUN 0 per the hardcoded LUN map.
         session
-            .dump_partition("boot_a", &boot_out, 0, 4, log)
-            .map_err(|e| format!("dump boot_a: {e}"))?;
+            .dump_partition(&boot_part, &boot_out, 0, 4, log)
+            .map_err(|e| format!("dump {boot_part}: {e}"))?;
         session
-            .dump_partition("vbmeta_system_a", &vbm_out, 0, 0, log)
-            .map_err(|e| format!("dump vbmeta_system_a: {e}"))?;
+            .dump_partition(&vbm_part, &vbm_out, 0, 0, log)
+            .map_err(|e| format!("dump {vbm_part}: {e}"))?;
         let boot_idx = ltbox_patch::avb::extract_image_avb_info(&boot_out)
             .map_err(|e| format!("boot AVB: {e}"))?
             .rollback_index;
@@ -1752,12 +1758,12 @@ fn detect_arb_run(
         ltbox_core::live!(log, "");
         ltbox_core::live!(
             log,
-            "boot_a = {boot_idx} ({})",
+            "{boot_part} = {boot_idx} ({})",
             format_unix_timestamp_utc(boot_idx)
         );
         ltbox_core::live!(
             log,
-            "vbmeta_system_a = {vbm_idx} ({})",
+            "{vbm_part} = {vbm_idx} ({})",
             format_unix_timestamp_utc(vbm_idx)
         );
         ltbox_core::live!(log, "");
@@ -1880,14 +1886,65 @@ pub(crate) struct LiveLabels {
     pub(crate) root_backup_copy_prefix: String,
 }
 
-/// Classify a model → ARB bucket i18n key (`arb_yes`/`arb_no`/`arb_unknown`).
+/// Classify a model → rollback-protection i18n key. Every supported model
+/// enforces AVB rollback protection except the PRC-only TB322FC, and an
+/// unknown model is assumed protected, so this is a TB322FC check.
 fn arb_from_model(model: &str) -> &'static str {
-    let m = model.to_uppercase();
-    match m.as_str() {
-        "TB320FC" | "TB321FU" | "TB323FU" | "TB520FU" | "TB710FU" => "arb_yes",
-        "TB322FC" => "arb_no",
-        _ => "arb_unknown",
+    if is_rollback_protected_model(model) {
+        "arb_yes"
+    } else {
+        "arb_no"
     }
+}
+
+/// Normalize an optional fastboot `current-slot` to a partition suffix
+/// (`_a`/`_b`), defaulting to `_a` when unknown (e.g. EDL-start with no
+/// fastboot probe).
+fn active_slot_suffix(slot: Option<&str>) -> &'static str {
+    match slot {
+        Some(s) if s.eq_ignore_ascii_case("_b") || s.eq_ignore_ascii_case("b") => "_b",
+        _ => "_a",
+    }
+}
+
+/// Read the device's committed AVB rollback index by dumping the active-slot
+/// `boot` + `vbmeta_system` over EDL and taking the higher index. Used when
+/// fastboot can't report `stored_rollback_index` (every model but the no-ARB
+/// TB322FC). `slot` is the active-slot suffix; falls back to `_a` when
+/// unknown. The max is the device's rollback floor — bumping a partition
+/// above its own claim is safe, so the generic key-map overlay path needs
+/// only this single value (vs the per-partition split the TB323FU testkey
+/// path keeps for its re-sign targets).
+fn read_device_rollback_index_via_edl(
+    session: &mut ltbox_device::edl::EdlSession,
+    slot: Option<&str>,
+    work_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<u64, String> {
+    let s = active_slot_suffix(slot);
+    let boot = format!("boot{s}");
+    let vbs = format!("vbmeta_system{s}");
+    let boot_lun = ltbox_core::partition_lun::lun_for_partition(&boot)
+        .ok_or_else(|| format!("no LUN for {boot}"))?;
+    let vbs_lun = ltbox_core::partition_lun::lun_for_partition(&vbs)
+        .ok_or_else(|| format!("no LUN for {vbs}"))?;
+    let boot_img = work_dir.join(format!("dev_{boot}.img"));
+    let vbs_img = work_dir.join(format!("dev_{vbs}.img"));
+    session
+        .dump_partition(&boot, &boot_img, 0, boot_lun, log)
+        .map_err(|e| format!("dump device {boot}: {e}"))?;
+    session
+        .dump_partition(&vbs, &vbs_img, 0, vbs_lun, log)
+        .map_err(|e| format!("dump device {vbs}: {e}"))?;
+    let boot_idx = ltbox_patch::avb::extract_image_avb_info(&boot_img)
+        .map_err(|e| format!("AVB {boot}: {e}"))?
+        .rollback_index;
+    let vbs_idx = ltbox_patch::avb::extract_image_avb_info(&vbs_img)
+        .map_err(|e| format!("AVB {vbs}: {e}"))?
+        .rollback_index;
+    let _ = std::fs::remove_file(&boot_img);
+    let _ = std::fs::remove_file(&vbs_img);
+    Ok(boot_idx.max(vbs_idx))
 }
 
 /// Trim Lenovo build-display to the ROM + version tail. Example:
@@ -1991,6 +2048,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
     session: &mut ltbox_device::edl::EdlSession,
     fw_dir: &std::path::Path,
     work_dir: &std::path::Path,
+    slot: Option<&str>,
     log: &mut Vec<String>,
 ) -> std::result::Result<(Vec<ArbOverlay>, bool), String> {
     const KEY: &str = "testkey_rsa4096";
@@ -2006,21 +2064,19 @@ pub(crate) fn build_tb323fu_arb_overlays(
             .rollback_index)
     };
 
-    // 1. Read device-committed indices (boot_a LUN 4, vbmeta_system_a LUN 0).
-    let dev_boot_img = work_dir.join("dev_boot_a.img");
-    let dev_vbs_img = work_dir.join("dev_vbmeta_system_a.img");
+    // 1. Read device-committed indices from the ACTIVE slot (boot LUN 4,
+    //    vbmeta_system LUN 0). A first-time user may still be on `_b`, so
+    //    don't assume `_a`.
+    let dev_boot = format!("boot{}", active_slot_suffix(slot));
+    let dev_vbs = format!("vbmeta_system{}", active_slot_suffix(slot));
+    let dev_boot_img = work_dir.join(format!("dev_{dev_boot}.img"));
+    let dev_vbs_img = work_dir.join(format!("dev_{dev_vbs}.img"));
     session
-        .dump_partition("boot_a", &dev_boot_img, 0, lun_of("boot_a")?, log)
-        .map_err(|e| format!("dump device boot_a: {e}"))?;
+        .dump_partition(&dev_boot, &dev_boot_img, 0, lun_of(&dev_boot)?, log)
+        .map_err(|e| format!("dump device {dev_boot}: {e}"))?;
     session
-        .dump_partition(
-            "vbmeta_system_a",
-            &dev_vbs_img,
-            0,
-            lun_of("vbmeta_system_a")?,
-            log,
-        )
-        .map_err(|e| format!("dump device vbmeta_system_a: {e}"))?;
+        .dump_partition(&dev_vbs, &dev_vbs_img, 0, lun_of(&dev_vbs)?, log)
+        .map_err(|e| format!("dump device {dev_vbs}: {e}"))?;
     let dev_boot_idx = idx_of(&dev_boot_img)?;
     let dev_vbs_idx = idx_of(&dev_vbs_img)?;
     let _ = std::fs::remove_file(&dev_boot_img);

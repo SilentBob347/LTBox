@@ -437,15 +437,13 @@ impl App {
                                         .max()
                                         .copied();
                                     r.arb = if let Some(v) = arb_val {
+                                        // Real committed index — shown as-is, with a
+                                        // UTC hover tooltip on the dashboard.
                                         v.to_string()
                                     } else {
-                                        // TB320FC has ARB but reports no indices.
-                                        let m = r.model.to_uppercase();
-                                        if m == "TB320FC" {
-                                            "arb_yes".to_string()
-                                        } else {
-                                            arb_from_model(&r.model).to_string()
-                                        }
+                                        // No stored index over fastboot → yes/no by
+                                        // model (only TB322FC lacks rollback protection).
+                                        arb_from_model(&r.model).to_string()
                                     };
                                 }
                                 return r;
