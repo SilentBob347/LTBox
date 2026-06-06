@@ -746,8 +746,7 @@ pub(crate) fn flash_worker(
                     "live_arb_image_status",
                     name = log_name,
                     image = analysis.image_index.to_string(),
-                    needs = analysis.needs_patch.to_string(),
-                    mode = format!("{:?}", rb_mode)
+                    needs = analysis.needs_patch.to_string()
                 )
             );
             if !analysis.needs_patch {

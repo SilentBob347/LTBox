@@ -328,7 +328,7 @@ impl App {
                 if self.is_tb323fu() && self.root.is_gki() {
                     self.root.mode = None;
                     self.root.step = 1; // Mode step
-                    self.error_msg = Some(self.t("root_family_unsupported_tb323fu").to_string());
+                    self.error_msg = Some(tr_args!("model_unsupported", model = "TB323FU"));
                     return Task::none();
                 }
                 if self

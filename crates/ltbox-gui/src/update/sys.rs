@@ -112,7 +112,7 @@ impl App {
                 // Final guard: never start Boot Recovery on TB323FU even if a
                 // stale Rescue selection slipped past the disabled card.
                 if action == SysUpdateAction::Rescue && self.is_tb323fu() {
-                    self.error_msg = Some(self.t("root_family_unsupported_tb323fu").to_string());
+                    self.error_msg = Some(tr_args!("model_unsupported", model = "TB323FU"));
                     return Task::none();
                 }
                 // Rescue captures folder + region into the blocking task.

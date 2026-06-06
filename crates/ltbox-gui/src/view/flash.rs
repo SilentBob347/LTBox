@@ -3,6 +3,7 @@
 use crate::*;
 use iced::widget::{self, button, column, container, row, text};
 use iced::{Element, Length, Theme};
+use ltbox_core::tr_args;
 
 impl App {
     pub(crate) fn view_flash_wizard(&self) -> Element<'_, Message> {
@@ -52,11 +53,12 @@ impl App {
         // a grayed icon so the constraint is visible — silent skip
         // would confuse users who expect both options.
         let tb322fc = self.is_tb322fc();
+        let unsupported_tb322fc = tr_args!("model_unsupported", model = "TB322FC");
         let row_card: Element<'_, Message> = if tb322fc {
             icon_option_card_sub_disabled(
                 lucide_disabled(icon::region_row(), 57.6),
                 self.t("region_row"),
-                self.t("flash_unsupported_tb322fc"),
+                &unsupported_tb322fc,
             )
         } else {
             icon_option_card_sub(
@@ -105,11 +107,12 @@ impl App {
         // never a valid target. Disable the card with a grayed icon to
         // keep the constraint visible on the picker.
         let tb322fc = self.is_tb322fc();
+        let unsupported_tb322fc = tr_args!("model_unsupported", model = "TB322FC");
         let other_card: Element<'_, Message> = if tb322fc {
             icon_option_card_sub_disabled(
                 lucide_disabled(icon::tile_globe(), 57.6),
                 self.t(FlashTarget::OtherRegion.label_key()),
-                self.t("flash_unsupported_tb322fc"),
+                &unsupported_tb322fc,
             )
         } else {
             icon_option_card_sub(

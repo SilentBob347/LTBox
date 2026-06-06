@@ -4,6 +4,7 @@ use crate::*;
 use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use iced_aw::widget::Spinner;
+use ltbox_core::tr_args;
 use theme::is_dark;
 
 impl App {
@@ -100,6 +101,11 @@ impl App {
             // Disabled rescue card — no on_press, grayed out; still mirrors
             // the sub-row layout of the other tiles with the Qualcomm-required
             // hint so the label sits at the same height.
+            let rescue_req = if self.is_tb323fu() {
+                tr_args!("model_unsupported", model = "TB323FU")
+            } else {
+                self.t("sysupdate_rescue_req").to_string()
+            };
             let content = column![
                 icon_tile(rescue_icon),
                 text(self.t("sysupdate_rescue").to_string())
@@ -107,18 +113,11 @@ impl App {
                     .width(Length::Fill)
                     .center()
                     .style(label_style),
-                text(
-                    self.t(if self.is_tb323fu() {
-                        "root_family_unsupported_tb323fu"
-                    } else {
-                        "sysupdate_rescue_req"
-                    })
-                    .to_string(),
-                )
-                .size(11)
-                .width(Length::Fill)
-                .center()
-                .style(label_style),
+                text(rescue_req)
+                    .size(11)
+                    .width(Length::Fill)
+                    .center()
+                    .style(label_style),
             ]
             .spacing(8)
             .align_x(iced::Alignment::Center);
