@@ -277,7 +277,13 @@ impl App {
         let data = self
             .flash
             .data_mode
-            .map(|d| self.t(d.label_key()).to_string())
+            .map(|d| {
+                self.t(match d {
+                    DataMode::Keep => "flash_confirm_data_keep",
+                    DataMode::Wipe => "flash_confirm_data_wipe",
+                })
+                .to_string()
+            })
             .unwrap_or_else(|| dash.clone());
         // Confirm rows use short value labels (Modify / Auto / Ignore)
         // instead of the verbose "… rollback index" strings shown in
@@ -315,7 +321,7 @@ impl App {
             info_kv_center(self.t("flash_confirm_target"), &target),
             info_kv_center(self.t("flash_confirm_data"), &data),
             info_kv_center(self.t("flash_confirm_region_edit"), &modify_region),
-            info_kv_center(self.t("device_arb"), &rollback),
+            info_kv_center(self.t("flash_confirm_rollback"), &rollback),
         ];
         if let Some(cc) = self.wf_config.country_action.target() {
             let entry = COUNTRY_CODES.iter().find(|e| e.code == cc);
