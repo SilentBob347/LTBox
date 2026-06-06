@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use iced::{Color, color};
+use std::sync::RwLock;
 
 /// Semantic color slots per Material 3.
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +37,8 @@ pub struct Palette {
     /// Success — M3 doesn't ship this; tonal family of tertiary green.
     pub success: Color,
     pub warning: Color,
+    pub warning_container: Color,
+    pub on_warning_container: Color,
 
     pub background: Color,
     pub on_background: Color,
@@ -81,7 +84,9 @@ pub const LIGHT: Palette = Palette {
     on_error_container: color!(0x410002),
 
     success: color!(0x216C2A),
-    warning: color!(0xE6A000),
+    warning: color!(0x735B00),
+    warning_container: color!(0xFFF0C2),
+    on_warning_container: color!(0x241A00),
 
     background: color!(0xFBF8FD),
     on_background: color!(0x1B1B21),
@@ -128,6 +133,8 @@ pub const DARK: Palette = Palette {
 
     success: color!(0x8ADA95),
     warning: color!(0xF5BE4B),
+    warning_container: color!(0x5A4300),
+    on_warning_container: color!(0xFFDFA3),
 
     background: color!(0x131318),
     on_background: color!(0xE4E1E9),
@@ -150,9 +157,296 @@ pub const DARK: Palette = Palette {
     shadow: color!(0x000000),
 };
 
+/// Teal seed palette, generated to the same role structure as the indigo base.
+pub const TEAL_LIGHT: Palette = Palette {
+    primary: color!(0x006A6A),
+    on_primary: color!(0xFFFFFF),
+    primary_container: color!(0x9CF1EF),
+    on_primary_container: color!(0x002020),
+
+    secondary: color!(0x4A6363),
+    on_secondary: color!(0xFFFFFF),
+    secondary_container: color!(0xCCE8E7),
+    on_secondary_container: color!(0x051F1F),
+
+    tertiary: color!(0x4B607C),
+    on_tertiary: color!(0xFFFFFF),
+    tertiary_container: color!(0xD3E4FF),
+    on_tertiary_container: color!(0x041C35),
+
+    error: LIGHT.error,
+    on_error: LIGHT.on_error,
+    error_container: LIGHT.error_container,
+    on_error_container: LIGHT.on_error_container,
+
+    success: LIGHT.success,
+    warning: LIGHT.warning,
+    warning_container: LIGHT.warning_container,
+    on_warning_container: LIGHT.on_warning_container,
+
+    background: color!(0xF7FAF9),
+    on_background: LIGHT.on_background,
+
+    surface: color!(0xF7FAF9),
+    surface_dim: color!(0xD7DBDA),
+    surface_bright: color!(0xF7FAF9),
+    surface_container_lowest: color!(0xFFFFFF),
+    surface_container_low: color!(0xF0F4F3),
+    surface_container: color!(0xEAEEED),
+    surface_container_high: color!(0xE4E8E7),
+    surface_container_highest: color!(0xDEE2E1),
+    on_surface: LIGHT.on_surface,
+    on_surface_variant: color!(0x3F4948),
+
+    outline: color!(0x6F7978),
+    outline_variant: color!(0xBFC9C8),
+
+    scrim: color!(0x000000),
+    shadow: color!(0x000000),
+};
+
+pub const TEAL_DARK: Palette = Palette {
+    primary: color!(0x80D5D3),
+    on_primary: color!(0x003737),
+    primary_container: color!(0x004F4F),
+    on_primary_container: color!(0x9CF1EF),
+
+    secondary: color!(0xB0CCCB),
+    on_secondary: color!(0x1B3534),
+    secondary_container: color!(0x324B4A),
+    on_secondary_container: color!(0xCCE8E7),
+
+    tertiary: color!(0xB3C8E9),
+    on_tertiary: color!(0x1C314C),
+    tertiary_container: color!(0x334865),
+    on_tertiary_container: color!(0xD3E4FF),
+
+    error: DARK.error,
+    on_error: DARK.on_error,
+    error_container: DARK.error_container,
+    on_error_container: DARK.on_error_container,
+
+    success: DARK.success,
+    warning: DARK.warning,
+    warning_container: DARK.warning_container,
+    on_warning_container: DARK.on_warning_container,
+
+    background: color!(0x111414),
+    on_background: DARK.on_background,
+
+    surface: color!(0x111414),
+    surface_dim: color!(0x111414),
+    surface_bright: color!(0x363A39),
+    surface_container_lowest: color!(0x0C0F0F),
+    surface_container_low: color!(0x191C1C),
+    surface_container: color!(0x1D2020),
+    surface_container_high: color!(0x272B2A),
+    surface_container_highest: color!(0x323535),
+    on_surface: DARK.on_surface,
+    on_surface_variant: color!(0xBFC9C8),
+
+    outline: color!(0x899392),
+    outline_variant: color!(0x3F4948),
+
+    scrim: color!(0x000000),
+    shadow: color!(0x000000),
+};
+
+/// Rose seed palette for users who want a warmer accent family.
+pub const ROSE_LIGHT: Palette = Palette {
+    primary: color!(0x984061),
+    on_primary: color!(0xFFFFFF),
+    primary_container: color!(0xFFD9E3),
+    on_primary_container: color!(0x3E001D),
+
+    secondary: color!(0x74565F),
+    on_secondary: color!(0xFFFFFF),
+    secondary_container: color!(0xFFD9E3),
+    on_secondary_container: color!(0x2B151D),
+
+    tertiary: color!(0x7D5635),
+    on_tertiary: color!(0xFFFFFF),
+    tertiary_container: color!(0xFFDCC2),
+    on_tertiary_container: color!(0x301400),
+
+    error: LIGHT.error,
+    on_error: LIGHT.on_error,
+    error_container: LIGHT.error_container,
+    on_error_container: LIGHT.on_error_container,
+
+    success: LIGHT.success,
+    warning: LIGHT.warning,
+    warning_container: LIGHT.warning_container,
+    on_warning_container: LIGHT.on_warning_container,
+
+    background: color!(0xFFFBFF),
+    on_background: LIGHT.on_background,
+
+    surface: color!(0xFFFBFF),
+    surface_dim: color!(0xE5D7DC),
+    surface_bright: color!(0xFFFBFF),
+    surface_container_lowest: color!(0xFFFFFF),
+    surface_container_low: color!(0xFCF0F4),
+    surface_container: color!(0xF6EAEE),
+    surface_container_high: color!(0xF0E4E8),
+    surface_container_highest: color!(0xEADFE3),
+    on_surface: LIGHT.on_surface,
+    on_surface_variant: color!(0x514349),
+
+    outline: color!(0x82737A),
+    outline_variant: color!(0xD4C2C8),
+
+    scrim: color!(0x000000),
+    shadow: color!(0x000000),
+};
+
+pub const ROSE_DARK: Palette = Palette {
+    primary: color!(0xFFB1C8),
+    on_primary: color!(0x5E1134),
+    primary_container: color!(0x7B2949),
+    on_primary_container: color!(0xFFD9E3),
+
+    secondary: color!(0xE3BDC8),
+    on_secondary: color!(0x422A33),
+    secondary_container: color!(0x5A3F49),
+    on_secondary_container: color!(0xFFD9E3),
+
+    tertiary: color!(0xF2BD91),
+    on_tertiary: color!(0x49290D),
+    tertiary_container: color!(0x633F20),
+    on_tertiary_container: color!(0xFFDCC2),
+
+    error: DARK.error,
+    on_error: DARK.on_error,
+    error_container: DARK.error_container,
+    on_error_container: DARK.on_error_container,
+
+    success: DARK.success,
+    warning: DARK.warning,
+    warning_container: DARK.warning_container,
+    on_warning_container: DARK.on_warning_container,
+
+    background: color!(0x171216),
+    on_background: DARK.on_background,
+
+    surface: color!(0x171216),
+    surface_dim: color!(0x171216),
+    surface_bright: color!(0x3F373B),
+    surface_container_lowest: color!(0x120D10),
+    surface_container_low: color!(0x211A1E),
+    surface_container: color!(0x261E23),
+    surface_container_high: color!(0x30282D),
+    surface_container_highest: color!(0x3B3337),
+    on_surface: DARK.on_surface,
+    on_surface_variant: color!(0xD4C2C8),
+
+    outline: color!(0x9C8D93),
+    outline_variant: color!(0x514349),
+
+    scrim: color!(0x000000),
+    shadow: color!(0x000000),
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeSeed {
+    #[default]
+    Indigo,
+    Teal,
+    Rose,
+}
+
+impl ThemeSeed {
+    pub const ALL: [Self; 3] = [Self::Indigo, Self::Teal, Self::Rose];
+
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::Indigo => "theme_seed_indigo",
+            Self::Teal => "theme_seed_teal",
+            Self::Rose => "theme_seed_rose",
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Indigo => "indigo",
+            Self::Teal => "teal",
+            Self::Rose => "rose",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "indigo" => Some(Self::Indigo),
+            "teal" => Some(Self::Teal),
+            "rose" => Some(Self::Rose),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeTheme {
+    seed: ThemeSeed,
+    dark_mode: bool,
+}
+
+static RUNTIME_THEME: RwLock<RuntimeTheme> = RwLock::new(RuntimeTheme {
+    seed: ThemeSeed::Indigo,
+    dark_mode: false,
+});
+
+pub fn set_runtime_theme(seed: ThemeSeed, dark_mode: bool) {
+    if let Ok(mut runtime) = RUNTIME_THEME.write() {
+        *runtime = RuntimeTheme { seed, dark_mode };
+    }
+}
+
+fn runtime_theme() -> RuntimeTheme {
+    RUNTIME_THEME.read().map_or(
+        RuntimeTheme {
+            seed: ThemeSeed::Indigo,
+            dark_mode: false,
+        },
+        |runtime| *runtime,
+    )
+}
+
 /// Active palette for the current dark-mode flag.
 pub const fn palette(dark_mode: bool) -> &'static Palette {
     if dark_mode { &DARK } else { &LIGHT }
+}
+
+pub fn palette_for(seed: ThemeSeed, dark_mode: bool) -> Palette {
+    match (seed, dark_mode) {
+        (ThemeSeed::Indigo, false) => LIGHT,
+        (ThemeSeed::Indigo, true) => DARK,
+        (ThemeSeed::Teal, false) => TEAL_LIGHT,
+        (ThemeSeed::Teal, true) => TEAL_DARK,
+        (ThemeSeed::Rose, false) => ROSE_LIGHT,
+        (ThemeSeed::Rose, true) => ROSE_DARK,
+    }
+}
+
+pub fn active_palette() -> Palette {
+    let runtime = runtime_theme();
+    palette_for(runtime.seed, runtime.dark_mode)
+}
+
+pub fn active_palette_for(t: &iced::Theme) -> Palette {
+    let runtime = runtime_theme();
+    palette_for(runtime.seed, is_dark(t))
+}
+
+pub fn iced_palette(seed: ThemeSeed, dark_mode: bool) -> iced::theme::Palette {
+    let p = palette_for(seed, dark_mode);
+    iced::theme::Palette {
+        background: p.background,
+        text: p.on_surface,
+        primary: p.primary,
+        success: p.success,
+        warning: p.warning,
+        danger: p.error,
+    }
 }
 
 /// Probe `iced::Theme` for the active mode. We don't store a flag on
@@ -229,7 +523,7 @@ pub fn state_layer_bg(status: iced::widget::button::Status, layer_color: Color) 
 /// the surrounding component scale.
 pub fn tooltip_style(t: &iced::Theme, radius: f32) -> iced::widget::container::Style {
     let dark = is_dark(t);
-    let p = palette(dark);
+    let p = active_palette_for(t);
     iced::widget::container::Style {
         background: Some(p.surface_container_high.into()),
         text_color: Some(p.on_surface),
@@ -364,9 +658,9 @@ pub fn surface_card_style(
 ) -> iced::widget::container::Style {
     use iced::widget::container;
     let dark = t.palette().background.r < 0.5;
-    let p = if dark { &DARK } else { &LIGHT };
+    let p = active_palette_for(t);
     container::Style {
-        background: Some(level.bg(p).into()),
+        background: Some(level.bg(&p).into()),
         border: iced::Border {
             color: p.outline_variant,
             width: 1.0,

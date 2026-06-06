@@ -101,6 +101,9 @@ pub struct PersistedSettings {
     /// upgrades via the legacy `dark_mode` field below.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Material color seed. Defaults to the original indigo palette.
+    #[serde(default = "default_theme_seed")]
+    pub theme_seed: String,
     /// Legacy flag kept for upgrade compatibility. `theme` is the
     /// source of truth for new saves.
     #[serde(default)]
@@ -173,11 +176,16 @@ fn default_theme() -> String {
     String::new()
 }
 
+fn default_theme_seed() -> String {
+    "indigo".to_string()
+}
+
 impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
             language: default_language(),
             theme: "system".to_string(),
+            theme_seed: default_theme_seed(),
             dark_mode: false,
             recent_paths: RecentPaths::default(),
             default_loader_path: None,
@@ -246,6 +254,7 @@ mod tests {
         let s = PersistedSettings::default();
         assert_eq!(s.language, "en");
         assert_eq!(s.theme, "system");
+        assert_eq!(s.theme_seed, "indigo");
         assert!(!s.dark_mode);
     }
 
@@ -286,13 +295,16 @@ mod tests {
         let s: PersistedSettings = serde_json::from_str(r#"{"dark_mode": true}"#).unwrap();
         assert_eq!(s.language, "en");
         assert_eq!(s.theme, "");
+        assert_eq!(s.theme_seed, "indigo");
         assert!(s.dark_mode);
     }
 
     #[test]
     fn theme_field_roundtrips() {
-        let s: PersistedSettings = serde_json::from_str(r#"{"theme": "dark"}"#).unwrap();
+        let s: PersistedSettings =
+            serde_json::from_str(r#"{"theme": "dark", "theme_seed": "teal"}"#).unwrap();
         assert_eq!(s.theme, "dark");
+        assert_eq!(s.theme_seed, "teal");
     }
 
     #[test]

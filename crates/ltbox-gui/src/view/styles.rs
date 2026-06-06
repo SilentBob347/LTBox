@@ -2,8 +2,8 @@
 
 use crate::*;
 use iced::Theme;
-use iced::widget::{button, container};
-use theme::with_alpha;
+use iced::widget::{button, checkbox, container, pick_list, scrollable, text_input};
+use theme::{is_dark, mix_color, with_alpha};
 
 /// `on_surface_variant` — secondary labels / descriptions.
 pub(crate) fn muted_style(t: &Theme) -> iced::widget::text::Style {
@@ -50,6 +50,18 @@ pub(crate) fn warning_style(t: &Theme) -> iced::widget::text::Style {
     }
 }
 
+pub(crate) fn warning_container_text_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).on_warning_container),
+    }
+}
+
+pub(crate) fn error_container_text_style(t: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(pal_of(t).on_error_container),
+    }
+}
+
 pub(crate) fn neutral_pill_btn_style(t: &Theme, _s: button::Status) -> button::Style {
     let p = pal_of(t);
     button::Style {
@@ -60,6 +72,193 @@ pub(crate) fn neutral_pill_btn_style(t: &Theme, _s: button::Status) -> button::S
         },
         text_color: p.on_surface_variant,
         ..Default::default()
+    }
+}
+
+pub(crate) fn m3_text_input_style(t: &Theme, status: text_input::Status) -> text_input::Style {
+    let p = pal_of(t);
+    let focused = matches!(status, text_input::Status::Focused { .. });
+    let hovered = matches!(
+        status,
+        text_input::Status::Hovered | text_input::Status::Focused { is_hovered: true }
+    );
+    let disabled = matches!(status, text_input::Status::Disabled);
+    let border_color = if focused {
+        p.primary
+    } else if hovered {
+        p.outline
+    } else {
+        p.outline_variant
+    };
+    text_input::Style {
+        background: if disabled {
+            with_alpha(p.on_surface, 0.04).into()
+        } else {
+            p.surface_container_lowest.into()
+        },
+        border: iced::Border {
+            color: if disabled {
+                with_alpha(p.on_surface, 0.12)
+            } else {
+                border_color
+            },
+            width: if focused { 2.0 } else { 1.0 },
+            radius: theme::shape::SM.into(),
+        },
+        icon: if disabled {
+            with_alpha(p.on_surface, 0.38)
+        } else {
+            p.on_surface_variant
+        },
+        placeholder: with_alpha(p.on_surface, if disabled { 0.38 } else { 0.62 }),
+        value: if disabled {
+            with_alpha(p.on_surface, 0.38)
+        } else {
+            p.on_surface
+        },
+        selection: with_alpha(p.primary, 0.30),
+    }
+}
+
+pub(crate) fn m3_pick_list_style(t: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let p = pal_of(t);
+    let active = pick_list::Style {
+        text_color: p.on_surface,
+        placeholder_color: with_alpha(p.on_surface, 0.62),
+        handle_color: p.on_surface_variant,
+        background: p.surface_container_lowest.into(),
+        border: iced::Border {
+            color: p.outline_variant,
+            width: 1.0,
+            radius: theme::shape::SM.into(),
+        },
+    };
+    match status {
+        pick_list::Status::Active => active,
+        pick_list::Status::Hovered | pick_list::Status::Opened { .. } => pick_list::Style {
+            border: iced::Border {
+                color: p.primary,
+                width: 1.0,
+                radius: theme::shape::SM.into(),
+            },
+            ..active
+        },
+    }
+}
+
+pub(crate) fn m3_pick_list_menu_style(t: &Theme) -> iced::widget::overlay::menu::Style {
+    let p = pal_of(t);
+    iced::widget::overlay::menu::Style {
+        background: p.surface_container_high.into(),
+        border: iced::Border {
+            color: p.outline_variant,
+            width: 1.0,
+            radius: theme::shape::SM.into(),
+        },
+        text_color: p.on_surface,
+        selected_text_color: p.on_secondary_container,
+        selected_background: p.secondary_container.into(),
+        shadow: theme::elevation(2, is_dark(t)),
+    }
+}
+
+pub(crate) fn m3_checkbox_style(t: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let p = pal_of(t);
+    let is_checked = match status {
+        checkbox::Status::Active { is_checked }
+        | checkbox::Status::Hovered { is_checked }
+        | checkbox::Status::Disabled { is_checked } => is_checked,
+    };
+    let disabled = matches!(status, checkbox::Status::Disabled { .. });
+    let hovered = matches!(status, checkbox::Status::Hovered { .. });
+    if disabled {
+        return checkbox::Style {
+            background: with_alpha(p.on_surface, 0.12).into(),
+            icon_color: with_alpha(p.on_surface, 0.38),
+            border: iced::Border {
+                color: with_alpha(p.on_surface, 0.38),
+                width: 1.0,
+                radius: theme::shape::XS.into(),
+            },
+            text_color: Some(with_alpha(p.on_surface, 0.38)),
+        };
+    }
+    checkbox::Style {
+        background: if is_checked {
+            let bg = if hovered {
+                mix_color(p.primary, p.on_primary, theme::state::HOVER)
+            } else {
+                p.primary
+            };
+            bg.into()
+        } else {
+            iced::Color::TRANSPARENT.into()
+        },
+        icon_color: if is_checked {
+            p.on_primary
+        } else {
+            iced::Color::TRANSPARENT
+        },
+        border: iced::Border {
+            color: if is_checked {
+                p.primary
+            } else if hovered {
+                p.on_surface
+            } else {
+                p.outline
+            },
+            width: 2.0,
+            radius: theme::shape::XS.into(),
+        },
+        text_color: Some(p.on_surface),
+    }
+}
+
+pub(crate) fn m3_scrollable_style(t: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let p = pal_of(t);
+    let hovered = matches!(status, scrollable::Status::Hovered { .. });
+    let dragged = matches!(status, scrollable::Status::Dragged { .. });
+    let rail = scrollable::Rail {
+        background: Some(
+            with_alpha(p.on_surface, if hovered || dragged { 0.08 } else { 0.04 }).into(),
+        ),
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        scroller: scrollable::Scroller {
+            background: with_alpha(
+                p.on_surface_variant,
+                if dragged {
+                    0.62
+                } else if hovered {
+                    0.48
+                } else {
+                    0.34
+                },
+            )
+            .into(),
+            border: iced::Border {
+                radius: theme::shape::FULL.into(),
+                ..Default::default()
+            },
+        },
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: p.surface_container_high.into(),
+            border: iced::Border {
+                color: p.outline_variant,
+                width: 1.0,
+                radius: theme::shape::FULL.into(),
+            },
+            shadow: theme::elevation(2, is_dark(t)),
+            icon: p.on_surface,
+        },
     }
 }
 
@@ -132,14 +331,13 @@ pub(crate) fn md_text_btn_style(t: &Theme, status: button::Status) -> button::St
     }
 }
 
-/// Text button for the amber dashboard banners ("Don't show again"). Fixed
-/// white label + white state layer, matching the banner's white body text, so
-/// it stays legible on the warning-amber container in BOTH themes. The default
-/// `md_text_btn_style` uses the theme `primary`, which is a low-contrast
+/// Text button for warning banners ("Don't show again"). Uses the matching
+/// warning on-container role and state layer. The default
+/// `md_text_btn_style` uses the theme `primary`, which can be low-contrast
 /// lavender on amber in dark mode — the visibility bug this fixes. The banner
 /// background is theme-independent, so the on-color is too.
-pub(crate) fn banner_text_btn_style(_t: &Theme, status: button::Status) -> button::Style {
-    let on_banner = iced::Color::WHITE;
+pub(crate) fn banner_text_btn_style(t: &Theme, status: button::Status) -> button::Style {
+    let on_banner = pal_of(t).on_warning_container;
     let bg_alpha = theme::state_alpha(status);
     button::Style {
         background: if bg_alpha > 0.0 {

@@ -5,8 +5,6 @@ use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use iced_aw::widget::Spinner;
 use ltbox_core::tr_args;
-use theme::is_dark;
-
 impl App {
     pub(crate) fn view_sysupdate_wizard(&self) -> Element<'_, Message> {
         // Exec-step log popup overlay — without this the "Show log" button
@@ -400,7 +398,7 @@ impl App {
                         width: 1.5,
                         radius: theme::shape::MD.into(),
                     },
-                    shadow: theme::elevation(2, is_dark(t)),
+                    shadow: theme::elevation(2, theme::is_dark(t)),
                     ..Default::default()
                 }
             });

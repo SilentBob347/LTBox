@@ -3,8 +3,6 @@
 use crate::*;
 use iced::widget::{self, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
-use theme::with_alpha;
-
 impl App {
     pub(crate) fn view_flash_parts_wizard(&self) -> Element<'_, Message> {
         if self.log_popup_open && self.flash_parts.step >= 3 {
@@ -95,12 +93,18 @@ impl App {
         .on_press(on_select)
         .padding(0)
         .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
-        let status_color = if loader_error.is_some() {
-            iced::Color::from_rgb(0.9, 0.2, 0.2)
-        } else if selected {
-            GREEN
-        } else {
-            LABEL
+        let has_error = loader_error.is_some();
+        let status_style = move |t: &Theme| {
+            let p = pal_of(t);
+            iced::widget::text::Style {
+                color: Some(if has_error {
+                    p.error
+                } else if selected {
+                    p.success
+                } else {
+                    p.outline
+                }),
+            }
         };
         let chips = self.recent_file_chips(LOADER_PICKER_EXTS, on_chosen, "picker_recents");
         let col = column![
@@ -111,7 +115,7 @@ impl App {
             text(status)
                 .size(12)
                 .width(Length::Fill)
-                .color(status_color)
+                .style(status_style)
                 .center()
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
@@ -147,7 +151,10 @@ impl App {
         subtitle_key: &str,
         list: iced::widget::Column<'a, Message>,
     ) -> Element<'a, Message> {
-        let scrolled = scrollable(list).height(Length::Fill).width(Length::Fill);
+        let scrolled = scrollable(list)
+            .style(m3_scrollable_style)
+            .height(Length::Fill)
+            .width(Length::Fill);
         let col = column![
             text(self.t(title_key).to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -223,15 +230,19 @@ impl App {
                     .on_toggle(move |_| {
                         Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
                     })
+                    .style(m3_checkbox_style)
                     .into(),
                 FlashRowState::Flash => iced::widget::checkbox(true)
                     .on_toggle(move |_| {
                         Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
                     })
+                    .style(m3_checkbox_style)
                     .into(),
                 FlashRowState::Erase => text("⛔")
                     .size(18)
-                    .color(iced::Color::from_rgb(0.9, 0.2, 0.2))
+                    .style(|t: &Theme| iced::widget::text::Style {
+                        color: Some(pal_of(t).error),
+                    })
                     .into(),
             };
             let marker_btn = button(
@@ -321,13 +332,14 @@ impl App {
 
         let mut rows: Vec<Element<'_, Message>> = Vec::new();
 
-        // ERASE block first, red and loud.
+        // ERASE block first, error-toned and loud.
         if !erase_rows.is_empty() {
-            let red = iced::Color::from_rgb(0.9, 0.2, 0.2);
             let mut erase_col = column![
                 text(self.t("flash_parts_confirm_erase_warn").to_string())
                     .size(14)
-                    .color(red)
+                    .style(|t: &Theme| iced::widget::text::Style {
+                        color: Some(pal_of(t).error),
+                    })
             ]
             .spacing(4);
             for r in &erase_rows {
@@ -339,20 +351,22 @@ impl App {
                         format_bytes_auto(r.size_bytes)
                     ))
                     .size(13)
-                    .color(red),
+                    .style(|t: &Theme| iced::widget::text::Style {
+                        color: Some(pal_of(t).error),
+                    }),
                 );
             }
             rows.push(
                 container(erase_col)
                     .padding(14)
                     .style(move |t: &Theme| container::Style {
-                        background: Some(iced::Background::Color(with_alpha(red, 0.12))),
+                        background: Some(iced::Background::Color(pal_of(t).error_container)),
                         border: iced::Border {
-                            color: red,
+                            color: pal_of(t).error,
                             width: 1.0,
-                            radius: 8.0.into(),
+                            radius: theme::shape::SM.into(),
                         },
-                        text_color: Some(pal_of(t).on_surface),
+                        text_color: Some(pal_of(t).on_error_container),
                         ..Default::default()
                     })
                     .into(),
@@ -461,6 +475,7 @@ impl App {
         let all_checked =
             !self.dump_parts.rows.is_empty() && self.dump_parts.rows.iter().all(|r| r.selected);
         let header_cb = iced::widget::checkbox(all_checked)
+            .style(m3_checkbox_style)
             .on_toggle(|_| Message::DumpParts(DumpPartsMsg::DumpPartsToggleAll));
         let header = row![
             container(header_cb).width(32),
@@ -500,6 +515,7 @@ impl App {
         let mut list = column![header, widget::rule::horizontal(1)].spacing(0);
         for (idx, row) in self.dump_parts.rows.iter().enumerate() {
             let cb = iced::widget::checkbox(row.selected)
+                .style(m3_checkbox_style)
                 .on_toggle(move |_| Message::DumpParts(DumpPartsMsg::DumpPartsToggleRow(idx)));
             let data_row = iced::widget::row![
                 container(cb).width(32),
@@ -613,6 +629,7 @@ impl App {
         for idx in 0..PHYS_LUN_COUNT {
             let checked = self.dump_phys.selected[idx];
             let cb = iced::widget::checkbox(checked)
+                .style(m3_checkbox_style)
                 .on_toggle(move |_| Message::DumpPhys(DumpPhysMsg::DumpPhysToggleRow(idx)));
             let data_row = iced::widget::row![
                 container(cb).width(32),
@@ -704,6 +721,7 @@ impl App {
         for idx in 0..PHYS_LUN_COUNT {
             let checked = self.flash_phys.selected[idx];
             let cb = iced::widget::checkbox(checked)
+                .style(m3_checkbox_style)
                 .on_toggle(move |_| Message::FlashPhys(FlashPhysMsg::FlashPhysToggleRow(idx)));
 
             let file_disp = self.flash_phys.file_paths[idx]

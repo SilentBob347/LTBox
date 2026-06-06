@@ -191,7 +191,12 @@ impl App {
             btn,
             Space::new().width(Length::Fill),
         ];
-        let status_color = if selected { GREEN } else { LABEL };
+        let status_style = move |t: &Theme| {
+            let p = pal_of(t);
+            iced::widget::text::Style {
+                color: Some(if selected { p.success } else { p.outline }),
+            }
+        };
         let chips: Element<'_, Message> = if self.adv_wizard.is_image_info() {
             self.recent_file_chips(
                 &["img"],
@@ -224,7 +229,7 @@ impl App {
             text(status)
                 .size(12)
                 .width(Length::Fill)
-                .color(status_color)
+                .style(status_style)
                 .center()
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             chips,
@@ -278,7 +283,12 @@ impl App {
             btn,
             Space::new().width(Length::Fill),
         ];
-        let status_color = if selected { GREEN } else { LABEL };
+        let status_style = move |t: &Theme| {
+            let p = pal_of(t);
+            iced::widget::text::Style {
+                color: Some(if selected { p.success } else { p.outline }),
+            }
+        };
         let col = column![
             text(self.t("adv_country_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -291,7 +301,7 @@ impl App {
             text(status)
                 .size(12)
                 .width(Length::Fill)
-                .color(status_color)
+                .style(status_style)
                 .center()
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         ]
@@ -345,7 +355,12 @@ impl App {
             btn,
             Space::new().width(Length::Fill),
         ];
-        let status_color = if selected { GREEN } else { LABEL };
+        let status_style = move |t: &Theme| {
+            let p = pal_of(t);
+            iced::widget::text::Style {
+                color: Some(if selected { p.success } else { p.outline }),
+            }
+        };
         let col = column![
             text(self.t("adv_region_target_title").to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -358,7 +373,7 @@ impl App {
             text(status)
                 .size(12)
                 .width(Length::Fill)
-                .color(status_color)
+                .style(status_style)
                 .center()
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         ]
@@ -480,12 +495,17 @@ impl App {
                 ]
                 .align_y(iced::Alignment::Center),
             );
-            let status_color = if selected { GREEN } else { LABEL };
+            let status_style = move |t: &Theme| {
+                let p = pal_of(t);
+                iced::widget::text::Style {
+                    color: Some(if selected { p.success } else { p.outline }),
+                }
+            };
             col = col.push(
                 text(status)
                     .size(12)
                     .width(Length::Fill)
-                    .color(status_color)
+                    .style(status_style)
                     .center()
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
@@ -556,10 +576,15 @@ impl App {
                 ));
             }
         }
-        container(scrollable(col).height(Length::Fill).width(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        container(
+            scrollable(col)
+                .style(m3_scrollable_style)
+                .height(Length::Fill)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     pub(crate) fn adv_image_info_exec_step(&self) -> Element<'_, Message> {

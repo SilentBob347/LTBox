@@ -549,6 +549,7 @@ impl App {
         }
         container(
             iced::widget::scrollable(col)
+                .style(m3_scrollable_style)
                 .height(Length::Fill)
                 .width(Length::Fill),
         )

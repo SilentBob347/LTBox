@@ -3,7 +3,7 @@
 use crate::*;
 use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
-use theme::with_alpha;
+use theme::{mix_color, with_alpha};
 
 impl App {
     /// Device-info popup: render the Lenovo PTSTPD `data` block as a
@@ -111,6 +111,7 @@ impl App {
                     table = table.push(tinted);
                 }
                 scrollable(table)
+                    .style(m3_scrollable_style)
                     .height(Length::Fixed(420.0))
                     .width(Length::Fill)
                     .into()
@@ -229,6 +230,7 @@ impl App {
                     .spacing(12)
                     .width(Length::Fill),
                 )
+                .style(m3_scrollable_style)
                 .height(Length::Fixed(420.0))
                 .width(Length::Fill)
                 .into()
@@ -281,10 +283,7 @@ impl App {
         let utc_preview: Element<'_, Message> = if valid {
             let ts: u64 = buf.parse().unwrap_or(0);
             let formatted = format_unix_timestamp_utc(ts);
-            text(formatted)
-                .size(13)
-                .color(iced::Color::from_rgb(0.4, 0.7, 0.4))
-                .into()
+            text(formatted).size(13).style(success_style).into()
         } else {
             // Keep a fixed-height placeholder so the layout doesn't
             // jump when the preview appears / disappears.
@@ -305,15 +304,14 @@ impl App {
         .on_submit(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
         .padding([8, 12])
         .size(14)
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .style(m3_text_input_style);
 
         let cancel_btn = button(text(self.t("btn_cancel").to_string()).size(13))
             .on_press(Message::Adv(AdvMsg::AdvWizArbIndexCancel))
             .padding([8, 18])
             .style(md_text_btn_style);
-        let ok_btn_inner = text(self.t("btn_ok").to_string())
-            .size(13)
-            .color(iced::Color::WHITE);
+        let ok_btn_inner = text(self.t("btn_ok").to_string()).size(13);
         let ok_btn = if valid {
             button(ok_btn_inner)
                 .on_press(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
@@ -427,7 +425,7 @@ impl App {
             ]
             .align_y(iced::Alignment::Center),
             widget::rule::horizontal(1),
-            scrollable(list).height(300),
+            scrollable(list).style(m3_scrollable_style).height(300),
         ]
         .spacing(10)
         .padding(20)
@@ -445,32 +443,27 @@ impl App {
         for target in [DeviceRegion::Prc, DeviceRegion::Row] {
             let is_selected = selected == Some(target);
             let label = self.t(target.label_key()).to_string();
-            let bg_color = if is_selected {
-                ACCENT
-            } else {
-                iced::Color::TRANSPARENT
-            };
-            let txt_color = if is_selected {
-                iced::Color::WHITE
-            } else {
-                iced::Color::BLACK
-            };
             list = list.push(
-                button(text(label).size(13).color(txt_color))
+                button(text(label).size(13))
                     .on_press(Message::SelectRegionTarget(target))
                     .padding([6, 14])
                     .width(Length::Fill)
-                    .style(move |_t: &Theme, status| {
+                    .style(move |t: &Theme, status| {
+                        let p = pal_of(t);
                         let hover = matches!(status, button::Status::Hovered);
                         button::Style {
                             background: Some(if is_selected {
-                                bg_color.into()
+                                p.primary.into()
                             } else if hover {
-                                iced::Color::from_rgba(0.357, 0.388, 0.878, 0.08).into()
+                                with_alpha(p.primary, theme::state::HOVER).into()
                             } else {
                                 iced::Color::TRANSPARENT.into()
                             }),
-                            text_color: txt_color,
+                            text_color: if is_selected {
+                                p.on_primary
+                            } else {
+                                p.on_surface
+                            },
                             ..Default::default()
                         }
                     }),
@@ -599,16 +592,14 @@ impl App {
                 button(text(self.t("btn_close").to_string()).size(12))
                     .on_press(Message::ToggleLogPopup(false))
                     .padding([6, 16])
-                    .style(|_t: &Theme, status| {
-                        let a = match status {
-                            button::Status::Hovered => 1.0,
-                            _ => 0.85,
-                        };
+                    .style(|t: &Theme, status| {
+                        let p = pal_of(t);
+                        let bg = mix_color(p.primary, p.on_primary, theme::state_alpha(status));
                         button::Style {
-                            background: Some(iced::Color { a, ..ACCENT }.into()),
-                            text_color: iced::Color::WHITE,
+                            background: Some(bg.into()),
+                            text_color: p.on_primary,
                             border: iced::Border {
-                                radius: 6.0.into(),
+                                radius: theme::shape::FULL.into(),
                                 ..Default::default()
                             },
                             ..Default::default()

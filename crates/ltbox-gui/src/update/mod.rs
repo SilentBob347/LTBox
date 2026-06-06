@@ -103,7 +103,18 @@ impl App {
                     ThemeChoice::Dark => true,
                     ThemeChoice::System => theme_detect::system_prefers_dark(),
                 };
+                self.sync_runtime_theme();
                 self.persist_settings();
+            }
+            Message::RefreshSystemTheme => {
+                if self.theme_choice == ThemeChoice::System {
+                    let dark = theme_detect::system_prefers_dark();
+                    if self.dark_mode != dark {
+                        self.dark_mode = dark;
+                        self.sync_runtime_theme();
+                        self.persist_settings();
+                    }
+                }
             }
             Message::ToggleLogPopup(open) => {
                 self.log_popup_open = open;

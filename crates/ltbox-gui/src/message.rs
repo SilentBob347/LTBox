@@ -4,8 +4,8 @@
 use crate::{
     AdvAction, DataMode, DevicePollResult, DeviceRegion, DumpPartsScanResult, Family,
     FlashPartsScanResult, FlashTarget, Language, NightlySource, PartsSortColumn, PickerTarget,
-    Provider, RebootTarget, RescueRegion, RootMode, SysUpdateAction, ThemeChoice, UnrootType,
-    VerChoice, View,
+    Provider, RebootTarget, RescueRegion, RootMode, SysUpdateAction, ThemeChoice, ThemeSeed,
+    UnrootType, VerChoice, View,
 };
 
 #[derive(Debug, Clone)]
@@ -80,6 +80,8 @@ pub(crate) enum Message {
     SidebarHoverEnter,
     /// Sidebar mouse-area exited — collapse back to icon-only width.
     SidebarHoverExit,
+    /// Periodic system-theme probe while "Follow system" is active.
+    RefreshSystemTheme,
     /// 16 ms tick from the sidebar tween subscription. Steps
     /// `sidebar_anim` toward its target via exponential decay.
     /// Subscription auto-stops once the value has settled.
@@ -336,6 +338,7 @@ pub(crate) enum RebootMsg {
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum SettingsMsg {
     SetLanguage(Language),
+    SetThemeSeed(ThemeSeed),
     SettingsPickDefaultLoader,
     SettingsDefaultLoaderChosen(Option<String>),
     SettingsClearDefaultLoader,

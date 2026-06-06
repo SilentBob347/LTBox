@@ -17,6 +17,12 @@ impl App {
                 self.persist_settings();
                 Task::none()
             }
+            SettingsMsg::SetThemeSeed(seed) => {
+                self.theme_seed = seed;
+                self.sync_runtime_theme();
+                self.persist_settings();
+                Task::none()
+            }
             SettingsMsg::SettingsPickDefaultLoader => {
                 let spec = loader_file_spec("picker_target_edl_loader");
                 pickers::pick_file_for(spec, &self.recent_paths, |__v| {

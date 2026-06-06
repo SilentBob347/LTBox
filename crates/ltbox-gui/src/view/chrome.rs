@@ -7,6 +7,7 @@ use iced_aw::widget::Spinner;
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
+        self.sync_runtime_theme();
         let mut main = column![];
         main = main.push(self.title_bar());
         main = main.push(widget::rule::horizontal(1).style(shell_rule_style));
@@ -415,7 +416,9 @@ impl App {
                 .height(Length::Fill)
                 .into()
         } else {
-            scrollable(container(inner).padding(24).width(Length::Fill)).into()
+            scrollable(container(inner).padding(24).width(Length::Fill))
+                .style(m3_scrollable_style)
+                .into()
         };
         container(body)
             .width(Length::Fill)
@@ -426,25 +429,27 @@ impl App {
     pub(crate) fn error_banner(&self, msg: &str) -> Element<'_, Message> {
         // Floating overlay via `view()`'s stack so the layout below
         // doesn't shift.
-        let err_bg = iced::Color::from_rgba(0.95, 0.2, 0.2, 0.94);
         let card = container(
             row![
-                text(format!("  {msg}")).size(12).color(iced::Color::WHITE),
+                text(format!("  {msg}"))
+                    .size(12)
+                    .style(error_container_text_style),
                 Space::new().width(Length::Fill),
-                button(text(" × ").size(14).color(iced::Color::WHITE))
+                button(text(" × ").size(14).style(error_container_text_style))
                     .on_press(Message::DismissError)
                     .padding([2, 10])
-                    .style(|_t: &Theme, status| {
-                        let a = matches!(status, button::Status::Hovered);
+                    .style(|t: &Theme, status| {
+                        let p = pal_of(t);
+                        let a = theme::state_alpha(status);
                         button::Style {
-                            background: if a {
-                                Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.18).into())
+                            background: if a > 0.0 {
+                                Some(with_alpha(p.on_error_container, a).into())
                             } else {
                                 None
                             },
-                            text_color: iced::Color::WHITE,
+                            text_color: p.on_error_container,
                             border: iced::Border {
-                                radius: 4.0.into(),
+                                radius: theme::shape::XS.into(),
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -455,19 +460,18 @@ impl App {
             .align_y(iced::Alignment::Center),
         )
         .width(Length::Fill)
-        .style(move |_t: &Theme| container::Style {
-            background: Some(err_bg.into()),
-            border: iced::Border {
-                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-                width: 0.0,
-                radius: 0.0.into(),
-            },
-            shadow: iced::Shadow {
-                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.25),
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 6.0,
-            },
-            ..Default::default()
+        .style(move |t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.error_container.into()),
+                border: iced::Border {
+                    color: p.error_container,
+                    width: 0.0,
+                    radius: 0.0.into(),
+                },
+                shadow: theme::elevation(2, theme::is_dark(t)),
+                ..Default::default()
+            }
         });
         // Pin to y=0 via a Fill-height spacer below.
         column![card, Space::new().width(Length::Fill).height(Length::Fill)]
@@ -476,7 +480,8 @@ impl App {
     }
 
     pub(crate) fn status_bar(&self) -> Element<'_, Message> {
-        let status_color = self.connection.color(self.pal());
+        let p = self.pal();
+        let status_color = self.connection.color(&p);
         let status_label = self.t(self.connection.label_key());
         let model_text = if self.device_model.is_empty() {
             ""
@@ -527,7 +532,7 @@ impl App {
         .into()
     }
 
-    /// Amber (warning, not error-red) banner shell shared by the
+    /// Warning-container banner shell shared by the
     /// missing-driver install prompt and the optional update prompt. The
     /// Qualcomm USB driver is not strictly mandatory for every LTBox
     /// feature, so both prompts use a warning tone rather than a hard error.
@@ -535,18 +540,20 @@ impl App {
         &self,
         content: impl Into<Element<'a, Message>>,
     ) -> Element<'a, Message> {
-        let amber = iced::Color::from_rgb(0.95, 0.65, 0.0);
         container(content)
             .padding([12, 16])
             .width(Length::Fill)
-            .style(move |_t: &Theme| container::Style {
-                background: Some(amber.into()),
-                border: iced::Border {
-                    color: amber,
-                    width: 1.0,
-                    radius: theme::shape::SM.into(),
-                },
-                ..Default::default()
+            .style(move |t: &Theme| {
+                let p = pal_of(t);
+                container::Style {
+                    background: Some(p.warning_container.into()),
+                    border: iced::Border {
+                        color: p.warning_container,
+                        width: 1.0,
+                        radius: theme::shape::SM.into(),
+                    },
+                    ..Default::default()
+                }
             })
             .into()
     }
@@ -609,10 +616,10 @@ impl App {
         let body = column![
             text(self.t("driver_missing_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
-                .color(iced::Color::WHITE),
+                .style(warning_container_text_style),
             text(self.t("driver_missing_desc").to_string())
                 .size(theme::text_size::BODY_SMALL)
-                .color(iced::Color::WHITE),
+                .style(warning_container_text_style),
         ]
         .spacing(4)
         .width(Length::Fill);
@@ -674,14 +681,14 @@ impl App {
         let body = column![
             text(self.t("driver_update_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
-                .color(iced::Color::WHITE),
+                .style(warning_container_text_style),
             text(tr_args!(
                 "driver_update_desc",
                 current = current,
                 latest = latest
             ))
             .size(theme::text_size::BODY_SMALL)
-            .color(iced::Color::WHITE),
+            .style(warning_container_text_style),
         ]
         .spacing(4)
         .width(Length::Fill);
@@ -721,10 +728,10 @@ impl App {
         let body = column![
             text(self.t("dual_usb_advisory_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
-                .color(iced::Color::WHITE),
+                .style(warning_container_text_style),
             text(self.t("dual_usb_advisory_desc").to_string())
                 .size(theme::text_size::BODY_SMALL)
-                .color(iced::Color::WHITE),
+                .style(warning_container_text_style),
         ]
         .spacing(4)
         .width(Length::Fill);

@@ -3,7 +3,7 @@
 use crate::*;
 use iced::widget::{self, Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
-use theme::{is_dark, mix_color, with_alpha};
+use theme::{mix_color, with_alpha};
 
 impl App {
     pub(crate) fn view_settings(&self) -> Element<'_, Message> {
@@ -31,6 +31,8 @@ impl App {
             // menu items inherit `text_size` for visual consistency
             // with the trigger.
             .text_size(13)
+            .style(m3_pick_list_style)
+            .menu_style(m3_pick_list_menu_style)
             .width(160),
         ]
         .align_y(iced::Alignment::Center);
@@ -61,6 +63,39 @@ impl App {
             // Match the row label's 13 px size. Same rationale as the
             // language pick list.
             .text_size(13)
+            .style(m3_pick_list_style)
+            .menu_style(m3_pick_list_menu_style)
+            .width(160),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let seed_indigo = self.t(ThemeSeed::Indigo.label_key()).to_string();
+        let seed_teal = self.t(ThemeSeed::Teal.label_key()).to_string();
+        let seed_rose = self.t(ThemeSeed::Rose.label_key()).to_string();
+        let current_seed_label = match self.theme_seed {
+            ThemeSeed::Indigo => seed_indigo.clone(),
+            ThemeSeed::Teal => seed_teal.clone(),
+            ThemeSeed::Rose => seed_rose.clone(),
+        };
+        let seed_options: Vec<String> =
+            vec![seed_indigo.clone(), seed_teal.clone(), seed_rose.clone()];
+        let seed_row = row![
+            text(self.t("settings_theme_seed").to_string())
+                .size(13)
+                .width(Length::Fill),
+            widget::pick_list(seed_options, Some(current_seed_label), move |selected| {
+                let seed = if selected == seed_teal {
+                    ThemeSeed::Teal
+                } else if selected == seed_rose {
+                    ThemeSeed::Rose
+                } else {
+                    ThemeSeed::Indigo
+                };
+                Message::Settings(SettingsMsg::SetThemeSeed(seed))
+            },)
+            .text_size(13)
+            .style(m3_pick_list_style)
+            .menu_style(m3_pick_list_menu_style)
             .width(160),
         ]
         .align_y(iced::Alignment::Center);
@@ -202,7 +237,7 @@ impl App {
         .spacing(6);
 
         let prefs_card = container(
-            column![lang_row, theme_row, default_loader_row,]
+            column![lang_row, theme_row, seed_row, default_loader_row,]
                 .spacing(14)
                 .padding(iced::Padding {
                     top: 14.0,
@@ -222,7 +257,7 @@ impl App {
                     width: 1.0,
                     radius: theme::shape::MD.into(),
                 },
-                shadow: theme::elevation(1, is_dark(t)),
+                shadow: theme::elevation(1, theme::is_dark(t)),
                 ..Default::default()
             }
         });

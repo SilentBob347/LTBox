@@ -154,26 +154,7 @@ impl App {
         .secure(true)
         .padding([10, 12])
         .width(Length::Fill)
-        .style(|t: &Theme, status| {
-            let p = pal_of(t);
-            let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
-            iced::widget::text_input::Style {
-                background: p.surface.into(),
-                border: iced::Border {
-                    color: if focused {
-                        p.primary
-                    } else {
-                        p.outline_variant
-                    },
-                    width: if focused { 2.0 } else { 1.0 },
-                    radius: 8.0.into(),
-                },
-                placeholder: with_alpha(p.on_surface, 0.5),
-                icon: p.on_surface,
-                value: p.on_surface,
-                selection: with_alpha(p.primary, 0.3),
-            }
-        });
+        .style(m3_text_input_style);
 
         let err: Element<'_, Message> = match &self.error_msg {
             Some(e) => text(e.clone())
@@ -242,26 +223,7 @@ impl App {
         .on_submit(Message::Root(RootMsg::RootRunIdConfirm))
         .padding([10, 12])
         .width(Length::Fill)
-        .style(|t: &Theme, status| {
-            let p = pal_of(t);
-            let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
-            iced::widget::text_input::Style {
-                background: p.surface.into(),
-                border: iced::Border {
-                    color: if focused {
-                        p.primary
-                    } else {
-                        p.outline_variant
-                    },
-                    width: if focused { 2.0 } else { 1.0 },
-                    radius: 8.0.into(),
-                },
-                placeholder: with_alpha(p.on_surface, 0.5),
-                icon: p.on_surface,
-                value: p.on_surface,
-                selection: with_alpha(p.primary, 0.3),
-            }
-        });
+        .style(m3_text_input_style);
 
         let err: Element<'_, Message> = match &self.error_msg {
             Some(e) => text(e.clone())
@@ -313,26 +275,7 @@ impl App {
         .on_submit(Message::Root(RootMsg::RootKernelVersionConfirm))
         .padding([10, 12])
         .width(Length::Fill)
-        .style(|t: &Theme, status| {
-            let p = pal_of(t);
-            let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
-            iced::widget::text_input::Style {
-                background: p.surface.into(),
-                border: iced::Border {
-                    color: if focused {
-                        p.primary
-                    } else {
-                        p.outline_variant
-                    },
-                    width: if focused { 2.0 } else { 1.0 },
-                    radius: 8.0.into(),
-                },
-                placeholder: with_alpha(p.on_surface, 0.5),
-                icon: p.on_surface,
-                value: p.on_surface,
-                selection: with_alpha(p.primary, 0.3),
-            }
-        });
+        .style(m3_text_input_style);
 
         let err: Element<'_, Message> = match &self.error_msg {
             Some(e) => text(e.clone())

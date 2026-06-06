@@ -51,18 +51,12 @@ use ltbox_core::{live, tr_args};
 use iced::widget::{self, Space, button, column, container, row, text};
 use iced::{Element, Length, Subscription, Task, Theme};
 
-use theme::{Palette, palette, with_alpha};
+use theme::{Palette, ThemeSeed, palette_for, with_alpha};
 
 /// Palette lookup from `iced` style closures that only have `&Theme`.
-fn pal_of(t: &Theme) -> &'static Palette {
-    palette(is_dark(t))
+fn pal_of(t: &Theme) -> Palette {
+    theme::active_palette_for(t)
 }
-
-// Shims for contexts without a `&Theme` (plain `.color(...)` calls).
-// Dark-mode-critical surfaces already route through `pal_of` / `self.pal()`.
-const ACCENT: iced::Color = theme::LIGHT.primary;
-const LABEL: iced::Color = theme::LIGHT.outline;
-const GREEN: iced::Color = theme::LIGHT.success;
 
 /// Upper bound on `App.log_lines` — keeps memory flat over long sessions.
 const LOG_MAX_LINES: usize = 500;
@@ -377,12 +371,6 @@ fn main() -> iced::Result {
     app = app.font(icon::FONT);
     app.run()
 }
-
-/// Re-export so existing call sites keep their short `is_dark(t)`
-/// usage; the canonical definition now lives in `theme::is_dark` so
-/// helpers inside that module can also use it without re-implementing
-/// the probe.
-use theme::is_dark;
 
 /// Global tracing subscriber writing daily-rotated files under
 /// `%APPDATA%\ltbox\logs\`. Caller must hold the returned `WorkerGuard`
@@ -2415,6 +2403,7 @@ struct App {
     /// registry. Recomputed on theme-choice change.
     dark_mode: bool,
     theme_choice: ThemeChoice,
+    theme_seed: ThemeSeed,
     settings: SettingsState,
     translations: Translations,
     root: RootWizard,
@@ -2624,17 +2613,20 @@ impl Default for App {
                 ThemeChoice::System
             }
         });
+        let theme_seed = ThemeSeed::from_code(&persisted.theme_seed).unwrap_or_default();
         let dark_mode = match theme_choice {
             ThemeChoice::Light => false,
             ThemeChoice::Dark => true,
             ThemeChoice::System => theme_detect::system_prefers_dark(),
         };
+        theme::set_runtime_theme(theme_seed, dark_mode);
         install_core_translator(lang);
         Self {
             window_id: None,
             current_view: View::default(),
             dark_mode,
             theme_choice,
+            theme_seed,
             settings: SettingsState { language: lang },
             translations: Translations::load(lang),
             root: RootWizard::default(),
@@ -2776,11 +2768,19 @@ impl App {
         )
     }
     fn theme(&self) -> Theme {
-        if self.dark_mode {
-            Theme::Dark
-        } else {
-            Theme::Light
-        }
+        self.sync_runtime_theme();
+        Theme::custom(
+            format!(
+                "LTBox {} {}",
+                self.theme_seed.code(),
+                if self.dark_mode { "dark" } else { "light" }
+            ),
+            theme::iced_palette(self.theme_seed, self.dark_mode),
+        )
+    }
+
+    fn sync_runtime_theme(&self) {
+        theme::set_runtime_theme(self.theme_seed, self.dark_mode);
     }
 
     /// Localized string. Falls back to English, then the key itself.
@@ -2788,8 +2788,8 @@ impl App {
         self.translations.t(key)
     }
 
-    fn pal(&self) -> &'static Palette {
-        palette(self.dark_mode)
+    fn pal(&self) -> Palette {
+        palette_for(self.theme_seed, self.dark_mode)
     }
 
     /// Push one line, trim to `LOG_MAX_LINES`. Editor rebuild is
@@ -3342,6 +3342,7 @@ impl App {
         settings_store::save(&settings_store::PersistedSettings {
             language: self.settings.language.code().to_string(),
             theme: self.theme_choice.code().to_string(),
+            theme_seed: self.theme_seed.code().to_string(),
             // Legacy field kept readable by older builds.
             dark_mode: self.dark_mode,
             recent_paths: self.recent_paths.clone(),
@@ -3471,6 +3472,12 @@ impl App {
                 iced::time::every(WINDOW_SIZE_SAVE_INTERVAL).map(|_| Message::PersistWindowSize),
             );
         }
+        if self.theme_choice == ThemeChoice::System {
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(2))
+                    .map(|_| Message::RefreshSystemTheme),
+            );
+        }
         Subscription::batch(subs)
     }
 
@@ -3488,7 +3495,9 @@ impl App {
         column![
             text(self.t(error_key).to_string())
                 .size(13)
-                .color(iced::Color::from_rgb(0.9, 0.2, 0.2)),
+                .style(|t: &Theme| iced::widget::text::Style {
+                    color: Some(pal_of(t).error),
+                }),
             text(e.to_string()).size(11).style(muted_style),
             Space::new().height(8),
             button(text(self.t("btn_retry").to_string()).size(12))
