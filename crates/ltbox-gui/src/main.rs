@@ -2037,6 +2037,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
     fw_dir: &std::path::Path,
     work_dir: &std::path::Path,
     slot: Option<&str>,
+    device_floors: Option<(u64, u64)>,
     log: &mut Vec<String>,
 ) -> std::result::Result<(Vec<ArbOverlay>, bool), String> {
     const KEY: &str = "testkey_rsa4096";
@@ -2052,23 +2053,32 @@ pub(crate) fn build_tb323fu_arb_overlays(
             .rollback_index)
     };
 
-    // 1. Read device-committed indices from the ACTIVE slot (boot LUN 4,
-    //    vbmeta_system LUN 0). A first-time user may still be on `_b`, so
-    //    don't assume `_a`.
-    let dev_boot = format!("boot{}", active_slot_suffix(slot));
-    let dev_vbs = format!("vbmeta_system{}", active_slot_suffix(slot));
-    let dev_boot_img = work_dir.join(format!("dev_{dev_boot}.img"));
-    let dev_vbs_img = work_dir.join(format!("dev_{dev_vbs}.img"));
-    session
-        .dump_partition(&dev_boot, &dev_boot_img, 0, lun_of(&dev_boot)?, log)
-        .map_err(|e| format!("dump device {dev_boot}: {e}"))?;
-    session
-        .dump_partition(&dev_vbs, &dev_vbs_img, 0, lun_of(&dev_vbs)?, log)
-        .map_err(|e| format!("dump device {dev_vbs}: {e}"))?;
-    let dev_boot_idx = idx_of(&dev_boot_img)?;
-    let dev_vbs_idx = idx_of(&dev_vbs_img)?;
-    let _ = std::fs::remove_file(&dev_boot_img);
-    let _ = std::fs::remove_file(&dev_vbs_img);
+    // 1. Device-committed per-location indices (boot LUN 4, vbmeta_system
+    //    LUN 0). On an EDL-start flash the caller passes component-wise maxima
+    //    already read across BOTH slots (the active slot is unknown there, and
+    //    AVB indices are per-location, so a single slot can underestimate one
+    //    location). Otherwise read the ACTIVE slot here — a first-time user may
+    //    still be on `_b`, so don't assume `_a`.
+    let (dev_boot_idx, dev_vbs_idx) = match device_floors {
+        Some(floors) => floors,
+        None => {
+            let dev_boot = format!("boot{}", active_slot_suffix(slot));
+            let dev_vbs = format!("vbmeta_system{}", active_slot_suffix(slot));
+            let dev_boot_img = work_dir.join(format!("dev_{dev_boot}.img"));
+            let dev_vbs_img = work_dir.join(format!("dev_{dev_vbs}.img"));
+            session
+                .dump_partition(&dev_boot, &dev_boot_img, 0, lun_of(&dev_boot)?, log)
+                .map_err(|e| format!("dump device {dev_boot}: {e}"))?;
+            session
+                .dump_partition(&dev_vbs, &dev_vbs_img, 0, lun_of(&dev_vbs)?, log)
+                .map_err(|e| format!("dump device {dev_vbs}: {e}"))?;
+            let b = idx_of(&dev_boot_img)?;
+            let v = idx_of(&dev_vbs_img)?;
+            let _ = std::fs::remove_file(&dev_boot_img);
+            let _ = std::fs::remove_file(&dev_vbs_img);
+            (b, v)
+        }
+    };
 
     // 2. Install-image indices.
     let inst_boot = fw_dir.join("boot.img");

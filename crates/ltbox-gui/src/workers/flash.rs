@@ -46,10 +46,185 @@ fn reboot_fastboot_to_system_after_pre_edl_abort(log: &mut Vec<String>, started_
     }
 }
 
+/// Supported Lenovo SKUs, matched as fingerprint tokens to recover the device
+/// model from an EDL-dumped vendor_boot when fastboot/ADB never ran.
+const SUPPORTED_MODELS: [&str; 6] = [
+    "TB320FC", "TB321FU", "TB322FC", "TB323FU", "TB520FU", "TB710FU",
+];
+
+/// EDL-start device identity + rollback floor, read over the open EDL session.
+struct EdlStartProbe {
+    /// Device model token recovered from the vendor_boot fingerprint, or empty
+    /// when no supported SKU token matched.
+    model_token: String,
+    /// Component-wise device rollback floors `(boot, vbmeta_system)` — the MAX
+    /// of each location across both slots — or `None` for the no-ARB TB322FC.
+    rollback_floors: Option<(u64, u64)>,
+}
+
+/// Read the device model + committed rollback index on an EDL-start flash by
+/// dumping BOTH slots over the open session. The active slot is unknown in
+/// EDL-start and the inactive slot's images may not carry parseable AVB info,
+/// so each partition is dumped from `_a` and `_b` and the valid side is used
+/// (the higher-index slot when both parse). Returns `Err` (the caller resets
+/// back into EDL and aborts) when neither slot yields a valid vendor_boot, when
+/// the recovered model does not match the target firmware, or — for a
+/// rollback-protected model — when neither slot yields a valid boot +
+/// vbmeta_system pair.
+fn read_edl_start_device(
+    session: &mut ltbox_device::edl::EdlSession,
+    firmware_fp: Option<&str>,
+    log: &mut Vec<String>,
+) -> std::result::Result<EdlStartProbe, String> {
+    const FP_KEY: &str = "com.android.build.vendor_boot.fingerprint";
+    let work_dir = ltbox_core::app_paths::work_dir_for("flash_edl_probe");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).map_err(|e| format!("edl probe work dir: {e}"))?;
+
+    // 1. Model check — dump vendor_boot from BOTH slots and keep every
+    //    fingerprint that parses. A device left mid-cross-flash can have one
+    //    slot on a different SKU, so don't stop at the first parseable slot.
+    let mut device_fps: Vec<String> = Vec::new();
+    for slot in ["_a", "_b"] {
+        let part = format!("vendor_boot{slot}");
+        let Some(lun) = ltbox_core::partition_lun::lun_for_partition(&part) else {
+            continue;
+        };
+        let out = work_dir.join(format!("dev_{part}.img"));
+        let fp = session
+            .dump_partition(&part, &out, 0, lun, log)
+            .ok()
+            .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&out).ok())
+            .and_then(|info| {
+                info.props
+                    .iter()
+                    .find(|(k, _)| k == FP_KEY)
+                    .and_then(|(_, v)| std::str::from_utf8(v).ok())
+                    .map(|s| s.trim_end_matches('\0').to_string())
+            });
+        let _ = std::fs::remove_file(&out);
+        if let Some(fp) = fp {
+            device_fps.push(fp);
+        }
+    }
+    if device_fps.is_empty() {
+        return Err(ltbox_core::i18n::tr("err_flash_edl_avb_invalid"));
+    }
+
+    // Recover the model token, preferring a slot whose SKU the target firmware
+    // also names — a device left mid-cross-flash can carry a stale non-matching
+    // slot alongside the matching one. On EDL-start there is no other model
+    // source, so an unrecognized device, a firmware image with no vendor_boot
+    // fingerprint, or a genuine mismatch all abort (the caller resets back into
+    // EDL) rather than flash blind — TB323FU especially, since its ARB/region
+    // gates key off the model and would silently stay off on an unidentified
+    // device.
+    let mut model_token = String::new();
+    'find: for fp in &device_fps {
+        for m in SUPPORTED_MODELS {
+            if fingerprint_token_match(fp, m) {
+                let matches_fw = firmware_fp
+                    .map(|fw| fingerprint_token_match(fw, m))
+                    .unwrap_or(false);
+                if matches_fw {
+                    model_token = m.to_string();
+                    break 'find;
+                }
+                if model_token.is_empty() {
+                    model_token = m.to_string();
+                }
+            }
+        }
+    }
+    let firmware_matches = firmware_fp
+        .map(|fw| fingerprint_token_match(fw, &model_token))
+        .unwrap_or(false);
+    if model_token.is_empty() || !firmware_matches {
+        ltbox_core::live!(
+            log,
+            "[Flash] {}",
+            tr_args!(
+                "live_rescue_model_mismatch_abort",
+                device = if model_token.is_empty() {
+                    device_fps.join(", ")
+                } else {
+                    model_token.clone()
+                },
+                fingerprint = firmware_fp.unwrap_or("").to_string()
+            )
+        );
+        return Err(ltbox_core::i18n::tr("err_flash_model_mismatch_pre_edl"));
+    }
+    ltbox_core::live!(
+        log,
+        "[Flash] {}",
+        ltbox_core::i18n::tr("live_rescue_model_check_ok")
+    );
+
+    // 2. TB322FC has no rollback protection — skip the index read.
+    if model_token.eq_ignore_ascii_case("TB322FC") {
+        return Ok(EdlStartProbe {
+            model_token,
+            rollback_floors: None,
+        });
+    }
+
+    // 3. Rollback floor — dump boot + vbmeta_system from both slots and take
+    //    the per-location MAX across them. AVB rollback indices are per-location
+    //    and the two slots can hold different images, so a single slot can
+    //    underestimate one location (and TB323FU re-signs each location to its
+    //    own floor). Each location must parse on at least one slot.
+    ltbox_core::live!(log, "[ARB] {}", ltbox_core::i18n::tr("live_arb_edl_dump"));
+    let mut boot_idx: [Option<u64>; 2] = [None, None];
+    let mut vbs_idx: [Option<u64>; 2] = [None, None];
+    for (i, slot) in ["_a", "_b"].into_iter().enumerate() {
+        let boot = format!("boot{slot}");
+        let vbs = format!("vbmeta_system{slot}");
+        let (Some(boot_lun), Some(vbs_lun)) = (
+            ltbox_core::partition_lun::lun_for_partition(&boot),
+            ltbox_core::partition_lun::lun_for_partition(&vbs),
+        ) else {
+            continue;
+        };
+        let boot_img = work_dir.join(format!("dev_{boot}.img"));
+        let vbs_img = work_dir.join(format!("dev_{vbs}.img"));
+        boot_idx[i] = session
+            .dump_partition(&boot, &boot_img, 0, boot_lun, log)
+            .ok()
+            .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&boot_img).ok())
+            .map(|info| info.rollback_index);
+        vbs_idx[i] = session
+            .dump_partition(&vbs, &vbs_img, 0, vbs_lun, log)
+            .ok()
+            .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&vbs_img).ok())
+            .map(|info| info.rollback_index);
+        let _ = std::fs::remove_file(&boot_img);
+        let _ = std::fs::remove_file(&vbs_img);
+    }
+    let Some(floors) = rollback_floors(boot_idx, vbs_idx) else {
+        return Err(ltbox_core::i18n::tr("err_flash_edl_avb_invalid"));
+    };
+    Ok(EdlStartProbe {
+        model_token,
+        rollback_floors: Some(floors),
+    })
+}
+
+/// Component-wise device rollback floors from per-slot boot / vbmeta_system
+/// indices (`None` = that slot's image did not parse). Each location's floor is
+/// the MAX across both slots, because AVB rollback indices are per-location and
+/// the two slots can hold different images. Returns `None` (the caller aborts)
+/// when a location parsed on neither slot.
+fn rollback_floors(boot: [Option<u64>; 2], vbs: [Option<u64>; 2]) -> Option<(u64, u64)> {
+    let boot_floor = boot.into_iter().flatten().max()?;
+    let vbs_floor = vbs.into_iter().flatten().max()?;
+    Some((boot_floor, vbs_floor))
+}
+
 pub(crate) fn flash_worker(
     cfg: WorkflowConfig,
     conn: ConnectionStatus,
-    device_model: String,
+    mut device_model: String,
     fw_folder: String,
     mut rb_mode: ltbox_patch::rollback::RollbackMode,
     ll: LiveLabels,
@@ -302,19 +477,12 @@ pub(crate) fn flash_worker(
         .map(|fp| fingerprint_token_match(fp, "TB323FU"))
         .unwrap_or(false);
 
-    // EDL-start can't reach Fastboot vars (the generic ARB
-    // index source) or the device model, so non-TB323FU
-    // silently downgrades ARB On/Auto → Off. TB323FU is
-    // exempt: it reads its index by dumping partitions over
-    // this very EDL session, so it keeps On/Auto.
-    if edl_start && !target_is_tb323fu && rb_mode != ltbox_patch::rollback::RollbackMode::Off {
-        rb_mode = ltbox_patch::rollback::RollbackMode::Off;
-        live!(
-            log,
-            "[Flash] {}",
-            ltbox_core::i18n::tr("live_flash_edl_start_skips")
-        );
-    }
+    // EDL-start no longer forces rollback-bypass (or region) off. The device
+    // model and committed rollback index are read by dumping vendor_boot +
+    // boot + vbmeta_system from BOTH slots over EDL once the session is open
+    // (see the `edl_start` block after `EdlSession::open` below), so the
+    // user's selected rollback-bypass + region modes are preserved exactly as
+    // on an ADB/bootloader start.
 
     // TB323FU must never run a blind ON: ON bumps even
     // matching indices and would force the testkey/_arb
@@ -337,11 +505,14 @@ pub(crate) fn flash_worker(
     }
 
     // Rollback=ON + no fastboot vars → can't target a safe
-    // index. Bail before EDL. Runs AFTER the TB323FU On→Auto
-    // demotion above, so an EDL-start TB323FU (whose index
-    // is read over EDL, not fastboot) is already Auto here
-    // and is not aborted.
-    if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On) && !fastboot_reachable {
+    // index. Bail before EDL — UNLESS the device started in EDL, where the
+    // index is read by dumping partitions over the open session (the
+    // `edl_start` block after `EdlSession::open`). A bootloader/ADB start with
+    // unreachable fastboot still has no index source, so it still aborts.
+    if matches!(rb_mode, ltbox_patch::rollback::RollbackMode::On)
+        && !fastboot_reachable
+        && !edl_start
+    {
         live!(
             log,
             "[ARB] {}",
@@ -530,10 +701,12 @@ pub(crate) fn flash_worker(
         "[ARB] {}",
         tr_args!("live_arb_device_index", index = device_idx_str)
     );
-    if has_boot {
+    if has_boot && !edl_start {
         // Pre-result "Analyzing …" line dropped — analysis is
         // synchronous and the result line ("boot.img rollback
-        // index: …") fires immediately after.
+        // index: …") fires immediately after. Skipped on EDL-start: the
+        // device index is unknown until the post-open both-slot dump, so a
+        // pre-EDL summary here would print a misleading "bypass: no".
         match ltbox_patch::rollback::analyze_rollback_with_mode(
             &boot,
             device_rollback_index,
@@ -664,6 +837,60 @@ pub(crate) fn flash_worker(
     let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
         .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
 
+    // EDL-start: fastboot/ADB never ran, so the device model + committed
+    // rollback index are unknown. Read them off the device by dumping BOTH
+    // slots over the open session — the active slot is unknown in EDL-start,
+    // and the inactive slot's images may not carry parseable AVB info.
+    // vendor_boot identifies the model (compared against the target firmware
+    // fingerprint); boot + vbmeta_system give the rollback floor. If neither
+    // slot yields a valid AVB image, reset back into EDL and abort rather than
+    // flash blind. TB322FC has no rollback protection → bypass forced Off.
+    // On EDL-start, the per-location rollback floors (component-wise max across
+    // both slots) feed both the generic ARB overlay loop and TB323FU's overlay
+    // builder below — each location keeps its own floor.
+    let mut edl_floors: Option<(u64, u64)> = None;
+    if edl_start {
+        match read_edl_start_device(&mut session, vendor_boot_fingerprint.as_deref(), &mut log) {
+            Ok(probe) => {
+                device_model = probe.model_token;
+                match probe.rollback_floors {
+                    None => {
+                        // TB322FC is PRC-only. The pre-EDL UI gates that block
+                        // cross-region / non-CN country never fired (the model
+                        // was unknown until now), so enforce the constraint
+                        // here, before any region or country write.
+                        let non_cn_country = cfg
+                            .country_action
+                            .target()
+                            .map(|c| !c.eq_ignore_ascii_case("CN"))
+                            .unwrap_or(false);
+                        if cfg.modify_region || non_cn_country {
+                            let _ = session.reset_to_edl(&mut log);
+                            return Err(ltbox_core::i18n::tr("err_flash_tb322fc_prc_only"));
+                        }
+                        rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+                        ltbox_core::live!(
+                            log,
+                            "[ARB] {}",
+                            ltbox_core::i18n::tr("live_arb_device_index_none")
+                        );
+                    }
+                    Some(floors) => {
+                        // Component-wise floors flow per location into both the
+                        // generic overlay loop and the TB323FU builder; never
+                        // collapse to a single max (that would inflate the
+                        // lower location and block future stock firmware).
+                        edl_floors = Some(floors);
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = session.reset_to_edl(&mut log);
+                return Err(e);
+            }
+        }
+    }
+
     // Full-firmware flash: rawprogram + patch XMLs
     // drive every program node (no slot guessing).
     let (raw_xmls, patch_xmls) = ltbox_device::edl::collect_firmware_xmls_for_flash(fw_dir, false)
@@ -690,6 +917,7 @@ pub(crate) fn flash_worker(
             fw_dir,
             &arb_work_dir,
             active_slot.as_deref(),
+            edl_floors,
             &mut log,
         )?;
         tb323fu_arb_need = need;
@@ -699,31 +927,49 @@ pub(crate) fn flash_worker(
         let _ = std::fs::remove_dir_all(&arb_work_dir);
         std::fs::create_dir_all(&arb_work_dir).map_err(|e| format!("arb work dir: {e}"))?;
 
-        // Fastboot couldn't report `stored_rollback_index`. Every model but
-        // the no-ARB TB322FC still enforces rollback protection, so read the
-        // committed index from the ACTIVE slot over EDL (same mechanism as the
-        // TB323FU path). TB322FC keeps `None` → the per-partition `else` below
-        // skips patching, which is correct since it has no rollback floor.
-        let device_rollback_index = match device_rollback_index {
-            Some(i) => Some(i),
-            None if is_rollback_protected_model(&device_model) => {
-                ltbox_core::live!(log, "[ARB] {}", ltbox_core::i18n::tr("live_arb_edl_dump"));
-                Some(read_device_rollback_index_via_edl(
-                    &mut session,
-                    active_slot.as_deref(),
-                    &arb_work_dir,
-                    &mut log,
-                )?)
+        // Per-location device rollback floors. On EDL-start we already read
+        // component-wise maxima from BOTH slots; apply each location's own floor
+        // to its partition so a higher boot floor never inflates the
+        // vbmeta_system location — which would block later stock firmware — and
+        // vice versa. Otherwise fall back to the single aggregate index
+        // (fastboot, or the active-slot EDL read) applied to every location, as
+        // before. TB322FC keeps `None` → the per-partition `else` below skips
+        // patching, which is correct since it has no rollback floor.
+        let (boot_floor, vbs_floor) = match edl_floors {
+            Some((b, v)) => (Some(b), Some(v)),
+            None => {
+                let idx = match device_rollback_index {
+                    Some(i) => Some(i),
+                    None if is_rollback_protected_model(&device_model) => {
+                        ltbox_core::live!(
+                            log,
+                            "[ARB] {}",
+                            ltbox_core::i18n::tr("live_arb_edl_dump")
+                        );
+                        Some(read_device_rollback_index_via_edl(
+                            &mut session,
+                            active_slot.as_deref(),
+                            &arb_work_dir,
+                            &mut log,
+                        )?)
+                    }
+                    None => None,
+                };
+                (idx, idx)
             }
-            None => None,
         };
 
-        // (base, on-disk filename, slot label)
-        let label_pairs: &[(&str, &str, &str)] = &[
-            ("boot", "boot.img", "boot_a"),
-            ("vbmeta_system", "vbmeta_system.img", "vbmeta_system_a"),
+        // (base, on-disk filename, slot label, device floor for this location)
+        let label_pairs: [(&str, &str, &str, Option<u64>); 2] = [
+            ("boot", "boot.img", "boot_a", boot_floor),
+            (
+                "vbmeta_system",
+                "vbmeta_system.img",
+                "vbmeta_system_a",
+                vbs_floor,
+            ),
         ];
-        for (log_name, filename, slot_label) in label_pairs {
+        for (log_name, filename, slot_label, loc_floor) in label_pairs {
             let Some(lun) = ltbox_core::partition_lun::lun_for_partition(log_name) else {
                 ltbox_core::live!(
                     log,
@@ -748,9 +994,7 @@ pub(crate) fn flash_worker(
 
             // `Off` is already bypassed; On or Auto here.
             let analysis = match ltbox_patch::rollback::analyze_rollback_with_mode(
-                &source,
-                device_rollback_index,
-                rb_mode,
+                &source, loc_floor, rb_mode,
             ) {
                 Ok(a) => a,
                 Err(e) => {
@@ -779,7 +1023,7 @@ pub(crate) fn flash_worker(
             if !analysis.needs_patch {
                 continue;
             }
-            let Some(target) = device_rollback_index else {
+            let Some(target) = loc_floor else {
                 ltbox_core::live!(
                     log,
                     "[ARB] {}",
@@ -1385,5 +1629,25 @@ mod tests {
     #[test]
     fn pre_edl_abort_keeps_fastboot_when_flash_started_in_fastboot() {
         assert!(!should_reboot_fastboot_to_system_after_pre_edl_abort(true));
+    }
+
+    #[test]
+    fn edl_start_rollback_floors_are_component_wise() {
+        use super::rollback_floors;
+        // Per-location max across slots: _a=(boot 10, vbs 1), _b=(boot 9, vbs 8)
+        // -> (10, 8); a single-slot pick would have missed vbs 8.
+        assert_eq!(
+            rollback_floors([Some(10), Some(9)], [Some(1), Some(8)]),
+            Some((10, 8))
+        );
+        // A location that parsed on only one slot uses that slot's value.
+        assert_eq!(
+            rollback_floors([Some(7), None], [None, Some(3)]),
+            Some((7, 3))
+        );
+        // A location that parsed on neither slot -> abort.
+        assert_eq!(rollback_floors([None, None], [Some(5), Some(6)]), None);
+        assert_eq!(rollback_floors([Some(5), Some(6)], [None, None]), None);
+        assert_eq!(rollback_floors([None, None], [None, None]), None);
     }
 }
