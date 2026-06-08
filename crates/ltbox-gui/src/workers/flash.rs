@@ -4,9 +4,10 @@
 //! update_flash handler.
 
 use crate::{
-    ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, build_tb323fu_arb_overlays,
-    efisp_asset_suffix, find_edl_loader, fingerprint_token_match, is_rollback_protected_model,
-    phase_marker, read_device_rollback_index_via_edl, transition_to_edl,
+    ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, active_slot_suffix,
+    build_tb323fu_arb_overlays, efisp_asset_suffix, find_edl_loader, fingerprint_token_match,
+    is_rollback_protected_model, phase_marker, read_device_rollback_index_via_edl,
+    transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
 
@@ -219,6 +220,169 @@ fn rollback_floors(boot: [Option<u64>; 2], vbs: [Option<u64>; 2]) -> Option<(u64
     let boot_floor = boot.into_iter().flatten().max()?;
     let vbs_floor = vbs.into_iter().flatten().max()?;
     Some((boot_floor, vbs_floor))
+}
+
+/// Dump a partition over EDL and parse its AVB info, cleaning up the temp file.
+/// `None` on any dump/parse failure.
+fn dump_avb_info(
+    session: &mut ltbox_device::edl::EdlSession,
+    part: &str,
+    lun: u8,
+    work_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> Option<ltbox_patch::avb::AvbImageInfo> {
+    let out = work_dir.join(format!("dev_{part}.img"));
+    let info = session
+        .dump_partition(part, &out, 0, lun, log)
+        .ok()
+        .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&out).ok());
+    let _ = std::fs::remove_file(&out);
+    info
+}
+
+/// Device active-slot vbmeta identity, for the AVB key-class policy.
+struct DeviceVbmeta {
+    /// Active slot suffix (`_a` / `_b`).
+    slot: &'static str,
+    /// Root-of-trust class of the active-slot vbmeta.
+    class: ltbox_patch::key_map::KeyClass,
+    /// avbtool key spec for the active-slot vbmeta pubkey (`Some` iff
+    /// `class == Testkey`) — used to reject re-signing a device on a testkey the
+    /// re-sign path doesn't support.
+    key_spec: Option<&'static str>,
+    /// Device-committed per-location rollback floors — the MAX of each location
+    /// across BOTH slots (AVB indices are per-location; the slots can differ).
+    boot_floor: u64,
+    vbs_floor: u64,
+}
+
+/// Read the device's active-slot vbmeta root-of-trust + committed rollback
+/// floors. The active slot is `known_active` (fastboot `current-slot`) when set;
+/// otherwise (EDL-start) it is chosen by dumping vbmeta from BOTH slots and
+/// taking the valid one — or, when both parse, the slot with the higher
+/// `vbmeta_system` rollback index (the root vbmeta carries no rollback index;
+/// ties favour `_a`). The class/key come from the active-slot `vbmeta` pubkey;
+/// the floors are component-wise maxima of `boot` + `vbmeta_system` across BOTH
+/// slots (the device's true committed floor — a single slot can understate one
+/// location). Errors (the caller resets to the device's start mode and aborts)
+/// when no slot's vbmeta / floors parse.
+fn read_device_vbmeta(
+    session: &mut ltbox_device::edl::EdlSession,
+    known_active: Option<&str>,
+    work_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<DeviceVbmeta, String> {
+    let vbmeta_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta")
+        .ok_or_else(|| "no LUN for vbmeta".to_string())?;
+    let vbs_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta_system")
+        .ok_or_else(|| "no LUN for vbmeta_system".to_string())?;
+    let boot_lun = ltbox_core::partition_lun::lun_for_partition("boot")
+        .ok_or_else(|| "no LUN for boot".to_string())?;
+
+    // Per slot: whether vbmeta (the root of trust) parses, plus the per-location
+    // rollback indices from boot + vbmeta_system (the root vbmeta has none).
+    let mut vbmeta_ok = [false, false];
+    let mut boot_idx: [Option<u64>; 2] = [None, None];
+    let mut vbs_idx: [Option<u64>; 2] = [None, None];
+    for (i, slot) in ["_a", "_b"].into_iter().enumerate() {
+        vbmeta_ok[i] =
+            dump_avb_info(session, &format!("vbmeta{slot}"), vbmeta_lun, work_dir, log).is_some();
+        boot_idx[i] = dump_avb_info(session, &format!("boot{slot}"), boot_lun, work_dir, log)
+            .map(|info| info.rollback_index);
+        vbs_idx[i] = dump_avb_info(
+            session,
+            &format!("vbmeta_system{slot}"),
+            vbs_lun,
+            work_dir,
+            log,
+        )
+        .map(|info| info.rollback_index);
+    }
+
+    // Active slot: fastboot's when known; otherwise the valid vbmeta side, or
+    // (both valid) the higher vbmeta_system rollback index, ties favouring `_a`.
+    let slot = match known_active {
+        Some(s) => active_slot_suffix(Some(s)),
+        None => match (vbmeta_ok[0], vbmeta_ok[1]) {
+            (true, false) => "_a",
+            (false, true) => "_b",
+            (true, true) => {
+                if vbs_idx[1].unwrap_or(0) > vbs_idx[0].unwrap_or(0) {
+                    "_b"
+                } else {
+                    "_a"
+                }
+            }
+            (false, false) => return Err("no device vbmeta parsed on either slot".to_string()),
+        },
+    };
+
+    // Class + testkey spec from the active-slot vbmeta pubkey.
+    let active_vb = dump_avb_info(session, &format!("vbmeta{slot}"), vbmeta_lun, work_dir, log)
+        .ok_or_else(|| format!("device vbmeta{slot} AVB unreadable"))?;
+    let pubkey = active_vb.public_key_sha1.as_deref();
+    let class = ltbox_patch::key_map::classify_pubkey(pubkey);
+    let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(pubkey);
+
+    // Component-wise device rollback floor (max per location across both slots).
+    let (boot_floor, vbs_floor) = rollback_floors(boot_idx, vbs_idx)
+        .ok_or_else(|| "device boot/vbmeta_system AVB unreadable on both slots".to_string())?;
+
+    Ok(DeviceVbmeta {
+        slot,
+        class,
+        key_spec,
+        boot_floor,
+        vbs_floor,
+    })
+}
+
+/// Back up the device's active-slot `abl` (the bootloader) for later restore.
+/// `abl` is not in the static LUN map, so its LUN is found by GPT-scanning the
+/// device. Returns `(lun, backup_path)` — the LUN holds both `abl_a`/`abl_b`,
+/// and the restore later targets `abl_a` (firmware always lands on `_a`).
+fn backup_device_abl(
+    session: &mut ltbox_device::edl::EdlSession,
+    slot: &str,
+    work_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<(u8, std::path::PathBuf), String> {
+    let parts = session
+        .scan_partitions(0..=5, log)
+        .map_err(|e| format!("scan partitions for abl: {e}"))?;
+    let abl_part = format!("abl{slot}");
+    let lun = parts
+        .iter()
+        .find(|p| p.name == "abl_a")
+        .or_else(|| parts.iter().find(|p| p.name == abl_part))
+        .map(|p| p.lun)
+        .ok_or_else(|| "abl partition not found on device".to_string())?;
+    let out = work_dir.join("dev_abl_backup.img");
+    session
+        .dump_partition(&abl_part, &out, 0, lun, log)
+        .map_err(|e| format!("dump device {abl_part}: {e}"))?;
+    Ok((lun, out))
+}
+
+/// Best-effort restore of the backed-up device `abl` onto `abl_a` for the flash
+/// error paths: once the firmware's own (fixed-key) abl may have been written,
+/// the original testkey abl must go back even on failure, or the device is left
+/// with a fixed-key bootloader on a testkey-resigned chain. Failures here are
+/// logged and swallowed — the caller is already returning an error and leaves
+/// the device in EDL for retry.
+fn restore_abl_best_effort(
+    session: &mut ltbox_device::edl::EdlSession,
+    abl_restore: &Option<(u8, std::path::PathBuf)>,
+    log: &mut Vec<String>,
+) {
+    if let Some((lun, abl_img)) = abl_restore {
+        ltbox_core::live!(
+            log,
+            "[ARB] {}",
+            ltbox_core::i18n::tr("live_flash_abl_restore")
+        );
+        let _ = session.flash_partition("abl_a", abl_img, 0, *lun, log);
+    }
 }
 
 pub(crate) fn flash_worker(
@@ -595,6 +759,35 @@ pub(crate) fn flash_worker(
         )
     );
 
+    // AVB root-of-trust pre-check (before region conversion, which only re-signs
+    // via testkeys in KEY_MAP). Classify the firmware vbmeta: an `Unknown` key
+    // aborts; a fixed-key ("key2") firmware aborts on cross-region for now
+    // (same-region key2 is handled after EDL opens; cross-region key2 re-sign is
+    // a separate change). TB323FU has its own region path (efisp GBL) and is
+    // exempt here.
+    let fw_key_class = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
+        Ok(info) => ltbox_patch::key_map::classify_pubkey(info.public_key_sha1.as_deref()),
+        Err(_) => ltbox_patch::key_map::KeyClass::Unknown,
+    };
+    if fw_key_class == ltbox_patch::key_map::KeyClass::Unknown {
+        ltbox_core::live!(
+            log,
+            "[AVB] {}",
+            ltbox_core::i18n::tr("live_flash_vbmeta_key_unknown")
+        );
+        reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
+        return Err(ltbox_core::i18n::tr("err_flash_vbmeta_key_unknown"));
+    }
+    if fw_key_class == ltbox_patch::key_map::KeyClass::Fixed
+        && cfg.modify_region
+        && !target_is_tb323fu
+    {
+        reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
+        return Err(ltbox_core::i18n::tr(
+            "err_flash_key2_cross_region_unsupported",
+        ));
+    }
+
     // 4. Region conversion
     let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
     if cfg.modify_region && !tb323fu_skip_region {
@@ -900,6 +1093,119 @@ pub(crate) fn flash_worker(
     }
     // Stage ARB copies; flash them after rawprogram.
     let mut arb_patched: Vec<(String, u8, std::path::PathBuf)> = Vec::new();
+    // abl (bootloader) backup to overlay-restore onto abl_a after the flash —
+    // set only for the testkey-device + fixed-firmware re-sign case below.
+    let mut abl_restore: Option<(u8, std::path::PathBuf)> = None;
+
+    // AVB root-of-trust gate (device side). The firmware vbmeta was already
+    // classified before region conversion (`fw_key_class`): `Unknown` and a
+    // cross-region `Fixed` firmware aborted there; `Testkey` firmware and a
+    // `Fixed` firmware on TB323FU take their existing paths. Here a same-region
+    // `Fixed` ("key2") firmware on any other model classifies the device's
+    // active-slot vbmeta and either proceeds as-is (fixed device, no downgrade),
+    // re-signs to the testkey + preserves the device bootloader (testkey
+    // device), or aborts.
+    if fw_key_class == ltbox_patch::key_map::KeyClass::Fixed && !target_is_tb323fu {
+        let kc_dir = ltbox_core::app_paths::work_dir_for("flash_keyclass");
+        let _ = std::fs::remove_dir_all(&kc_dir);
+        std::fs::create_dir_all(&kc_dir).map_err(|e| format!("keyclass work dir: {e}"))?;
+        let dev = match read_device_vbmeta(&mut session, active_slot.as_deref(), &kc_dir, &mut log)
+        {
+            Ok(d) => d,
+            Err(e) => {
+                if edl_start {
+                    let _ = session.reset_to_edl(&mut log);
+                } else {
+                    let _ = session.reset(&mut log);
+                }
+                return Err(e);
+            }
+        };
+        match dev.class {
+            ltbox_patch::key_map::KeyClass::Unknown => {
+                if edl_start {
+                    let _ = session.reset_to_edl(&mut log);
+                } else {
+                    let _ = session.reset(&mut log);
+                }
+                return Err(ltbox_core::i18n::tr("err_flash_device_key_unknown"));
+            }
+            ltbox_patch::key_map::KeyClass::Fixed => {
+                // Fixed device + fixed firmware: the bootloader enforces region
+                // + rollback, so only a same-region, non-downgrade install can
+                // proceed (no re-sign, flash as-is).
+                let fw_boot_idx = ltbox_patch::avb::extract_image_avb_info(&boot)
+                    .map(|i| i.rollback_index)
+                    .unwrap_or(0);
+                let fw_vbs_idx =
+                    ltbox_patch::avb::extract_image_avb_info(&fw_dir.join("vbmeta_system.img"))
+                        .map(|i| i.rollback_index)
+                        .unwrap_or(0);
+                let downgrade = fw_boot_idx < dev.boot_floor || fw_vbs_idx < dev.vbs_floor;
+                if cfg.modify_region || downgrade {
+                    if edl_start {
+                        let _ = session.reset_to_edl(&mut log);
+                    } else {
+                        let _ = session.reset(&mut log);
+                    }
+                    return Err(ltbox_core::i18n::tr("err_flash_key2_device_constraint"));
+                }
+                ltbox_core::live!(
+                    log,
+                    "[AVB] {}",
+                    ltbox_core::i18n::tr("live_flash_key2_proceed")
+                );
+                rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+            }
+            ltbox_patch::key_map::KeyClass::Testkey => {
+                // The re-sign path supports only the 4096 testkey; a device on a
+                // different testkey (e.g. 2048) would reject a 4096-re-signed
+                // chain, so abort rather than risk a brick.
+                if dev.key_spec != Some("testkey_rsa4096") {
+                    if edl_start {
+                        let _ = session.reset_to_edl(&mut log);
+                    } else {
+                        let _ = session.reset(&mut log);
+                    }
+                    return Err(ltbox_core::i18n::tr("err_flash_device_testkey_unsupported"));
+                }
+                // Testkey device + fixed firmware: re-sign the install to the
+                // testkey root the device trusts, and preserve the device's own
+                // abl — the firmware's abl would re-root the chain to the fixed
+                // key and reject the re-signed images.
+                ltbox_core::live!(
+                    log,
+                    "[AVB] {}",
+                    ltbox_core::i18n::tr("live_flash_key2_resign")
+                );
+                let arb_work_dir = ltbox_core::app_paths::work_dir_for("flash_arb");
+                let _ = std::fs::remove_dir_all(&arb_work_dir);
+                std::fs::create_dir_all(&arb_work_dir).map_err(|e| format!("arb work dir: {e}"))?;
+                let (overlays, _need) = build_tb323fu_arb_overlays(
+                    &mut session,
+                    fw_dir,
+                    &arb_work_dir,
+                    Some(dev.slot),
+                    Some((dev.boot_floor, dev.vbs_floor)),
+                    true,
+                    &mut log,
+                )?;
+                arb_patched = overlays;
+                match backup_device_abl(&mut session, dev.slot, &arb_work_dir, &mut log) {
+                    Ok(backup) => abl_restore = Some(backup),
+                    Err(e) => {
+                        if edl_start {
+                            let _ = session.reset_to_edl(&mut log);
+                        } else {
+                            let _ = session.reset(&mut log);
+                        }
+                        return Err(e);
+                    }
+                }
+                rb_mode = ltbox_patch::rollback::RollbackMode::Off;
+            }
+        }
+    }
     if rb_mode != ltbox_patch::rollback::RollbackMode::Off && target_is_tb323fu {
         // TB323FU stages the testkey chain whenever the
         // install is a downgrade, independent of region /
@@ -918,6 +1224,7 @@ pub(crate) fn flash_worker(
             &arb_work_dir,
             active_slot.as_deref(),
             edl_floors,
+            false,
             &mut log,
         )?;
         tb323fu_arb_need = need;
@@ -1170,9 +1477,17 @@ pub(crate) fn flash_worker(
             patch = patch_xmls.len().to_string()
         )
     );
-    session
-        .flash_rawprogram_with_wipe(&raw_xmls, &patch_xmls, cfg.wipe, &mut log)
-        .map_err(|e| tr_args!("err_flash_firmware_failed", error = e.to_string()))?;
+    // ABL preservation is brick-critical once the firmware's own (fixed-key) abl
+    // can land: if rawprogram or an ARB overlay fails after that point, the
+    // original testkey abl must still go back, or the device is left with a
+    // fixed-key bootloader on a testkey-resigned chain. Restore best-effort on
+    // those error paths (device stays in EDL for retry); the success-path
+    // restore below stays fatal.
+    if let Err(e) = session.flash_rawprogram_with_wipe(&raw_xmls, &patch_xmls, cfg.wipe, &mut log) {
+        let err = tr_args!("err_flash_firmware_failed", error = e.to_string());
+        restore_abl_best_effort(&mut session, &abl_restore, &mut log);
+        return Err(err);
+    }
 
     // Overlay ARB-patched boot/vbmeta_system by GPT name.
     for (label, lun, patched) in &arb_patched {
@@ -1182,9 +1497,29 @@ pub(crate) fn flash_worker(
             tr_args!("live_arb_flash_patched", label = label)
         );
         if let Err(e) = session.flash_partition(label, patched, 0, *lun, &mut log) {
-            return Err(tr_args!(
+            let err = tr_args!(
                 "err_flash_arb_partition_failed",
                 label = label,
+                error = e.to_string()
+            );
+            restore_abl_best_effort(&mut session, &abl_restore, &mut log);
+            return Err(err);
+        }
+    }
+
+    // Restore the device's original bootloader on abl_a (testkey-fixed firmware
+    // re-signed for a testkey device). The firmware's own abl would re-root the
+    // chain to the fixed key and reject the re-signed images; a failed restore
+    // leaves the device in EDL rather than resetting into that mismatch.
+    if let Some((lun, abl_img)) = &abl_restore {
+        live!(
+            log,
+            "[ARB] {}",
+            ltbox_core::i18n::tr("live_flash_abl_restore")
+        );
+        if let Err(e) = session.flash_partition("abl_a", abl_img, 0, *lun, &mut log) {
+            return Err(tr_args!(
+                "err_flash_abl_restore_failed",
                 error = e.to_string()
             ));
         }

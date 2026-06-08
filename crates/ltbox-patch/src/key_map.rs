@@ -16,6 +16,38 @@ const KEY_MAP: &[(&str, &str)] = &[
     ),
 ];
 
+/// Pubkey SHA-1s for builds where the AVB **testkey vulnerability is fixed**
+/// (a non-testkey root of trust). Matched for classification only — these keys
+/// are never used to re-sign (a testkey device's bootloader trusts the testkey,
+/// so re-signs always target `testkey_rsa4096`).
+const KEY2_MAP: &[&str] = &["8fcb864f11f53ed11284615fb67685522085d3a2"];
+
+/// Which root of trust an image's vbmeta pubkey belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyClass {
+    /// Pubkey is in [`KEY_MAP`] — an AOSP testkey (testkey-vulnerability build).
+    Testkey,
+    /// Pubkey is in [`KEY2_MAP`] — a build with the testkey vulnerability fixed.
+    Fixed,
+    /// Pubkey is empty/absent or matches neither map.
+    Unknown,
+}
+
+/// Classify a vbmeta `public_key_sha1` into its root of trust. An empty/absent
+/// pubkey is treated as `Unknown` (callers gate writes on a positive class).
+pub fn classify_pubkey(pubkey_sha1: Option<&str>) -> KeyClass {
+    let Some(sha1) = pubkey_sha1.map(str::trim).filter(|s| !s.is_empty()) else {
+        return KeyClass::Unknown;
+    };
+    if has_key_for(sha1) {
+        KeyClass::Testkey
+    } else if KEY2_MAP.iter().any(|k| k.eq_ignore_ascii_case(sha1)) {
+        KeyClass::Fixed
+    } else {
+        KeyClass::Unknown
+    }
+}
+
 /// Resolve a `public_key_sha1` to an `avbtool-rs` key spec name.
 /// Returns `None` for an empty / unknown pubkey.
 pub fn key_spec_for_pubkey(pubkey_sha1: Option<&str>) -> Option<&'static str> {

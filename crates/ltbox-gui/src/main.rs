@@ -1888,7 +1888,7 @@ fn arb_from_model(model: &str) -> &'static str {
 /// Normalize an optional fastboot `current-slot` to a partition suffix
 /// (`_a`/`_b`), defaulting to `_a` when unknown (e.g. EDL-start with no
 /// fastboot probe).
-fn active_slot_suffix(slot: Option<&str>) -> &'static str {
+pub(crate) fn active_slot_suffix(slot: Option<&str>) -> &'static str {
     match slot {
         Some(s) if s.eq_ignore_ascii_case("_b") || s.eq_ignore_ascii_case("b") => "_b",
         _ => "_a",
@@ -2038,6 +2038,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
     work_dir: &std::path::Path,
     slot: Option<&str>,
     device_floors: Option<(u64, u64)>,
+    force_resign: bool,
     log: &mut Vec<String>,
 ) -> std::result::Result<(Vec<ArbOverlay>, bool), String> {
     const KEY: &str = "testkey_rsa4096";
@@ -2106,7 +2107,11 @@ pub(crate) fn build_tb323fu_arb_overlays(
 
     // 3. need = any dumped partition is behind the device-committed index.
     let need = inst_boot_idx < dev_boot_idx || inst_vbs_idx < dev_vbs_idx;
-    if !need {
+    // `force_resign` re-signs to testkey even without a downgrade: a non-TB323FU
+    // device on a testkey root must accept a testkey-fixed ("key2") firmware,
+    // which means re-signing the install images to the testkey regardless of
+    // rollback index.
+    if !need && !force_resign {
         ltbox_core::live!(
             log,
             "[ARB] {}",
