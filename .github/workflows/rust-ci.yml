@@ -348,6 +348,71 @@ jobs:
             ${{ steps.stage.outputs.tarball }}.sha256
           if-no-files-found: error
 
+  build-macos:
+    name: Build macos_universal
+    needs: fmt-clippy
+    # macos-14 is the Apple Silicon (arm64) runner; the x86_64 slice
+    # cross-builds on it natively (Apple clang + the universal SDK), so one
+    # runner produces the lipo'd universal binary. macOS needs no apt-style
+    # native deps — libusb is vendored static (LIBUSB_STATIC=1), Metal and
+    # the rest are system frameworks. Free runner minutes for public repos.
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        # rustup is preinstalled on macos-14; `rustup show` triggers the
+        # toml-driven 1.95.0 install, then add both Mac targets so
+        # make-app.sh can lipo a universal binary.
+        run: |
+          rustup show
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+
+      - name: Resolve release tag or commit
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${GITHUB_SHA:0:7}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build universal LTBox.app + tarball
+        # make-app.sh builds both Mac arches (LIBUSB_STATIC=1), lipo's the
+        # universal binary, assembles + ad-hoc-signs LTBox.app, and packages
+        # it as a .tar.gz. No Developer ID here — notarization is the optional
+        # S4 path (set MACOS_SIGN_IDENTITY + add signing secrets to enable it).
+        run: ./misc/macos/make-app.sh
+
+      - name: Stage artifact
+        id: stage
+        # make-app.sh already produced a tarball of the ad-hoc-signed .app
+        # (signature lives inside the bundle, so it survives tar). Just rename
+        # it to the tagged convention and checksum it.
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          tar_name="LTBox-macos_universal-${tag}.tar.gz"
+          mv "dist/macos/LTBox-macos-universal.tar.gz" "${tar_name}"
+          shasum -a 256 "${tar_name}" | awk '{print $1"  "$2}' > "${tar_name}.sha256"
+          echo "tarball=${tar_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos_universal-${{ steps.meta.outputs.tag }}
+          path: |
+            ${{ steps.stage.outputs.tarball }}
+            ${{ steps.stage.outputs.tarball }}.sha256
+          if-no-files-found: error
+
   test:
     # Cross-built .exes can't execute on the Linux build runners
     # (Wine + iced GUI is not a serious testing strategy), so the
@@ -419,7 +484,7 @@ jobs:
 
   release:
     name: Draft GitHub Release
-    needs: [build-windows, build-linux, test, test-linux]
+    needs: [build-windows, build-linux, build-macos, test, test-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -450,3 +515,5 @@ jobs:
             artifacts/**/LTBox-linux_x86_64-*.tar.gz.sha256
             artifacts/**/LTBox-linux_arm64-*.tar.gz
             artifacts/**/LTBox-linux_arm64-*.tar.gz.sha256
+            artifacts/**/LTBox-macos_universal-*.tar.gz
+            artifacts/**/LTBox-macos_universal-*.tar.gz.sha256
