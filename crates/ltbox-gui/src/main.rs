@@ -2057,20 +2057,26 @@ fn efisp_is_empty(data: &[u8]) -> bool {
 /// One staged ARB overlay: (GPT label, UFS LUN, patched image path).
 pub(crate) type ArbOverlay = (String, u8, std::path::PathBuf);
 
-/// TB323FU firmware-flash anti-rollback. Unlike the generic fastboot path,
-/// TB323FU never exposes `stored_rollback_index` so the device-committed
-/// indices are read by dumping `boot_a` + `vbmeta_system_a` over the open
-/// EDL session. When the install images sit BELOW those indices (a downgrade
-/// the bootloader would reject) the four AVB-signed partitions are re-signed
-/// with `testkey_rsa4096` and staged as overlays — boot / vbmeta_system get
-/// their rollback index bumped to the device value, recovery keeps its stock
-/// index (re-signed only), and vbmeta is rebuilt with its boot / recovery /
-/// vbmeta_system chain descriptors repointed at the testkey so the re-signed
-/// trio verifies. recovery + vbmeta are install-image-only (no device dump).
+/// Testkey re-sign overlays for an AVB flash — used by the TB323FU anti-rollback
+/// path and the non-TB323FU key2 / cross-region re-sign. The device-committed
+/// boot + vbmeta_system indices come from `device_floors` (component-wise across
+/// both slots on EDL-start) or are read from the active slot here.
 ///
-/// Returns `(overlays, need)`. `need` is true when a downgrade was patched —
-/// the caller swaps the efisp GBL to its `_arb` (testkey-root) variant. When
-/// `need` is false the install images are flashed stock (empty overlays).
+/// Layout-aware: it re-signs exactly the partitions the (base) vbmeta chains —
+/// each needs a matching `<part>.img` — so packages without recovery (or with a
+/// different chained set) work too. boot / vbmeta_system bump to the device
+/// floor (`max`, never lowered); other chained partitions (e.g. recovery) are
+/// re-signed only; the vbmeta is rebuilt with every chained descriptor repointed
+/// at the testkey and flashed LAST (it ties the chain together — shrinks the
+/// partial-write brick window). `vbmeta_base` overrides the rebuild base: for a
+/// key2 cross-region install the caller passes the region-converted, testkey
+/// vbmeta so its recomputed vendor_boot hash is preserved; otherwise the
+/// firmware's own `vbmeta.img`.
+///
+/// `force_resign` re-signs even without a downgrade (key2 firmware on a testkey
+/// device). Returns `(overlays, need)`; `need` is the downgrade flag — the
+/// TB323FU caller swaps the efisp GBL to its `_arb` (testkey-root) variant.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_tb323fu_arb_overlays(
     session: &mut ltbox_device::edl::EdlSession,
     fw_dir: &std::path::Path,
@@ -2078,6 +2084,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
     slot: Option<&str>,
     device_floors: Option<(u64, u64)>,
     force_resign: bool,
+    vbmeta_base: Option<&std::path::Path>,
     log: &mut Vec<String>,
 ) -> std::result::Result<(Vec<ArbOverlay>, bool), String> {
     const KEY: &str = "testkey_rsa4096";
@@ -2093,12 +2100,42 @@ pub(crate) fn build_tb323fu_arb_overlays(
             .rollback_index)
     };
 
-    // 1. Device-committed per-location indices (boot LUN 4, vbmeta_system
-    //    LUN 0). On an EDL-start flash the caller passes component-wise maxima
-    //    already read across BOTH slots (the active slot is unknown there, and
-    //    AVB indices are per-location, so a single slot can underestimate one
-    //    location). Otherwise read the ACTIVE slot here — a first-time user may
-    //    still be on `_b`, so don't assume `_a`.
+    // 1. Rechain base vbmeta (caller override for cross-region, else firmware's)
+    //    and the partitions it chains. Re-sign + rechain only the ones we can
+    //    handle: a plain partition name, an install image, and a resolvable A/B
+    //    GPT label/LUN. Other chained partitions (e.g. vbmeta_vendor) keep their
+    //    stock chain descriptor + stock image.
+    let inst_vbmeta = vbmeta_base
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| fw_dir.join("vbmeta.img"));
+    if !inst_vbmeta.exists() {
+        return Err(format!("install image missing: {}", inst_vbmeta.display()));
+    }
+    let chained = ltbox_patch::avb::chain_partitions(&inst_vbmeta)
+        .map_err(|e| format!("vbmeta chain partitions: {e}"))?;
+    let inst_img = |p: &str| fw_dir.join(format!("{p}.img"));
+    let has = |name: &str| chained.iter().any(|c| c.name == name);
+    // GPT label for a chained partition: `_a` for A/B, the unsuffixed name for a
+    // `DO_NOT_USE_AB` chain (AVB verifies the unsuffixed partition).
+    let label_of = |c: &ltbox_patch::avb::ChainPartition| -> String {
+        if c.do_not_use_ab {
+            c.name.clone()
+        } else {
+            format!("{}_a", c.name)
+        }
+    };
+    // The floor read + index bump below assume A/B slots for the rollback-
+    // protected partitions, so reject a non-A/B boot / vbmeta_system layout.
+    if chained
+        .iter()
+        .any(|c| (c.name == "boot" || c.name == "vbmeta_system") && c.do_not_use_ab)
+    {
+        return Err("non-A/B boot/vbmeta_system rollback layout is unsupported".to_string());
+    }
+    // 2. Device-committed per-location indices (boot + vbmeta_system). On an
+    //    EDL-start flash the caller passes component-wise maxima already read
+    //    across BOTH slots; otherwise read the ACTIVE slot here (a first-time
+    //    user may still be on `_b`, so don't assume `_a`).
     let (dev_boot_idx, dev_vbs_idx) = match device_floors {
         Some(floors) => floors,
         None => {
@@ -2120,18 +2157,17 @@ pub(crate) fn build_tb323fu_arb_overlays(
         }
     };
 
-    // 2. Install-image indices.
-    let inst_boot = fw_dir.join("boot.img");
-    let inst_vbs = fw_dir.join("vbmeta_system.img");
-    let inst_rec = fw_dir.join("recovery.img");
-    let inst_vbmeta = fw_dir.join("vbmeta.img");
-    for p in [&inst_boot, &inst_vbs, &inst_rec, &inst_vbmeta] {
-        if !p.exists() {
-            return Err(format!("install image missing: {}", p.display()));
-        }
-    }
-    let inst_boot_idx = idx_of(&inst_boot)?;
-    let inst_vbs_idx = idx_of(&inst_vbs)?;
+    // 3. Rollback-protected install indices (boot + vbmeta_system when chained).
+    let inst_boot_idx = if has("boot") {
+        idx_of(&inst_img("boot"))?
+    } else {
+        0
+    };
+    let inst_vbs_idx = if has("vbmeta_system") {
+        idx_of(&inst_img("vbmeta_system"))?
+    } else {
+        0
+    };
     ltbox_core::live!(
         log,
         "[ARB] {}",
@@ -2144,12 +2180,9 @@ pub(crate) fn build_tb323fu_arb_overlays(
         )
     );
 
-    // 3. need = any dumped partition is behind the device-committed index.
-    let need = inst_boot_idx < dev_boot_idx || inst_vbs_idx < dev_vbs_idx;
-    // `force_resign` re-signs to testkey even without a downgrade: a non-TB323FU
-    // device on a testkey root must accept a testkey-fixed ("key2") firmware,
-    // which means re-signing the install images to the testkey regardless of
-    // rollback index.
+    // 4. need = a rollback-protected install image is behind the device index.
+    let need = (has("boot") && inst_boot_idx < dev_boot_idx)
+        || (has("vbmeta_system") && inst_vbs_idx < dev_vbs_idx);
     if !need && !force_resign {
         ltbox_core::live!(
             log,
@@ -2159,42 +2192,90 @@ pub(crate) fn build_tb323fu_arb_overlays(
         return Ok((Vec::new(), false));
     }
 
-    // 4. Re-sign overlays (all testkey). boot / vbmeta_system bump to the
-    // device value; never lower the image's own claim, hence the max().
+    // 5. A re-sign is needed: validate + select the chained partitions to
+    //    re-sign. Two distinct failure modes:
+    //   * Missing image — the firmware chains the partition but ships no
+    //     `<part>.img`, so the testkey root would delegate to a partition the
+    //     package may never flash. Abort: a stale child fails AVB verification.
+    //   * Image present but the LUN is not in the static map (e.g. vbmeta_vendor)
+    //     — no overlay can be staged, so leave it stock: rawprogram still flashes
+    //     the firmware's own image, which matches its preserved (firmware-key)
+    //     chain descriptor under the testkey-signed root.
+    // The rollback-protected boot / vbmeta_system MUST be re-signable.
+    let mut to_resign: Vec<&ltbox_patch::avb::ChainPartition> = Vec::new();
+    for c in &chained {
+        if c.name.is_empty()
+            || !c
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Err(format!(
+                "unsafe chain partition name in vbmeta: {:?}",
+                c.name
+            ));
+        }
+        if !inst_img(&c.name).exists() {
+            return Err(format!(
+                "vbmeta chains {} but its install image is missing: {}",
+                c.name,
+                inst_img(&c.name).display()
+            ));
+        }
+        if ltbox_core::partition_lun::lun_for_partition(&label_of(c)).is_some() {
+            to_resign.push(c);
+        } else if c.name == "boot" || c.name == "vbmeta_system" {
+            return Err(format!(
+                "rollback-protected {} is chained but its LUN is unknown",
+                c.name
+            ));
+        }
+    }
+
+    // 6. Re-sign each handled chained partition to the testkey. boot /
+    //    vbmeta_system bump to the device floor (never lower the image's own
+    //    claim, hence max()); others are re-signed only. Flash boot LAST among
+    //    them (just before vbmeta_a) to shrink the partial-write brick window.
     let boot_target = inst_boot_idx.max(dev_boot_idx);
     let vbs_target = inst_vbs_idx.max(dev_vbs_idx);
-    let out_boot = work_dir.join("boot.arb.img");
-    let out_vbs = work_dir.join("vbmeta_system.arb.img");
-    let out_rec = work_dir.join("recovery.arb.img");
-    let out_vbmeta = work_dir.join("vbmeta.arb.img");
-    std::fs::copy(&inst_boot, &out_boot).map_err(|e| format!("copy boot: {e}"))?;
-    std::fs::copy(&inst_vbs, &out_vbs).map_err(|e| format!("copy vbmeta_system: {e}"))?;
-    std::fs::copy(&inst_rec, &out_rec).map_err(|e| format!("copy recovery: {e}"))?;
+    // Re-sign with the testkey's OWN algorithm (derived from KEY), not the source
+    // image's: a key2 image may use a different RSA size, which avbtool would
+    // reject against the testkey.
+    let key_algo = ltbox_patch::avb::algorithm_for_key_spec(KEY)
+        .ok_or_else(|| format!("unknown AVB algorithm for {KEY}"))?;
+    let mut ordered = to_resign.clone();
+    ordered.sort_by_key(|c| u8::from(c.name == "boot"));
+    let mut overlays: Vec<ArbOverlay> = Vec::new();
+    for &c in &ordered {
+        let name = c.name.as_str();
+        let out = work_dir.join(format!("{name}.arb.img"));
+        std::fs::copy(inst_img(name), &out).map_err(|e| format!("copy {name}: {e}"))?;
+        let target = match name {
+            "boot" => Some(boot_target),
+            "vbmeta_system" => Some(vbs_target),
+            _ => None,
+        };
+        ltbox_patch::avb::resign_image(&out, KEY, &key_algo, target)
+            .map_err(|e| format!("resign {name}: {e}"))?;
+        let label = label_of(c);
+        let lun = lun_of(&label)?;
+        overlays.push((label, lun, out));
+    }
 
-    let boot_algo = ltbox_patch::avb::extract_image_avb_info(&out_boot)
-        .map_err(|e| format!("boot AVB: {e}"))?
-        .algorithm;
-    ltbox_patch::avb::resign_image(&out_boot, KEY, &boot_algo, Some(boot_target))
-        .map_err(|e| format!("resign boot: {e}"))?;
-    let vbs_algo = ltbox_patch::avb::extract_image_avb_info(&out_vbs)
-        .map_err(|e| format!("vbmeta_system AVB: {e}"))?
-        .algorithm;
-    ltbox_patch::avb::resign_image(&out_vbs, KEY, &vbs_algo, Some(vbs_target))
-        .map_err(|e| format!("resign vbmeta_system: {e}"))?;
-    let rec_algo = ltbox_patch::avb::extract_image_avb_info(&out_rec)
-        .map_err(|e| format!("recovery AVB: {e}"))?
-        .algorithm;
-    ltbox_patch::avb::resign_image(&out_rec, KEY, &rec_algo, None)
-        .map_err(|e| format!("resign recovery: {e}"))?;
+    // 7. Rebuild vbmeta on the base, repointing the re-signed chained descriptors
+    //    at the testkey (others keep their stock pubkey); flash it LAST.
+    let out_vbmeta = work_dir.join("vbmeta.arb.img");
+    let chained_refs: Vec<&str> = to_resign.iter().map(|c| c.name.as_str()).collect();
     ltbox_patch::avb::rebuild_vbmeta_rechained(
         &out_vbmeta,
         &inst_vbmeta,
-        &["boot", "recovery", "vbmeta_system"],
+        &chained_refs,
         KEY,
         KEY,
         ALGO,
     )
     .map_err(|e| format!("rebuild vbmeta: {e}"))?;
+    overlays.push(("vbmeta_a".to_string(), lun_of("vbmeta_a")?, out_vbmeta));
     ltbox_core::live!(
         log,
         "[ARB] {}",
@@ -2205,22 +2286,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
         )
     );
 
-    // 5. Overlays: (GPT label, LUN, patched path). Flashed after rawprogram.
-    // Ordered to shrink the partial-write brick window: leaf images first,
-    // the boot source next, and the root `vbmeta_a` (which ties the whole
-    // chain together) LAST — and the caller flashes the `_arb` GBL only
-    // after every overlay lands.
-    let overlays = vec![
-        ("recovery_a".to_string(), lun_of("recovery_a")?, out_rec),
-        (
-            "vbmeta_system_a".to_string(),
-            lun_of("vbmeta_system_a")?,
-            out_vbs,
-        ),
-        ("boot_a".to_string(), lun_of("boot_a")?, out_boot),
-        ("vbmeta_a".to_string(), lun_of("vbmeta_a")?, out_vbmeta),
-    ];
-    Ok((overlays, true))
+    Ok((overlays, need))
 }
 
 /// Route device into EDL (Qualcomm 9008). Shared by Root/Unroot/Flash.

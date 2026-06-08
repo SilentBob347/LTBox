@@ -183,6 +183,7 @@ pub fn build_region_converted_boot_chain(
     output_dir: &Path,
     target: RegionTarget,
     patterns: &RegionPatternSet,
+    key_override: Option<&str>,
 ) -> Result<RegionBootChainBuild> {
     if output_dir.exists() {
         fs::remove_dir_all(output_dir).map_err(|e| {
@@ -253,27 +254,45 @@ pub fn build_region_converted_boot_chain(
 
     let vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
     let vbmeta_out = output_dir.join("vbmeta.img");
-    match key_map::key_spec_for_signed_pubkey(vbmeta_info.public_key_sha1.as_deref()) {
-        Ok(Some(key_spec)) => {
+    // `key_override` (testkey) re-signs the rebuilt vbmeta with that key rather
+    // than the firmware's own KEY_MAP key — the key2 cross-region flash passes
+    // the testkey so the converted vbmeta matches the device's root of trust.
+    // Without an override, fall back to the firmware's signing key.
+    let resolved = match key_override {
+        Some(spec) => Some(spec),
+        None => key_map::key_spec_for_signed_pubkey(vbmeta_info.public_key_sha1.as_deref())
+            .map_err(|key| {
+                LtboxError::Avb(tr_args!(
+                    "err_avb_signing_key_unknown",
+                    image = "vbmeta.img",
+                    key = key
+                ))
+            })?,
+    };
+    match resolved {
+        Some(key_spec) => {
+            // Keep the rebuild algorithm consistent with the signing key: a key
+            // override (cross-region testkey) may differ in size from the source
+            // vbmeta, so derive the algorithm from the override key itself —
+            // otherwise avbtool rejects the key/algorithm mismatch.
+            let algorithm = match key_override {
+                Some(spec) => avb::algorithm_for_key_spec(spec).ok_or_else(|| {
+                    LtboxError::Avb(format!("unknown AVB algorithm for key override {spec}"))
+                })?,
+                None => vbmeta_info.algorithm.clone(),
+            };
             avb::rebuild_vbmeta_with_chained_images(
                 &vbmeta_out,
                 &vbmeta_src,
                 &[vendor_boot_out.as_path()],
                 key_spec,
-                Some(vbmeta_info.algorithm.as_str()),
+                Some(algorithm.as_str()),
             )?;
             info!("Rebuilt vbmeta chain: {}", vbmeta_out.display());
         }
-        Ok(None) => {
+        None => {
             fs::copy(&vbmeta_src, &vbmeta_out)?;
             info!("vbmeta is unsigned; copied stock blob");
-        }
-        Err(key) => {
-            return Err(LtboxError::Avb(tr_args!(
-                "err_avb_signing_key_unknown",
-                image = "vbmeta.img",
-                key = key
-            )));
         }
     }
 
@@ -586,9 +605,14 @@ mod tests {
         fs::create_dir_all(&output_dir).unwrap();
         fs::write(output_dir.join("vendor_boot.patched.img"), b"stale").unwrap();
 
-        let built =
-            build_region_converted_boot_chain(&dir, &output_dir, RegionTarget::Prc, &patterns)
-                .unwrap();
+        let built = build_region_converted_boot_chain(
+            &dir,
+            &output_dir,
+            RegionTarget::Prc,
+            &patterns,
+            None,
+        )
+        .unwrap();
 
         let RegionBootChainBuild::Built(output) = built else {
             panic!("ROW firmware should build a PRC output pair");

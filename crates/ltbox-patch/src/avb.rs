@@ -109,6 +109,50 @@ pub fn extract_image_avb_info(image_path: &Path) -> Result<AvbImageInfo> {
     })
 }
 
+/// A chain-partition descriptor a vbmeta declares: the partition name and
+/// whether it is flagged `DO_NOT_USE_AB` (AVB verifies the unsuffixed name, so
+/// the image is flashed to `<name>` rather than `<name>_a`).
+#[derive(Debug, Clone)]
+pub struct ChainPartition {
+    pub name: String,
+    pub do_not_use_ab: bool,
+}
+
+/// The chain partitions a vbmeta image declares, in descriptor order (e.g.
+/// `boot`, `recovery`, `vbmeta_system`). Drives a layout-aware re-sign: only the
+/// partitions this vbmeta actually chains are re-signed + rechained, and each
+/// carries its `DO_NOT_USE_AB` flag so the caller targets the right GPT label —
+/// so a package without (say) recovery, or with non-A/B chains, still works.
+pub fn chain_partitions(vbmeta_path: &Path) -> Result<Vec<ChainPartition>> {
+    // libavb `AVB_CHAIN_PARTITION_DESCRIPTOR_FLAGS_DO_NOT_USE_AB`.
+    const DO_NOT_USE_AB: u32 = 1;
+    let info = avbtool_rs::image::inspect_avb_image(vbmeta_path)
+        .map_err(|e| LtboxError::Avb(format!("inspect {}: {e}", vbmeta_path.display())))?;
+    Ok(info
+        .descriptors
+        .iter()
+        .filter_map(|d| match d {
+            avbtool_rs::info::DescriptorInfo::ChainPartition {
+                partition_name,
+                flags,
+                ..
+            } => Some(ChainPartition {
+                name: partition_name.clone(),
+                do_not_use_ab: *flags & DO_NOT_USE_AB != 0,
+            }),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The AVB algorithm name for a signing-key spec (bundled name or PEM path),
+/// e.g. `testkey_rsa4096` -> `SHA256_RSA4096`, derived from the key's size. Used
+/// to keep a rebuild's algorithm consistent with a key override.
+pub fn algorithm_for_key_spec(key_spec: &str) -> Option<String> {
+    let key = avbtool_rs::crypto::load_key_from_spec(key_spec).ok()?;
+    key.algorithm().ok()
+}
+
 /// Resign an image. `key_spec` → bundled name (`testkey_rsa2048` / …)
 /// or filesystem path to a PEM; passed to `avbtool_rs::crypto::load_key_from_spec`.
 pub fn resign_image(

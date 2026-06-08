@@ -129,6 +129,7 @@ pub(crate) fn advanced_file_worker(
                 &output_dir,
                 target,
                 &ltbox_patch::region::RegionPatternSet::default(),
+                None,
             ) {
                 Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
                     ltbox_core::live!(

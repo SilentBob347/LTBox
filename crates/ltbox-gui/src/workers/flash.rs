@@ -761,19 +761,16 @@ pub(crate) fn flash_worker(
         reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
         return Err(ltbox_core::i18n::tr("err_flash_vbmeta_key_unknown"));
     }
-    if fw_key_class == ltbox_patch::key_map::KeyClass::Fixed
-        && cfg.modify_region
-        && !target_is_tb323fu
-    {
-        reboot_fastboot_to_system_after_pre_edl_abort(&mut log, started_in_fastboot);
-        return Err(ltbox_core::i18n::tr(
-            "err_flash_key2_cross_region_unsupported",
-        ));
-    }
-
-    // 4. Region conversion
+    // 4. Region conversion. Skipped for a fixed-key ("key2") firmware: its
+    //    vbmeta isn't in KEY_MAP, so the standard (testkey) converter cannot
+    //    re-sign it. Cross-region key2 is handled after EDL opens, where the
+    //    device key class decides between a testkey re-sign + conversion
+    //    (testkey device) or an abort (fixed device).
     let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
-    if cfg.modify_region && !tb323fu_skip_region {
+    if cfg.modify_region
+        && !tb323fu_skip_region
+        && fw_key_class != ltbox_patch::key_map::KeyClass::Fixed
+    {
         if has_vendor_boot && has_vbmeta {
             ltbox_core::live!(log, "[Region] {}", ltbox_core::i18n::tr("live_region_on"));
             ltbox_core::live!(
@@ -801,6 +798,7 @@ pub(crate) fn flash_worker(
                 &output_dir,
                 target,
                 &ltbox_patch::region::RegionPatternSet::default(),
+                None,
             ) {
                 Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
                     ltbox_core::live!(
@@ -1081,13 +1079,13 @@ pub(crate) fn flash_worker(
     let mut abl_restore: Option<(u8, std::path::PathBuf)> = None;
 
     // AVB root-of-trust gate (device side). The firmware vbmeta was already
-    // classified before region conversion (`fw_key_class`): `Unknown` and a
-    // cross-region `Fixed` firmware aborted there; `Testkey` firmware and a
-    // `Fixed` firmware on TB323FU take their existing paths. Here a same-region
-    // `Fixed` ("key2") firmware on any other model classifies the device's
-    // active-slot vbmeta and either proceeds as-is (fixed device, no downgrade),
-    // re-signs to the testkey + preserves the device bootloader (testkey
-    // device), or aborts.
+    // classified (`fw_key_class`): `Unknown` aborted before region conversion;
+    // `Testkey` firmware and a `Fixed` firmware on TB323FU take their existing
+    // paths. Here a `Fixed` ("key2") firmware on any other model classifies the
+    // device's active-slot vbmeta and either proceeds as-is (fixed device, same
+    // region, no downgrade), re-signs to the testkey + preserves the device
+    // bootloader (testkey device — including a cross-region convert-then-resign),
+    // or aborts (fixed device cross-region/downgrade, or unknown device key).
     if fw_key_class == ltbox_patch::key_map::KeyClass::Fixed && !target_is_tb323fu {
         let kc_dir = ltbox_core::app_paths::work_dir_for("flash_keyclass");
         let _ = std::fs::remove_dir_all(&kc_dir);
@@ -1164,15 +1162,79 @@ pub(crate) fn flash_worker(
                 let arb_work_dir = ltbox_core::app_paths::work_dir_for("flash_arb");
                 let _ = std::fs::remove_dir_all(&arb_work_dir);
                 std::fs::create_dir_all(&arb_work_dir).map_err(|e| format!("arb work dir: {e}"))?;
-                let (overlays, _need) = build_tb323fu_arb_overlays(
+
+                // Cross-region: convert vendor_boot + rebuild a testkey vbmeta
+                // first (region converter passes the testkey override), then
+                // re-sign the chain ON TOP of that vbmeta so the merged vbmeta
+                // carries both the converted vendor_boot hash and the testkey
+                // chain. The converted vendor_boot is flashed as an overlay just
+                // before the merged vbmeta_a.
+                let mut resign_base: Option<std::path::PathBuf> = None;
+                let mut region_vendor_boot: Option<std::path::PathBuf> = None;
+                if cfg.modify_region {
+                    let Some(device_region) = cfg.device_region else {
+                        if edl_start {
+                            let _ = session.reset_to_edl(&mut log);
+                        } else {
+                            let _ = session.reset(&mut log);
+                        }
+                        return Err(ltbox_core::i18n::tr("err_region_missing_device_region"));
+                    };
+                    let region_dir = ltbox_core::app_paths::auto_output_dir_for("region_convert");
+                    match ltbox_patch::region::build_region_converted_boot_chain(
+                        fw_dir,
+                        &region_dir,
+                        device_region.to_region_target(),
+                        &ltbox_patch::region::RegionPatternSet::default(),
+                        Some("testkey_rsa4096"),
+                    ) {
+                        Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                            ltbox_core::live!(
+                                log,
+                                "[Region] {}",
+                                tr_args!(
+                                    "live_region_patched",
+                                    count = output.replacement_count.to_string(),
+                                    path = output.vendor_boot.display().to_string()
+                                )
+                            );
+                            resign_base = Some(output.vbmeta.clone());
+                            region_vendor_boot = Some(output.vendor_boot.clone());
+                        }
+                        Ok(ltbox_patch::region::RegionBootChainBuild::Skipped { .. }) => {
+                            // Source already matches target: nothing to convert;
+                            // re-sign the firmware vbmeta as in the same-region case.
+                        }
+                        Err(e) => {
+                            if edl_start {
+                                let _ = session.reset_to_edl(&mut log);
+                            } else {
+                                let _ = session.reset(&mut log);
+                            }
+                            return Err(tr_args!(
+                                "err_region_conversion_failed",
+                                error = e.to_string()
+                            ));
+                        }
+                    }
+                }
+
+                let (mut overlays, _need) = build_tb323fu_arb_overlays(
                     &mut session,
                     fw_dir,
                     &arb_work_dir,
                     Some(dev.slot),
                     Some((dev.boot_floor, dev.vbs_floor)),
                     true,
+                    resign_base.as_deref(),
                     &mut log,
                 )?;
+                if let Some(vb) = region_vendor_boot {
+                    let lun = ltbox_core::partition_lun::lun_for_partition("vendor_boot_a")
+                        .ok_or_else(|| "no LUN for vendor_boot_a".to_string())?;
+                    let at = overlays.len().saturating_sub(1);
+                    overlays.insert(at, ("vendor_boot_a".to_string(), lun, vb));
+                }
                 arb_patched = overlays;
                 match backup_device_abl(&mut session, dev.slot, &arb_work_dir, &mut log) {
                     Ok(backup) => abl_restore = Some(backup),
@@ -1208,6 +1270,7 @@ pub(crate) fn flash_worker(
             active_slot.as_deref(),
             edl_floors,
             false,
+            None,
             &mut log,
         )?;
         tb323fu_arb_need = need;
