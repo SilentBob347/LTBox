@@ -1989,17 +1989,15 @@ fn select_device_name<F: FnMut(&str) -> String>(mut getprop: F) -> String {
     .unwrap_or_default()
 }
 
-/// GBL EFI asset suffix for a TB323FU target firmware: PRC builds embed
-/// `_PRC` in their vendor_boot fingerprint, everything else is treated as ROW.
-/// Used to pick the `*_prc.efi` / `*_row.efi` asset from the gbl_root_canoe
-/// release. When `arb` is set the anti-rollback build is requested instead
-/// (`*_prc_arb.efi` / `*_row_arb.efi`) — its GBL roots trust at the testkey
-/// so it accepts the testkey-re-signed boot chain LTBox stages on a downgrade.
-pub(crate) fn efisp_asset_suffix(vendor_boot_fp: Option<&str>, arb: bool) -> &'static str {
-    let prc = vendor_boot_fp
-        .map(|fp| fp.contains("_PRC"))
-        .unwrap_or(false);
-    match (prc, arb) {
+/// GBL EFI asset suffix for a TB323FU target firmware, by region (`is_prc`) and
+/// whether the anti-rollback build is needed (`arb`). Picks the
+/// `*_prc.efi` / `*_row.efi` asset (or `*_prc_arb.efi` / `*_row_arb.efi`) from
+/// the gbl_root_canoe release. The `_arb` GBL roots trust at the testkey so it
+/// accepts the testkey-re-signed boot chain LTBox stages on a downgrade. The
+/// region comes from the vendor_boot `product_region` DTB marker — TB323FU's AVB
+/// fingerprint carries no `_PRC`/`_ROW` token.
+pub(crate) fn efisp_asset_suffix(is_prc: bool, arb: bool) -> &'static str {
+    match (is_prc, arb) {
         (true, false) => "_prc.efi",
         (true, true) => "_prc_arb.efi",
         (false, false) => "_row.efi",
@@ -4265,15 +4263,11 @@ mod tests {
 
     #[test]
     fn efisp_asset_suffix_picks_prc_or_row() {
-        let prc = "Lenovo/TB323FU_PRC/TB323FU:16/BQ2A.250831.001/10.084W:user/release-keys";
-        let row = "Lenovo/TB323FU/TB323FU:16/BQ2A.250831.001/10.084.260421W:user/release-keys";
-        assert_eq!(efisp_asset_suffix(Some(prc), false), "_prc.efi");
-        assert_eq!(efisp_asset_suffix(Some(row), false), "_row.efi");
-        assert_eq!(efisp_asset_suffix(None, false), "_row.efi");
+        assert_eq!(efisp_asset_suffix(true, false), "_prc.efi");
+        assert_eq!(efisp_asset_suffix(false, false), "_row.efi");
         // Anti-rollback downgrade requests the `_arb` GBL (testkey root).
-        assert_eq!(efisp_asset_suffix(Some(prc), true), "_prc_arb.efi");
-        assert_eq!(efisp_asset_suffix(Some(row), true), "_row_arb.efi");
-        assert_eq!(efisp_asset_suffix(None, true), "_row_arb.efi");
+        assert_eq!(efisp_asset_suffix(true, true), "_prc_arb.efi");
+        assert_eq!(efisp_asset_suffix(false, true), "_row_arb.efi");
     }
 
     #[test]

@@ -55,7 +55,7 @@ const SUPPORTED_MODELS: [&str; 6] = [
 
 /// EDL-start device identity + rollback floor, read over the open EDL session.
 struct EdlStartProbe {
-    /// Device model token recovered from the vendor_boot fingerprint, or empty
+    /// Device model token recovered from the vbmeta_system fingerprint, or empty
     /// when no supported SKU token matched.
     model_token: String,
     /// Component-wise device rollback floors `(boot, vbmeta_system)` — the MAX
@@ -68,8 +68,8 @@ struct EdlStartProbe {
 /// EDL-start and the inactive slot's images may not carry parseable AVB info,
 /// so each partition is dumped from `_a` and `_b` and the valid side is used
 /// (the higher-index slot when both parse). Returns `Err` (the caller resets
-/// back into EDL and aborts) when neither slot yields a valid vendor_boot, when
-/// the recovered model does not match the target firmware, or — for a
+/// back into EDL and aborts) when neither slot yields a valid vbmeta_system,
+/// when the recovered model does not match the target firmware, or — for a
 /// rollback-protected model — when neither slot yields a valid boot +
 /// vbmeta_system pair.
 fn read_edl_start_device(
@@ -77,36 +77,35 @@ fn read_edl_start_device(
     firmware_fp: Option<&str>,
     log: &mut Vec<String>,
 ) -> std::result::Result<EdlStartProbe, String> {
-    const FP_KEY: &str = "com.android.build.vendor_boot.fingerprint";
     let work_dir = ltbox_core::app_paths::work_dir_for("flash_edl_probe");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(&work_dir).map_err(|e| format!("edl probe work dir: {e}"))?;
 
-    // 1. Model check — dump vendor_boot from BOTH slots and keep every
-    //    fingerprint that parses. A device left mid-cross-flash can have one
-    //    slot on a different SKU, so don't stop at the first parseable slot.
+    // 1. Model + vbmeta_system rollback index — dump vbmeta_system from BOTH
+    //    slots. It carries the device build fingerprint (system.fingerprint) AND
+    //    the per-location rollback index, so one dump identifies the model and
+    //    yields the vbmeta_system floor; vendor_boot / vbmeta need no separate
+    //    dump. A device left mid-cross-flash can have one slot on a different
+    //    SKU, so keep every fingerprint that parses.
     let mut device_fps: Vec<String> = Vec::new();
-    for slot in ["_a", "_b"] {
-        let part = format!("vendor_boot{slot}");
+    let mut vbs_idx: [Option<u64>; 2] = [None, None];
+    for (i, slot) in ["_a", "_b"].into_iter().enumerate() {
+        let part = format!("vbmeta_system{slot}");
         let Some(lun) = ltbox_core::partition_lun::lun_for_partition(&part) else {
             continue;
         };
         let out = work_dir.join(format!("dev_{part}.img"));
-        let fp = session
+        if let Some(info) = session
             .dump_partition(&part, &out, 0, lun, log)
             .ok()
             .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&out).ok())
-            .and_then(|info| {
-                info.props
-                    .iter()
-                    .find(|(k, _)| k == FP_KEY)
-                    .and_then(|(_, v)| std::str::from_utf8(v).ok())
-                    .map(|s| s.trim_end_matches('\0').to_string())
-            });
-        let _ = std::fs::remove_file(&out);
-        if let Some(fp) = fp {
-            device_fps.push(fp);
+        {
+            if let Some(fp) = ltbox_patch::avb::build_fingerprint(&info) {
+                device_fps.push(fp);
+            }
+            vbs_idx[i] = Some(info.rollback_index);
         }
+        let _ = std::fs::remove_file(&out);
     }
     if device_fps.is_empty() {
         return Err(ltbox_core::i18n::tr("err_flash_edl_avb_invalid"));
@@ -170,37 +169,26 @@ fn read_edl_start_device(
         });
     }
 
-    // 3. Rollback floor — dump boot + vbmeta_system from both slots and take
-    //    the per-location MAX across them. AVB rollback indices are per-location
-    //    and the two slots can hold different images, so a single slot can
-    //    underestimate one location (and TB323FU re-signs each location to its
-    //    own floor). Each location must parse on at least one slot.
+    // 3. Rollback floor — vbmeta_system was read above; add the boot floor by
+    //    dumping boot from both slots, then take the per-location MAX across
+    //    slots. AVB rollback indices are per-location and the two slots can hold
+    //    different images, so a single slot can underestimate one location (and
+    //    TB323FU re-signs each location to its own floor). Each location must
+    //    parse on at least one slot.
     ltbox_core::live!(log, "[ARB] {}", ltbox_core::i18n::tr("live_arb_edl_dump"));
     let mut boot_idx: [Option<u64>; 2] = [None, None];
-    let mut vbs_idx: [Option<u64>; 2] = [None, None];
     for (i, slot) in ["_a", "_b"].into_iter().enumerate() {
         let boot = format!("boot{slot}");
-        let vbs = format!("vbmeta_system{slot}");
-        let (Some(boot_lun), Some(vbs_lun)) = (
-            ltbox_core::partition_lun::lun_for_partition(&boot),
-            ltbox_core::partition_lun::lun_for_partition(&vbs),
-        ) else {
+        let Some(boot_lun) = ltbox_core::partition_lun::lun_for_partition(&boot) else {
             continue;
         };
         let boot_img = work_dir.join(format!("dev_{boot}.img"));
-        let vbs_img = work_dir.join(format!("dev_{vbs}.img"));
         boot_idx[i] = session
             .dump_partition(&boot, &boot_img, 0, boot_lun, log)
             .ok()
             .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&boot_img).ok())
             .map(|info| info.rollback_index);
-        vbs_idx[i] = session
-            .dump_partition(&vbs, &vbs_img, 0, vbs_lun, log)
-            .ok()
-            .and_then(|_| ltbox_patch::avb::extract_image_avb_info(&vbs_img).ok())
-            .map(|info| info.rollback_index);
         let _ = std::fs::remove_file(&boot_img);
-        let _ = std::fs::remove_file(&vbs_img);
     }
     let Some(floors) = rollback_floors(boot_idx, vbs_idx) else {
         return Err(ltbox_core::i18n::tr("err_flash_edl_avb_invalid"));
@@ -240,13 +228,14 @@ fn dump_avb_info(
     info
 }
 
-/// Device active-slot vbmeta identity, for the AVB key-class policy.
+/// Device active-slot identity (read from vbmeta_system), for the AVB key-class
+/// policy.
 struct DeviceVbmeta {
     /// Active slot suffix (`_a` / `_b`).
     slot: &'static str,
-    /// Root-of-trust class of the active-slot vbmeta.
+    /// Root-of-trust class of the active-slot vbmeta_system.
     class: ltbox_patch::key_map::KeyClass,
-    /// avbtool key spec for the active-slot vbmeta pubkey (`Some` iff
+    /// avbtool key spec for the active-slot vbmeta_system pubkey (`Some` iff
     /// `class == Testkey`) — used to reject re-signing a device on a testkey the
     /// re-sign path doesn't support.
     key_spec: Option<&'static str>,
@@ -256,75 +245,72 @@ struct DeviceVbmeta {
     vbs_floor: u64,
 }
 
-/// Read the device's active-slot vbmeta root-of-trust + committed rollback
-/// floors. The active slot is `known_active` (fastboot `current-slot`) when set;
-/// otherwise (EDL-start) it is chosen by dumping vbmeta from BOTH slots and
-/// taking the valid one — or, when both parse, the slot with the higher
-/// `vbmeta_system` rollback index (the root vbmeta carries no rollback index;
-/// ties favour `_a`). The class/key come from the active-slot `vbmeta` pubkey;
-/// the floors are component-wise maxima of `boot` + `vbmeta_system` across BOTH
-/// slots (the device's true committed floor — a single slot can understate one
-/// location). Errors (the caller resets to the device's start mode and aborts)
-/// when no slot's vbmeta / floors parse.
+/// Read the device's active-slot root-of-trust + committed rollback floors from
+/// vbmeta_system — the unified identity source: it carries the signing key (root
+/// of trust), the device build fingerprint, and the per-location rollback index,
+/// so vbmeta / vendor_boot need no separate dump here. The active slot is
+/// `known_active` (fastboot `current-slot`) when set; otherwise (EDL-start) it
+/// is the valid vbmeta_system side, or — when both parse — the slot with the
+/// higher vbmeta_system rollback index (ties favour `_a`). The floors are
+/// component-wise maxima of `boot` + `vbmeta_system` across BOTH slots (the
+/// device's true committed floor — a single slot can understate one location).
+/// Errors (the caller resets to the device's start mode and aborts) when no
+/// slot's vbmeta_system / floors parse.
 fn read_device_vbmeta(
     session: &mut ltbox_device::edl::EdlSession,
     known_active: Option<&str>,
     work_dir: &std::path::Path,
     log: &mut Vec<String>,
 ) -> std::result::Result<DeviceVbmeta, String> {
-    let vbmeta_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta")
-        .ok_or_else(|| "no LUN for vbmeta".to_string())?;
     let vbs_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta_system")
         .ok_or_else(|| "no LUN for vbmeta_system".to_string())?;
     let boot_lun = ltbox_core::partition_lun::lun_for_partition("boot")
         .ok_or_else(|| "no LUN for boot".to_string())?;
 
-    // Per slot: whether vbmeta (the root of trust) parses, plus the per-location
-    // rollback indices from boot + vbmeta_system (the root vbmeta has none).
-    let mut vbmeta_ok = [false, false];
+    // Per slot: full vbmeta_system AVB info (validity + pubkey + rollback index)
+    // and the boot rollback index.
+    let mut vbs_info: [Option<ltbox_patch::avb::AvbImageInfo>; 2] = [None, None];
     let mut boot_idx: [Option<u64>; 2] = [None, None];
-    let mut vbs_idx: [Option<u64>; 2] = [None, None];
     for (i, slot) in ["_a", "_b"].into_iter().enumerate() {
-        vbmeta_ok[i] =
-            dump_avb_info(session, &format!("vbmeta{slot}"), vbmeta_lun, work_dir, log).is_some();
-        boot_idx[i] = dump_avb_info(session, &format!("boot{slot}"), boot_lun, work_dir, log)
-            .map(|info| info.rollback_index);
-        vbs_idx[i] = dump_avb_info(
+        vbs_info[i] = dump_avb_info(
             session,
             &format!("vbmeta_system{slot}"),
             vbs_lun,
             work_dir,
             log,
-        )
-        .map(|info| info.rollback_index);
+        );
+        boot_idx[i] = dump_avb_info(session, &format!("boot{slot}"), boot_lun, work_dir, log)
+            .map(|info| info.rollback_index);
     }
 
-    // Active slot: fastboot's when known; otherwise the valid vbmeta side, or
-    // (both valid) the higher vbmeta_system rollback index, ties favouring `_a`.
-    let slot = match known_active {
-        Some(s) => active_slot_suffix(Some(s)),
-        None => match (vbmeta_ok[0], vbmeta_ok[1]) {
-            (true, false) => "_a",
-            (false, true) => "_b",
-            (true, true) => {
-                if vbs_idx[1].unwrap_or(0) > vbs_idx[0].unwrap_or(0) {
-                    "_b"
-                } else {
-                    "_a"
-                }
+    // Active slot: fastboot's when known; otherwise the valid vbmeta_system side,
+    // or (both valid) the higher vbmeta_system rollback index, ties favour `_a`.
+    let active = match known_active {
+        Some(s) => usize::from(active_slot_suffix(Some(s)) == "_b"),
+        None => match (vbs_info[0].as_ref(), vbs_info[1].as_ref()) {
+            (Some(_), None) => 0,
+            (None, Some(_)) => 1,
+            (Some(a), Some(b)) => usize::from(b.rollback_index > a.rollback_index),
+            (None, None) => {
+                return Err("no device vbmeta_system parsed on either slot".to_string());
             }
-            (false, false) => return Err("no device vbmeta parsed on either slot".to_string()),
         },
     };
+    let slot = if active == 1 { "_b" } else { "_a" };
 
-    // Class + testkey spec from the active-slot vbmeta pubkey.
-    let active_vb = dump_avb_info(session, &format!("vbmeta{slot}"), vbmeta_lun, work_dir, log)
-        .ok_or_else(|| format!("device vbmeta{slot} AVB unreadable"))?;
-    let pubkey = active_vb.public_key_sha1.as_deref();
+    // Class + testkey spec from the active-slot vbmeta_system pubkey.
+    let active_info = vbs_info[active]
+        .as_ref()
+        .ok_or_else(|| format!("device vbmeta_system{slot} AVB unreadable"))?;
+    let pubkey = active_info.public_key_sha1.as_deref();
     let class = ltbox_patch::key_map::classify_pubkey(pubkey);
     let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(pubkey);
 
     // Component-wise device rollback floor (max per location across both slots).
+    let vbs_idx = [
+        vbs_info[0].as_ref().map(|i| i.rollback_index),
+        vbs_info[1].as_ref().map(|i| i.rollback_index),
+    ];
     let (boot_floor, vbs_floor) = rollback_floors(boot_idx, vbs_idx)
         .ok_or_else(|| "device boot/vbmeta_system AVB unreadable on both slots".to_string())?;
 
@@ -523,9 +509,11 @@ pub(crate) fn flash_worker(
     // 3. Scan firmware folder
     let vendor_boot = fw_dir.join("vendor_boot.img");
     let vbmeta = fw_dir.join("vbmeta.img");
+    let vbmeta_system = fw_dir.join("vbmeta_system.img");
     let boot = fw_dir.join("boot.img");
     let has_vendor_boot = vendor_boot.exists();
     let has_vbmeta = vbmeta.exists();
+    let has_vbmeta_system = vbmeta_system.exists();
     let has_boot = boot.exists();
     let found = ltbox_core::i18n::tr("live_status_found");
     let not_found = ltbox_core::i18n::tr("live_status_not_found");
@@ -554,25 +542,20 @@ pub(crate) fn flash_worker(
         )
     );
 
-    // Cross-check vendor_boot against the probed model
-    // before EDL, and retain its fingerprint for SKU gates.
-    let mut vendor_boot_fingerprint: Option<String> = None;
-    if has_vendor_boot {
-        match ltbox_patch::avb::extract_image_avb_info(&vendor_boot) {
+    // Cross-check the firmware against the probed model before EDL via
+    // vbmeta_system's build fingerprint (the unified identity source), and retain
+    // it for SKU gates.
+    let mut firmware_fingerprint: Option<String> = None;
+    if has_vbmeta_system {
+        match ltbox_patch::avb::extract_image_avb_info(&vbmeta_system) {
             Ok(info) => {
-                // Pull the fingerprint prop up-front so the SKU
-                // gate below works on EDL-start too — there
-                // `device_model` is empty and the validate path
-                // would skip without populating it.
-                let fp_prop = info
-                    .props
-                    .iter()
-                    .find(|(k, _)| k == "com.android.build.vendor_boot.fingerprint")
-                    .and_then(|(_, v)| std::str::from_utf8(v).ok())
-                    .map(|s| s.trim_end_matches('\0').to_string());
+                // Pull the fingerprint up-front so the SKU gate below works on
+                // EDL-start too — there `device_model` is empty and the validate
+                // path would skip without populating it.
+                let fp_prop = ltbox_patch::avb::build_fingerprint(&info);
 
                 if edl_start {
-                    vendor_boot_fingerprint = fp_prop;
+                    firmware_fingerprint = fp_prop;
                 } else {
                     use ltbox_patch::region::{ModelValidation, validate_device_model};
                     match validate_device_model(&info, &device_model) {
@@ -582,7 +565,7 @@ pub(crate) fn flash_worker(
                                 "[Flash] {}",
                                 ltbox_core::i18n::tr("live_rescue_model_check_ok")
                             );
-                            vendor_boot_fingerprint = Some(fingerprint);
+                            firmware_fingerprint = Some(fingerprint);
                         }
                         ModelValidation::Missing => {
                             ltbox_core::live!(
@@ -590,7 +573,7 @@ pub(crate) fn flash_worker(
                                 "[Flash] {}",
                                 ltbox_core::i18n::tr("live_rescue_no_fingerprint_skip")
                             );
-                            vendor_boot_fingerprint = fp_prop;
+                            firmware_fingerprint = fp_prop;
                         }
                         ModelValidation::Mismatch {
                             fingerprint,
@@ -628,7 +611,7 @@ pub(crate) fn flash_worker(
     // TB323FU keeps region boot-chain conversion off (it
     // provisions a GBL on efisp instead) but DOES take ARB
     // overlays. Region detect uses fp first, then model.
-    let tb323fu_skip_region = vendor_boot_fingerprint
+    let tb323fu_skip_region = firmware_fingerprint
         .as_deref()
         .map(|fp| fingerprint_token_match(fp, "TB323FU"))
         .unwrap_or(false)
@@ -636,7 +619,7 @@ pub(crate) fn flash_worker(
 
     // GBL/ARB work follows the TARGET firmware identity
     // (vendor_boot fp), never the connected device.
-    let target_is_tb323fu = vendor_boot_fingerprint
+    let target_is_tb323fu = firmware_fingerprint
         .as_deref()
         .map(|fp| fingerprint_token_match(fp, "TB323FU"))
         .unwrap_or(false);
@@ -760,12 +743,12 @@ pub(crate) fn flash_worker(
     );
 
     // AVB root-of-trust pre-check (before region conversion, which only re-signs
-    // via testkeys in KEY_MAP). Classify the firmware vbmeta: an `Unknown` key
-    // aborts; a fixed-key ("key2") firmware aborts on cross-region for now
-    // (same-region key2 is handled after EDL opens; cross-region key2 re-sign is
-    // a separate change). TB323FU has its own region path (efisp GBL) and is
-    // exempt here.
-    let fw_key_class = match ltbox_patch::avb::extract_image_avb_info(&vbmeta) {
+    // via testkeys in KEY_MAP). Classify the firmware via vbmeta_system's pubkey
+    // (the unified key source): an `Unknown` key aborts; a fixed-key ("key2")
+    // firmware aborts on cross-region for now (same-region key2 is handled after
+    // EDL opens; cross-region key2 re-sign is a separate change). TB323FU has its
+    // own region path (efisp GBL) and is exempt here.
+    let fw_key_class = match ltbox_patch::avb::extract_image_avb_info(&vbmeta_system) {
         Ok(info) => ltbox_patch::key_map::classify_pubkey(info.public_key_sha1.as_deref()),
         Err(_) => ltbox_patch::key_map::KeyClass::Unknown,
     };
@@ -1043,7 +1026,7 @@ pub(crate) fn flash_worker(
     // builder below — each location keeps its own floor.
     let mut edl_floors: Option<(u64, u64)> = None;
     if edl_start {
-        match read_edl_start_device(&mut session, vendor_boot_fingerprint.as_deref(), &mut log) {
+        match read_edl_start_device(&mut session, firmware_fingerprint.as_deref(), &mut log) {
             Ok(probe) => {
                 device_model = probe.model_token;
                 match probe.rollback_floors {
@@ -1440,7 +1423,11 @@ pub(crate) fn flash_worker(
     // a data reset, so it provisions in data-keep mode too.
     // Both flash below.
     if target_is_tb323fu && (tb323fu_arb_need || cfg.modify_region) {
-        let suffix = efisp_asset_suffix(vendor_boot_fingerprint.as_deref(), tb323fu_arb_need);
+        // TB323FU's AVB fingerprint carries no region token; read the region
+        // from the firmware vendor_boot's `product_region` DTB marker instead.
+        let is_prc = ltbox_patch::region::detect_product_region(&vendor_boot)
+            == Some(ltbox_patch::region::RegionTarget::Prc);
+        let suffix = efisp_asset_suffix(is_prc, tb323fu_arb_need);
         ltbox_core::live!(
             log,
             "[Flash] {}",
@@ -1681,7 +1668,7 @@ pub(crate) fn flash_worker(
         // Detect via the vendor_boot fingerprint (works
         // on EDL-start) or the probe-reported model.
         let oemowninfo_sku = ["TB320FC", "TB323FU"].iter().any(|m| {
-            vendor_boot_fingerprint
+            firmware_fingerprint
                 .as_deref()
                 .map(|fp| fingerprint_token_match(fp, m))
                 .unwrap_or(false)
@@ -1695,7 +1682,7 @@ pub(crate) fn flash_worker(
         // TB323FU keeps /persist as dump + backup only —
         // no country-code patch, no fingerprint edit, no
         // re-flash. Only oemowninfo is modified + flashed.
-        let tb323fu_persist_backup_only = vendor_boot_fingerprint
+        let tb323fu_persist_backup_only = firmware_fingerprint
             .as_deref()
             .map(|fp| fingerprint_token_match(fp, "TB323FU"))
             .unwrap_or(false)

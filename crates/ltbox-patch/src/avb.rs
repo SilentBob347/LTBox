@@ -25,13 +25,16 @@ pub struct AvbImageInfo {
 
 /// The Android build fingerprint embedded in an image's AVB property
 /// descriptors (`com.android.build.<part>.fingerprint`, e.g.
-/// `Lenovo/TB323FU/...:user/release-keys`), if present. Used to identify the
-/// firmware an image belongs to — the TB323FU root gate reads it from the
-/// dumped boot / init_boot.
+/// `qti/TB323FU/...:user/release-keys`), if present. Used to identify the
+/// firmware an image belongs to. Prefers the canonical
+/// `com.android.build.system.fingerprint` (carried by vbmeta_system, the unified
+/// identity source) and falls back to any `.fingerprint` prop for images that
+/// lack it (vendor_boot / boot / init_boot) — all hold the same value.
 pub fn build_fingerprint(info: &AvbImageInfo) -> Option<String> {
     info.props
         .iter()
-        .find(|(k, _)| k.ends_with(".fingerprint"))
+        .find(|(k, _)| k == "com.android.build.system.fingerprint")
+        .or_else(|| info.props.iter().find(|(k, _)| k.ends_with(".fingerprint")))
         .and_then(|(_, v)| std::str::from_utf8(v).ok())
         .map(|s| s.trim_end_matches('\0').trim().to_string())
         .filter(|s| !s.is_empty())

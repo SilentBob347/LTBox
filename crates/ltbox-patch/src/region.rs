@@ -10,12 +10,7 @@ use crate::{avb, key_map};
 use ltbox_core::{LtboxError, Result, tr_args};
 use tracing::info;
 
-/// AVB property key that carries the vendor_boot fingerprint — stock
-/// Lenovo firmware embeds the full `ro.vendor.build.fingerprint` string
-/// so the device model is a substring match away.
-const VENDOR_BOOT_FINGERPRINT_KEY: &str = "com.android.build.vendor_boot.fingerprint";
-
-/// Outcome of validating a vendor_boot image against a device model.
+/// Outcome of validating an image against a device model.
 /// Matches v2 `_validate_device_model` three-way result: the fingerprint
 /// may match, mismatch, or be absent entirely (older firmware).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,22 +28,16 @@ pub enum ModelValidation {
     Missing,
 }
 
-/// Check an AVB-extracted `vendor_boot.img` against the ADB-reported
-/// device model. Mirrors v2 `_validate_device_model` in
-/// `bin/ltbox/actions/region.py`: pulls
-/// `com.android.build.vendor_boot.fingerprint` from the image's AVB
-/// props and looks for the device model as a substring.
+/// Check an AVB-extracted image against the ADB-reported device model. Reads the
+/// build fingerprint via [`avb::build_fingerprint`] (preferring
+/// `com.android.build.system.fingerprint`, so a vbmeta_system image works
+/// directly) and looks for the device model as a substring.
 ///
 /// Spaces in `device_model` are stripped to tolerate
 /// `"TB 320FC"`-style reads from `ro.product.model`.
 pub fn validate_device_model(info: &AvbImageInfo, device_model: &str) -> ModelValidation {
     let normalized = device_model.replace(' ', "");
-    let fingerprint = info
-        .props
-        .iter()
-        .find(|(k, _)| k == VENDOR_BOOT_FINGERPRINT_KEY)
-        .and_then(|(_, v)| std::str::from_utf8(v).ok())
-        .map(|s| s.trim_end_matches('\0').to_string());
+    let fingerprint = avb::build_fingerprint(info);
 
     match fingerprint {
         None => ModelValidation::Missing,
@@ -66,6 +55,55 @@ pub fn validate_device_model(info: &AvbImageInfo, device_model: &str) -> ModelVa
 pub enum RegionTarget {
     Prc,
     Row,
+}
+
+/// Detect a firmware's region from the `product_region` node in its vendor_boot
+/// device-tree. TB323FU (and others) carry no `_PRC`/`_ROW` token in the AVB
+/// fingerprint, but the DTB has an FDT node named `product_region` whose
+/// properties carry a `PRC` / `ROW` value. The flattened device-tree lays the
+/// node out as `FDT_BEGIN_NODE "product_region\0"` (padded) followed by its
+/// `FDT_PROP` entries (`token, len, nameoff, value`), so this walks that node's
+/// properties and returns the first `PRC` / `ROW` value. Occurrences of the same
+/// string in the FDT strings block are not followed by an `FDT_PROP` token, so
+/// they are skipped. Returns `None` when the marker is absent / unreadable.
+pub fn detect_product_region(vendor_boot_path: &Path) -> Option<RegionTarget> {
+    const FDT_PROP: u32 = 0x0000_0003;
+    let data = fs::read(vendor_boot_path).ok()?;
+    let name = b"product_region\0";
+    let be32 = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    let mut from = 0usize;
+    while let Some(rel) = find_subslice(&data[from..], name) {
+        let node_name_start = from + rel;
+        // Walk the node's FDT_PROP entries from just past the (4-aligned) name.
+        let mut pos = (node_name_start + name.len() + 3) & !3;
+        for _ in 0..16 {
+            if pos + 8 > data.len() || be32(&data[pos..]) != FDT_PROP {
+                break; // END_NODE / nested BEGIN_NODE / strings block -> stop
+            }
+            let len = be32(&data[pos + 4..]) as usize;
+            let value_start = pos + 12; // token + len + nameoff
+            if value_start + len > data.len() {
+                break;
+            }
+            let value = &data[value_start..value_start + len];
+            match value.split(|&b| b == 0).next().unwrap_or(value) {
+                b"PRC" => return Some(RegionTarget::Prc),
+                b"ROW" => return Some(RegionTarget::Row),
+                _ => {}
+            }
+            pos = (value_start + len + 3) & !3;
+        }
+        from = node_name_start + name.len();
+    }
+    None
+}
+
+/// First offset of `needle` in `haystack`, if present.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Vendor-boot region markers. `prc_patterns` are applied when the target is
@@ -448,6 +486,35 @@ mod tests {
         let n = replace_in_place(&mut data, b".PRC", b".ROW").unwrap();
         assert_eq!(n, 2);
         assert_eq!(&data, b"hello.ROW.world.ROW.end");
+    }
+
+    #[test]
+    fn detect_product_region_reads_dtb_marker() {
+        // Mimic the FDT layout: `product_region` name, FDT_PROP header
+        // (token, len, nameoff), then the "PRC\0" / "ROW\0" value.
+        let build = |value: &[u8]| -> Vec<u8> {
+            let mut v = b"product_region\0\0".to_vec();
+            v.extend_from_slice(&[0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0x26, 0xb7]);
+            v.extend_from_slice(value);
+            v
+        };
+        let dir = std::env::temp_dir().join(format!("ltbox_region_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let prc = dir.join("vb_prc.img");
+        std::fs::write(&prc, build(b"PRC\0")).unwrap();
+        assert_eq!(detect_product_region(&prc), Some(RegionTarget::Prc));
+
+        let row = dir.join("vb_row.img");
+        std::fs::write(&row, build(b"ROW\0")).unwrap();
+        assert_eq!(detect_product_region(&row), Some(RegionTarget::Row));
+
+        // A strings-block-only `product_region` (no adjacent value) -> None.
+        let none = dir.join("vb_none.img");
+        std::fs::write(&none, b"product_region\0model\0compatible\0").unwrap();
+        assert_eq!(detect_product_region(&none), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

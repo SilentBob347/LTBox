@@ -335,11 +335,26 @@ pub(crate) fn root_worker(
                     if efisp_empty {
                         // Empty efisp = stock, GBL-unprovisioned, so the
                         // firmware was never rollback-patched — fetch the
-                        // non-`_arb` region GBL (region from the boot
-                        // fingerprint) and flash it with the patched boot
-                        // at Phase 6. efisp flashing no longer wipes data,
-                        // so provisioning it here is safe in any data mode.
-                        let suffix = efisp_asset_suffix(boot_fp.as_deref(), false);
+                        // non-`_arb` region GBL and flash it with the patched
+                        // boot at Phase 6. efisp flashing no longer wipes data,
+                        // so provisioning it here is safe in any data mode. The
+                        // region comes from the device vendor_boot's
+                        // `product_region` DTB marker — the AVB fingerprint
+                        // carries no `_PRC`/`_ROW` token.
+                        let vb_part = format!("vendor_boot{slot_suffix}");
+                        let dumped_vb = work_dir.join("vendor_boot.img");
+                        let is_prc = match ltbox_core::partition_lun::lun_for_partition(&vb_part) {
+                            Some(lun)
+                                if session
+                                    .dump_partition(&vb_part, &dumped_vb, 0, lun, &mut log)
+                                    .is_ok() =>
+                            {
+                                ltbox_patch::region::detect_product_region(&dumped_vb)
+                                    == Some(ltbox_patch::region::RegionTarget::Prc)
+                            }
+                            _ => false,
+                        };
+                        let suffix = efisp_asset_suffix(is_prc, false);
                         live!(
                             log,
                             "[Root] {}",
