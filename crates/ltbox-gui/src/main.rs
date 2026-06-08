@@ -2208,7 +2208,7 @@ pub(crate) fn transition_to_edl(
     log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
     let live = probe_connection_for_edl().unwrap_or(conn);
-    ensure_edl(live, "EDL", log).map_err(|()| "Could not transition device to EDL".to_string())
+    ensure_edl(live, "EDL", log).map_err(|()| ltbox_core::i18n::tr("err_edl_transition_failed"))
 }
 
 /// Quick EDL/Fastboot/ADB probe in that order. Returns `None` only when
