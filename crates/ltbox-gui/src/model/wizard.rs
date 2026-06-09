@@ -1100,7 +1100,7 @@ impl Wizard for FlashPhysWizard {
 // Simple Firmware Flash wizard state (Advanced → EDL ops)
 // =========================================================================
 
-/// Minimal flash wizard for the "Simple Firmware Flash" advanced op: pick a
+/// Minimal flash wizard for the "Firmware Simple Flasher" advanced op: pick a
 /// firmware folder, review a read-only confirm screen, flash. Step 0 (intro)
 /// opens the folder picker on Next; the picker callback advances to the
 /// confirm step. No region / rollback / data choices — the flash runs the
