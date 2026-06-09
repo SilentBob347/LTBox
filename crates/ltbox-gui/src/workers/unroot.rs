@@ -2,7 +2,8 @@
 //! folder over EDL. Extracted from the update_unroot handler.
 
 use crate::{
-    ConnectionStatus, LiveLabels, UnrootType, find_edl_loader, phase_marker, transition_to_edl,
+    ConnectionStatus, LiveLabels, UnrootType, find_edl_loader, open_edl_session, phase_marker,
+    transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
 
@@ -105,8 +106,7 @@ pub(crate) fn unroot_worker(
         phase_marker(2, 3, &ll.op_unroot_phase[1]),
         tr_args!("live_unroot_backup_pair", boot = boot_name)
     );
-    let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-        .map_err(|e| format!("EDL session error: {e}"))?;
+    let mut session = open_edl_session(&loader, true, &mut log)?;
     session
         .flash_partition(&boot_label, &boot_path, 0, boot_lun, &mut log)
         .map_err(|e| format!("Flash {boot_label} failed: {e}"))?;

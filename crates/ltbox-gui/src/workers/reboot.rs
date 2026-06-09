@@ -1,7 +1,7 @@
 //! Reboot workers: issue the reboot command over ADB / Fastboot / EDL.
 //! Each runs on a blocking thread; extracted from the update_reboot handler.
 
-use crate::{ConnectionStatus, RebootTarget, ensure_edl};
+use crate::{ConnectionStatus, RebootTarget, ensure_edl, open_edl_session};
 use std::path::PathBuf;
 
 pub(crate) fn reboot_worker(
@@ -79,8 +79,7 @@ pub(crate) fn reboot_edl_with_loader_worker(
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     // `auto_reset=false` — reset is triggered explicitly below.
-    let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
-        .map_err(|e| format!("EDL session open: {e}"))?;
+    let mut session = open_edl_session(&loader, false, &mut log)?;
     match target {
         RebootTarget::System => {
             // Reboot-to-system is the user's intent here; the inner EDL

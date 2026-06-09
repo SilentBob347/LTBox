@@ -1758,8 +1758,7 @@ fn detect_arb_run(
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
         let loader_pb = std::path::PathBuf::from(&loader);
-        let mut session = ltbox_device::edl::EdlSession::open(&loader_pb, true, log)
-            .map_err(|e| format!("EDL open: {e}"))?;
+        let mut session = open_edl_session(&loader_pb, true, log)?;
         // Read the active slot (a first-time user may be on `_b`).
         let slot = active_slot_suffix(vars.current_slot.as_deref());
         let boot_part = format!("boot{slot}");

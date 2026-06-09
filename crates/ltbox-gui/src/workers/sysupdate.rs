@@ -2,7 +2,10 @@
 //! or run the Rescue OTA (EDL dump + region patch + reflash). Extracted
 //! from the update_sys handler.
 
-use crate::{ConnectionStatus, LiveLabels, RescueRegion, SysUpdateAction, transition_to_edl};
+use crate::{
+    ConnectionStatus, LiveLabels, RescueRegion, SysUpdateAction, open_edl_session,
+    transition_to_edl,
+};
 use ltbox_core::tr_args;
 
 pub(crate) fn sysupdate_worker(
@@ -227,8 +230,7 @@ pub(crate) fn sysupdate_worker(
             // modes.
             transition_to_edl(conn, &ll, &mut log)?;
 
-            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-                .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
+            let mut session = open_edl_session(&loader, true, &mut log)?;
 
             // vendor_boot + vbmeta land on LUN 0
             // for supported models. GPT-by-name

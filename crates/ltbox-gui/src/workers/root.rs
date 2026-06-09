@@ -4,8 +4,9 @@
 
 use crate::{
     ConnectionStatus, Family, LiveLabels, Provider, RootMode, VerChoice, efisp_asset_suffix,
-    efisp_is_empty, fingerprint_token_match, install_root_manager_apk, phase_marker,
-    stage_manager_apk_for_manual_install, transition_to_edl, wait_and_install_root_manager_apk,
+    efisp_is_empty, fingerprint_token_match, install_root_manager_apk, open_edl_session,
+    phase_marker, stage_manager_apk_for_manual_install, transition_to_edl,
+    wait_and_install_root_manager_apk,
 };
 use ltbox_core::{live, tr_args};
 
@@ -285,8 +286,7 @@ pub(crate) fn root_worker(
             // flash it alongside the patched boot at Phase 6.
             let mut root_efisp_efi: Option<std::path::PathBuf> = None;
             {
-                let mut session = ltbox_device::edl::EdlSession::open(&loader, false, &mut log)
-                    .map_err(|e| format!("EDL session: {e}"))?;
+                let mut session = open_edl_session(&loader, false, &mut log)?;
                 // Patch pipeline hardcodes `init_boot.img` /
                 // `vbmeta.img` regardless of device label.
                 let boot_out = if base_name == "boot" {
@@ -470,8 +470,7 @@ pub(crate) fn root_worker(
             // since there was no real work between it and
             // flash open — collapsed into this one phase.
             live!(log, "[Root] {}", phase_marker(6, 7, &ll.op_root_phase[5]));
-            let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-                .map_err(|e| format!("EDL session (flash): {e}"))?;
+            let mut session = open_edl_session(&loader, true, &mut log)?;
             // Mirror of the equivalent one-shot `qdl-rs
             // --phys-part-idx 4 write <name> <img>` — GPT
             // resolves the start sector, so no rawprogram

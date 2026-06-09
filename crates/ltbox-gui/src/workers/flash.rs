@@ -6,8 +6,8 @@
 use crate::{
     ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, active_slot_suffix,
     build_tb323fu_arb_overlays, efisp_asset_suffix, find_edl_loader, fingerprint_token_match,
-    is_rollback_protected_model, phase_marker, read_device_rollback_index_via_edl,
-    transition_to_edl,
+    is_rollback_protected_model, open_edl_session, phase_marker,
+    read_device_rollback_index_via_edl, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
 
@@ -1020,8 +1020,7 @@ pub(crate) fn flash_worker(
     live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
     transition_to_edl(conn, &ll, &mut log)?;
 
-    let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-        .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
+    let mut session = open_edl_session(&loader, true, &mut log)?;
 
     // EDL-start: fastboot/ADB never ran, so the device model + committed
     // rollback index are unknown. Read them off the device by dumping BOTH
@@ -2056,8 +2055,7 @@ pub(crate) fn change_country_worker(
     std::fs::create_dir_all(&critical_backup)
         .map_err(|e| tr_args!("err_country_backup_dir_failed", error = e.to_string()))?;
     transition_to_edl(conn, &ll, &mut log)?;
-    let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-        .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
+    let mut session = open_edl_session(&loader, true, &mut log)?;
     let outcome = run_country_change(
         &mut session,
         &work_dir,
@@ -2177,8 +2175,7 @@ pub(crate) fn simple_flash_worker(
     //    current transport rather than trusting the captured snapshot), then
     //    open the session — same entry path normal firmware flashing uses.
     transition_to_edl(conn, &ll, &mut log)?;
-    let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
-        .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
+    let mut session = open_edl_session(&loader, true, &mut log)?;
 
     // 6. Flash verbatim — no FP check, no signing-key check, no region / ARB /
     //    country edits, no keep-data skip.

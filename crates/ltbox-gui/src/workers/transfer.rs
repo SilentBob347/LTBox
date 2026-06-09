@@ -44,6 +44,11 @@ fn scan_lun_partitions(
                 tag,
                 tr_args!(open_failed_key, error = e.to_string())
             );
+            ltbox_core::live!(
+                log,
+                "{}",
+                ltbox_core::i18n::tr("live_edl_open_failed_reboot_notice")
+            );
             return Err(tr_args!(
                 "err_edl_session_open_failed",
                 error = e.to_string()
@@ -145,6 +150,11 @@ pub(crate) fn flash_parts_execute(
                 log,
                 "[FlashParts] {}",
                 tr_args!("live_flashparts_edl_open_failed", error = e.to_string())
+            );
+            ltbox_core::live!(
+                log,
+                "{}",
+                ltbox_core::i18n::tr("live_edl_open_failed_reboot_notice")
             );
             return Err(tr_args!(
                 "err_edl_session_open_failed",
@@ -664,6 +674,11 @@ pub(crate) fn flash_physical_execute(
                 log,
                 "[FlashPhys] {}",
                 tr_args!("live_flashphys_edl_open_failed", error = e.to_string())
+            );
+            ltbox_core::live!(
+                log,
+                "{}",
+                ltbox_core::i18n::tr("live_edl_open_failed_reboot_notice")
             );
             return Err(tr_args!(
                 "err_edl_session_open_failed",

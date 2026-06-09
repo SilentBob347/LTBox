@@ -50,6 +50,32 @@ pub(crate) fn wait_for_edl_ready(tag: &str, log: &mut Vec<String>) -> Result<(),
     }
 }
 
+/// Open the first EDL session after a successful transition. On failure the
+/// device reached EDL and its port was found, but the Sahara/Firehose handshake
+/// did not complete — nothing has been written yet, so reassure the user and
+/// point them to a manual reboot (mirrors `wait_for_edl_ready`'s no-port notice)
+/// before the caller aborts. Use for the FIRST session open of any operation.
+pub(crate) fn open_edl_session(
+    loader: &std::path::Path,
+    auto_reset: bool,
+    log: &mut Vec<String>,
+) -> Result<ltbox_device::edl::EdlSession, String> {
+    match ltbox_device::edl::EdlSession::open(loader, auto_reset, log) {
+        Ok(session) => Ok(session),
+        Err(e) => {
+            ltbox_core::live!(
+                log,
+                "{}",
+                ltbox_core::i18n::tr("live_edl_open_failed_reboot_notice")
+            );
+            Err(tr_args!(
+                "err_edl_session_open_failed",
+                error = e.to_string()
+            ))
+        }
+    }
+}
+
 pub(crate) fn wait_for_manual_edl(tag: &str, log: &mut Vec<String>) -> Result<(), ()> {
     ltbox_core::live!(
         log,
