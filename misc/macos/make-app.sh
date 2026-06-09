@@ -34,12 +34,19 @@ ICON_SVG="$REPO/crates/ltbox-gui/assets/icon_source.svg"
 VERSION="$(sed -n -E 's/^version = "([^"]+)".*/\1/p' "$REPO/Cargo.toml" | head -1)"
 [ -n "$VERSION" ] || { echo "could not read version from Cargo.toml" >&2; exit 1; }
 
-# 1. Build each arch (static libusb so the bundle is self-contained).
+# 1. Build each arch with C deps statically linked so the bundle is
+#    self-contained:
+#      - LIBUSB_STATIC  → libusb1-sys vendors libusb.
+#      - LZMA_API_STATIC → lzma-sys (via xz2 → noto-fonts-dl) compiles the
+#        bundled liblzma from source. Without it, lzma-sys pkg-config's a
+#        dynamic liblzma, which on a GitHub runner resolves to Homebrew's
+#        /opt/homebrew/opt/xz/lib/liblzma.5.dylib — exactly the non-system
+#        dylib the otool guard (step 5) rejects.
 slices=()
 for t in "${TARGETS[@]}"; do
     if [ "${SKIP_BUILD:-0}" != "1" ]; then
         rustup target add "$t" >/dev/null 2>&1 || true
-        LIBUSB_STATIC=1 cargo build --release --target "$t" -p ltbox-gui
+        LIBUSB_STATIC=1 LZMA_API_STATIC=1 cargo build --release --target "$t" -p ltbox-gui
     fi
     slice="$REPO/target/$t/release/$BIN_NAME"
     [ -x "$slice" ] || { echo "missing slice: $slice (run without SKIP_BUILD?)" >&2; exit 1; }
