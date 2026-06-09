@@ -3,6 +3,10 @@
 [🇰🇷 한국어](READMEs/README_ko-KR.md) / [🇨🇳 简体中文](READMEs/README_zh-CN.md)
 
 [![License: CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+[![Rust][rust-shield]][rust]
+[![Build][ci-shield]][ci]
+[![Latest release][release-shield]][releases]
+[![Downloads][downloads-shield]][releases]
 
 ## ⚠️ Disclaimer
 
@@ -20,40 +24,41 @@ See **[Quick Start](https://github.com/miner7222/LTBox/wiki/Home#quick-start)** 
 
 ## 📋 What Can It Do?
 
-The app is a sidebar-driven GUI. Each entry opens a guided wizard.
+LTBox is a sidebar-driven desktop GUI; each entry opens a guided wizard.
 
 | Sidebar entry | What it does |
 |---|---|
 | **Dashboard** | Device status, region, recent folders, one-click actions |
-| **Flash Firmware** | All-in-one: region → target → wipe/keep → flash. Drives region conversion + rollback handling end-to-end. |
-| **System Update** | Disable or enable OTA updates; **Boot Recovery** for rescuing a device that failed to boot after an OTA on a converted region |
-| **Root Device** | Root with KernelSU / KernelSU Next / SukiSU / ReSukiSU / APatch / FolkPatch / Magisk (+ forks) |
-| **Unroot Device** | Restore the stock boot image from a prior Root backup |
+| **Flash Firmware** | One flow from region → target → wipe/keep → flash, with region conversion and rollback handled end-to-end |
+| **System Updates** | Disable or re-enable OTA updates; **Boot Recovery** revives a region-converted device that won't boot after an OTA |
+| **Root Device** | Root with KernelSU / KernelSU Next / SukiSU Ultra / ReSukiSU / APatch / FolkPatch / Magisk (+ forks) |
+| **Unroot Device** | Restore the stock boot image from an earlier root backup |
 | **Reboot** | Jump to System, Recovery, Bootloader, or EDL |
-| **Advanced** | Individual pipeline steps for manual control — see below |
-| **Settings** | Language (en/ko/zh/ru), theme (system/light/dark), default EDL loader path |
+| **Advanced** | Run individual pipeline steps by hand — see below |
+| **Settings** | Language (en/ko/zh/ru/ja), theme (system/light/dark), accent color, default EDL loader path |
 
-### Advanced Menu
+### Advanced
 
 <details>
 <summary>Step-by-step manual control over the pipeline, grouped into three sections</summary>
 
 <br>
 
-**Region & patch**
-- Convert region (vendor_boot + vbmeta rebuild)
-- Patch devinfo / persist
+**Region/Country Edit**
+- Convert Region — rewrite the `vendor_boot` region code (PRC ↔ ROW) and rebuild vbmeta
+- Change Country Code — dump the model's country partitions, rewrite the code, flash
 
-**Rollback**
-- Inspect `.img` AVB metadata
-- Detect anti-rollback index
-- Patch anti-rollback index
-- Rebuild vbmeta for modified images
+**AVB Image**
+- Obtain Image Info — show AVB metadata for one or more `.img` files
+- Detect Rollback Protection — compare the rollback index on the device against the firmware
+- Bypass Rollback Protection — patch the rollback index in chained partition images
+- Rebuild vbmeta — rebuild `vbmeta.img` with updated hash descriptors
 
-**EDL ops**
-- Decrypt `.x` files → XML
-- Dump / flash partitions by name (GPT-by-name, EDL)
-- Dump / flash physical LUNs (whole-LUN, EDL)
+**EDL Operations**
+- Convert X to XML — decrypt `.x` firmware files to rawprogram `.xml`
+- Read / Write Partitions — dump or flash partitions by name (GPT-by-name)
+- Dump / Flash Physical Storage — dump or flash whole LUNs
+- Firmware Simple Flasher — flash only, no checks or edits (as close as possible to the stock flash script)
 
 </details>
 
@@ -63,10 +68,10 @@ The app is a sidebar-driven GUI. Each entry opens a guided wizard.
 
 | Crate | Role |
 |---|---|
-| `ltbox-core` | Primitives — errors, settings, logging, GitHub / nightly.link / Lenovo PTSTPD clients, crypto, XML decrypt, live-log sink |
-| `ltbox-device` | Transport layer — ADB, Fastboot, EDL / QDL, serialport discovery, Windows Qualcomm USB driver probe + auto-install |
-| `ltbox-patch` | Image pipeline — AVB (embedded AOSP testkey specs), boot image ramdisk patching, region conversion, rollback index handling, root provider integration |
-| `ltbox-gui` | `iced` desktop app — the `ltbox.exe` binary |
+| `ltbox-core` | Primitives — errors, settings, logging, HTTP clients (GitHub, nightly.link, Lenovo), crypto, XML decrypt, live-log sink |
+| `ltbox-device` | Transport — ADB, Fastboot, EDL / QDL, serial-port discovery, Windows Qualcomm USB driver probe + auto-install |
+| `ltbox-patch` | Image pipeline — AVB (bundled AOSP test-key specs), boot-image ramdisk patching, region conversion, rollback-index handling, root-provider integration |
+| `ltbox-gui` | `iced` desktop app — builds the `ltbox` binary (`ltbox.exe` on Windows) |
 
 ---
 
@@ -88,3 +93,10 @@ This work is licensed under [CC BY-NC-SA 4.0][cc-by-nc-sa].
 [cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
 [cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
 [cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+[rust]: https://www.rust-lang.org
+[rust-shield]: https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white
+[ci]: https://github.com/miner7222/LTBox/actions/workflows/rust-ci.yml
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/miner7222/LTBox/rust-ci.yml?branch=main&label=build&logo=github
+[releases]: https://github.com/miner7222/LTBox/releases/latest
+[release-shield]: https://img.shields.io/github/v/release/miner7222/LTBox?logo=github
+[downloads-shield]: https://img.shields.io/github/downloads/miner7222/LTBox/total?logo=github

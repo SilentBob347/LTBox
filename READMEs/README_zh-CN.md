@@ -3,10 +3,14 @@
 [🇺🇸 English](../README.md) / [🇰🇷 한국어](README_ko-KR.md)
 
 [![License: CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+[![Rust][rust-shield]][rust]
+[![构建][ci-shield]][ci]
+[![最新发布][release-shield]][releases]
+[![下载量][downloads-shield]][releases]
 
 ## ⚠️ 免责声明
 
-**仅供教育用途。** 修改固件可能导致设备变砖、数据丢失或保修失效。作者**不承担任何责任**。所有后果由用户自行承担。**使用风险自负。**
+**仅供教育用途。** 修改固件可能导致设备变砖、数据丢失或保修失效。作者**不承担任何责任**，一切后果由用户自行承担。**使用风险自负。**
 
 ---
 
@@ -20,40 +24,41 @@
 
 ## 📋 功能介绍
 
-侧边栏驱动的 GUI，每个入口打开一个引导式向导。
+LTBox 是以侧边栏为核心的桌面 GUI，每个入口都会打开一个引导式向导。
 
 | 侧边栏条目 | 说明 |
 |---|---|
-| **仪表盘** | 设备状态、区域、最近使用的文件夹、一键操作 |
-| **固件刷写** | 一键操作：区域 → 目标 → 清除/保留 → 刷写。端到端处理区域转换和回滚 |
-| **系统更新** | 禁用或启用 OTA 更新；**启动恢复**用于抢救区域转换后 OTA 导致启动失败的设备 |
-| **Root 设备** | 使用 KernelSU / KernelSU Next / SukiSU / ReSukiSU / APatch / FolkPatch / Magisk（及分支）获取 Root |
+| **仪表盘** | 设备状态、区域、最近文件夹、一键操作 |
+| **刷写固件** | 区域 → 目标 → 清除/保留 → 刷写一气呵成，区域转换与回滚全程自动处理 |
+| **系统更新** | 禁用或重新启用 OTA 更新；**启动恢复**可救回区域转换后因 OTA 而无法启动的设备 |
+| **获取 Root** | 使用 KernelSU / KernelSU Next / SukiSU Ultra / ReSukiSU / APatch / FolkPatch / Magisk（及分支）获取 Root |
 | **取消 Root** | 从之前的 Root 备份恢复原始引导镜像 |
-| **重启** | 跳转到系统 / Recovery / Bootloader / EDL |
-| **高级菜单** | 单独的流水线步骤供手动控制 — 见下方 |
-| **设置** | 语言（en/ko/zh/ru）、主题（系统/浅色/深色）、默认 EDL 加载器路径 |
+| **重启** | 跳转到 System / Recovery / Bootloader / EDL |
+| **高级** | 手动逐步执行流水线步骤 — 见下方 |
+| **设置** | 语言（en/ko/zh/ru/ja）、主题（系统/浅色/深色）、强调色、默认 EDL 加载器路径 |
 
-### 高级菜单
+### 高级
 
 <details>
 <summary>逐步手动控制流水线，分为三个部分</summary>
 
 <br>
 
-**区域 & 补丁**
-- 区域转换（vendor_boot + vbmeta 重建）
-- 补丁 devinfo / persist
+**区域/国家修改**
+- 区域转换 — 改写 `vendor_boot` 区域码（PRC ↔ ROW）并重建 vbmeta
+- 修补国家码 — 转储该机型的国家码分区，改写后刷写
 
-**回滚**
-- 查看 `.img` AVB 元数据
-- 检测反回滚索引
-- 补丁反回滚索引
-- 为修改后的镜像重建 vbmeta
+**AVB 镜像**
+- 获取镜像信息 — 显示一个或多个 `.img` 文件的 AVB 元数据
+- 检测回滚保护 — 比较设备与固件的回滚索引
+- 绕过回滚保护 — 修补链式分区镜像中的回滚索引
+- 重建 vbmeta — 以更新后的哈希描述符重建 `vbmeta.img`
 
 **EDL 操作**
-- 解密 `.x` 文件 → XML
-- 按名称转储 / 刷写分区（GPT-by-name, EDL）
-- 物理 LUN 整体转储 / 刷写（whole-LUN, EDL）
+- X 转 XML — 将 `.x` 固件文件解密为 rawprogram `.xml`
+- 分区读取 / 写入 — 按名称导出或刷写分区（GPT-by-name）
+- 物理存储导出 / 刷写 — 对整个 LUN 进行导出或刷写
+- 固件简易刷写 — 仅刷写，不做检查或修改（尽量贴近原厂刷机脚本）
 
 </details>
 
@@ -63,10 +68,10 @@
 
 | Crate | 职责 |
 |---|---|
-| `ltbox-core` | 基础原语 — 错误、设置、日志、GitHub / nightly.link / 联想 PTSTPD 客户端、加密、XML 解密、实时日志接收器 |
-| `ltbox-device` | 传输层 — ADB、Fastboot、EDL / QDL、serialport 探测、Windows 高通 USB 驱动检测 + 自动安装 |
-| `ltbox-patch` | 镜像流水线 — AVB（内嵌 AOSP testkey 规范）、引导镜像 ramdisk 补丁、区域转换、回滚索引处理、Root 方案集成 |
-| `ltbox-gui` | `iced` 桌面应用 — `ltbox.exe` 二进制 |
+| `ltbox-core` | 基础原语 — 错误、设置、日志、HTTP 客户端（GitHub、nightly.link、联想）、加密、XML 解密、实时日志接收器 |
+| `ltbox-device` | 传输层 — ADB、Fastboot、EDL / QDL、串口探测、Windows 高通 USB 驱动检测 + 自动安装 |
+| `ltbox-patch` | 镜像流水线 — AVB（内置 AOSP testkey 规范）、引导镜像 ramdisk 补丁、区域转换、回滚索引处理、Root 方案集成 |
+| `ltbox-gui` | `iced` 桌面应用 — 构建 `ltbox` 二进制（Windows 上为 `ltbox.exe`） |
 
 ---
 
@@ -88,3 +93,10 @@
 [cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
 [cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
 [cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+[rust]: https://www.rust-lang.org
+[rust-shield]: https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white
+[ci]: https://github.com/miner7222/LTBox/actions/workflows/rust-ci.yml
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/miner7222/LTBox/rust-ci.yml?branch=main&label=build&logo=github
+[releases]: https://github.com/miner7222/LTBox/releases/latest
+[release-shield]: https://img.shields.io/github/v/release/miner7222/LTBox?logo=github
+[downloads-shield]: https://img.shields.io/github/downloads/miner7222/LTBox/total?logo=github

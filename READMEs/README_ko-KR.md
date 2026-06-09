@@ -3,10 +3,14 @@
 [🇺🇸 English](../README.md) / [🇨🇳 简体中文](README_zh-CN.md)
 
 [![License: CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+[![Rust][rust-shield]][rust]
+[![빌드][ci-shield]][ci]
+[![최신 릴리스][release-shield]][releases]
+[![다운로드][downloads-shield]][releases]
 
 ## ⚠️ 면책 조항
 
-**교육 목적으로만 사용하세요.** 펌웨어 수정은 벽돌, 데이터 손실, 보증 무효화 등의 위험이 있습니다. 제작자는 **어떠한 책임도 지지 않습니다**. 모든 결과는 사용자 본인의 책임입니다. **본인의 위험 부담 하에 사용하세요.**
+**교육 목적으로만 사용하세요.** 펌웨어를 수정하면 기기가 벽돌이 되거나 데이터가 사라지거나 보증이 무효화될 수 있습니다. 제작자는 **어떠한 책임도 지지 않으며**, 모든 책임은 사용자 본인에게 있습니다. **위험을 감수하고 사용하세요.**
 
 ---
 
@@ -20,40 +24,41 @@
 
 ## 📋 무엇을 할 수 있나요?
 
-사이드바 기반 GUI로 각 항목이 가이드형 위저드를 엽니다.
+LTBox는 사이드바 중심의 데스크톱 GUI입니다. 각 항목을 열면 단계별 위저드가 안내합니다.
 
 | 사이드바 항목 | 설명 |
 |---|---|
 | **대시보드** | 기기 상태, 지역, 최근 폴더, 원클릭 작업 |
-| **펌웨어 플래싱** | 올인원: 지역 → 대상 → 초기화/유지 → 플래싱. 지역 변환과 롤백 처리를 엔드투엔드로 수행 |
-| **시스템 업데이트** | OTA 업데이트 비활성화/활성화; **부팅 복구**로 지역 변환된 기기의 OTA 후 부팅 실패 복구 |
-| **루팅** | KernelSU / KernelSU Next / SukiSU / ReSukiSU / APatch / FolkPatch / Magisk(+포크)로 루팅 |
-| **루팅 해제** | 이전 루팅 백업에서 순정 부트 이미지 복원 |
+| **펌웨어 플래싱** | 지역 → 대상 → 초기화/유지 → 플래싱을 한 흐름으로. 지역 변환과 롤백까지 한 번에 처리 |
+| **시스템 업데이트** | OTA 업데이트 비활성화/활성화; 지역 변환된 기기가 OTA 후 부팅에 실패하면 **부팅 복구**로 되살리기 |
+| **루팅** | KernelSU / KernelSU Next / SukiSU Ultra / ReSukiSU / APatch / FolkPatch / Magisk(+포크)로 루팅 |
+| **언루팅** | 이전 루팅 백업에서 순정 부트 이미지 복원 |
 | **재부팅** | System / Recovery / Bootloader / EDL로 이동 |
-| **고급 메뉴** | 파이프라인 개별 단계 수동 제어 — 아래 참조 |
-| **설정** | 언어(en/ko/zh/ru), 테마(시스템/라이트/다크), 기본 EDL 로더 경로 |
+| **고급** | 파이프라인 단계를 직접 하나씩 실행 — 아래 참조 |
+| **설정** | 언어(en/ko/zh/ru/ja), 테마(시스템/라이트/다크), 강조 색상, 기본 EDL 로더 경로 |
 
-### 고급 메뉴
+### 고급
 
 <details>
-<summary>파이프라인 개별 단계 수동 제어, 세 섹션으로 구성</summary>
+<summary>파이프라인 단계를 수동으로 제어, 세 섹션으로 구성</summary>
 
 <br>
 
-**지역 & 패치**
-- 지역 변환 (vendor_boot + vbmeta 재구성)
-- devinfo / persist 패치
+**지역/국가 수정**
+- 지역 변환 — `vendor_boot` 지역 코드(PRC ↔ ROW)를 재작성하고 vbmeta 재빌드
+- 국가 코드 변경 — 모델별 국가 파티션을 덤프·수정·플래싱
 
-**롤백**
-- `.img` AVB 메타데이터 확인
-- 안티롤백 인덱스 감지
-- 안티롤백 인덱스 패치
-- 수정된 이미지에 대한 vbmeta 재구성
+**AVB 이미지**
+- 이미지 정보 — `.img` 파일의 AVB 메타데이터 표시
+- 롤백 보호 감지 — 기기와 펌웨어의 롤백 인덱스 비교
+- 롤백 보호 우회 — 체인 파티션 이미지의 롤백 인덱스 패치
+- vbmeta 재빌드 — 해시 디스크립터를 갱신해 `vbmeta.img` 재빌드
 
 **EDL 작업**
-- `.x` 파일 복호화 → XML
-- 파티션 이름 기준 덤프 / 플래싱 (GPT-by-name, EDL)
-- 물리 LUN 단위 덤프 / 플래싱 (전체 LUN, EDL)
+- X → XML 변환 — `.x` 펌웨어 파일을 rawprogram `.xml`로 복호화
+- 파티션 읽기 / 쓰기 — 이름 기준으로 파티션 덤프/플래싱 (GPT-by-name)
+- 물리 저장소 덤프 / 플래싱 — LUN 전체 덤프/플래싱
+- 펌웨어 단순 플래싱 — 검사·수정 없이 플래싱만 (순정 플래시 스크립트에 최대한 가깝게)
 
 </details>
 
@@ -63,10 +68,10 @@
 
 | 크레이트 | 역할 |
 |---|---|
-| `ltbox-core` | 프리미티브 — 에러, 설정, 로깅, GitHub / nightly.link / Lenovo PTSTPD 클라이언트, 암호화, XML 복호화, 라이브 로그 싱크 |
-| `ltbox-device` | 전송 계층 — ADB, Fastboot, EDL / QDL, serialport 탐지, Windows 퀄컴 USB 드라이버 감지 + 자동 설치 |
+| `ltbox-core` | 프리미티브 — 에러, 설정, 로깅, HTTP 클라이언트(GitHub, nightly.link, Lenovo), 암호화, XML 복호화, 라이브 로그 싱크 |
+| `ltbox-device` | 전송 계층 — ADB, Fastboot, EDL / QDL, 시리얼 포트 탐지, Windows 퀄컴 USB 드라이버 감지 + 자동 설치 |
 | `ltbox-patch` | 이미지 파이프라인 — AVB(내장 AOSP testkey 스펙), 부트 이미지 ramdisk 패치, 지역 변환, 롤백 인덱스 처리, 루트 프로바이더 통합 |
-| `ltbox-gui` | `iced` 데스크톱 앱 — `ltbox.exe` 바이너리 |
+| `ltbox-gui` | `iced` 데스크톱 앱 — `ltbox` 바이너리 빌드(Windows에서는 `ltbox.exe`) |
 
 ---
 
@@ -88,3 +93,10 @@
 [cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
 [cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
 [cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+[rust]: https://www.rust-lang.org
+[rust-shield]: https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white
+[ci]: https://github.com/miner7222/LTBox/actions/workflows/rust-ci.yml
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/miner7222/LTBox/rust-ci.yml?branch=main&label=build&logo=github
+[releases]: https://github.com/miner7222/LTBox/releases/latest
+[release-shield]: https://img.shields.io/github/v/release/miner7222/LTBox?logo=github
+[downloads-shield]: https://img.shields.io/github/downloads/miner7222/LTBox/total?logo=github
