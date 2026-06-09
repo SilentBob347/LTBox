@@ -126,10 +126,12 @@ impl App {
             Message::Flash(m) => return self.update_flash(m),
             // Country code popup
             Message::SelectCountry(code) => {
-                // TB322FC ships PRC-only — only `CN` is a valid country
-                // target. The popup grays out other entries, but a stale
-                // dispatch could still land here. Drop it.
-                if self.is_tb322fc() && !code.eq_ignore_ascii_case("CN") {
+                // TB322FC ships PRC-only — the Flash wizard only accepts `CN`.
+                // The popup grays out other entries, but a stale dispatch could
+                // still land here. Drop it — EXCEPT for the Advanced "Change
+                // Country Code" op, which allows any country on any model.
+                if self.is_tb322fc() && !self.adv_needs_country && !code.eq_ignore_ascii_case("CN")
+                {
                     return Task::none();
                 }
                 self.country_popup_open = false;

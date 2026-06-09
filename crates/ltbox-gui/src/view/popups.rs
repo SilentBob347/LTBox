@@ -370,10 +370,11 @@ impl App {
             );
             list = list.push(widget::rule::horizontal(1));
         }
-        // TB322FC PRC-only: only CN is selectable. Non-CN rows render
-        // as disabled buttons so the constraint stays visible on the
-        // popup. The "Do not change" row above remains usable.
-        let tb322fc = self.is_tb322fc();
+        // TB322FC PRC-only: only CN is selectable in the Flash wizard. Non-CN
+        // rows render as disabled buttons so the constraint stays visible. The
+        // Advanced "Change Country Code" op has no such restriction (any country,
+        // any model), so the gate is lifted there. "Do not change" stays usable.
+        let tb322fc = self.is_tb322fc() && !self.adv_needs_country;
         for entry in COUNTRY_CODES {
             let code = entry.code.to_string();
             let selected = selected_code == Some(entry.code);
