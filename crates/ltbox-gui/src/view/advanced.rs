@@ -81,8 +81,10 @@ impl App {
             self.adv_wiz_detect_arb_step()
         } else if is_confirm {
             self.adv_wiz_confirm_step()
-        } else if needs_country && self.adv_wizard.step == 1 {
+        } else if needs_country && self.adv_wizard.step == 0 {
             self.adv_wiz_country_step()
+        } else if needs_country && self.adv_wizard.step == 1 {
+            self.adv_wiz_loader_step()
         } else if needs_region_target && self.adv_wizard.step == 1 {
             self.adv_wiz_region_target_step()
         } else if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb))
@@ -101,18 +103,16 @@ impl App {
             } else {
                 self.t("btn_next").to_string()
             };
-            // DetectArb gates Start on either a picked loader (TB320FC
-            // path) or no requirement at all (other models — Start is
-            // always enabled). Other wizards keep the standard
-            // `can_next` check.
             let is_start = is_confirm || detect_arb_step0;
-            // Most advanced operations (RegionConvert / PatchDevinfo /
-            // PatchArb / RebuildVbmeta) are folder-only and don't need
-            // a connected device. The ones that DO touch the device
-            // (DetectArb, ConvertXml stays offline so excluded) get
-            // the reachability gate at the Start step.
+            // DetectArb's Start gets a generic reachability gate. Change Country
+            // Code (PatchDevinfo) runs over EDL but is launched from system/ADB
+            // (the model is read there), so its Start specifically requires an
+            // ADB connection. Other advanced ops are folder-only (no device).
             let needs_device = matches!(self.adv_wizard.action, Some(AdvAction::DetectArb));
-            let can = if detect_arb_step0 {
+            let needs_system =
+                is_start && matches!(self.adv_wizard.action, Some(AdvAction::PatchDevinfo));
+            let system_ok = self.connection == ConnectionStatus::Adb;
+            let can = (if detect_arb_step0 {
                 if self.device_model.eq_ignore_ascii_case("TB320FC") {
                     self.adv_wizard.file_path.is_some()
                 } else {
@@ -120,16 +120,42 @@ impl App {
                 }
             } else {
                 self.adv_wizard.can_next()
-            } && !self.busy
-                && (!is_start || !needs_device || self.device_reachable());
-            wizard_nav_generic(
+            }) && !self.busy
+                && (!is_start || !needs_device || self.device_reachable())
+                && (!needs_system || system_ok);
+            let nav = wizard_nav_generic(
                 true,
                 &label,
                 can,
                 self.t("btn_back"),
                 Message::Adv(AdvMsg::AdvWizBack),
                 Message::Adv(AdvMsg::AdvWizNext),
-            )
+            );
+            // Start blocked only because the device isn't on ADB → explain on hover.
+            if needs_system && !system_ok {
+                iced::widget::tooltip(
+                    nav,
+                    container(text(self.t("adv_country_needs_system").to_string()).size(12))
+                        .padding([6, 10])
+                        .style(|t: &Theme| {
+                            let p = pal_of(t);
+                            container::Style {
+                                background: Some(p.surface_container_high.into()),
+                                text_color: Some(p.on_surface),
+                                border: iced::Border {
+                                    color: p.outline_variant,
+                                    width: 1.0,
+                                    radius: 8.0.into(),
+                                },
+                                ..Default::default()
+                            }
+                        }),
+                    iced::widget::tooltip::Position::Top,
+                )
+                .into()
+            } else {
+                nav
+            }
         };
 
         column![step_bar, body, nav]
@@ -264,10 +290,13 @@ impl App {
                     text(self.t("btn_pick_country").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("adv_country_desc").to_string())
-                        .size(11)
-                        .style(muted_style)
-                        .center(),
+                    text(tr_args!(
+                        "adv_country_pick_count",
+                        count = COUNTRY_CODES.len().to_string()
+                    ))
+                    .size(11)
+                    .style(muted_style)
+                    .center(),
                 ]
                 .spacing(6)
                 .width(Length::Fixed(280.0))
@@ -301,6 +330,77 @@ impl App {
                 .style(muted_style)
                 .center(),
             btn_row,
+            text(status)
+                .size(12)
+                .width(Length::Fill)
+                .style(status_style)
+                .center()
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(14)
+        .padding(28)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
+        container(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    /// Step 1 for Change Country Code: pick the EDL loader (the device is
+    /// transitioned to EDL with it). Same loader-browse the DetectArb step uses.
+    pub(crate) fn adv_wiz_loader_step(&self) -> Element<'_, Message> {
+        let selected = self.adv_wizard.file_path.is_some();
+        let status = self
+            .adv_wizard
+            .file_path
+            .clone()
+            .unwrap_or_else(|| self.t("adv_source_placeholder").to_string());
+        let btn = button(
+            container(
+                column![
+                    text(self.t("btn_browse_loader").to_string())
+                        .size(14)
+                        .center(),
+                    text(self.loader_picker_desc())
+                        .size(11)
+                        .style(muted_style)
+                        .center(),
+                ]
+                .spacing(6)
+                .width(Length::Fixed(280.0))
+                .align_x(iced::Alignment::Center),
+            )
+            .padding([20, 24])
+            .width(Length::Fixed(280.0))
+            .style(move |t: &Theme| sel_card_style(t, selected)),
+        )
+        .width(Length::Shrink)
+        .on_press(Message::Adv(AdvMsg::AdvWizBrowse))
+        .padding(0)
+        .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected));
+        let status_style = move |t: &Theme| {
+            let p = pal_of(t);
+            iced::widget::text::Style {
+                color: Some(if selected { p.success } else { p.outline }),
+            }
+        };
+        let col = column![
+            text(self.t("adv_loader_title").to_string())
+                .size(theme::text_size::WIZARD_STEP_TITLE)
+                .center(),
+            text(self.t("adv_loader_subtitle").to_string())
+                .size(13)
+                .style(muted_style)
+                .center(),
+            row![
+                Space::new().width(Length::Fill),
+                btn,
+                Space::new().width(Length::Fill),
+            ]
+            .align_y(iced::Alignment::Center),
             text(status)
                 .size(12)
                 .width(Length::Fill)
@@ -533,6 +633,13 @@ impl App {
             .file_path
             .clone()
             .unwrap_or_else(|| dash.clone());
+        // Change Country Code shows the EDL loader (its `file_path`); other ops
+        // show the picked source file/folder.
+        let source_label = if self.adv_wizard.needs_country() {
+            self.t("adv_confirm_loader")
+        } else {
+            self.t("adv_confirm_source")
+        };
         let mut col = column![
             text(self.t(action.label_key()).to_string())
                 .size(theme::text_size::WIZARD_STEP_TITLE)
@@ -542,7 +649,7 @@ impl App {
                 .style(muted_style)
                 .center(),
             Space::new().height(12),
-            info_kv_center(self.t("adv_confirm_source"), &path),
+            info_kv_center(source_label, &path),
         ]
         .spacing(10)
         .padding(28)

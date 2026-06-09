@@ -723,6 +723,54 @@ impl App {
                     let Some(action) = self.adv_wizard.action else {
                         return Task::none();
                     };
+                    // Change Country Code runs the EDL country-change worker
+                    // (dump → patch → flash the model's country partitions →
+                    // reset to system), not the local-file advanced_file_worker.
+                    if matches!(action, AdvAction::PatchDevinfo) {
+                        let Some(target_code) = self.adv_wizard.country.clone() else {
+                            return Task::none();
+                        };
+                        // Re-resolve the loader against the NOW-connected model:
+                        // selections may predate this device (e.g. a `.melf` needs
+                        // its Sahara manifest only when the live device is TB323FU).
+                        // Pick-time resolve (AdvWizBrowseDone) keeps Confirm
+                        // accurate; this re-check keeps Start correct if the model
+                        // changed in between.
+                        let Some(picked) = self.adv_wizard.file_path.clone() else {
+                            return Task::none();
+                        };
+                        let loader = match self.resolve_loader_input(&picked) {
+                            Ok(l) => l,
+                            Err(msg) => {
+                                self.error_msg = Some(msg);
+                                return Task::none();
+                            }
+                        };
+                        self.adv_wizard.next(); // → exec screen
+                        self.begin_op(View::Advanced);
+                        self.error_msg = None;
+                        let conn = self.connection;
+                        let device_model = self.device_model.clone();
+                        let ll = self.live_labels();
+                        let label = self.t(action.label_key()).to_string();
+                        self.log_push(format!("[Advanced] {label}"));
+                        return task_heavy(
+                            move || {
+                                change_country_worker(
+                                    conn,
+                                    device_model,
+                                    target_code,
+                                    std::path::PathBuf::from(loader),
+                                    ll,
+                                )
+                            },
+                            |result| match result {
+                                Ok(lines) => Message::Adv(AdvMsg::AdvExecDone(lines)),
+                                Err(e) => Message::OperationError(e),
+                            },
+                            Err,
+                        );
+                    }
                     self.adv_confirm_path = self.adv_wizard.file_path.clone();
                     if let Some(code) = self.adv_wizard.country.clone() {
                         self.wf_config.country_action = CountryAction::Set(code);
@@ -777,6 +825,23 @@ impl App {
                         // keeps buckets consistent even if rfd returns an
                         // unexpected path type.
                         self.remember_recent(self.adv_wizard.picker_kind(), &p);
+                    }
+                    // Change Country Code picks an EDL loader: resolve it now
+                    // (e.g. upgrade a TB323FU .melf to its sibling Sahara
+                    // manifest) so the confirm screen shows the loader actually
+                    // used and Start needs no re-resolve.
+                    if matches!(self.adv_wizard.action, Some(AdvAction::PatchDevinfo)) {
+                        match self.resolve_loader_input(&p) {
+                            Ok(resolved) => {
+                                self.adv_wizard.file_path = Some(resolved);
+                                self.error_msg = None;
+                            }
+                            Err(msg) => {
+                                self.adv_wizard.file_path = None;
+                                self.error_msg = Some(msg);
+                            }
+                        }
+                        return Task::none();
                     }
                     self.adv_wizard.file_path = Some(p);
                 }

@@ -1726,246 +1726,22 @@ pub(crate) fn flash_worker(
         // `dump_partition_by_name`. Avoids re-decrypting
         // `rawprogram*.x` mid-flow when the catalog scratch
         // dir has been cleaned.
-        use ltbox_patch::region::{
-            EU_COUNTRY_CODES as EU_CODES, KNOWN_COUNTRY_CODES as KNOWN_CODES,
-        };
-        // TB320FC / TB323FU keep the country code in
-        // `oemowninfo` (LUN 0), not `devinfo` (LUN 4).
-        // Detect via the vendor_boot fingerprint (works
-        // on EDL-start) or the probe-reported model.
-        let oemowninfo_sku = ["TB320FC", "TB323FU"].iter().any(|m| {
-            firmware_fingerprint
-                .as_deref()
-                .map(|fp| fingerprint_token_match(fp, m))
-                .unwrap_or(false)
-                || fingerprint_token_match(&device_model, m)
-        });
-        // TB320FC / TB323FU keep the country code ONLY in oemowninfo; every
-        // other SKU keeps it in devinfo + persist. Dump / detect / patch / flash
-        // only those partitions for the model — no cross-partition work.
-        let country_partitions: &[&str] = if oemowninfo_sku {
-            &["oemowninfo"]
-        } else {
-            &["devinfo", "persist"]
-        };
-        let mut country_progress = CountryPatchProgress::new(country_partitions);
-        for label in country_partitions.iter().copied() {
-            let Some(lun) = ltbox_core::partition_lun::lun_for_partition(label) else {
-                let reason = "no hardcoded LUN for label";
-                ltbox_core::live!(
-                    log,
-                    "[Country] {}",
-                    tr_args!(
-                        "live_country_partition_status",
-                        label = label,
-                        reason = reason
-                    )
-                );
-                country_progress.mark_failed(label, reason);
-                continue;
-            };
-            let dump_path = work_dir.join(format!("{label}.img"));
+        // Best-effort after a successful flash: warn on a partial country
+        // failure but still reset (don't strand the device in EDL).
+        if let Err(e) = run_country_change(
+            &mut session,
+            &work_dir,
+            &critical_backup,
+            &device_model,
+            firmware_fingerprint.as_deref(),
+            target_code,
+            &ll,
+            &mut log,
+        ) {
             live!(
-                log,
-                "[Country] {}",
-                tr_args!(
-                    "live_country_dump_partition",
-                    label = label,
-                    lun = lun.to_string(),
-                    start = "?",
-                    sectors = "?"
-                )
-            );
-            if let Err(e) = session.dump_partition(label, &dump_path, 0, lun, &mut log) {
-                let reason = format!("dump failed: {e}");
-                ltbox_core::live!(
-                    log,
-                    "[Country] {}",
-                    tr_args!(
-                        "live_country_partition_status",
-                        label = label,
-                        reason = reason
-                    )
-                );
-                country_progress.mark_failed(label, reason);
-                continue;
-            }
-            // Backup before any patch touches it.
-            if let Err(e) = std::fs::copy(&dump_path, critical_backup.join(format!("{label}.img")))
-            {
-                let reason = format!("backup failed: {e}");
-                ltbox_core::live!(
-                    log,
-                    "[Country] {}",
-                    tr_args!(
-                        "live_country_partition_status",
-                        label = label,
-                        reason = reason
-                    )
-                );
-                country_progress.mark_failed(label, reason);
-                continue;
-            }
-            let detected = match ltbox_patch::region::detect_country_code(
-                &dump_path,
-                KNOWN_CODES,
-                label == "persist",
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    let reason = format!("detect failed: {e}");
-                    ltbox_core::live!(
-                        log,
-                        "[Country] {}",
-                        tr_args!(
-                            "live_country_partition_status",
-                            label = label,
-                            reason = reason
-                        )
-                    );
-                    country_progress.mark_failed(label, reason);
-                    None
-                }
-            };
-            let patched_path = work_dir.join(format!("{label}.patched.img"));
-            // Patch the country code when the partition carries
-            // one. `persist` has no real country code (its only
-            // matches live in captured logs), so it is a no-op
-            // pass-through here — dump + backup already happened.
-            let mut changed = false;
-            match detected {
-                Some(ref old_code) => {
-                    live!(
-                        log,
-                        "[Country] {}",
-                        tr_args!(
-                            "live_country_patch_transition",
-                            label = label,
-                            from = old_code,
-                            to = target_code
-                        )
-                    );
-                    match ltbox_patch::region::patch_country_code(
-                        &dump_path,
-                        &patched_path,
-                        old_code,
-                        target_code,
-                        EU_CODES,
-                        label == "persist",
-                    ) {
-                        Ok(c) => changed |= c,
-                        Err(e) => {
-                            let reason = format!("patch failed: {e}");
-                            ltbox_core::live!(
-                                log,
-                                "[Country] {}",
-                                tr_args!(
-                                    "live_country_partition_status",
-                                    label = label,
-                                    reason = reason
-                                )
-                            );
-                            country_progress.mark_failed(label, reason);
-                            continue;
-                        }
-                    }
-                }
-                None => {
-                    if label != "persist" {
-                        let reason = "no known code detected";
-                        ltbox_core::live!(
-                            log,
-                            "[Country] {}",
-                            tr_args!(
-                                "live_country_partition_status",
-                                label = label,
-                                reason = reason
-                            )
-                        );
-                        country_progress.mark_failed(label, reason);
-                        continue;
-                    }
-                    // persist has no country code — nothing to
-                    // patch; `changed` stays false and it is
-                    // marked handled in the pass-through below.
-                }
-            }
-
-            // Flash once if the country code changed.
-            if changed {
-                if let Err(e) = session.flash_partition(label, &patched_path, 0, lun, &mut log) {
-                    ltbox_core::live!(
-                        log,
-                        "[Country] {}",
-                        tr_args!(
-                            "live_country_flash_failed",
-                            label = label,
-                            error = e.to_string()
-                        )
-                    );
-                    country_progress.mark_failed(label, format!("flash failed: {e}"));
-                } else {
-                    live!(
-                        log,
-                        "[Country] {}",
-                        tr_args!("live_country_patched_flashed", label = label)
-                    );
-                    country_progress.mark_flashed(label);
-                }
-            } else if detected.as_deref() == Some(target_code) {
-                ltbox_core::live!(
-                    log,
-                    "[Country] {}",
-                    tr_args!(
-                        "live_country_partition_already",
-                        label = label,
-                        target = target_code
-                    )
-                );
-                country_progress.mark_flashed(label);
-            } else if label == "persist" {
-                // persist carries no country code — nothing to
-                // patch; treat as handled so the run still
-                // resets to system.
-                country_progress.mark_flashed(label);
-            } else {
-                let reason = "no replacements";
-                ltbox_core::live!(
-                    log,
-                    "[Country] {}",
-                    tr_args!(
-                        "live_country_partition_status",
-                        label = label,
-                        reason = reason
-                    )
-                );
-                country_progress.mark_failed(label, reason);
-            }
-        }
-        if let Err(e) = country_progress.finish() {
-            // Non-fatal: the firmware itself is already
-            // flashed, so warn and STILL reset to system
-            // rather than aborting and leaving the device
-            // stuck in EDL. The country code just stays
-            // whatever was already on the partition.
-            ltbox_core::live!(
                 log,
                 "[Country] {}",
                 tr_args!("live_country_warning", error = e)
-            );
-        }
-        // Surface the backup location once
-        // per run. Empty dir = every label
-        // was skipped.
-        if std::fs::read_dir(&critical_backup)
-            .map(|mut it| it.next().is_some())
-            .unwrap_or(false)
-        {
-            live!(
-                log,
-                "[Country] {} {}",
-                ll.backup_saved_prefix,
-                critical_backup.display()
             );
         }
     }
@@ -1992,6 +1768,316 @@ pub(crate) fn flash_worker(
     live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
     session.reset_tolerant(&mut log);
     live!(log, "[Flash] {}", ll.flash_completed);
+    Ok(log)
+}
+
+/// Country-code partitions to dump/patch/flash for a model. TB320FC / TB323FU
+/// keep the code ONLY in `oemowninfo` (LUN 0); every other model keeps it in
+/// `devinfo` + `persist`. The model is matched against the vendor_boot AVB
+/// fingerprint (works on an EDL-start flash) or the probe-reported model name.
+fn country_partitions_for(
+    device_model: &str,
+    firmware_fingerprint: Option<&str>,
+) -> &'static [&'static str] {
+    let oemowninfo_sku = ["TB320FC", "TB323FU"].iter().any(|m| {
+        firmware_fingerprint
+            .map(|fp| fingerprint_token_match(fp, m))
+            .unwrap_or(false)
+            || fingerprint_token_match(device_model, m)
+    });
+    if oemowninfo_sku {
+        &["oemowninfo"]
+    } else {
+        &["devinfo", "persist"]
+    }
+}
+
+/// Rewrite the device's country code in the model's country partitions over an
+/// open EDL session: TB320FC / TB323FU use `oemowninfo`; every other model uses
+/// `devinfo` + `persist`. Best-effort per partition (logs + continues on
+/// failure). Shared by `flash_worker`'s post-flash country phase and the
+/// standalone `change_country_worker`.
+#[allow(clippy::too_many_arguments)]
+fn run_country_change(
+    session: &mut ltbox_device::edl::EdlSession,
+    work_dir: &std::path::Path,
+    critical_backup: &std::path::Path,
+    device_model: &str,
+    firmware_fingerprint: Option<&str>,
+    target_code: &str,
+    ll: &LiveLabels,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    use ltbox_patch::region::{EU_COUNTRY_CODES as EU_CODES, KNOWN_COUNTRY_CODES as KNOWN_CODES};
+    let country_partitions = country_partitions_for(device_model, firmware_fingerprint);
+    let mut country_progress = CountryPatchProgress::new(country_partitions);
+    for label in country_partitions.iter().copied() {
+        let Some(lun) = ltbox_core::partition_lun::lun_for_partition(label) else {
+            let reason = "no hardcoded LUN for label";
+            ltbox_core::live!(
+                log,
+                "[Country] {}",
+                tr_args!(
+                    "live_country_partition_status",
+                    label = label,
+                    reason = reason
+                )
+            );
+            country_progress.mark_failed(label, reason);
+            continue;
+        };
+        let dump_path = work_dir.join(format!("{label}.img"));
+        live!(
+            log,
+            "[Country] {}",
+            tr_args!(
+                "live_country_dump_partition",
+                label = label,
+                lun = lun.to_string(),
+                start = "?",
+                sectors = "?"
+            )
+        );
+        if let Err(e) = session.dump_partition(label, &dump_path, 0, lun, log) {
+            let reason = format!("dump failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[Country] {}",
+                tr_args!(
+                    "live_country_partition_status",
+                    label = label,
+                    reason = reason
+                )
+            );
+            country_progress.mark_failed(label, reason);
+            continue;
+        }
+        // Backup before any patch touches it.
+        if let Err(e) = std::fs::copy(&dump_path, critical_backup.join(format!("{label}.img"))) {
+            let reason = format!("backup failed: {e}");
+            ltbox_core::live!(
+                log,
+                "[Country] {}",
+                tr_args!(
+                    "live_country_partition_status",
+                    label = label,
+                    reason = reason
+                )
+            );
+            country_progress.mark_failed(label, reason);
+            continue;
+        }
+        let detected = match ltbox_patch::region::detect_country_code(
+            &dump_path,
+            KNOWN_CODES,
+            label == "persist",
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                let reason = format!("detect failed: {e}");
+                ltbox_core::live!(
+                    log,
+                    "[Country] {}",
+                    tr_args!(
+                        "live_country_partition_status",
+                        label = label,
+                        reason = reason
+                    )
+                );
+                country_progress.mark_failed(label, reason);
+                None
+            }
+        };
+        let patched_path = work_dir.join(format!("{label}.patched.img"));
+        // Patch the country code when the partition carries
+        // one. `persist` has no real country code (its only
+        // matches live in captured logs), so it is a no-op
+        // pass-through here — dump + backup already happened.
+        let mut changed = false;
+        match detected {
+            Some(ref old_code) => {
+                live!(
+                    log,
+                    "[Country] {}",
+                    tr_args!(
+                        "live_country_patch_transition",
+                        label = label,
+                        from = old_code,
+                        to = target_code
+                    )
+                );
+                match ltbox_patch::region::patch_country_code(
+                    &dump_path,
+                    &patched_path,
+                    old_code,
+                    target_code,
+                    EU_CODES,
+                    label == "persist",
+                ) {
+                    Ok(c) => changed |= c,
+                    Err(e) => {
+                        let reason = format!("patch failed: {e}");
+                        ltbox_core::live!(
+                            log,
+                            "[Country] {}",
+                            tr_args!(
+                                "live_country_partition_status",
+                                label = label,
+                                reason = reason
+                            )
+                        );
+                        country_progress.mark_failed(label, reason);
+                        continue;
+                    }
+                }
+            }
+            None => {
+                if label != "persist" {
+                    let reason = "no known code detected";
+                    ltbox_core::live!(
+                        log,
+                        "[Country] {}",
+                        tr_args!(
+                            "live_country_partition_status",
+                            label = label,
+                            reason = reason
+                        )
+                    );
+                    country_progress.mark_failed(label, reason);
+                    continue;
+                }
+                // persist has no country code — nothing to
+                // patch; `changed` stays false and it is
+                // marked handled in the pass-through below.
+            }
+        }
+
+        // Flash once if the country code changed.
+        if changed {
+            if let Err(e) = session.flash_partition(label, &patched_path, 0, lun, log) {
+                ltbox_core::live!(
+                    log,
+                    "[Country] {}",
+                    tr_args!(
+                        "live_country_flash_failed",
+                        label = label,
+                        error = e.to_string()
+                    )
+                );
+                country_progress.mark_failed(label, format!("flash failed: {e}"));
+            } else {
+                live!(
+                    log,
+                    "[Country] {}",
+                    tr_args!("live_country_patched_flashed", label = label)
+                );
+                country_progress.mark_flashed(label);
+            }
+        } else if detected.as_deref() == Some(target_code) {
+            ltbox_core::live!(
+                log,
+                "[Country] {}",
+                tr_args!(
+                    "live_country_partition_already",
+                    label = label,
+                    target = target_code
+                )
+            );
+            country_progress.mark_flashed(label);
+        } else if label == "persist" {
+            // persist carries no country code — nothing to
+            // patch; treat as handled so the run still
+            // resets to system.
+            country_progress.mark_flashed(label);
+        } else {
+            let reason = "no replacements";
+            ltbox_core::live!(
+                log,
+                "[Country] {}",
+                tr_args!(
+                    "live_country_partition_status",
+                    label = label,
+                    reason = reason
+                )
+            );
+            country_progress.mark_failed(label, reason);
+        }
+    }
+    // Aggregate per-partition outcome. The caller decides severity: the
+    // post-flash phase treats it as best-effort (warn + still reset), the
+    // standalone change-country op propagates it as the operation's result.
+    let outcome = country_progress.finish();
+    // Surface the backup location once per run. Empty dir = every label skipped.
+    if std::fs::read_dir(critical_backup)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+    {
+        live!(
+            log,
+            "[Country] {} {}",
+            ll.backup_saved_prefix,
+            critical_backup.display()
+        );
+    }
+    outcome
+}
+
+/// Advanced "Change Country Code": rewrite the device's country code over EDL
+/// and reset to system. Mirrors `flash_worker`'s country phase but standalone —
+/// no firmware package, just a user-picked country + EDL loader. Per model:
+/// TB320FC / TB323FU touch `oemowninfo`; all others `devinfo` + `persist`.
+pub(crate) fn change_country_worker(
+    conn: ConnectionStatus,
+    device_model: String,
+    target_code: String,
+    loader: std::path::PathBuf,
+    ll: LiveLabels,
+) -> Result<Vec<String>, String> {
+    let mut log = Vec::new();
+    live!(
+        log,
+        "[Country] {}",
+        tr_args!(
+            "live_flash_country_patch_target",
+            target = target_code.as_str()
+        )
+    );
+    // Create scratch + backup dirs BEFORE entering EDL: a setup failure here
+    // must not strand the device in EDL (EdlSession has no reset-on-drop).
+    let work_dir = ltbox_core::app_paths::work_dir_for("change_country");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir)
+        .map_err(|e| tr_args!("err_country_work_dir_failed", error = e.to_string()))?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let critical_backup = ltbox_core::app_paths::backup_dir_for(&format!("backup_critical_{ts}"));
+    std::fs::create_dir_all(&critical_backup)
+        .map_err(|e| tr_args!("err_country_backup_dir_failed", error = e.to_string()))?;
+    transition_to_edl(conn, &ll, &mut log)?;
+    let mut session = ltbox_device::edl::EdlSession::open(&loader, true, &mut log)
+        .map_err(|e| tr_args!("err_edl_session_open_failed", error = e.to_string()))?;
+    let outcome = run_country_change(
+        &mut session,
+        &work_dir,
+        &critical_backup,
+        &device_model,
+        None,
+        &target_code,
+        &ll,
+        &mut log,
+    );
+    // Reset to system regardless (don't strand the device in EDL), then surface
+    // any failure: for the standalone op the country change IS the operation, so
+    // a partial failure must not report success.
+    session.reset_tolerant(&mut log);
+    outcome?;
+    live!(
+        log,
+        "[Country] {}",
+        ltbox_core::i18n::tr("live_country_change_done")
+    );
     Ok(log)
 }
 
@@ -2133,6 +2219,24 @@ mod tests {
         FixedFirmwareDevicePolicy, fixed_firmware_device_policy,
         should_reboot_fastboot_to_system_after_pre_edl_abort,
     };
+
+    #[test]
+    fn country_partitions_select_by_model() {
+        use super::country_partitions_for;
+        // TB320FC / TB323FU keep the country code only in oemowninfo.
+        assert_eq!(country_partitions_for("TB320FC", None), &["oemowninfo"][..]);
+        assert_eq!(country_partitions_for("TB323FU", None), &["oemowninfo"][..]);
+        // Every other model uses devinfo + persist.
+        assert_eq!(
+            country_partitions_for("TB330FU", None),
+            &["devinfo", "persist"][..]
+        );
+        // The AVB fingerprint (EDL-start, no probed model) also selects it.
+        assert_eq!(
+            country_partitions_for("", Some("Lenovo/TB323FU/TB323FU:14/build")),
+            &["oemowninfo"][..]
+        );
+    }
 
     #[test]
     fn pre_edl_abort_reboots_when_flash_flow_entered_fastboot() {

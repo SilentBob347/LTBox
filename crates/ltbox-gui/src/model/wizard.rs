@@ -1175,9 +1175,10 @@ impl AdvWizard {
             return &["adv_step_source", "adv_step_info"];
         }
         if self.needs_country() {
+            // Change Country Code: country pick, then EDL loader, confirm, exec.
             &[
-                "adv_step_source",
                 "adv_step_country",
+                "adv_step_loader",
                 "flash_step_confirm",
                 "flash_step_flash",
             ]
@@ -1223,14 +1224,19 @@ impl Wizard for AdvWizard {
         self.steps().len()
     }
     fn can_next(&self) -> bool {
+        // Change Country Code: step 0 picks the country, step 1 the EDL loader.
+        if self.needs_country() {
+            return match self.step {
+                0 => self.country.is_some(),
+                1 => self.file_path.is_some(),
+                _ => true,
+            };
+        }
         if self.step == 0 {
             if self.is_image_info() {
                 return !self.file_paths.is_empty();
             }
             return self.file_path.is_some();
-        }
-        if self.needs_country() && self.step == 1 {
-            return self.country.is_some();
         }
         if self.needs_region_target() && self.step == 1 {
             return self.region_target.is_some();
@@ -1250,9 +1256,10 @@ impl AdvWizard {
     pub(crate) fn is_folder_op(&self) -> bool {
         matches!(
             self.action,
-            // PatchDevinfo: folder holds devinfo.img + persist.img.
             // ConvertXml: folder holds the encrypted `*.x` pack.
-            Some(AdvAction::PatchDevinfo) | Some(AdvAction::ConvertXml) | Some(AdvAction::PatchArb)
+            // PatchArb: folder holds boot.img + vbmeta_system.img.
+            // (Change Country Code now picks an EDL loader file, not a folder.)
+            Some(AdvAction::ConvertXml) | Some(AdvAction::PatchArb)
         )
     }
     /// Extension whitelist for `rfd::AsyncFileDialog::add_filter`.
@@ -1262,7 +1269,10 @@ impl AdvWizard {
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::RebuildVbmeta) => ("Android partition image (*.img)", &["img"]),
-            Some(AdvAction::DetectArb) => ("EDL loader (.melf / .xml / .x)", LOADER_PICKER_EXTS),
+            Some(AdvAction::DetectArb) | Some(AdvAction::PatchDevinfo) => (
+                "EDL loader (.melf / .mbn / .elf / .xml / .x)",
+                LOADER_PICKER_EXTS,
+            ),
             _ => ("", &[]),
         }
     }
@@ -1280,13 +1290,12 @@ impl AdvWizard {
         match self.action {
             // Source folders (existing payloads).
             Some(AdvAction::ConvertXml) => PickerKind::EncryptedRawprogramFolder,
-            Some(AdvAction::PatchDevinfo) | Some(AdvAction::PatchArb) => {
-                PickerKind::QfilFirmwareFolder
-            }
+            Some(AdvAction::PatchArb) => PickerKind::QfilFirmwareFolder,
             // File-picking actions - all share the unified File bucket.
             Some(AdvAction::RegionConvert)
             | Some(AdvAction::ImageInfo)
             | Some(AdvAction::DetectArb)
+            | Some(AdvAction::PatchDevinfo)
             | Some(AdvAction::RebuildVbmeta) => PickerKind::File,
             // Remaining actions don't open a Browse dialog on step 0
             // (DumpPartitions/DumpPhysical/Flash* have dedicated wizards);
@@ -1303,7 +1312,7 @@ impl AdvWizard {
     pub(crate) fn picker_target_i18n_key(&self) -> &'static str {
         match self.action {
             Some(AdvAction::ConvertXml) => "picker_target_encrypted_rawprogram",
-            Some(AdvAction::PatchDevinfo) => "picker_target_devinfo_persist_folder",
+            Some(AdvAction::PatchDevinfo) => "picker_target_edl_loader",
             Some(AdvAction::RegionConvert) => "picker_target_vendor_boot_img",
             Some(AdvAction::ImageInfo) => "picker_target_avb_images",
             Some(AdvAction::DetectArb) => "picker_target_edl_loader",
