@@ -47,6 +47,27 @@ fn reboot_fastboot_to_system_after_pre_edl_abort(log: &mut Vec<String>, started_
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixedFirmwareDevicePolicy {
+    AbortUnknown,
+    KeepFixed,
+    ResignTestkey,
+}
+
+/// Decide how a fixed-key ("key2") firmware should be handled from the device's
+/// active-slot vbmeta_system key class. vbmeta_system may use either bundled
+/// testkey size while the root vbmeta still uses testkey_rsa4096, so the exact
+/// vbmeta_system key spec must not gate the testkey re-sign path.
+fn fixed_firmware_device_policy(
+    device_vbs_class: ltbox_patch::key_map::KeyClass,
+) -> FixedFirmwareDevicePolicy {
+    match device_vbs_class {
+        ltbox_patch::key_map::KeyClass::Unknown => FixedFirmwareDevicePolicy::AbortUnknown,
+        ltbox_patch::key_map::KeyClass::Fixed => FixedFirmwareDevicePolicy::KeepFixed,
+        ltbox_patch::key_map::KeyClass::Testkey => FixedFirmwareDevicePolicy::ResignTestkey,
+    }
+}
+
 /// Supported Lenovo SKUs, matched as fingerprint tokens to recover the device
 /// model from an EDL-dumped vendor_boot when fastboot/ADB never ran.
 const SUPPORTED_MODELS: [&str; 6] = [
@@ -233,22 +254,19 @@ fn dump_avb_info(
 struct DeviceVbmeta {
     /// Active slot suffix (`_a` / `_b`).
     slot: &'static str,
-    /// Root-of-trust class of the active-slot vbmeta_system.
+    /// Device key class indicated by the active-slot vbmeta_system signer.
     class: ltbox_patch::key_map::KeyClass,
-    /// avbtool key spec for the active-slot vbmeta_system pubkey (`Some` iff
-    /// `class == Testkey`) — used to reject re-signing a device on a testkey the
-    /// re-sign path doesn't support.
-    key_spec: Option<&'static str>,
     /// Device-committed per-location rollback floors — the MAX of each location
     /// across BOTH slots (AVB indices are per-location; the slots can differ).
     boot_floor: u64,
     vbs_floor: u64,
 }
 
-/// Read the device's active-slot root-of-trust + committed rollback floors from
-/// vbmeta_system — the unified identity source: it carries the signing key (root
-/// of trust), the device build fingerprint, and the per-location rollback index,
-/// so vbmeta / vendor_boot need no separate dump here. The active slot is
+/// Read the device's active-slot key class + committed rollback floors from
+/// vbmeta_system — the unified identity source: its signer identifies the device
+/// key class, and it carries the build fingerprint + per-location rollback index,
+/// so vbmeta / vendor_boot need no separate dump here. Its exact signer is not
+/// necessarily the root vbmeta signer. The active slot is
 /// `known_active` (fastboot `current-slot`) when set; otherwise (EDL-start) it
 /// is the valid vbmeta_system side, or — when both parse — the slot with the
 /// higher vbmeta_system rollback index (ties favour `_a`). The floors are
@@ -298,13 +316,14 @@ fn read_device_vbmeta(
     };
     let slot = if active == 1 { "_b" } else { "_a" };
 
-    // Class + testkey spec from the active-slot vbmeta_system pubkey.
+    // Device key class from the active-slot vbmeta_system pubkey. Do not retain
+    // its exact testkey spec: vbmeta_system may use RSA-2048 while root vbmeta
+    // uses RSA-4096, and fixed-firmware re-sign targets that RSA-4096 root.
     let active_info = vbs_info[active]
         .as_ref()
         .ok_or_else(|| format!("device vbmeta_system{slot} AVB unreadable"))?;
     let pubkey = active_info.public_key_sha1.as_deref();
     let class = ltbox_patch::key_map::classify_pubkey(pubkey);
-    let key_spec = ltbox_patch::key_map::key_spec_for_pubkey(pubkey);
 
     // Component-wise device rollback floor (max per location across both slots).
     let vbs_idx = [
@@ -317,7 +336,6 @@ fn read_device_vbmeta(
     Ok(DeviceVbmeta {
         slot,
         class,
-        key_spec,
         boot_floor,
         vbs_floor,
     })
@@ -1096,8 +1114,8 @@ pub(crate) fn flash_worker(
                 return Err(e);
             }
         };
-        match dev.class {
-            ltbox_patch::key_map::KeyClass::Unknown => {
+        match fixed_firmware_device_policy(dev.class) {
+            FixedFirmwareDevicePolicy::AbortUnknown => {
                 if edl_start {
                     let _ = session.reset_to_edl(&mut log);
                 } else {
@@ -1105,7 +1123,7 @@ pub(crate) fn flash_worker(
                 }
                 return Err(ltbox_core::i18n::tr("err_flash_device_key_unknown"));
             }
-            ltbox_patch::key_map::KeyClass::Fixed => {
+            FixedFirmwareDevicePolicy::KeepFixed => {
                 // Fixed device + fixed firmware: the bootloader enforces region
                 // + rollback, so only a same-region, non-downgrade install can
                 // proceed (no re-sign, flash as-is).
@@ -1132,22 +1150,13 @@ pub(crate) fn flash_worker(
                 );
                 rb_mode = ltbox_patch::rollback::RollbackMode::Off;
             }
-            ltbox_patch::key_map::KeyClass::Testkey => {
-                // The re-sign path supports only the 4096 testkey; a device on a
-                // different testkey (e.g. 2048) would reject a 4096-re-signed
-                // chain, so abort rather than risk a brick.
-                if dev.key_spec != Some("testkey_rsa4096") {
-                    if edl_start {
-                        let _ = session.reset_to_edl(&mut log);
-                    } else {
-                        let _ = session.reset(&mut log);
-                    }
-                    return Err(ltbox_core::i18n::tr("err_flash_device_testkey_unsupported"));
-                }
+            FixedFirmwareDevicePolicy::ResignTestkey => {
                 // Testkey device + fixed firmware: re-sign the install to the
-                // testkey root the device trusts, and preserve the device's own
-                // abl — the firmware's abl would re-root the chain to the fixed
-                // key and reject the re-signed images.
+                // RSA-4096 testkey root and preserve the device's own abl. The
+                // vbmeta_system signer may itself be RSA-2048; it still indicates
+                // a testkey-class device whose root vbmeta trusts this re-sign.
+                // The firmware's abl would re-root the chain to the fixed key and
+                // reject the re-signed images.
                 ltbox_core::live!(
                     log,
                     "[AVB] {}",
@@ -2120,7 +2129,10 @@ pub(crate) fn simple_flash_worker(
 
 #[cfg(test)]
 mod tests {
-    use super::should_reboot_fastboot_to_system_after_pre_edl_abort;
+    use super::{
+        FixedFirmwareDevicePolicy, fixed_firmware_device_policy,
+        should_reboot_fastboot_to_system_after_pre_edl_abort,
+    };
 
     #[test]
     fn pre_edl_abort_reboots_when_flash_flow_entered_fastboot() {
@@ -2150,5 +2162,32 @@ mod tests {
         assert_eq!(rollback_floors([None, None], [Some(5), Some(6)]), None);
         assert_eq!(rollback_floors([Some(5), Some(6)], [None, None]), None);
         assert_eq!(rollback_floors([None, None], [None, None]), None);
+    }
+
+    #[test]
+    fn fixed_firmware_resigns_for_device_with_rsa2048_vbmeta_system() {
+        let rsa2048 =
+            ltbox_patch::key_map::classify_pubkey(Some("cdbb77177f731920bbe0a0f94f84d9038ae0617d"));
+        let rsa4096 =
+            ltbox_patch::key_map::classify_pubkey(Some("2597c218aae470a130f61162feaae70afd97f011"));
+        let key2 =
+            ltbox_patch::key_map::classify_pubkey(Some("8fcb864f11f53ed11284615fb67685522085d3a2"));
+
+        assert_eq!(
+            fixed_firmware_device_policy(rsa2048),
+            FixedFirmwareDevicePolicy::ResignTestkey
+        );
+        assert_eq!(
+            fixed_firmware_device_policy(rsa4096),
+            FixedFirmwareDevicePolicy::ResignTestkey
+        );
+        assert_eq!(
+            fixed_firmware_device_policy(key2),
+            FixedFirmwareDevicePolicy::KeepFixed
+        );
+        assert_eq!(
+            fixed_firmware_device_policy(ltbox_patch::key_map::KeyClass::Unknown),
+            FixedFirmwareDevicePolicy::AbortUnknown
+        );
     }
 }
