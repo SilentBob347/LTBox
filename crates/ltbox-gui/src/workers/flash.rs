@@ -1767,6 +1767,8 @@ pub(crate) fn flash_worker(
     live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
     session.reset_tolerant(&mut log);
     live!(log, "[Flash] {}", ll.flash_completed);
+    // Flash succeeded — drop the `work_*` scratch (a mid-flow abort keeps it).
+    ltbox_core::app_paths::clean_work_dirs();
     Ok(log)
 }
 
@@ -2076,6 +2078,7 @@ pub(crate) fn change_country_worker(
         "[Country] {}",
         ltbox_core::i18n::tr("live_country_change_done")
     );
+    ltbox_core::app_paths::clean_work_dirs();
     Ok(log)
 }
 
@@ -2207,6 +2210,7 @@ pub(crate) fn simple_flash_worker(
         "[SimpleFlash] {}",
         ltbox_core::i18n::tr("live_flash_completed")
     );
+    ltbox_core::app_paths::clean_work_dirs();
     Ok(log)
 }
 

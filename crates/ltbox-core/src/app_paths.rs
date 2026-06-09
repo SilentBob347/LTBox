@@ -101,6 +101,26 @@ pub fn work_dir_for(slug: &str) -> PathBuf {
     }
 }
 
+/// Remove every exec-time scratch directory created by [`work_dir_for`].
+/// Call on a *successful* operation so the `work_*` scratch (firmware flash,
+/// country change, ARB overlays, …) does not accumulate; a mid-flow abort
+/// deliberately leaves it behind for inspection. Best-effort — errors ignored.
+pub fn clean_work_dirs() {
+    if cfg!(windows) {
+        // `work_*` siblings of the exe; leave `output_*` / backups alone.
+        let Ok(entries) = std::fs::read_dir(auto_output_root()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("work_") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(auto_output_root().join("work"));
+    }
+}
+
 /// Path to LTBox's owned ADB RSA private key. Persisted so the user
 /// only has to tap "Allow USB debugging?" once per device — `adb_client`'s
 /// `usb` backend mints a fresh in-memory key whenever the key file is
