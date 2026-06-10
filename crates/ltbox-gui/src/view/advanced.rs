@@ -112,6 +112,15 @@ impl App {
             let needs_system =
                 is_start && matches!(self.adv_wizard.action, Some(AdvAction::PatchDevinfo));
             let system_ok = self.connection == ConnectionStatus::Adb;
+            // Change Country's picked loader must still fit the connected model at
+            // Start (the device may have been swapped after the loader was picked).
+            let loader_ok = !needs_system
+                || self
+                    .adv_wizard
+                    .file_path
+                    .as_deref()
+                    .map(|p| self.loader_fits_model(std::path::Path::new(p)))
+                    .unwrap_or(true);
             let can = (if detect_arb_step0 {
                 if self.device_model.eq_ignore_ascii_case("TB320FC") {
                     self.adv_wizard.file_path.is_some()
@@ -122,40 +131,25 @@ impl App {
                 self.adv_wizard.can_next()
             }) && !self.busy
                 && (!is_start || !needs_device || self.device_reachable())
-                && (!needs_system || system_ok);
-            let nav = wizard_nav_generic(
+                && (!needs_system || system_ok)
+                && loader_ok;
+            // Explain a Start disabled by the ADB / loader-fit gate on hover.
+            let hint: Option<String> = if needs_system && !system_ok {
+                Some(self.t("adv_country_needs_system").to_string())
+            } else if needs_system && !loader_ok {
+                Some(self.t("loader_model_mismatch_tooltip").to_string())
+            } else {
+                None
+            };
+            wizard_nav_generic_with_disabled_next_tooltip(
                 true,
                 &label,
                 can,
+                hint,
                 self.t("btn_back"),
                 Message::Adv(AdvMsg::AdvWizBack),
                 Message::Adv(AdvMsg::AdvWizNext),
-            );
-            // Start blocked only because the device isn't on ADB → explain on hover.
-            if needs_system && !system_ok {
-                iced::widget::tooltip(
-                    nav,
-                    container(text(self.t("adv_country_needs_system").to_string()).size(12))
-                        .padding([6, 10])
-                        .style(|t: &Theme| {
-                            let p = pal_of(t);
-                            container::Style {
-                                background: Some(p.surface_container_high.into()),
-                                text_color: Some(p.on_surface),
-                                border: iced::Border {
-                                    color: p.outline_variant,
-                                    width: 1.0,
-                                    radius: 8.0.into(),
-                                },
-                                ..Default::default()
-                            }
-                        }),
-                    iced::widget::tooltip::Position::Top,
-                )
-                .into()
-            } else {
-                nav
-            }
+            )
         };
 
         column![step_bar, body, nav]

@@ -27,10 +27,20 @@ impl App {
                 _ => self.t("btn_next").to_string(),
             };
             let is_start = self.flash_parts.step == 2 || self.flash_parts.step == 0;
+            // Confirm step: the picked loader must still fit the connected model
+            // (the device may have been swapped after the GPT scan).
+            let loader_ok = self.flash_parts.step != 2
+                || self
+                    .flash_parts
+                    .loader_path
+                    .as_deref()
+                    .map(|p| self.loader_fits_model(std::path::Path::new(p)))
+                    .unwrap_or(true);
             let can = self.flash_parts.can_next()
                 && !(self.busy && is_start)
-                && (!is_start || self.device_reachable());
-            wizard_nav_generic(
+                && (!is_start || self.device_reachable())
+                && loader_ok;
+            let nav = wizard_nav_generic(
                 true,
                 &label,
                 can,
@@ -41,7 +51,12 @@ impl App {
                     Message::FlashParts(FlashPartsMsg::FlashPartsBack)
                 },
                 Message::FlashParts(FlashPartsMsg::FlashPartsNext),
-            )
+            );
+            if self.flash_parts.step == 2 && !loader_ok {
+                disabled_reason_tooltip(nav, self.t("loader_model_mismatch_tooltip").to_string())
+            } else {
+                nav
+            }
         } else {
             container(text("")).into()
         };
@@ -667,10 +682,20 @@ impl App {
                 _ => self.t("btn_next").to_string(),
             };
             let is_start = self.flash_phys.step == 2;
+            // Confirm step: the picked loader must still fit the connected model
+            // (the device may have been swapped after picking it).
+            let loader_ok = self.flash_phys.step != 2
+                || self
+                    .flash_phys
+                    .loader_path
+                    .as_deref()
+                    .map(|p| self.loader_fits_model(std::path::Path::new(p)))
+                    .unwrap_or(true);
             let can = self.flash_phys.can_next()
                 && !(self.busy && is_start)
-                && (!is_start || self.device_reachable());
-            wizard_nav_generic(
+                && (!is_start || self.device_reachable())
+                && loader_ok;
+            let nav = wizard_nav_generic(
                 true,
                 &label,
                 can,
@@ -681,7 +706,12 @@ impl App {
                     Message::FlashPhys(FlashPhysMsg::FlashPhysBack)
                 },
                 Message::FlashPhys(FlashPhysMsg::FlashPhysNext),
-            )
+            );
+            if self.flash_phys.step == 2 && !loader_ok {
+                disabled_reason_tooltip(nav, self.t("loader_model_mismatch_tooltip").to_string())
+            } else {
+                nav
+            }
         } else {
             container(text("")).into()
         };

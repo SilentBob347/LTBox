@@ -3387,13 +3387,14 @@ impl App {
         self.log_dirty = false;
     }
 
-    /// Picker shortcut: routes through `default_loader_path` if set,
-    /// else opens `loader_file_spec`. Dedupe across `*SelectLoader` handlers.
+    /// Picker shortcut: routes through the resolved Settings default loader when
+    /// it exists and fits the connected model, else opens `loader_file_spec`.
+    /// Dedupe across `*SelectLoader` handlers.
     fn pick_loader_with_default<F>(&mut self, on_chosen: F) -> Task<Message>
     where
         F: 'static + Send + Fn(Option<String>) -> Message,
     {
-        if let Some(path) = self.default_loader_path.clone() {
+        if let Some(path) = self.resolved_default_loader() {
             return self.update(on_chosen(Some(path)));
         }
         pickers::pick_file_for(
@@ -3429,7 +3430,10 @@ impl App {
     /// step with a missing file and surfacing the error later).
     fn resolved_default_loader(&self) -> Option<String> {
         let p = self.default_loader_path.as_deref()?;
-        if std::path::Path::new(p).is_file() {
+        // Bypass the default when its extension doesn't fit the connected model
+        // (TB323FU needs the .xml/.x manifest, others a .melf) so the wizard shows
+        // its loader picker instead of auto-advancing with the wrong loader.
+        if std::path::Path::new(p).is_file() && self.loader_fits_model(std::path::Path::new(p)) {
             Some(p.to_string())
         } else {
             None
@@ -3448,6 +3452,21 @@ impl App {
     /// loader step as before.
     fn apply_default_loader_to_advanced_wizard(&mut self) -> Task<Message> {
         let Some(path) = self.resolved_default_loader() else {
+            // Default set but its extension doesn't fit the connected model
+            // (resolved to None): surface the open wizard's loader picker with a
+            // notice so it doesn't look like a bug. `loader_step_card` renders it.
+            if self.default_loader_path.is_some() && !self.default_loader_fits_model() {
+                let notice = ltbox_core::i18n::tr("loader_default_ext_unsupported");
+                if self.advanced_wizard_open.is_flash_parts() {
+                    self.flash_parts.scan_error = Some(notice);
+                } else if self.advanced_wizard_open.is_dump_parts() {
+                    self.dump_parts.scan_error = Some(notice);
+                } else if self.advanced_wizard_open.is_dump_phys() {
+                    self.dump_phys.loader_error = Some(notice);
+                } else if self.advanced_wizard_open.is_flash_phys() {
+                    self.flash_phys.loader_error = Some(notice);
+                }
+            }
             return Task::none();
         };
         if self.advanced_wizard_open.is_flash_parts() {
@@ -3699,6 +3718,25 @@ impl App {
     /// failing mid-Sahara.
     fn is_tb323fu(&self) -> bool {
         self.device_class() == DeviceClass::TB323FU
+    }
+
+    /// True when `path`'s extension is the EDL loader form the connected device
+    /// needs: TB323FU (Y700 Gen 5) loads the multi-image Sahara manifest
+    /// (`.xml` / `.x`); every other model loads a `.melf` single-blob programmer.
+    /// Inspects only the picked file's own extension, never the `.mbn` / `.elf`
+    /// images a manifest references internally.
+    fn loader_fits_model(&self, path: &std::path::Path) -> bool {
+        loader_ext_fits_model(self.is_tb323fu(), path)
+    }
+
+    /// True when the Settings default EDL loader is unset, or its extension fits
+    /// the connected model (see [`Self::loader_fits_model`]). When false the
+    /// default is bypassed so the wizard's loader picker is shown instead.
+    fn default_loader_fits_model(&self) -> bool {
+        match self.default_loader_path.as_deref() {
+            None => true,
+            Some(p) => self.loader_fits_model(std::path::Path::new(p)),
+        }
     }
 
     /// Loader-picker description, resolved live against the connected
@@ -4268,6 +4306,20 @@ fn wizard_nav_generic<'a>(
     back_msg: Message,
     next_msg: Message,
 ) -> Element<'a, Message> {
+    wizard_nav_generic_with_disabled_next_tooltip(
+        can_back, next_label, can_next, None, back_label, back_msg, next_msg,
+    )
+}
+
+fn wizard_nav_generic_with_disabled_next_tooltip<'a>(
+    can_back: bool,
+    next_label: &str,
+    can_next: bool,
+    disabled_next_hint: Option<String>,
+    back_label: &str,
+    back_msg: Message,
+    next_msg: Message,
+) -> Element<'a, Message> {
     let mut r = row![].spacing(8).padding([12, 24]);
     if can_back {
         r = r.push(
@@ -4293,11 +4345,14 @@ fn wizard_nav_generic<'a>(
     let next_btn = button(text(next_label.to_string()).size(13))
         .padding([10, 24])
         .style(md_filled_btn_style);
-    r = r.push(if can_next {
-        next_btn.on_press(next_msg)
+    let next: Element<'_, Message> = if can_next {
+        next_btn.on_press(next_msg).into()
+    } else if let Some(hint) = disabled_next_hint {
+        disabled_reason_tooltip(next_btn.into(), hint)
     } else {
-        next_btn
-    });
+        next_btn.into()
+    };
+    r = r.push(next);
     // Top-edge divider only — bottom + sides come from the window
     // outline / sidebar rule.
     column![
