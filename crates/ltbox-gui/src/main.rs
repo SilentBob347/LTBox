@@ -4768,7 +4768,10 @@ mod tests {
         let gui_src = concat!(
             include_str!("main.rs"),
             include_str!("workers/transfer.rs"),
-            include_str!("workers/flash.rs"),
+            include_str!("workers/flash/mod.rs"),
+            include_str!("workers/flash/full.rs"),
+            include_str!("workers/flash/country.rs"),
+            include_str!("workers/flash/simple.rs"),
         );
         let edl_rs = include_str!("../../ltbox-device/src/edl.rs");
 
