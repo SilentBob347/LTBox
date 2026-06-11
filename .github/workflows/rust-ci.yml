@@ -386,6 +386,11 @@ jobs:
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: cargo clippy (native macOS)
+        # Lints the cfg(target_os = "macos") paths that the Windows-targeted
+        # clippy job never sees.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
       - name: Build universal LTBox.app + tarball
         # make-app.sh builds both Mac arches (LIBUSB_STATIC=1), lipo's the
         # universal binary, assembles + ad-hoc-signs LTBox.app, and packages
@@ -480,6 +485,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: test-linux
+
+      - name: cargo clippy (native Linux)
+        # Lints the cfg(target_os = "linux") paths that the Windows-targeted
+        # clippy job never sees.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test --workspace
         run: cargo test --workspace --locked
