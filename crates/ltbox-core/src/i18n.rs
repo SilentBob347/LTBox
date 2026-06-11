@@ -1,12 +1,8 @@
-//! i18n — JSON string tables with English fallback. Mirrors v2 `i18n.py`.
+//! i18n — localized log lines for backend crates via a translator the GUI
+//! installs at startup (and re-installs on every language switch). Backends
+//! call [`tr`] without depending on the GUI's language state.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
-
-use crate::error::{LtboxError, Result};
-
-static STRINGS: OnceLock<StringTable> = OnceLock::new();
 
 type TranslatorFn = dyn Fn(&str) -> String + Send + Sync;
 
@@ -33,89 +29,35 @@ where
     }
 }
 
-/// Resolve `key` via the registered translator or the built-in table.
-/// Falls back to the key itself so calls are never destructive.
+/// Resolve `key` via the installed translator, falling back to the key
+/// itself so calls are never destructive — e.g. before the GUI installs a
+/// translator, or in a non-GUI context.
 pub fn tr(key: &str) -> String {
     if let Some(lock) = TRANSLATOR.get()
         && let Ok(guard) = lock.read()
     {
         return guard(key);
     }
-    get_string(key)
-}
-
-struct StringTable {
-    strings: HashMap<String, String>,
-    fallback: HashMap<String, String>,
-}
-
-/// Initialize i18n. `lang_dir` must contain `en.json`, `ko.json`, etc.
-pub fn load_lang(lang: &str, lang_dir: &Path) -> Result<()> {
-    let fallback = load_json(&lang_dir.join("en.json"))?;
-    let strings = if lang == "en" {
-        fallback.clone()
-    } else {
-        let path = lang_dir.join(format!("{lang}.json"));
-        if path.exists() {
-            load_json(&path)?
-        } else {
-            fallback.clone()
-        }
-    };
-
-    let _ = STRINGS.set(StringTable { strings, fallback });
-    Ok(())
-}
-
-/// Localized string. Falls back to English, then the key itself.
-pub fn get_string(key: &str) -> String {
-    match STRINGS.get() {
-        Some(table) => table
-            .strings
-            .get(key)
-            .or_else(|| table.fallback.get(key))
-            .cloned()
-            .unwrap_or_else(|| key.to_string()),
-        None => key.to_string(),
-    }
-}
-
-/// `<exe_dir>/lang` (LTBox distribution: `bin/ltbox/lang/`).
-pub fn default_lang_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("lang")
-}
-
-fn load_json(path: &Path) -> Result<HashMap<String, String>> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        LtboxError::Config(format!("Cannot read language file {}: {e}", path.display()))
-    })?;
-    let map: HashMap<String, String> = serde_json::from_str(&content)?;
-    Ok(map)
+    key.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     #[test]
-    fn get_string_returns_key_when_not_loaded() {
-        assert_eq!(get_string("nonexistent_key"), "nonexistent_key");
-    }
-
-    #[test]
-    fn load_and_get_string() {
-        let dir = tempfile::tempdir().unwrap();
-        let en = dir.path().join("en.json");
-        fs::write(&en, r#"{"hello": "world", "foo": "bar"}"#).unwrap();
-
-        // STRINGS is a global OnceLock, so just verify JSON loading.
-        let map = load_json(&en).unwrap();
-        assert_eq!(map.get("hello").unwrap(), "world");
-        assert_eq!(map.get("foo").unwrap(), "bar");
+    fn tr_routes_through_the_installed_translator() {
+        // TRANSLATOR is a process-global; this is the only test that installs
+        // one. The closure falls back to the key for anything it doesn't map,
+        // matching the no-translator behavior, so test ordering is irrelevant.
+        set_translator(|k| {
+            if k == "hello" {
+                "world".to_string()
+            } else {
+                k.to_string()
+            }
+        });
+        assert_eq!(tr("hello"), "world");
+        assert_eq!(tr("unmapped_key"), "unmapped_key");
     }
 }
