@@ -40,8 +40,10 @@ on:
       - 'LICENSE'
   workflow_dispatch:
 
+# Least privilege at the top level; only the release job needs write, and it
+# grants `contents: write` to itself.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
