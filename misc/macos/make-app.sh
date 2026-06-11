@@ -46,7 +46,7 @@ slices=()
 for t in "${TARGETS[@]}"; do
     if [ "${SKIP_BUILD:-0}" != "1" ]; then
         rustup target add "$t" >/dev/null 2>&1 || true
-        LIBUSB_STATIC=1 LZMA_API_STATIC=1 cargo build --release --target "$t" -p ltbox-gui
+        LIBUSB_STATIC=1 LZMA_API_STATIC=1 cargo build --release --locked --target "$t" -p ltbox-gui
     fi
     slice="$REPO/target/$t/release/$BIN_NAME"
     [ -x "$slice" ] || { echo "missing slice: $slice (run without SKIP_BUILD?)" >&2; exit 1; }

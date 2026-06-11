@@ -112,7 +112,7 @@ jobs:
         # APIs. Target x86_64-pc-windows-msvc through the same
         # cargo-xwin sysroot the build jobs use so clippy sees the
         # same world rustc will compile against.
-        run: cargo xwin clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+        run: cargo xwin clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
 
   build-windows:
     name: Build ${{ matrix.name }}
@@ -217,7 +217,7 @@ jobs:
           CC_aarch64_pc_windows_msvc: clang-cl
           CXX_aarch64_pc_windows_msvc: clang-cl
           AR_aarch64_pc_windows_msvc: llvm-lib
-        run: cargo xwin build --release --target ${{ matrix.target }} -p ltbox-gui
+        run: cargo xwin build --release --locked --target ${{ matrix.target }} -p ltbox-gui
 
       - name: Stage artifact
         id: stage
@@ -312,7 +312,7 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: cargo build --release
-        run: cargo build --release --target ${{ matrix.target }} -p ltbox-gui
+        run: cargo build --release --locked --target ${{ matrix.target }} -p ltbox-gui
 
       - name: Stage artifact
         id: stage
@@ -443,7 +443,7 @@ jobs:
           key: test-windows
 
       - name: cargo test --workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   test-linux:
     # Linux native test gate — distinct from the Windows test job
@@ -482,7 +482,7 @@ jobs:
           key: test-linux
 
       - name: cargo test --workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   release:
     name: Draft GitHub Release
