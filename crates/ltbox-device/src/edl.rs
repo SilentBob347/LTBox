@@ -1234,6 +1234,7 @@ impl EdlSession {
             return Ok(());
         }
 
+        require_destructive_coords(node, &ctx)?;
         let lun: u8 = parse_xml_attr(node, "physical_partition_number", 0u8, &ctx)?;
         let slot: u8 = parse_xml_attr(node, "slot", 0u8, &ctx)?;
         let start_sector = node.attribute("start_sector").unwrap_or("0");
@@ -1320,6 +1321,7 @@ impl EdlSession {
         if num_sectors == 0 {
             return Ok(());
         }
+        require_destructive_coords(node, ctx)?;
         let lun: u8 = parse_xml_attr(node, "physical_partition_number", 0u8, ctx)?;
         let start_sector = node.attribute("start_sector").unwrap_or("0");
 
@@ -1352,6 +1354,7 @@ impl EdlSession {
                 continue;
             }
             let ctx = "<patch>";
+            require_destructive_coords(&node, ctx)?;
             let byte_off: u64 = parse_xml_attr(&node, "byte_offset", 0u64, ctx)?;
             let lun: u8 = parse_xml_attr(&node, "physical_partition_number", 0u8, ctx)?;
             let slot: u8 = parse_xml_attr(&node, "slot", 0u8, ctx)?;
@@ -1411,6 +1414,23 @@ where
             .parse::<T>()
             .map_err(|e| EdlError::Session(format!("{context}: invalid {attr}='{raw}': {e}"))),
     }
+}
+
+/// Refuse a destructive node (`<program>`, `<erase>`, or a DISK `<patch>`)
+/// that omits its target coordinates. Unlike `slot` / `file_sector_offset`,
+/// `physical_partition_number` and `start_sector` are not optional here:
+/// silently defaulting either to 0 would steer the write at LUN 0 / sector 0
+/// — the primary GPT. Presence-only, since a `start_sector` may be a formula
+/// string (e.g. `NUM_DISK_SECTORS-33.`) rather than a parseable integer.
+fn require_destructive_coords(node: &roxmltree::Node<'_, '_>, context: &str) -> Result<()> {
+    for attr in ["physical_partition_number", "start_sector"] {
+        if node.attribute(attr).is_none() {
+            return Err(EdlError::Session(format!(
+                "{context}: missing required {attr} on a destructive node"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1610,6 +1630,33 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn first_node<'a>(doc: &'a roxmltree::Document<'a>, tag: &str) -> roxmltree::Node<'a, 'a> {
+        doc.descendants().find(|n| n.has_tag_name(tag)).unwrap()
+    }
+
+    #[test]
+    fn require_destructive_coords_demands_lun_and_start_sector() {
+        // Both present (start_sector may be a formula string) → accepted.
+        let ok = roxmltree::Document::parse(
+            r#"<data><program physical_partition_number="0" start_sector="NUM_DISK_SECTORS-33."/></data>"#,
+        )
+        .unwrap();
+        assert!(require_destructive_coords(&first_node(&ok, "program"), "<program>").is_ok());
+
+        // Missing start_sector → rejected (would default to sector 0 = GPT).
+        let no_start =
+            roxmltree::Document::parse(r#"<data><program physical_partition_number="2"/></data>"#)
+                .unwrap();
+        assert!(
+            require_destructive_coords(&first_node(&no_start, "program"), "<program>").is_err()
+        );
+
+        // Missing physical_partition_number → rejected (would default to LUN 0).
+        let no_lun =
+            roxmltree::Document::parse(r#"<data><erase start_sector="34"/></data>"#).unwrap();
+        assert!(require_destructive_coords(&first_node(&no_lun, "erase"), "<erase>").is_err());
+    }
 
     #[test]
     fn partition_span_sectors_counts_inclusive_and_rejects_inverted() {
