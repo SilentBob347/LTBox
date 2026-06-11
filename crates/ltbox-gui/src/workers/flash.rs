@@ -383,6 +383,58 @@ fn restore_abl_best_effort(
     }
 }
 
+/// Decrypt every shipped rawprogram `.x` in `fw_dir` in place, writing each to
+/// a sibling `<stem>.xml` so the catalog scan can resolve image paths. The
+/// encrypted Sahara manifest (`qsahara_device_programmer.x`) is a loader, not a
+/// flash image, so it is left for `EdlSession::open` to decrypt at load time.
+/// Logs the decrypted count and returns it. Unpacks the firmware as shipped —
+/// not a content modification.
+fn decrypt_rawprogram_x_files(
+    fw_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<usize, String> {
+    let x_entries: Vec<std::path::PathBuf> = std::fs::read_dir(fw_dir)
+        .map_err(|e| {
+            tr_args!(
+                "err_read_dir_failed",
+                path = fw_dir.display().to_string(),
+                error = e.to_string()
+            )
+        })?
+        .filter_map(|r| r.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("x"))
+                    .unwrap_or(false)
+                && !ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
+        })
+        .collect();
+    if x_entries.is_empty() {
+        return Ok(0);
+    }
+    let mut decrypted = 0usize;
+    for src in &x_entries {
+        let stem = src.file_stem().unwrap_or_default();
+        let output = fw_dir.join(stem).with_extension("xml");
+        ltbox_core::crypto::decrypt_file(src, &output).map_err(|e| {
+            tr_args!(
+                "err_decrypt_file_failed",
+                path = src.display().to_string(),
+                error = e.to_string()
+            )
+        })?;
+        decrypted += 1;
+    }
+    live!(
+        log,
+        "[XML] {}",
+        tr_args!("live_xml_decrypt_done", count = decrypted.to_string())
+    );
+    Ok(decrypted)
+}
+
 pub(crate) fn flash_worker(
     cfg: WorkflowConfig,
     conn: ConnectionStatus,
@@ -952,47 +1004,10 @@ pub(crate) fn flash_worker(
 
     // 6. XML
     //
-    // Decrypt every `.x` in place — output sits next
-    // to its source as `<stem>.xml` so the catalog
-    // scan below picks it up and the EDL flash can
-    // still resolve image paths via `xml_dir.join`.
+    // Decrypt every shipped `.x` rawprogram in place so the catalog scan
+    // below picks up the `<stem>.xml` output (see decrypt_rawprogram_x_files).
     if x_count > 0 {
-        let x_entries: Vec<std::path::PathBuf> = std::fs::read_dir(fw_dir)
-            .map_err(|e| {
-                tr_args!(
-                    "err_read_dir_failed",
-                    path = fw_dir.display().to_string(),
-                    error = e.to_string()
-                )
-            })?
-            .filter_map(|r| r.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.is_file()
-                    && p.extension()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.eq_ignore_ascii_case("x"))
-                        .unwrap_or(false)
-                    && !ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
-            })
-            .collect();
-        let mut decrypted = 0usize;
-        for src in &x_entries {
-            let stem = src.file_stem().unwrap_or_default();
-            let output = fw_dir.join(stem).with_extension("xml");
-            ltbox_core::crypto::decrypt_file(src, &output).map_err(|e| {
-                tr_args!(
-                    "err_decrypt_file_failed",
-                    path = src.display().to_string(),
-                    error = e.to_string()
-                )
-            })?;
-            decrypted += 1;
-        }
-        ltbox_core::live!(
-            log,
-            "[XML] {}",
-            tr_args!("live_xml_decrypt_done", count = decrypted.to_string())
-        );
+        decrypt_rawprogram_x_files(fw_dir, &mut log)?;
     }
     if !cfg.wipe && xml_count > 0 {
         ltbox_core::live!(
@@ -2141,44 +2156,7 @@ pub(crate) fn simple_flash_worker(
     //    (`qsahara_device_programmer.x`) is a loader, not a flash image, so it
     //    is left for `EdlSession::open` to decrypt at load time. This unpacks
     //    the firmware as shipped — it is not a content modification.
-    let x_entries: Vec<std::path::PathBuf> = std::fs::read_dir(fw_dir)
-        .map_err(|e| {
-            tr_args!(
-                "err_read_dir_failed",
-                path = fw_dir.display().to_string(),
-                error = e.to_string()
-            )
-        })?
-        .filter_map(|r| r.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.eq_ignore_ascii_case("x"))
-                    .unwrap_or(false)
-                && !ltbox_core::sahara_xml::is_encrypted_manifest_filename(p)
-        })
-        .collect();
-    if !x_entries.is_empty() {
-        let mut decrypted = 0usize;
-        for src in &x_entries {
-            let stem = src.file_stem().unwrap_or_default();
-            let output = fw_dir.join(stem).with_extension("xml");
-            ltbox_core::crypto::decrypt_file(src, &output).map_err(|e| {
-                tr_args!(
-                    "err_decrypt_file_failed",
-                    path = src.display().to_string(),
-                    error = e.to_string()
-                )
-            })?;
-            decrypted += 1;
-        }
-        live!(
-            log,
-            "[XML] {}",
-            tr_args!("live_xml_decrypt_done", count = decrypted.to_string())
-        );
-    }
+    decrypt_rawprogram_x_files(fw_dir, &mut log)?;
 
     // 3. Locate the EDL loader inside the firmware folder (or its parent).
     //    A missing loader is a hard error — nothing can be flashed, so the run
