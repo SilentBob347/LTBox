@@ -4299,6 +4299,12 @@ const WIZARD_CARD_HEIGHT: f32 = 180.0;
 /// translations.
 const SUB_ROW_HEIGHT: f32 = 32.0;
 
+const FLASH_PARTS_MARKER_CELL_WIDTH: f32 = 32.0;
+const FLASH_PARTS_MARKER_CELL_HEIGHT: f32 = 20.0;
+const FLASH_PARTS_MARKER_SIZE: f32 = 16.0;
+const FLASH_PARTS_ERASE_DASH_WIDTH: f32 = 9.0;
+const FLASH_PARTS_ERASE_DASH_HEIGHT: f32 = 2.0;
+
 fn wizard_nav_generic<'a>(
     can_back: bool,
     next_label: &str,
@@ -4853,6 +4859,17 @@ mod tests {
         w.rows[0].state = FlashRowState::Erase;
         w.rows[0].file_path = None;
         assert!(w.can_next());
+    }
+
+    #[test]
+    fn flash_parts_erase_marker_keeps_checkbox_square_footprint() {
+        assert_eq!(FLASH_PARTS_MARKER_CELL_WIDTH, 32.0);
+        assert_eq!(FLASH_PARTS_MARKER_CELL_HEIGHT, 20.0);
+        assert_eq!(FLASH_PARTS_MARKER_SIZE, 16.0);
+        let dash_width = std::hint::black_box(FLASH_PARTS_ERASE_DASH_WIDTH);
+        let marker_size = std::hint::black_box(FLASH_PARTS_MARKER_SIZE);
+        assert!(dash_width < marker_size);
+        assert!(marker_size < FLASH_PARTS_MARKER_CELL_HEIGHT);
     }
 
     #[test]

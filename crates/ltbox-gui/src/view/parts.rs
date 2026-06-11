@@ -1,8 +1,45 @@
 //! Partition + physical-storage dump/flash wizard views + steps. Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, button, column, container, row, scrollable, text};
+use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
+
+fn m3_erase_marker() -> Element<'static, Message> {
+    let dash = container(Space::new())
+        .width(Length::Fixed(FLASH_PARTS_ERASE_DASH_WIDTH))
+        .height(Length::Fixed(FLASH_PARTS_ERASE_DASH_HEIGHT))
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.on_error.into()),
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
+    container(dash)
+        .width(Length::Fixed(FLASH_PARTS_MARKER_SIZE))
+        .height(Length::Fixed(FLASH_PARTS_MARKER_SIZE))
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.error.into()),
+                border: iced::Border {
+                    color: p.error,
+                    width: 2.0,
+                    radius: theme::shape::XS.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
 impl App {
     pub(crate) fn view_flash_parts_wizard(&self) -> Element<'_, Message> {
         if self.log_popup_open && self.flash_parts.step >= 3 {
@@ -184,7 +221,7 @@ impl App {
         let desc = self.flash_parts.sort_desc;
         let mk_msg = |c: PartsSortColumn| Message::FlashParts(FlashPartsMsg::FlashPartsSortBy(c));
         let header = row![
-            text(" ").size(11).width(32), // checkbox col
+            text(" ").size(11).width(FLASH_PARTS_MARKER_CELL_WIDTH), // checkbox col
             parts_sort_header(
                 self.t("flash_parts_col_lun").to_string(),
                 active == PartsSortColumn::Lun,
@@ -230,28 +267,25 @@ impl App {
             // Fixed-width tri-state marker: skip, flash, or erase.
             let marker: Element<'_, Message> = match r.state {
                 FlashRowState::Unchecked => iced::widget::checkbox(false)
+                    .size(FLASH_PARTS_MARKER_SIZE)
                     .on_toggle(move |_| {
                         Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
                     })
                     .style(m3_checkbox_style)
                     .into(),
                 FlashRowState::Flash => iced::widget::checkbox(true)
+                    .size(FLASH_PARTS_MARKER_SIZE)
                     .on_toggle(move |_| {
                         Message::FlashParts(FlashPartsMsg::FlashPartsToggleRow(idx))
                     })
                     .style(m3_checkbox_style)
                     .into(),
-                FlashRowState::Erase => text("⛔")
-                    .size(18)
-                    .style(|t: &Theme| iced::widget::text::Style {
-                        color: Some(pal_of(t).error),
-                    })
-                    .into(),
+                FlashRowState::Erase => m3_erase_marker(),
             };
             let marker_btn = button(
                 container(marker)
-                    .width(32)
-                    .height(20)
+                    .width(FLASH_PARTS_MARKER_CELL_WIDTH)
+                    .height(FLASH_PARTS_MARKER_CELL_HEIGHT)
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
             )
@@ -275,7 +309,7 @@ impl App {
                 .unwrap_or_default();
 
             let data_row = iced::widget::row![
-                container(marker_btn).width(32),
+                container(marker_btn).width(FLASH_PARTS_MARKER_CELL_WIDTH),
                 text(r.lun.to_string()).size(12).width(50),
                 text(r.label.clone()).size(12).width(Length::FillPortion(3)),
                 text(r.start_sector.to_string())
