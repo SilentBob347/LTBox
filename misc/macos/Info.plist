@@ -31,6 +31,6 @@
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Licensed under CC BY-NC-SA 4.0</string>
+    <string>Licensed under GPL-3.0-or-later</string>
 </dict>
 </plist>

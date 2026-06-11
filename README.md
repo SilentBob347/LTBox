@@ -2,7 +2,7 @@
 
 [🇰🇷 한국어](READMEs/README_ko-KR.md) / [🇨🇳 简体中文](READMEs/README_zh-CN.md)
 
-[![License: CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+[![License: GPLv3][gpl-shield]][gpl]
 [![Rust][rust-shield]][rust]
 [![Build][ci-shield]][ci]
 [![Latest release][release-shield]][releases]
@@ -86,13 +86,13 @@ LTBox is a sidebar-driven desktop GUI; each entry opens a guided wizard.
 
 ## 📄 License
 
-This work is licensed under [CC BY-NC-SA 4.0][cc-by-nc-sa].
+This work is licensed under [GPL-3.0-or-later][gpl].
 
-[![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
+[![GPLv3][gpl-image]][gpl]
 
-[cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
-[cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
-[cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+[gpl]: https://www.gnu.org/licenses/gpl-3.0
+[gpl-image]: https://www.gnu.org/graphics/gplv3-127x51.png
+[gpl-shield]: https://img.shields.io/badge/License-GPLv3-blue.svg
 [rust]: https://www.rust-lang.org
 [rust-shield]: https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white
 [ci]: https://github.com/miner7222/LTBox/actions/workflows/rust-ci.yml

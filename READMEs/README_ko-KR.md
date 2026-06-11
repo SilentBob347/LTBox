@@ -2,7 +2,7 @@
 
 [🇺🇸 English](../README.md) / [🇨🇳 简体中文](README_zh-CN.md)
 
-[![License: CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+[![License: GPLv3][gpl-shield]][gpl]
 [![Rust][rust-shield]][rust]
 [![빌드][ci-shield]][ci]
 [![최신 릴리스][release-shield]][releases]
@@ -86,13 +86,13 @@ LTBox는 사이드바 중심의 데스크톱 GUI입니다. 각 항목을 열면 
 
 ## 📄 라이선스
 
-이 저작물은 [CC BY-NC-SA 4.0][cc-by-nc-sa] 라이선스를 따릅니다.
+이 저작물은 [GPL-3.0-or-later][gpl] 라이선스를 따릅니다.
 
-[![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
+[![GPLv3][gpl-image]][gpl]
 
-[cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
-[cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
-[cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+[gpl]: https://www.gnu.org/licenses/gpl-3.0
+[gpl-image]: https://www.gnu.org/graphics/gplv3-127x51.png
+[gpl-shield]: https://img.shields.io/badge/License-GPLv3-blue.svg
 [rust]: https://www.rust-lang.org
 [rust-shield]: https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white
 [ci]: https://github.com/miner7222/LTBox/actions/workflows/rust-ci.yml

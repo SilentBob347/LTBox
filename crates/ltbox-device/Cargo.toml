@@ -2,6 +2,7 @@
 name = "ltbox-device"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ltbox-core = { path = "../ltbox-core" }
