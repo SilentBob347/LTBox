@@ -1668,11 +1668,12 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// 2. Read `stored_rollback_index:N` vars. Any entry whose value is
 ///    not 0 / 1 makes the device anti-rollback; the report lists each
 ///    surviving entry as `stored_rollback_index:N = TS (UTC)`.
-/// 3. If no `stored_rollback_index` was reported AND the model is
-///    `TB320FC`, fall back to dumping `boot_a` + `vbmeta_system_a`
-///    over EDL using the user-picked Firehose loader and report
-///    their AVB rollback indices the same way.
-/// 4. Otherwise (no stored_rollback_index, not TB320FC) the device
+/// 3. If no `stored_rollback_index` was reported AND the model
+///    enforces rollback protection (every supported model except
+///    `TB322FC`), fall back to dumping the active-slot `boot` +
+///    `vbmeta_system` over EDL using the user-picked Firehose loader
+///    and report their AVB rollback indices the same way.
+/// 4. Otherwise (no stored_rollback_index, or `TB322FC`) the device
 ///    is not anti-rollback.
 /// 5. Always reboot to system at the end so the user can keep using
 ///    the device.
