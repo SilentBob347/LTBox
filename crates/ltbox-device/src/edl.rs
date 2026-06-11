@@ -1326,12 +1326,10 @@ impl EdlSession {
         ltbox_core::live!(
             log,
             "[EDL] {}",
-            tr("log_edl_erase_lun_cmd").replace(
-                "{lun}",
-                &lun.to_string()
-                    .replace("{start}", start_sector)
-                    .replace("{sectors}", &num_sectors.to_string())
-            )
+            tr("log_edl_erase_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{start}", start_sector)
+                .replace("{sectors}", &num_sectors.to_string())
         );
         send_firehose_erase(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase failed: {e}")))?;
