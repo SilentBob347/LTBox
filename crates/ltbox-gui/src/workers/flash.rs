@@ -553,6 +553,27 @@ pub(crate) fn flash_worker(
             status = if has_boot { &found } else { &not_found },
         )
     );
+    // No rawprogram pack (.x encrypted or .xml) anywhere in the folder → almost
+    // certainly the wrong folder, not a firmware image set. Say so clearly so the
+    // later AVB key abort isn't mistaken for a firmware-key problem.
+    let has_rawprogram_pack = std::fs::read_dir(fw_dir)
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.eq_ignore_ascii_case("x") || x.eq_ignore_ascii_case("xml"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if !has_rawprogram_pack {
+        ltbox_core::live!(
+            log,
+            "[Flash] {}",
+            ltbox_core::i18n::tr("live_flash_no_rawprogram_pack")
+        );
+    }
 
     // Cross-check the firmware against the probed model before EDL via
     // vbmeta_system's build fingerprint (the unified identity source), and retain
