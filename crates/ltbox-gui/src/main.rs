@@ -193,8 +193,8 @@ fn install_udev_rules() -> ! {
 }
 
 /// `ltbox --install-desktop` entry point. Linux only. Per-user install
-/// under `$XDG_DATA_HOME` (default `~/.local/share`); refreshes desktop
-/// + icon caches. The `__LTBOX_EXEC__` placeholder in the bundled
+/// under `$XDG_DATA_HOME` (default `~/.local/share`); refreshes the
+/// desktop and icon caches. The `__LTBOX_EXEC__` placeholder in the bundled
 /// `.desktop` is substituted with `current_exe()` at install time so a
 /// tarball-extracted binary works without being on PATH.
 #[cfg(target_os = "linux")]
