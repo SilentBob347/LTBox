@@ -142,6 +142,14 @@ jobs:
         with:
           tool: cargo-deny
 
+      - name: Cache cargo-deny advisory DB
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/advisory-dbs
+          key: cargo-deny-advisory-db-${{ runner.os }}-v1
+          restore-keys: |
+            cargo-deny-advisory-db-${{ runner.os }}-
+
       - name: cargo deny check
         # Advisories (RUSTSEC), license policy, banned crates, and dependency
         # sources — config in deny.toml at the repo root.
