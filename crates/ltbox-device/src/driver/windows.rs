@@ -31,6 +31,10 @@ struct GithubRelease {
     assets: Vec<GithubAsset>,
     #[serde(default)]
     draft: bool,
+    /// ISO-8601 publish time, used to pick the newest matching release
+    /// deterministically instead of trusting the order GitHub lists them in.
+    #[serde(default)]
+    published_at: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -114,8 +118,9 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
     false
 }
 
-/// Fetch the latest non-draft Windows release that ships the host-arch
-/// installer, returning `(tag_name, asset_download_url)`. Shared by the
+/// Fetch the latest Windows release that ships the host-arch installer,
+/// pre-releases included (only drafts are skipped), returning
+/// `(tag_name, asset_download_url)`. Shared by the
 /// installer and the update check so both resolve to the same release.
 fn fetch_latest_win_release() -> Result<(String, String)> {
     let meta_agent = ltbox_core::downloader::build_agent();
@@ -128,16 +133,23 @@ fn fetch_latest_win_release() -> Result<(String, String)> {
         .map_err(|e| DriverError::Parse(e.to_string()))?;
 
     let asset_name = arch_installer_asset();
-    let release = releases
+    // Pre-releases are intentionally INCLUDED — only drafts are skipped. The
+    // upstream repo currently ships its Windows driver solely as a pre-release
+    // (`release-win-v1.0.2.0`), and a newer pre-release should win over an
+    // older stable release. Select the newest match by publish time rather
+    // than relying on the order GitHub returns the list in.
+    let mut matching: Vec<GithubRelease> = releases
         .into_iter()
         .filter(|r| !r.draft)
         .filter(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
-        .find(|r| {
+        .filter(|r| {
             r.assets
                 .iter()
                 .any(|a| a.name.eq_ignore_ascii_case(asset_name))
         })
-        .ok_or(DriverError::NoAsset)?;
+        .collect();
+    matching.sort_unstable_by(|a, b| b.published_at.cmp(&a.published_at));
+    let release = matching.into_iter().next().ok_or(DriverError::NoAsset)?;
 
     let tag = release.tag_name.clone();
     let asset_url = release
