@@ -47,6 +47,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_XWIN_VERSION: "0.22.0"
   RUSTC_WRAPPER: sccache
   RUSTFLAGS: -D warnings
   SCCACHE_GHA_ENABLED: "true"
@@ -94,13 +95,16 @@ jobs:
       - name: Install cargo-xwin
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-xwin
+          tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
 
       - name: Cache xwin SDK
         uses: actions/cache@v5
         with:
           path: ~/.cache/cargo-xwin
-          key: xwin-${{ runner.os }}-x86_64-pc-windows-msvc-v1
+          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-x86_64-pc-windows-msvc-v1
+          restore-keys: |
+            xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-
+            xwin-${{ runner.os }}-
 
       - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
@@ -182,7 +186,7 @@ jobs:
         # change can't silently re-break the cross build.
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-xwin
+          tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
 
       - name: Cache xwin SDK
         # ~1.5 GB of MSVC CRT + Windows SDK headers/libs that
@@ -192,7 +196,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/cargo-xwin
-          key: xwin-${{ runner.os }}-${{ matrix.target }}-v1
+          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}-v1
+          restore-keys: |
+            xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-
+            xwin-${{ runner.os }}-
 
       - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
