@@ -98,13 +98,12 @@ jobs:
           tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
 
       - name: Cache xwin SDK
+        # Keep this target-exact. A broad restore prefix can pull an
+        # incompatible target's clang-cl shim/cache state into this job.
         uses: actions/cache@v5
         with:
           path: ~/.cache/cargo-xwin
-          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-x86_64-pc-windows-msvc-v1
-          restore-keys: |
-            xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-
-            xwin-${{ runner.os }}-
+          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-x86_64-pc-windows-msvc-v2
 
       - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
@@ -198,16 +197,13 @@ jobs:
 
       - name: Cache xwin SDK
         # ~1.5 GB of MSVC CRT + Windows SDK headers/libs that
-        # cargo-xwin downloads on first run. Cache key is keyed on
-        # the cargo-xwin version so a tool bump triggers a fresh
-        # SDK pull (xwin manifest format can drift between versions).
+        # cargo-xwin downloads on first run. Keep this target-exact:
+        # restoring another target's cache can bring incompatible
+        # clang-cl shim state into the job.
         uses: actions/cache@v5
         with:
           path: ~/.cache/cargo-xwin
-          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}-v1
-          restore-keys: |
-            xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-
-            xwin-${{ runner.os }}-
+          key: xwin-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}-v2
 
       - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
