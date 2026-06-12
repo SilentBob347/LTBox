@@ -159,6 +159,16 @@ fn install_udev_rules() -> ! {
         }
         std::process::exit(1);
     }
+    // Force the rules world-readable. A hardened root umask (0077) would
+    // otherwise leave the file 0600, which udev can't apply and which the
+    // GUI's read-back verification (run as the normal user) would read as
+    // `UdevRulesNoPermission` — making reinstall appear to fail and loop.
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) =
+        std::fs::set_permissions(UDEV_RULES_PATH, std::fs::Permissions::from_mode(0o644))
+    {
+        eprintln!("[ltbox] WARNING: chmod 0644 {UDEV_RULES_PATH}: {e}");
+    }
     let reload_ok = std::process::Command::new("udevadm")
         .args(["control", "--reload"])
         .status()

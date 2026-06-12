@@ -577,12 +577,42 @@ impl App {
     }
 
     pub(crate) fn driver_warning_banner(&self) -> Element<'_, Message> {
+        use ltbox_device::driver::DriverStatus;
         let installing = self.installing_drivers;
-        let offline = self.online == Some(false);
+        // Per-state copy. The Windows driver install downloads from GitHub
+        // (network required); the Linux udev-rules install is a local pkexec
+        // call, so it is never gated on connectivity.
+        let (title_key, desc_key, install_key, needs_network) = match self.driver_status {
+            Some(DriverStatus::UdevRulesMissing) => (
+                "driver_udev_missing_title",
+                "driver_udev_missing_desc",
+                "driver_udev_install_btn",
+                false,
+            ),
+            Some(DriverStatus::UdevRulesStale) => (
+                "driver_udev_stale_title",
+                "driver_udev_stale_desc",
+                "driver_udev_install_btn",
+                false,
+            ),
+            Some(DriverStatus::UdevRulesNoPermission) => (
+                "driver_udev_noperm_title",
+                "driver_udev_noperm_desc",
+                "driver_udev_install_btn",
+                false,
+            ),
+            _ => (
+                "driver_missing_title",
+                "driver_missing_desc",
+                "driver_install_btn",
+                true,
+            ),
+        };
+        let offline = needs_network && self.online == Some(false);
         let btn_label = if installing {
             self.t("driver_installing_btn").to_string()
         } else {
-            self.t("driver_install_btn").to_string()
+            self.t(install_key).to_string()
         };
         // `Length::Shrink` width on the inner text + `wrapping::None` so
         // a long localized label (e.g. Korean "다운로드 & 설치") never
@@ -614,10 +644,10 @@ impl App {
         // the button only a sliver — collapsing its label into a
         // vertical glyph stack.
         let body = column![
-            text(self.t("driver_missing_title").to_string())
+            text(self.t(title_key).to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
                 .style(warning_container_text_style),
-            text(self.t("driver_missing_desc").to_string())
+            text(self.t(desc_key).to_string())
                 .size(theme::text_size::BODY_SMALL)
                 .style(warning_container_text_style),
         ]

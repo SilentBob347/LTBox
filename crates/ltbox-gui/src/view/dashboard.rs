@@ -162,7 +162,15 @@ impl App {
             );
         }
 
-        if let Some(ltbox_device::driver::DriverStatus::Missing(_)) = self.driver_status {
+        if matches!(
+            self.driver_status,
+            Some(
+                ltbox_device::driver::DriverStatus::Missing(_)
+                    | ltbox_device::driver::DriverStatus::UdevRulesMissing
+                    | ltbox_device::driver::DriverStatus::UdevRulesStale
+                    | ltbox_device::driver::DriverStatus::UdevRulesNoPermission
+            )
+        ) {
             content = content.push(self.driver_warning_banner());
         } else if self.driver_update.is_some() {
             // Driver present but outdated — optional update prompt. Mutually
