@@ -102,10 +102,12 @@ jobs:
           path: ~/.cache/cargo-xwin
           key: xwin-${{ runner.os }}-x86_64-pc-windows-msvc-v1
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: lint-xwin
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -192,10 +194,12 @@ jobs:
           path: ~/.cache/cargo-xwin
           key: xwin-${{ runner.os }}-${{ matrix.target }}-v1
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -324,10 +328,12 @@ jobs:
           rustup show
           rustup target add ${{ matrix.target }}
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -401,10 +407,12 @@ jobs:
           rustup show
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -477,10 +485,12 @@ jobs:
         # triggers the toml-driven 1.95.0 install.
         run: rustup show
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: test-windows
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -518,10 +528,12 @@ jobs:
       - name: Install Rust (toolchain pinned by rust-toolchain.toml)
         run: rustup show
 
-      - name: Rust cache
+      - name: Cargo source cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: test-linux
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
 
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.10
