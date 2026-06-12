@@ -47,7 +47,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
   RUSTFLAGS: -D warnings
+  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_GHA_VERSION: ltbox-v1
+  # sccache can't cache incremental builds, so without this the dev-profile
+  # `cargo test` / `cargo clippy` jobs (the ones that run on every PR) compile
+  # uncached. Disable incremental — ephemeral runners never reuse it anyway.
+  CARGO_INCREMENTAL: "0"
   # cargo-xwin auto-accepts the Microsoft Software License Terms via
   # this env var so the install is non-interactive. Same effect as
   # passing `--accept-license` to every `cargo xwin …` invocation.
@@ -99,6 +106,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: lint-xwin
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -186,6 +196,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Resolve release tag or commit
         id: meta
@@ -316,6 +329,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: Resolve release tag or commit
         id: meta
         run: |
@@ -390,6 +406,9 @@ jobs:
         with:
           key: macos-universal
 
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: Resolve release tag or commit
         id: meta
         run: |
@@ -463,6 +482,9 @@ jobs:
         with:
           key: test-windows
 
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: cargo test --workspace
         run: cargo test --workspace --locked
 
@@ -500,6 +522,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: test-linux
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: cargo clippy (native Linux)
         # Lints the cfg(target_os = "linux") paths that the Windows-targeted
