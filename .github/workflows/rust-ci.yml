@@ -48,6 +48,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_XWIN_VERSION: "0.22.0"
+  NODE_OPTIONS: --no-deprecation
   RUSTC_WRAPPER: sccache
   RUSTFLAGS: -D warnings
   SCCACHE_GHA_ENABLED: "true"
@@ -511,7 +512,7 @@ jobs:
     # matrix above for compile-time validation; runtime coverage is
     # the x86_64 host's job.
     name: Test (host x86_64)
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     timeout-minutes: 30
     defaults:
       run:
@@ -520,8 +521,8 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust (toolchain pinned by rust-toolchain.toml)
-        # rustup is preinstalled on windows-latest; `rustup show`
-        # triggers the toml-driven 1.95.0 install.
+        # rustup is preinstalled on the Windows 2025 + VS 2026 image;
+        # `rustup show` triggers the toml-driven 1.95.0 install.
         run: rustup show
 
       - name: Cargo source cache

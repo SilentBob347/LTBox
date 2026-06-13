@@ -19,7 +19,9 @@ ignore = [
 ]
 
 [bans]
-multiple-versions = "warn"
+# The GUI/platform dependency graph intentionally carries many duplicate
+# transitive versions; keep this gate focused on advisories/licenses/sources.
+multiple-versions = "allow"
 # Workspace path deps and the git deps legitimately carry no version constraint.
 wildcards = "allow"
 
@@ -60,6 +62,13 @@ license-files = []
 [[licenses.clarify]]
 crate = "derive@0.1.1"
 expression = "GPL-3.0-or-later"
+license-files = []
+
+# `unescaper` uses the old slash-separated `GPL-3.0/MIT` Cargo syntax, which
+# cargo-deny treats as a parse warning. Assert the intended dual license.
+[[licenses.clarify]]
+crate = "unescaper@0.1.8"
+expression = "MIT OR GPL-3.0-only"
 license-files = []
 
 [sources]
