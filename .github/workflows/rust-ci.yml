@@ -402,6 +402,38 @@ jobs:
             ${{ steps.stage.outputs.tarball }}.sha256
           if-no-files-found: error
 
+  test-macos:
+    # macOS native test gate — distinct from the universal packaging job so
+    # validation can run in parallel with the slower two-slice release build.
+    name: Test macos_arm64
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (toolchain pinned by rust-toolchain.toml)
+        # rustup is preinstalled on macos-14; `rustup show` triggers the
+        # toml-driven 1.95.0 install for the native Apple Silicon host.
+        run: rustup show
+
+      - name: Cargo source cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-sources-${{ runner.os }}-${{ runner.arch }}
+          cache-targets: false
+          cache-bin: false
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: cargo clippy (native macOS)
+        # Lints the cfg(target_os = "macos") paths that the Windows-targeted
+        # clippy job never sees.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
   build-macos:
     name: Build macos_universal
     # macos-14 is the Apple Silicon (arm64) runner; the x86_64 slice
@@ -441,14 +473,6 @@ jobs:
             tag="${GITHUB_SHA:0:7}"
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-
-      - name: cargo clippy (native macOS)
-        # Lints the cfg(target_os = "macos") paths that the Windows-targeted
-        # clippy job never sees.
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: cargo test --workspace
-        run: cargo test --workspace --locked
 
       - name: Build universal LTBox.app + tarball
         # make-app.sh builds both Mac arches (LIBUSB_STATIC=1), lipo's the
@@ -563,7 +587,7 @@ jobs:
 
   release:
     name: Draft GitHub Release
-    needs: [fmt-clippy, cargo-deny, build-windows, build-linux, build-macos, test, test-linux]
+    needs: [fmt-clippy, cargo-deny, build-windows, build-linux, build-macos, test, test-linux, test-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
