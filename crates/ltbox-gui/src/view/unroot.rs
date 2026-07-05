@@ -37,7 +37,7 @@ impl App {
                 Message::Unroot(UnrootMsg::UnrootNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
         if let Some(header) = self.unroot_action_bar() {

@@ -39,7 +39,7 @@ impl App {
                 Message::Flash(FlashMsg::FlashNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
         if let Some(header) = self.flash_action_bar() {

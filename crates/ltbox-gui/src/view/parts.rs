@@ -83,7 +83,7 @@ impl App {
                 Message::FlashParts(FlashPartsMsg::FlashPartsNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
 
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
@@ -492,7 +492,7 @@ impl App {
                 Message::DumpParts(DumpPartsMsg::DumpPartsNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
 
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
@@ -663,7 +663,7 @@ impl App {
                 Message::DumpPhys(DumpPhysMsg::DumpPhysNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
 
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
@@ -776,7 +776,7 @@ impl App {
                 Message::FlashPhys(FlashPhysMsg::FlashPhysNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
 
         let mut layout = column![].width(Length::Fill).height(Length::Fill);

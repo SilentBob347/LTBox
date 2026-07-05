@@ -165,6 +165,10 @@ pub(crate) fn wizard_fab_footer<'a>(
     .into()
 }
 
+pub(crate) fn empty_wizard_nav<'a>() -> Element<'a, Message> {
+    Space::new().height(0).into()
+}
+
 fn wizard_nav_fabs<'a>(
     can_back: bool,
     next_label: &str,

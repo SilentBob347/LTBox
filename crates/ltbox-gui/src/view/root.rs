@@ -62,7 +62,7 @@ impl App {
                 && (!is_start || self.device_reachable());
             wizard_nav(self.root.step > 0, &label_owned, can, self.t("btn_back"))
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
         if let Some(header) = self.root_action_bar() {

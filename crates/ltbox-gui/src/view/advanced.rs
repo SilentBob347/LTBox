@@ -109,7 +109,7 @@ impl App {
         };
 
         let nav: Element<'_, Message> = if is_exec {
-            container(text("")).into()
+            empty_wizard_nav()
         } else {
             let label = if is_confirm || detect_arb_step0 {
                 self.t("btn_start").to_string()
@@ -810,7 +810,7 @@ impl App {
                 Message::SimpleFlash(SimpleFlashMsg::SimpleFlashNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
         if let Some(header) = self.simple_flash_action_bar() {

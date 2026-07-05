@@ -51,7 +51,7 @@ impl App {
                 Message::Sys(SysMsg::SysNext),
             )
         } else {
-            container(text("")).into()
+            empty_wizard_nav()
         };
         let mut layout = column![].width(Length::Fill).height(Length::Fill);
         if let Some(header) = self.sysupdate_action_bar() {
