@@ -3304,6 +3304,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "ureq 3.3.0",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

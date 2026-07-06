@@ -122,7 +122,129 @@ pub fn find_edl_port() -> Result<String> {
             return Ok(port.port_name.clone());
         }
     }
+    // Windows fallback: the WDF kernel driver (`qcwdfser`) publishes the 9008
+    // COM port with USB metadata that `serialport` classifies as `Unknown`, so
+    // the VID/PID loop above misses it. Resolve the COM name natively by
+    // matching the present device's hardware ID — no serialport classification,
+    // no PowerShell. `find_qcom_edl_port_windows` is self-gating (it only
+    // returns a port when a matching device is currently present), so it stays
+    // cheap on the idle poll path.
+    #[cfg(windows)]
+    if let Some(port_name) = find_qcom_edl_port_windows() {
+        return Ok(port_name);
+    }
     Err(EdlError::PortNotFound)
+}
+
+/// Windows-only: resolve the EDL 9008 serial COM port by hardware ID via
+/// SetupAPI, bypassing `serialport`'s USB classification (which fails on the
+/// WDF kernel driver's non-standard metadata). Enumerates only currently
+/// present devices in the Ports class (`DIGCF_PRESENT`), matches the hardware
+/// ID `VID_05C6&PID_9008`, and reads the assigned `PortName` (e.g. `COM3`) from
+/// the device's registry key. Returns `None` when no such port exists — the
+/// device is absent, or bound to a non-serial driver that created no COM port.
+#[cfg(windows)]
+fn find_qcom_edl_port_windows() -> Option<String> {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        DICS_FLAG_GLOBAL, DIGCF_PRESENT, DIREG_DEV, SP_DEVINFO_DATA, SPDRP_HARDWAREID,
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
+        SetupDiGetDeviceRegistryPropertyW, SetupDiOpenDevRegKey,
+    };
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Registry::{KEY_READ, RegCloseKey, RegQueryValueExW};
+    use windows_sys::core::GUID;
+
+    // GUID_DEVCLASS_PORTS {4d36e978-e325-11ce-bfc1-08002be10318}
+    const GUID_DEVCLASS_PORTS: GUID = GUID {
+        data1: 0x4d36_e978,
+        data2: 0xe325,
+        data3: 0x11ce,
+        data4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18],
+    };
+    const HWID_NEEDLE: &str = "VID_05C6&PID_9008";
+
+    // SAFETY: textbook SetupAPI enumeration. The device-info-set handle is
+    // always destroyed before returning; every buffer is fixed-size and the
+    // returned length is clamped to it; only device registry values are read
+    // (no writes, no device changes).
+    unsafe {
+        let hdev = SetupDiGetClassDevsW(
+            &GUID_DEVCLASS_PORTS,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            DIGCF_PRESENT,
+        );
+        if hdev == INVALID_HANDLE_VALUE as isize {
+            return None;
+        }
+
+        let mut found: Option<String> = None;
+        let mut index = 0u32;
+        loop {
+            let mut info: SP_DEVINFO_DATA = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+            if SetupDiEnumDeviceInfo(hdev, index, &mut info) == 0 {
+                break; // ERROR_NO_MORE_ITEMS
+            }
+            index += 1;
+
+            // Hardware IDs: REG_MULTI_SZ of UTF-16. Zero-init so the lossy
+            // decode of the unused tail is just NULs; overflow → skip.
+            let mut hwid_buf = [0u16; 1024];
+            let mut hwid_len = 0u32;
+            let got = SetupDiGetDeviceRegistryPropertyW(
+                hdev,
+                &info,
+                SPDRP_HARDWAREID,
+                std::ptr::null_mut(),
+                hwid_buf.as_mut_ptr() as *mut u8,
+                std::mem::size_of_val(&hwid_buf) as u32,
+                &mut hwid_len,
+            );
+            if got == 0 {
+                continue;
+            }
+            let hwids = String::from_utf16_lossy(&hwid_buf).to_ascii_uppercase();
+            if !hwids.contains(HWID_NEEDLE) {
+                continue;
+            }
+
+            let hkey = SetupDiOpenDevRegKey(hdev, &info, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+            if hkey == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            // Read PortName (REG_SZ, UTF-16) → e.g. "COM3".
+            let value: Vec<u16> = "PortName"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut port_buf = [0u16; 64];
+            let mut port_len = std::mem::size_of_val(&port_buf) as u32;
+            let rc = RegQueryValueExW(
+                hkey,
+                value.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                port_buf.as_mut_ptr() as *mut u8,
+                &mut port_len,
+            );
+            RegCloseKey(hkey);
+            if rc == 0 {
+                let count = (port_len as usize / 2).min(port_buf.len());
+                let end = port_buf[..count]
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(count);
+                let port = String::from_utf16_lossy(&port_buf[..end]);
+                if !port.is_empty() {
+                    found = Some(port);
+                    break;
+                }
+            }
+        }
+        SetupDiDestroyDeviceInfoList(hdev);
+        found
+    }
 }
 
 pub fn check_device() -> bool {
