@@ -1805,6 +1805,29 @@ enum OtaPopupState {
     Error(String),
 }
 
+/// Worker result for the QFIL-firmware lookup: a global (non-CN) device, a CN
+/// device whose MTM has no published package, or the resolved package.
+#[derive(Debug, Clone)]
+pub(crate) enum QfilOutcome {
+    /// `SaleArea != CN` — point the user at Lenovo Software Fix instead.
+    Global,
+    /// CN device, but the MTM resolved to no flashing-machine package.
+    NoPackage,
+    /// Resolved official QFIL package.
+    Package(ltbox_core::lenovo_qfil::QfilPackage),
+}
+
+/// Loading state for the QFIL-firmware popup. Mirrors [`OtaPopupState`] with a
+/// `Global` arm (non-CN device) and a `NoPackage` arm (CN, MTM unmatched).
+#[derive(Debug, Clone)]
+enum QfilPopupState {
+    Loading,
+    Global,
+    NoPackage,
+    Ready(ltbox_core::lenovo_qfil::QfilPackage),
+    Error(String),
+}
+
 /// Parse hwboardid: `"SM8750P_16+512_13"` → `("16 GB", "512 GB")`.
 fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
     let parts: Vec<&str> = hwboardid.split('_').collect();
@@ -1990,6 +2013,37 @@ where
     )
 }
 
+/// Resolve the QFIL-firmware outcome for a serial (blocking; runs in the
+/// worker). `cached` supplies MTM + SaleArea when already known; otherwise
+/// machine info is fetched here. Non-CN `SaleArea` short-circuits to
+/// [`QfilOutcome::Global`]; a CN device queries the official package.
+fn resolve_qfil(serial: &str, cached: Option<(String, String)>) -> Result<QfilOutcome, String> {
+    use ltbox_core::lenovo_info::FieldValue;
+    let (mtm, area) = match cached {
+        Some(t) => t,
+        None => {
+            let info =
+                ltbox_core::lenovo_info::fetch_machine_info(serial).map_err(|e| e.to_string())?;
+            let field = |k: &str| match info.field(k) {
+                FieldValue::Value(s) => s,
+                _ => String::new(),
+            };
+            (field("MTM"), field("SaleArea"))
+        }
+    };
+    // Global (non-CN) devices have no PTSTPD flashing-machine entry.
+    if !area.eq_ignore_ascii_case("CN") {
+        return Ok(QfilOutcome::Global);
+    }
+    if mtm.trim().is_empty() {
+        return Ok(QfilOutcome::NoPackage);
+    }
+    match ltbox_core::lenovo_qfil::fetch_qfil_package(&mtm).map_err(|e| e.to_string())? {
+        Some(pkg) => Ok(QfilOutcome::Package(pkg)),
+        None => Ok(QfilOutcome::NoPackage),
+    }
+}
+
 // =========================================================================
 // App
 // =========================================================================
@@ -2135,6 +2189,13 @@ struct App {
         std::collections::HashMap<(String, String), Option<ltbox_core::lenovo_ota::OtaUpdate>>,
     /// Selectable mirror of OTA changelog — `text` widget can't be selected.
     ota_changelog_editor: iced::widget::text_editor::Content,
+    /// Firmware-version dropdown (QFIL Firmware / OTA Package) open state.
+    firmware_menu_open: bool,
+    /// QFIL-firmware popup state. `Some((serial, state))` while open.
+    qfil_popup: Option<(String, QfilPopupState)>,
+    /// Session QFIL cache keyed by serial. Caches Global / NoPackage / Ready
+    /// (errors not cached), so reopening the popup never re-queries.
+    qfil_cache: std::collections::HashMap<String, QfilPopupState>,
     /// PatchArb wizard's unix-timestamp input popup.
     arb_index_popup_open: bool,
     /// Transient toast message; auto-cleared by a delayed task.
@@ -2344,6 +2405,9 @@ impl Default for App {
             ota_popup: None,
             ota_cache: std::collections::HashMap::new(),
             ota_changelog_editor: iced::widget::text_editor::Content::with_text(""),
+            firmware_menu_open: false,
+            qfil_popup: None,
+            qfil_cache: std::collections::HashMap::new(),
             arb_index_popup_open: false,
             toast_msg: None,
             sidebar_expanded: false,
@@ -3397,6 +3461,30 @@ impl App {
             String::new()
         };
         self.ota_changelog_editor = iced::widget::text_editor::Content::with_text(&editor_text);
+    }
+
+    /// Build the off-thread QFIL-fetch task for `serial`. Reuses the
+    /// device-info cache for MTM + SaleArea when the device-info popup already
+    /// fetched them this session; otherwise the worker fetches machine info
+    /// itself. Result arrives as `Message::QfilFetched`.
+    fn spawn_qfil_fetch(&self, serial: String) -> Task<Message> {
+        use ltbox_core::lenovo_info::FieldValue;
+        let cached: Option<(String, String)> = self.device_info_cache.get(&serial).map(|info| {
+            let field = |k: &str| match info.field(k) {
+                FieldValue::Value(s) => s,
+                _ => String::new(),
+            };
+            (field("MTM"), field("SaleArea"))
+        });
+        let serial_for_task = serial;
+        task_heavy(
+            move || {
+                let outcome = resolve_qfil(&serial_for_task, cached);
+                (serial_for_task, outcome)
+            },
+            |(s, r)| Message::QfilFetched(s, r),
+            |e| (String::new(), Err(e)),
+        )
     }
 
     /// Bottom-of-sidebar pill linking to the GitHub release when a

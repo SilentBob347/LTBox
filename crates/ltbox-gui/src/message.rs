@@ -16,6 +16,9 @@ pub(crate) enum Message {
     /// Open an external URL (About panel links) in the host's default
     /// browser via `open::that_detached` — no in-app webview.
     OpenUrl(&'static str),
+    /// Open a runtime-owned URL (e.g. a QFIL download link or the Software Fix
+    /// page) in the host's default browser.
+    OpenExternalUrl(String),
     SetTheme(ThemeChoice),
     ToggleLogPopup(bool),
     SelectCountry(String),
@@ -70,6 +73,17 @@ pub(crate) enum Message {
     /// changelog editor. Edit actions are dropped so the user can
     /// drag-select / Ctrl+C without mutating the changelog buffer.
     OtaChangelogAction(iced::widget::text_editor::Action),
+    /// Open/close the firmware-version dropdown (QFIL Firmware / OTA Package).
+    FirmwareMenu(bool),
+    /// Click the "QFIL Firmware" menu item. Resolves the device MTM, then the
+    /// official QFIL package (CN-only), and opens the QFIL popup.
+    QfilOpen,
+    /// Result of the QFIL fetch, keyed by the serial it was started for.
+    QfilFetched(String, Result<crate::QfilOutcome, String>),
+    /// User dismissed the QFIL popup.
+    QfilClose,
+    /// Retry the QFIL fetch for the currently open popup serial.
+    QfilRetry,
     /// Copy `payload` to the OS clipboard. Pairs with `ToastShow` so
     /// the user gets a visual confirmation; clipboard writes return a
     /// `Task<Message>` from iced so the second message is chained.

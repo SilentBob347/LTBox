@@ -616,6 +616,7 @@ impl App {
                 self.device_info_popup = None;
             }
             Message::OtaOpen => {
+                self.firmware_menu_open = false;
                 let serial = self.device_serial.trim().to_string();
                 // Pass the untrimmed firmware id to the OTA endpoint —
                 // Lenovo's `querynewfirmware` keys against the full
@@ -739,6 +740,64 @@ impl App {
                 if let Err(e) = open::that_detached(&url) {
                     tracing::warn!("failed to open OTA download URL: {e}");
                 }
+            }
+            Message::OpenExternalUrl(url) => {
+                if let Err(e) = open::that_detached(&url) {
+                    tracing::warn!("failed to open URL {url}: {e}");
+                }
+            }
+            Message::FirmwareMenu(open) => {
+                self.firmware_menu_open = open;
+            }
+            Message::QfilOpen => {
+                self.firmware_menu_open = false;
+                let serial = self.device_serial.trim().to_string();
+                if serial.is_empty() {
+                    return Task::none();
+                }
+                // Cache hit → restore the prior result without re-querying.
+                if let Some(cached) = self.qfil_cache.get(&serial).cloned() {
+                    self.qfil_popup = Some((serial, cached));
+                    return Task::none();
+                }
+                self.qfil_popup = Some((serial.clone(), QfilPopupState::Loading));
+                return self.spawn_qfil_fetch(serial);
+            }
+            Message::QfilFetched(serial, result) => {
+                if serial.is_empty() {
+                    // Worker panic fallback — surface on whichever popup is open.
+                    if let Some((s, _)) = self.qfil_popup.clone() {
+                        let msg = match result {
+                            Err(e) => e,
+                            Ok(_) => "task panicked".to_string(),
+                        };
+                        self.qfil_popup = Some((s, QfilPopupState::Error(msg)));
+                    }
+                    return Task::none();
+                }
+                let new_state = match result {
+                    Ok(QfilOutcome::Global) => QfilPopupState::Global,
+                    Ok(QfilOutcome::NoPackage) => QfilPopupState::NoPackage,
+                    Ok(QfilOutcome::Package(p)) => QfilPopupState::Ready(p),
+                    Err(e) => QfilPopupState::Error(e),
+                };
+                // Cache every non-error outcome so reopening never re-queries.
+                if !matches!(new_state, QfilPopupState::Error(_)) {
+                    self.qfil_cache.insert(serial.clone(), new_state.clone());
+                }
+                if matches!(&self.qfil_popup, Some((s, _)) if s == &serial) {
+                    self.qfil_popup = Some((serial, new_state));
+                }
+            }
+            Message::QfilClose => {
+                self.qfil_popup = None;
+            }
+            Message::QfilRetry => {
+                let Some((serial, _)) = self.qfil_popup.clone() else {
+                    return Task::none();
+                };
+                self.qfil_popup = Some((serial.clone(), QfilPopupState::Loading));
+                return self.spawn_qfil_fetch(serial);
             }
             Message::CopyToClipboard(payload) => {
                 let toast = self.t("toast_copied").to_string();

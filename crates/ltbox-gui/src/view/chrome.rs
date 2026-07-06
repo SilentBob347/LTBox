@@ -87,6 +87,9 @@ impl App {
         if self.ota_popup.is_some() {
             layers.push(self.ota_popup_view());
         }
+        if self.qfil_popup.is_some() {
+            layers.push(self.qfil_popup_view());
+        }
         if self.arb_index_popup_open {
             layers.push(self.arb_index_popup_view());
         }

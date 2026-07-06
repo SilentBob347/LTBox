@@ -5,6 +5,42 @@ use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
 
 impl App {
+    /// Two-item dropdown under the firmware version: QFIL flash-tool package
+    /// or OTA update — the device's two distinct firmware sources.
+    fn firmware_menu(&self) -> Element<'_, Message> {
+        let item = |label: String, msg: Message| -> Element<'_, Message> {
+            button(text(label).size(13).width(Length::Fill))
+                .on_press(msg)
+                .padding([8, 14])
+                .width(Length::Fill)
+                .style(dash_clickable_btn_style)
+                .into()
+        };
+        container(
+            column![
+                item(self.t("firmware_menu_qfil").to_string(), Message::QfilOpen),
+                item(self.t("firmware_menu_ota").to_string(), Message::OtaOpen),
+            ]
+            .spacing(2),
+        )
+        .padding(4)
+        .width(200)
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container_high.into()),
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::SM.into(),
+                },
+                shadow: theme::elevation(2, theme::is_dark(t)),
+                ..Default::default()
+            }
+        })
+        .into()
+    }
+
     pub(crate) fn view_dashboard(&self) -> Element<'_, Message> {
         let model = if self.device_model.is_empty() {
             "—"
@@ -214,10 +250,16 @@ impl App {
         let firmware_kv: Element<'_, Message> = if self.device_firmware.is_empty() {
             info_kv(self.t("device_firmware"), firmware)
         } else {
-            button(info_kv(self.t("device_firmware"), firmware))
-                .on_press(Message::OtaOpen)
+            // Clicking firmware opens a small dropdown offering the QFIL
+            // flash-tool package or the OTA update — the two distinct
+            // firmware sources for this device.
+            let anchor = button(info_kv(self.t("device_firmware"), firmware))
+                .on_press(Message::FirmwareMenu(!self.firmware_menu_open))
                 .padding([4, 0])
-                .style(dash_clickable_btn_style)
+                .style(dash_clickable_btn_style);
+            iced_aw::DropDown::new(anchor, self.firmware_menu(), self.firmware_menu_open)
+                .on_dismiss(Message::FirmwareMenu(false))
+                .alignment(iced_aw::drop_down::Alignment::Bottom)
                 .into()
         };
         // Row align_y(Center) handles the vertical mismatch: the

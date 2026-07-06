@@ -267,6 +267,135 @@ impl App {
         m3_dialog(content.into())
     }
 
+    /// QFIL-firmware popup: the official flash-tool package for a CN device
+    /// (resolved via MTM → `getPadFlashingMachine`), or a Software Fix pointer
+    /// for a global device. Branches on `QfilPopupState` like the OTA popup.
+    pub(crate) fn qfil_popup_view(&self) -> Element<'_, Message> {
+        let Some((_serial, state)) = self.qfil_popup.clone() else {
+            return container(text("")).into();
+        };
+        let title =
+            text(self.t("qfil_popup_title").to_string()).size(theme::text_size::WIZARD_STEP_TITLE);
+        let header = row![title, Space::new().width(Length::Fill)].align_y(iced::Alignment::Center);
+
+        let placeholder = |key: &str| -> Element<'_, Message> {
+            container(
+                text(self.t(key).to_string())
+                    .size(14)
+                    .style(muted_style)
+                    .width(Length::Fill)
+                    .center(),
+            )
+            .width(Length::Fill)
+            .height(48)
+            .center_x(Length::Fill)
+            .center_y(48)
+            .into()
+        };
+
+        let body: Element<'_, Message> = match &state {
+            QfilPopupState::Loading => self.popup_loading_view(),
+            QfilPopupState::Error(e) => {
+                self.popup_error_view("qfil_popup_error", e, Message::QfilRetry)
+            }
+            QfilPopupState::NoPackage => placeholder("qfil_popup_no_package"),
+            QfilPopupState::Global => self.qfil_global_message(),
+            QfilPopupState::Ready(pkg) => {
+                let updated = pkg
+                    .upd_time
+                    .map(|t| crate::format_unix_timestamp_utc(t as u64))
+                    .unwrap_or_default();
+                let mut rows = column![].spacing(10).width(Length::Fill);
+                if !pkg.version.is_empty() {
+                    rows = rows.push(info_kv(self.t("qfil_popup_version"), &pkg.version));
+                }
+                if !pkg.file_name.is_empty() {
+                    rows = rows.push(info_kv(self.t("qfil_popup_file"), &pkg.file_name));
+                }
+                if !pkg.platform.is_empty() {
+                    rows = rows.push(info_kv(self.t("qfil_popup_platform"), &pkg.platform));
+                }
+                if !updated.is_empty() {
+                    rows = rows.push(info_kv(self.t("qfil_popup_updated"), &updated));
+                }
+                // Archive password (fixed constant) with a copy affordance —
+                // it isn't discoverable and the user needs it to extract.
+                let pw = ltbox_core::lenovo_qfil::PACKAGE_PASSWORD;
+                let pw_row = row![
+                    info_kv(self.t("qfil_popup_password"), pw),
+                    Space::new().width(Length::Fill),
+                    button(text(self.t("qfil_popup_copy").to_string()).size(11))
+                        .on_press(Message::CopyToClipboard(pw.to_string()))
+                        .padding([4, 12])
+                        .style(md_filled_btn_style),
+                ]
+                .align_y(iced::Alignment::Center);
+                rows = rows.push(widget::rule::horizontal(1));
+                rows = rows.push(pw_row);
+                rows.into()
+            }
+        };
+
+        let download_url: Option<String> = match &state {
+            QfilPopupState::Ready(p) if !p.download_url.is_empty() => Some(p.download_url.clone()),
+            _ => None,
+        };
+        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
+            .on_press(Message::QfilClose)
+            .padding([6, 18])
+            .style(md_filled_btn_style);
+        let mut action_row = row![Space::new().width(Length::Fill)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        if let Some(url) = download_url {
+            action_row = action_row.push(
+                button(text(self.t("qfil_popup_download").to_string()).size(12))
+                    .on_press(Message::OpenExternalUrl(url))
+                    .padding([6, 18])
+                    .style(md_filled_btn_style),
+            );
+        }
+        action_row = action_row.push(close_btn);
+
+        let content = column![header, widget::rule::horizontal(1), body, action_row,]
+            .spacing(12)
+            .padding(20)
+            .width(560);
+
+        m3_dialog(content.into())
+    }
+
+    /// The global-device message with an inline "Software Fix" hyperlink. The
+    /// term is untranslated (product name) in every locale, so we split the
+    /// localized sentence on it and link that span.
+    fn qfil_global_message(&self) -> Element<'_, Message> {
+        const SOFTWARE_FIX_URL: &str = "https://pcsupport.lenovo.com/rescue-and-smart-assistant";
+        const LINK_TERM: &str = "Software Fix";
+        let msg = self.t("qfil_popup_global").to_string();
+        let primary = self.pal().primary;
+        let content: Element<'_, Message> = if let Some(idx) = msg.find(LINK_TERM) {
+            let before = msg[..idx].to_string();
+            let after = msg[idx + LINK_TERM.len()..].to_string();
+            iced::widget::rich_text([
+                iced::widget::span(before).size(13),
+                iced::widget::span(LINK_TERM)
+                    .size(13)
+                    .color(primary)
+                    .underline(true)
+                    .link(SOFTWARE_FIX_URL.to_string()),
+                iced::widget::span(after).size(13),
+            ])
+            .on_link_click(Message::OpenExternalUrl)
+            .into()
+        } else {
+            text(msg).size(13).into()
+        };
+        container(content)
+            .padding([12, 4])
+            .width(Length::Fill)
+            .into()
+    }
+
     /// PatchArb timestamp popup. Reads `adv_wizard.arb_index_buffer`
     /// for the in-flight typing and renders the UTC representation in
     /// real time once the buffer hits exactly 10 digits. OK is enabled
