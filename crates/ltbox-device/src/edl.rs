@@ -1830,7 +1830,25 @@ pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Process-unique suffix for temp files/dirs. `{pid}-{nanos}` alone is not
+    /// enough: `cargo test` runs these in parallel within one process (shared
+    /// pid), and the macOS x86_64 runner's `SystemTime` is coarse enough that
+    /// two helpers entering the same tick got identical names — then one's
+    /// `Drop` `remove_dir_all` deleted the dir the other was still writing,
+    /// panicking with `NotFound`. A process-global counter makes the name
+    /// unique even within a single clock tick.
+    fn unique_temp_id() -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        format!("{}-{nanos}-{seq}", std::process::id())
+    }
 
     fn first_node<'a>(doc: &'a roxmltree::Document<'a>, tag: &str) -> roxmltree::Node<'a, 'a> {
         doc.descendants().find(|n| n.has_tag_name(tag)).unwrap()
@@ -1912,14 +1930,8 @@ mod tests {
 
     impl TempXml {
         fn new(contents: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "ltbox-edl-wipe-plan-{}-{nonce}.xml",
-                std::process::id()
-            ));
+            let path =
+                std::env::temp_dir().join(format!("ltbox-edl-wipe-plan-{}.xml", unique_temp_id()));
             std::fs::write(&path, contents).expect("write temp rawprogram");
             Self(path)
         }
@@ -1933,12 +1945,7 @@ mod tests {
 
     impl TempFirmwareDir {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("ltbox-edl-fw-{}-{nonce}", std::process::id()));
+            let path = std::env::temp_dir().join(format!("ltbox-edl-fw-{}", unique_temp_id()));
             std::fs::create_dir_all(&path).expect("create temp firmware dir");
             Self(path)
         }
