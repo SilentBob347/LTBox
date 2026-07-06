@@ -550,6 +550,9 @@ impl App {
             SimpleFlashMsg::SimpleFlashFolderChosen(path) => {
                 if let Some(folder) = path {
                     self.remember_recent(pickers::PickerKind::QfilFirmwareFolder, &folder);
+                    // Mirror the Flash wizard: retarget an extracted-root pick
+                    // to its flashable `image/` child.
+                    let folder = crate::loader::redirect_str(folder);
                     self.simple_flash.firmware_folder = Some(folder);
                 }
                 Task::none()
