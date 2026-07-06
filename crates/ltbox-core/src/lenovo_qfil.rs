@@ -15,11 +15,17 @@
 use crate::error::{LtboxError, Result};
 use serde::Deserialize;
 
-const ENDPOINT: &str = "https://ptstpd.lenovo.com.cn/home/ConfigurationQuery/getPadFlashingMachine";
+// Base64-obfuscated so the host / secret don't surface in code search;
+// decoded at runtime via `obf::reveal` (see `obf.rs` — not security).
+const ENDPOINT_B64: &str = "aHR0cHM6Ly9wdHN0cGQubGVub3ZvLmNvbS5jbi9ob21lL0NvbmZpZ3VyYXRpb25RdWVyeS9nZXRQYWRGbGFzaGluZ01hY2hpbmU=";
+const PACKAGE_PASSWORD_B64: &str = "RkMoZnY6U2tuUg==";
 
 /// Extraction password for the official QFIL package archive. A fixed
 /// constant published in Lenovo's own flashing tool — not device-specific.
-pub const PACKAGE_PASSWORD: &str = "FC(fv:SknR";
+/// De-obfuscated at runtime (see [`crate::obf`]).
+pub fn package_password() -> String {
+    crate::obf::reveal(PACKAGE_PASSWORD_B64)
+}
 
 /// Slim view of one flashing-machine entry.
 #[derive(Debug, Clone, Default)]
@@ -60,7 +66,7 @@ pub fn fetch_qfil_package(mtm: &str) -> Result<Option<QfilPackage>> {
     }
     let agent = crate::downloader::build_agent();
     let mut resp = agent
-        .post(ENDPOINT)
+        .post(crate::obf::reveal(ENDPOINT_B64))
         .send_json(serde_json::json!({ "mtm": mtm }))
         .map_err(|e| LtboxError::Download(format!("Lenovo QFIL POST: {e}")))?;
     let env: Envelope = resp

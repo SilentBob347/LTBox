@@ -320,12 +320,12 @@ impl App {
                 }
                 // Archive password (fixed constant) with a copy affordance —
                 // it isn't discoverable and the user needs it to extract.
-                let pw = ltbox_core::lenovo_qfil::PACKAGE_PASSWORD;
+                let pw = ltbox_core::lenovo_qfil::package_password();
                 let pw_row = row![
-                    info_kv(self.t("qfil_popup_password"), pw),
+                    info_kv(self.t("qfil_popup_password"), &pw),
                     Space::new().width(Length::Fill),
                     button(text(self.t("qfil_popup_copy").to_string()).size(11))
-                        .on_press(Message::CopyToClipboard(pw.to_string()))
+                        .on_press(Message::CopyToClipboard(pw.clone()))
                         .padding([4, 12])
                         .style(md_filled_btn_style),
                 ]

@@ -15,7 +15,10 @@
 
 use crate::error::{LtboxError, Result};
 
-const ENDPOINT: &str = "https://ota.lenovo.com/ota-server/firmware/query/for-text-desc";
+// Base64-obfuscated so the host doesn't surface in code search; decoded at
+// runtime via `obf::reveal` (see `obf.rs` — not security).
+const ENDPOINT_B64: &str =
+    "aHR0cHM6Ly9vdGEubGVub3ZvLmNvbS9vdGEtc2VydmVyL2Zpcm13YXJlL3F1ZXJ5L2Zvci10ZXh0LWRlc2M=";
 
 /// Slim representation of a single `<firmware>` entry. Fields the GUI
 /// doesn't render (`level`, `needbackup`, `result_msg`, `object_to_name`,
@@ -63,7 +66,8 @@ pub fn fetch_ota(serial: &str, firmware_id: &str) -> Result<Option<OtaUpdate>> {
     }
     let device_model = devicemodel_from_firmware(firmware_id);
     let url = format!(
-        "{ENDPOINT}?locale=en&deviceid={serial}&action=querynewfirmware&devicemodel={device_model}&curfirmwarever={firmware_id}"
+        "{}?locale=en&deviceid={serial}&action=querynewfirmware&devicemodel={device_model}&curfirmwarever={firmware_id}",
+        crate::obf::reveal(ENDPOINT_B64)
     );
     let agent = crate::downloader::build_agent();
     let mut resp = agent

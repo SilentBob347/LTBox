@@ -9,8 +9,9 @@ use serde::Deserialize;
 
 use crate::error::{LtboxError, Result};
 
-const ENDPOINT: &str =
-    "https://ptstpd.lenovo.com.cn/home/ConfigurationQuery/getMachineSequenceInfo";
+// Base64-obfuscated so the host doesn't surface in code search; decoded at
+// runtime via `obf::reveal` (see `obf.rs` — not security).
+const ENDPOINT_B64: &str = "aHR0cHM6Ly9wdHN0cGQubGVub3ZvLmNvbS5jbi9ob21lL0NvbmZpZ3VyYXRpb25RdWVyeS9nZXRNYWNoaW5lU2VxdWVuY2VJbmZv";
 
 /// Display order for known fields. Keys missing from the response are
 /// skipped silently so a future schema addition does not break the
@@ -115,7 +116,7 @@ pub fn fetch_machine_info(serial: &str) -> Result<MachineInfo> {
         return Err(LtboxError::Other("empty serial".into()));
     }
     let agent = crate::downloader::build_agent();
-    let url = format!("{ENDPOINT}?MachineNo={trimmed}");
+    let url = format!("{}?MachineNo={trimmed}", crate::obf::reveal(ENDPOINT_B64));
     let mut resp = agent
         .get(&url)
         .call()

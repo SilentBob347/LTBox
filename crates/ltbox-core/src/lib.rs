@@ -15,6 +15,7 @@ pub mod lenovo_info;
 pub mod lenovo_ota;
 pub mod lenovo_qfil;
 pub mod live_sink;
+pub mod obf;
 pub mod partition_lun;
 pub mod runtime;
 pub mod safe_path;
