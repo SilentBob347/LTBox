@@ -94,6 +94,29 @@ impl App {
                 side,
             )
         };
+        // While the on-entry auto-detect runs, show a spinner + label instead
+        // of the cards — the user briefly sees this, then lands on the target
+        // step. The manual PRC/ROW cards are the fallback (probe failed /
+        // inconclusive / skipped from the serial prompt).
+        if self.flash_region_pending.is_some() {
+            let probing = column![
+                iced_aw::Spinner::new(),
+                text(self.t("flash_region_detecting").to_string())
+                    .size(13)
+                    .style(muted_style),
+            ]
+            .spacing(16)
+            .align_x(iced::Alignment::Center);
+            // Shrink-height content centered in the filled body slot — both
+            // axes, so the spinner sits dead center rather than at the top.
+            return container(probing)
+                .padding(28)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+        }
         let col = column![
             row![
                 icon_option_card_sub_square_sized(

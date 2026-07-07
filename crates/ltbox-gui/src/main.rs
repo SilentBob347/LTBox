@@ -2013,6 +2013,18 @@ where
     )
 }
 
+/// Map a PTSTPD `MachineInfo`'s `SaleArea` to a flash region: `"CN"` → PRC,
+/// JSON `null` → ROW, anything else (or missing) → `None` (can't infer).
+fn region_from_salearea(info: &ltbox_core::lenovo_info::MachineInfo) -> Option<DeviceRegion> {
+    match info.field("SaleArea") {
+        ltbox_core::lenovo_info::FieldValue::Value(s) if s.eq_ignore_ascii_case("CN") => {
+            Some(DeviceRegion::Prc)
+        }
+        ltbox_core::lenovo_info::FieldValue::Null => Some(DeviceRegion::Row),
+        _ => None,
+    }
+}
+
 /// Resolve the QFIL-firmware outcome for a serial (blocking; runs in the
 /// worker). `cached` supplies MTM + SaleArea when already known; otherwise
 /// machine info is fetched here. Non-CN `SaleArea` short-circuits to
@@ -2196,6 +2208,17 @@ struct App {
     /// Session QFIL cache keyed by serial. Caches Global / NoPackage / Ready
     /// (errors not cached), so reopening the popup never re-queries.
     qfil_cache: std::collections::HashMap<String, QfilPopupState>,
+    /// `probe_id` of the in-flight on-entry region-detection query, or `None`
+    /// when idle. Doubles as the spinner gate (the region step shows a spinner
+    /// while `Some`) and the staleness token — a result whose id doesn't match
+    /// has been superseded (re-entry, device swap, disconnect) and is ignored.
+    flash_region_pending: Option<u64>,
+    /// Monotonic counter minting a fresh `probe_id` for each region lookup.
+    flash_region_probe_seq: u64,
+    /// Manual-serial prompt for region detection. `Some(buffer)` = open;
+    /// buffer holds the in-progress input. Opened by the Auto FAB when no
+    /// usable polled serial is available.
+    flash_serial_prompt: Option<String>,
     /// PatchArb wizard's unix-timestamp input popup.
     arb_index_popup_open: bool,
     /// Transient toast message; auto-cleared by a delayed task.
@@ -2408,6 +2431,9 @@ impl Default for App {
             firmware_menu_open: false,
             qfil_popup: None,
             qfil_cache: std::collections::HashMap::new(),
+            flash_region_pending: None,
+            flash_region_probe_seq: 0,
+            flash_serial_prompt: None,
             arb_index_popup_open: false,
             toast_msg: None,
             sidebar_expanded: false,
@@ -3070,13 +3096,77 @@ impl App {
             return None;
         }
         let info = self.device_info_cache.get(&self.device_serial)?;
-        match info.field("SaleArea") {
-            ltbox_core::lenovo_info::FieldValue::Value(s) if s.eq_ignore_ascii_case("CN") => {
-                Some(DeviceRegion::Prc)
-            }
-            ltbox_core::lenovo_info::FieldValue::Null => Some(DeviceRegion::Row),
-            _ => None,
+        region_from_salearea(info)
+    }
+
+    /// Kick off region auto-detection on entering the Flash wizard (called
+    /// right after `flash.reset()`):
+    /// * PRC-only model (TB322FC) → preselect PRC and jump to the target step.
+    /// * usable polled serial → probe PTSTPD (region step shows a spinner).
+    /// * no usable serial → open the manual-serial prompt.
+    ///
+    /// On a fetch failure / inconclusive SaleArea the handler falls back to the
+    /// manual PRC/ROW cards, so this never blocks the wizard.
+    fn begin_flash_region_auto(&mut self) -> Task<Message> {
+        if self.is_tb322fc() {
+            // PRC-only SKU: no lookup needed; skip straight to the target step.
+            self.flash.device_region = Some(DeviceRegion::Prc);
+            self.flash.step = 1;
+            return Task::none();
         }
+        if self.has_pollable_serial() {
+            let serial = self.device_serial.trim().to_string();
+            return self.start_region_probe(serial);
+        }
+        // Serial comes only from an ADB/fastboot poll; ask for it manually.
+        self.flash_serial_prompt = Some(String::new());
+        Task::none()
+    }
+
+    /// Mint a fresh probe id, mark it pending (shows the spinner), and spawn
+    /// the lookup. The id is the staleness token the result handler checks.
+    fn start_region_probe(&mut self, serial: String) -> Task<Message> {
+        self.flash_region_probe_seq += 1;
+        let id = self.flash_region_probe_seq;
+        self.flash_region_pending = Some(id);
+        self.spawn_auto_region_fetch(id, serial)
+    }
+
+    /// Whether the polled serial is usable for an automatic region lookup: the
+    /// device is in an ADB/fastboot state (the only ones that yield a serial)
+    /// and the serial has the expected `HA…` prefix (guards against a garbled
+    /// read). When false, region detection falls back to the manual prompt.
+    fn has_pollable_serial(&self) -> bool {
+        matches!(
+            self.connection,
+            ConnectionStatus::Adb | ConnectionStatus::AdbRecovery | ConnectionStatus::Fastboot
+        ) && self.device_serial.trim().starts_with("HA")
+    }
+
+    /// Off-thread PTSTPD fetch for auto region detection. Reuses the device
+    /// -info cache when the serial is already known this session; otherwise
+    /// fetches. Result arrives as `FlashMsg::FlashAutoRegionFetched`.
+    fn spawn_auto_region_fetch(&self, id: u64, serial: String) -> Task<Message> {
+        if let Some(info) = self.device_info_cache.get(&serial).cloned() {
+            return Task::done(Message::Flash(FlashMsg::FlashAutoRegionFetched(
+                id,
+                serial,
+                Ok(info),
+            )));
+        }
+        // The fallback (heavy-thread spawn failure / panic) carries the same id
+        // + serial so the handler clears the spinner and falls back to manual
+        // instead of treating it as stale.
+        let serial_fb = serial.clone();
+        task_heavy(
+            move || {
+                let r =
+                    ltbox_core::lenovo_info::fetch_machine_info(&serial).map_err(|e| e.to_string());
+                (id, serial, r)
+            },
+            |(id, s, r)| Message::Flash(FlashMsg::FlashAutoRegionFetched(id, s, r)),
+            move |e| (id, serial_fb, Err(e)),
+        )
     }
 
     /// Returns the Settings-level default EDL loader path when it is set

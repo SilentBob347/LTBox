@@ -53,16 +53,15 @@ impl App {
                     && !self.flash.is_on_confirm_step()
                 {
                     self.flash.reset();
-                    // Re-apply SaleArea-driven preselect: `flash.reset()`
-                    // wipes `device_region` back to `None`, but the user's
-                    // earlier device-info fetch already picked a region;
-                    // mirror it onto the freshly-reset wizard so navigating
-                    // into Flash does not undo the inference.
-                    if self.flash.device_region.is_none()
-                        && let Some(r) = self.inferred_flash_region()
-                    {
-                        self.flash.device_region = Some(r);
-                    }
+                    // Fresh entry: auto-detect the hardware region (PRC/ROW)
+                    // so the user lands on the target step; falls back to the
+                    // manual region cards on failure. Returns early — the
+                    // remaining view branches are for other views. Clearing the
+                    // pending token invalidates any lookup still in flight from
+                    // a prior entry.
+                    self.flash_region_pending = None;
+                    self.flash_serial_prompt = None;
+                    return self.begin_flash_region_auto();
                 }
                 if v == View::SystemUpdate
                     && !busy
@@ -496,6 +495,8 @@ impl App {
                 );
             }
             Message::DevicePolled(r) => {
+                let prev_serial = self.device_serial.clone();
+                let prev_status = self.connection;
                 self.connection = r.status;
                 if !r.model.is_empty() {
                     self.device_model = r.model;
@@ -537,6 +538,14 @@ impl App {
                     self.device_serial.clear();
                     self.platform_supported = None;
                 }
+                // Device swap / disconnect mid-lookup: invalidate any in-flight
+                // region auto-detect so a prior device's PRC/ROW answer can't
+                // apply to the one now connected. Also covers a swap to a
+                // serial-less state (e.g. EDL) where `device_serial` is kept
+                // but the connection changed.
+                if self.device_serial != prev_serial || self.connection != prev_status {
+                    self.flash_region_pending = None;
+                }
             }
             Message::DeviceInfoOpen => {
                 let serial = self.device_serial.trim().to_string();
@@ -574,17 +583,10 @@ impl App {
                 }
                 match result {
                     Ok(info) => {
-                        // SaleArea-driven Flash region preselect. CN ⇒ PRC,
-                        // explicit JSON null ⇒ ROW. Other strings / missing
-                        // key leave the field untouched. Only set when the
-                        // user has not already picked one to avoid clobbering
-                        // a manual choice.
+                        // Cache only. Flash region is no longer preselected
+                        // silently here — the Flash wizard's Auto FAB is the
+                        // explicit entry point for SaleArea-driven detection.
                         self.device_info_cache.insert(serial.clone(), info);
-                        if self.flash.device_region.is_none()
-                            && let Some(r) = self.inferred_flash_region()
-                        {
-                            self.flash.device_region = Some(r);
-                        }
                         if matches!(&self.device_info_popup, Some((s, _)) if s == &serial) {
                             self.device_info_popup = Some((serial, DeviceInfoState::Ready));
                         }

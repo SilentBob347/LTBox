@@ -18,6 +18,74 @@ impl App {
                 self.flash.device_region = Some(r);
                 Task::none()
             }
+            FlashMsg::FlashSerialPromptInput(s) => {
+                if let Some(buf) = &mut self.flash_serial_prompt {
+                    *buf = s;
+                }
+                Task::none()
+            }
+            FlashMsg::FlashSerialPromptSkip => {
+                // Dismiss → the region step shows the manual PRC/ROW cards
+                // (not probing, no prompt).
+                self.flash_serial_prompt = None;
+                Task::none()
+            }
+            FlashMsg::FlashSerialPromptSubmit => {
+                let Some(buf) = self.flash_serial_prompt.take() else {
+                    return Task::none();
+                };
+                let serial = buf.trim().to_string();
+                if serial.is_empty() {
+                    // Nothing entered — keep the prompt open.
+                    self.flash_serial_prompt = Some(buf);
+                    return Task::none();
+                }
+                self.start_region_probe(serial)
+            }
+            FlashMsg::FlashAutoRegionFetched(id, serial, result) => {
+                // Ignore a superseded lookup — a newer probe (re-entry, device
+                // swap, or a fresh manual serial) has taken over. Leaves the
+                // active probe's spinner up untouched.
+                if self.flash_region_pending != Some(id) {
+                    return Task::none();
+                }
+                self.flash_region_pending = None;
+                match result {
+                    Ok(info) => {
+                        let region = region_from_salearea(&info);
+                        if !serial.is_empty() {
+                            self.device_info_cache.insert(serial, info);
+                        }
+                        // Only touch the selection while still on the region
+                        // step — never retroactively change a region the user
+                        // has already advanced past.
+                        if self.flash.step != 0 {
+                            return Task::none();
+                        }
+                        match region {
+                            // Resolved → preselect and advance to the target step.
+                            Some(r) => {
+                                self.flash.device_region = Some(r);
+                                self.flash.step = 1;
+                            }
+                            // SaleArea neither CN nor null → can't decide;
+                            // stay on the manual region cards + note it.
+                            None => {
+                                let msg = self.t("flash_region_auto_unknown").to_string();
+                                return Task::done(Message::ToastShow(msg));
+                            }
+                        }
+                    }
+                    // Network/upstream failure → manual region cards + toast.
+                    Err(e) => {
+                        if self.flash.step != 0 {
+                            return Task::none();
+                        }
+                        return Task::done(Message::ToastShow(e));
+                    }
+                }
+                Task::none()
+            }
             FlashMsg::FlashTarget(t) => {
                 // TB322FC: cross-region (OtherRegion) flashes are blocked
                 // because the only valid region is PRC. Drop the message

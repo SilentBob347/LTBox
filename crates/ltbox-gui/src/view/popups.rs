@@ -466,6 +466,53 @@ impl App {
         m3_dialog(content.into())
     }
 
+    /// Manual serial-number prompt for auto region detection. Shown by the
+    /// Flash region-step Auto FAB when no usable polled serial is available
+    /// (device not in ADB/fastboot, or a garbled read).
+    pub(crate) fn flash_serial_prompt_view(&self) -> Element<'_, Message> {
+        let Some(buf) = self.flash_serial_prompt.clone() else {
+            return container(text("")).into();
+        };
+        let valid = !buf.trim().is_empty();
+        let title = text(self.t("flash_serial_prompt_title").to_string())
+            .size(theme::text_size::WIZARD_STEP_TITLE);
+        let subtitle = text(self.t("flash_serial_prompt_subtitle").to_string())
+            .size(12)
+            .style(muted_style);
+        let input = iced::widget::text_input(self.t("flash_serial_prompt_placeholder"), &buf)
+            .on_input(|s| Message::Flash(FlashMsg::FlashSerialPromptInput(s)))
+            .on_submit(Message::Flash(FlashMsg::FlashSerialPromptSubmit))
+            .padding([8, 12])
+            .size(14)
+            .width(Length::Fill)
+            .style(m3_text_input_style);
+        let skip_btn = button(text(self.t("flash_serial_prompt_skip").to_string()).size(13))
+            .on_press(Message::Flash(FlashMsg::FlashSerialPromptSkip))
+            .padding([8, 18])
+            .style(md_text_btn_style);
+        let ok_inner = text(self.t("btn_ok").to_string()).size(13);
+        let ok_btn = if valid {
+            button(ok_inner)
+                .on_press(Message::Flash(FlashMsg::FlashSerialPromptSubmit))
+                .padding([8, 18])
+                .style(md_filled_btn_style)
+        } else {
+            button(ok_inner).padding([8, 18]).style(md_filled_btn_style)
+        };
+        let content = column![
+            title,
+            subtitle,
+            input,
+            row![Space::new().width(Length::Fill), skip_btn, ok_btn]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12)
+        .padding(20)
+        .width(420);
+        m3_dialog(content.into())
+    }
+
     pub(crate) fn country_popup_view(&self) -> Element<'_, Message> {
         let mut list = column![].spacing(2);
         let selected_code = self.country_popup_selected_code();

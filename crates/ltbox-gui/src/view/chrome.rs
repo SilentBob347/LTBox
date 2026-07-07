@@ -90,6 +90,9 @@ impl App {
         if self.qfil_popup.is_some() {
             layers.push(self.qfil_popup_view());
         }
+        if self.flash_serial_prompt.is_some() {
+            layers.push(self.flash_serial_prompt_view());
+        }
         if self.arb_index_popup_open {
             layers.push(self.arb_index_popup_view());
         }

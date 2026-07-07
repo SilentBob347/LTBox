@@ -173,6 +173,21 @@ pub(crate) enum WindowMsg {
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum FlashMsg {
     FlashRegion(DeviceRegion),
+    /// Result of the on-entry auto-region PTSTPD fetch: `(probe_id, serial,
+    /// result)`. The monotonic `probe_id` is the staleness token — only the
+    /// currently-pending probe is applied. Preselects PRC/ROW from SaleArea
+    /// and advances past the step.
+    FlashAutoRegionFetched(
+        u64,
+        String,
+        Result<ltbox_core::lenovo_info::MachineInfo, String>,
+    ),
+    /// Manual-serial prompt: typing.
+    FlashSerialPromptInput(String),
+    /// Manual-serial prompt: submit the entered serial and query.
+    FlashSerialPromptSubmit,
+    /// Manual-serial prompt: skip auto-detect and pick the region manually.
+    FlashSerialPromptSkip,
     FlashTarget(FlashTarget),
     FlashDataMode(DataMode),
     FlashNext,
