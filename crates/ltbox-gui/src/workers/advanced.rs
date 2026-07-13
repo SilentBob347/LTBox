@@ -2,9 +2,10 @@
 //! patch, ARB patch, vbmeta rebuild, xml convert. Each takes one input
 //! image and writes patched output. Extracted from the update_adv handler.
 
-use crate::{AdvAction, DeviceRegion};
+use crate::{AdvAction, DeviceRegion, PhaseReporter};
 use ltbox_core::tr_args;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn advanced_file_worker(
     input_path: String,
     action: AdvAction,
@@ -13,6 +14,7 @@ pub(crate) fn advanced_file_worker(
     adv_arb_index: Option<u64>,
     output_dir: std::path::PathBuf,
     action_label: String,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let input = std::path::Path::new(&input_path);
@@ -35,6 +37,7 @@ pub(crate) fn advanced_file_worker(
             return Err(ltbox_core::i18n::tr("err_advanced_image_info_dedicated"));
         }
         AdvAction::ConvertXml => {
+            ltbox_core::live!(log, "[Crypto] {}", phases.marker(1));
             // `input` is now the folder holding the encrypted
             // `*.x` pack (picker moved from file→folder so
             // users don't have to repeat the dialog for each
@@ -64,6 +67,7 @@ pub(crate) fn advanced_file_worker(
                     path = input.display().to_string()
                 ));
             }
+            ltbox_core::live!(log, "[Crypto] {}", phases.marker(2));
             for src in entries {
                 let stem = src.file_stem().unwrap_or_default();
                 let output = output_dir.join(stem).with_extension("xml");
@@ -82,6 +86,7 @@ pub(crate) fn advanced_file_worker(
                     }
                 }
             }
+            ltbox_core::live!(log, "[Crypto] {}", phases.marker(3));
         }
         AdvAction::DetectArb => {
             // DetectArb routes through its dedicated
@@ -104,6 +109,7 @@ pub(crate) fn advanced_file_worker(
             );
         }
         AdvAction::RegionConvert => {
+            ltbox_core::live!(log, "[Region] {}", phases.marker(1));
             let Some(target_region) = adv_region_target else {
                 return Err(ltbox_core::i18n::tr("err_region_target_missing"));
             };
@@ -124,12 +130,20 @@ pub(crate) fn advanced_file_worker(
                 ));
             }
             let target = target_region.to_region_target();
-            match ltbox_patch::region::build_region_converted_boot_chain(
+            match ltbox_patch::region::build_region_converted_boot_chain_with_progress(
                 firmware_dir,
                 &output_dir,
                 target,
                 &ltbox_patch::region::RegionPatternSet::default(),
                 None,
+                |stage| {
+                    let phase = match stage {
+                        ltbox_patch::region::RegionBuildStage::Inspect => 2,
+                        ltbox_patch::region::RegionBuildStage::PatchVendorBoot => 3,
+                        ltbox_patch::region::RegionBuildStage::RebuildVbmeta => 4,
+                    };
+                    ltbox_core::live!(log, "[Region] {}", phases.marker(phase));
+                },
             ) {
                 Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
                     ltbox_core::live!(
@@ -163,6 +177,9 @@ pub(crate) fn advanced_file_worker(
                     source_region,
                     target,
                 }) => {
+                    // Inspection can prove that no patch is needed. Skip the
+                    // write phase but still finish on the stable final phase.
+                    ltbox_core::live!(log, "[Region] {}", phases.marker(4));
                     ltbox_core::live!(
                         log,
                         "[Region] {}",
@@ -297,6 +314,7 @@ pub(crate) fn advanced_file_worker(
             }
         }
         AdvAction::PatchArb => {
+            ltbox_core::live!(log, "[ARB] {}", phases.marker(1));
             // `input` is the firmware folder; user-picked
             // target rollback index lives on the wizard.
             let target = adv_arb_index
@@ -347,6 +365,7 @@ pub(crate) fn advanced_file_worker(
                     index = vbmeta_info.rollback_index.to_string()
                 ));
             }
+            ltbox_core::live!(log, "[ARB] {}", phases.marker(2));
             // Signing key resolution: only the two stock
             // test keys embedded in avbtool-rs are supported.
             // Anything else aborts — user-supplied PEMs are
@@ -406,6 +425,7 @@ pub(crate) fn advanced_file_worker(
             let boot_out = output_dir.join("boot.img");
             let vbmeta_out = output_dir.join("vbmeta_system.img");
             // boot.img: NONE → add_hash_footer; signed → resign.
+            ltbox_core::live!(log, "[ARB] {}", phases.marker(3));
             std::fs::copy(&boot, &boot_out).map_err(|e| {
                 tr_args!(
                     "err_patch_arb_copy_failed",
@@ -443,6 +463,7 @@ pub(crate) fn advanced_file_worker(
                 })?;
             }
             // vbmeta_system.img: always resign (chains require sig).
+            ltbox_core::live!(log, "[ARB] {}", phases.marker(4));
             std::fs::copy(&vbmeta, &vbmeta_out).map_err(|e| {
                 tr_args!(
                     "err_patch_arb_copy_failed",
@@ -473,6 +494,7 @@ pub(crate) fn advanced_file_worker(
             );
         }
         AdvAction::RebuildVbmeta => {
+            ltbox_core::live!(log, "[AVB] {}", phases.marker(1));
             // `resign_image` alone won't work — chain
             // hashes go stale once dtbo / init_boot /
             // vendor_boot move.
@@ -523,6 +545,7 @@ pub(crate) fn advanced_file_worker(
                     chained.push(p);
                 }
             }
+            ltbox_core::live!(log, "[AVB] {}", phases.marker(2));
             if chained.is_empty() {
                 ltbox_core::live!(
                     log,
@@ -597,6 +620,7 @@ pub(crate) fn advanced_file_worker(
                     )
                 );
             }
+            ltbox_core::live!(log, "[AVB] {}", phases.marker(3));
         }
     }
     ltbox_core::live!(

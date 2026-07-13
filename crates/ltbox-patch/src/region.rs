@@ -171,6 +171,14 @@ pub enum RegionBootChainBuild {
     },
 }
 
+/// Coarse build boundaries exposed to callers that present progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionBuildStage {
+    Inspect,
+    PatchVendorBoot,
+    RebuildVbmeta,
+}
+
 /// Build the AVB-valid `vendor_boot.img` + `vbmeta.img` pair for region
 /// conversion.
 ///
@@ -184,6 +192,25 @@ pub fn build_region_converted_boot_chain(
     target: RegionTarget,
     patterns: &RegionPatternSet,
     key_override: Option<&str>,
+) -> Result<RegionBootChainBuild> {
+    build_region_converted_boot_chain_with_progress(
+        firmware_dir,
+        output_dir,
+        target,
+        patterns,
+        key_override,
+        |_| {},
+    )
+}
+
+/// Build a region-converted boot chain while reporting stable coarse stages.
+pub fn build_region_converted_boot_chain_with_progress(
+    firmware_dir: &Path,
+    output_dir: &Path,
+    target: RegionTarget,
+    patterns: &RegionPatternSet,
+    key_override: Option<&str>,
+    mut on_stage: impl FnMut(RegionBuildStage),
 ) -> Result<RegionBootChainBuild> {
     if output_dir.exists() {
         fs::remove_dir_all(output_dir).map_err(|e| {
@@ -215,6 +242,7 @@ pub fn build_region_converted_boot_chain(
         )));
     }
 
+    on_stage(RegionBuildStage::Inspect);
     let vendor_boot_data = fs::read(&vendor_boot_src).map_err(|e| {
         LtboxError::Patch(format!("Cannot read {}: {e}", vendor_boot_src.display()))
     })?;
@@ -228,6 +256,7 @@ pub fn build_region_converted_boot_chain(
         });
     }
 
+    on_stage(RegionBuildStage::PatchVendorBoot);
     let vendor_boot_out = output_dir.join("vendor_boot.img");
     let replacement_count = patch_vendor_boot(
         &vendor_boot_src,
@@ -252,6 +281,7 @@ pub fn build_region_converted_boot_chain(
         vendor_boot_out.display()
     );
 
+    on_stage(RegionBuildStage::RebuildVbmeta);
     let vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
     let vbmeta_out = output_dir.join("vbmeta.img");
     // `key_override` (testkey) re-signs the rebuilt vbmeta with that key rather
@@ -642,6 +672,32 @@ mod tests {
             detect_region_in_data(b"no marker", &patterns),
             DetectedRegion::Unknown
         );
+    }
+
+    #[test]
+    fn region_build_progress_stops_after_inspection_when_target_matches() {
+        let firmware = tempfile::tempdir().unwrap();
+        fs::write(
+            firmware.path().join("vendor_boot.img"),
+            b"header IROW footer",
+        )
+        .unwrap();
+        fs::write(firmware.path().join("vbmeta.img"), b"unused for no-op").unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let mut stages = Vec::new();
+
+        let result = build_region_converted_boot_chain_with_progress(
+            firmware.path(),
+            output.path(),
+            RegionTarget::Row,
+            &RegionPatternSet::default(),
+            None,
+            |stage| stages.push(stage),
+        )
+        .unwrap();
+
+        assert!(matches!(result, RegionBootChainBuild::Skipped { .. }));
+        assert_eq!(stages, vec![RegionBuildStage::Inspect]);
     }
 
     #[test]

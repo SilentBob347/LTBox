@@ -60,12 +60,14 @@ pub(crate) fn detect_arb_run(
     i_reboot_fastboot: &str,
     i_reboot_system: &str,
     i_edl_dump: &str,
+    phases: PhaseReporter,
     log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
     use ltbox_device::adb::AdbManager;
     use ltbox_device::fastboot::FastbootDevice;
 
     // Step 1: ensure we are in fastboot.
+    ltbox_core::live!(log, "[ARB] {}", phases.marker(1));
     if !matches!(conn, ConnectionStatus::Fastboot) {
         match conn {
             ConnectionStatus::Adb | ConnectionStatus::AdbRecovery => {
@@ -90,12 +92,14 @@ pub(crate) fn detect_arb_run(
 
     // Step 2: read fastboot vars (rollback_indices map is the source
     // of truth — its emptiness drives the model-specific fallback).
+    ltbox_core::live!(log, "[ARB] {}", phases.marker(2));
     let vars = FastbootDevice::open()
         .and_then(|mut d| d.get_all_vars())
         .map_err(|e| format!("fastboot vars: {e}"))?;
 
     let stored_present = !vars.rollback_indices.is_empty();
     if stored_present {
+        ltbox_core::live!(log, "[ARB] {}", phases.marker(4));
         let mut filtered: Vec<(u32, u64)> = vars
             .rollback_indices
             .iter()
@@ -111,6 +115,7 @@ pub(crate) fn detect_arb_run(
             ltbox_core::live!(log, "stored_rollback_index:{idx} = {ts} ({utc})");
         }
         ltbox_core::live!(log, "");
+        ltbox_core::live!(log, "[ARB] {}", phases.marker(5));
         ltbox_core::live!(log, "[ARB] {i_reboot_system}");
         if let Ok(mut dev) = FastbootDevice::open() {
             let _ = dev.reboot();
@@ -123,6 +128,7 @@ pub(crate) fn detect_arb_run(
     // read the ACTIVE-slot boot + vbmeta_system indices over EDL. (TB322FC
     // falls through to step 4 / "no anti-rollback".)
     if is_rollback_protected_model(&device_model) {
+        ltbox_core::live!(log, "[ARB] {}", phases.marker(3));
         let Some(loader) = loader_path else {
             return Err("An EDL loader is required for the deeper rollback inspection".into());
         };
@@ -155,6 +161,7 @@ pub(crate) fn detect_arb_run(
             .rollback_index;
         let _ = std::fs::remove_file(&boot_out);
         let _ = std::fs::remove_file(&vbm_out);
+        ltbox_core::live!(log, "[ARB] {}", phases.marker(4));
         ltbox_core::live!(log, "");
         ltbox_core::live!(log, "{i_anti}");
         ltbox_core::live!(log, "");
@@ -169,15 +176,18 @@ pub(crate) fn detect_arb_run(
             format_unix_timestamp_utc(vbm_idx)
         );
         ltbox_core::live!(log, "");
+        ltbox_core::live!(log, "[ARB] {}", phases.marker(5));
         ltbox_core::live!(log, "[ARB] {i_reboot_system}");
         session.reset_tolerant(log);
         return Ok(());
     }
 
     // Step 4: no stored_rollback_index, no TB320FC override.
+    ltbox_core::live!(log, "[ARB] {}", phases.marker(4));
     ltbox_core::live!(log, "");
     ltbox_core::live!(log, "{i_not}");
     ltbox_core::live!(log, "");
+    ltbox_core::live!(log, "[ARB] {}", phases.marker(5));
     ltbox_core::live!(log, "[ARB] {i_reboot_system}");
     if let Ok(mut dev) = FastbootDevice::open() {
         let _ = dev.reboot();

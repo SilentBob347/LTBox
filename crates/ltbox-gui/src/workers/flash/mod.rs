@@ -4,9 +4,9 @@
 //! update_flash handler.
 
 use crate::{
-    ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, active_slot_suffix,
-    build_tb323fu_arb_overlays, efisp_asset_suffix, find_firmware_loader, fingerprint_token_match,
-    is_rollback_protected_model, open_edl_session, phase_marker,
+    ConnectionStatus, CountryPatchProgress, LiveLabels, PhaseReporter, WorkflowConfig,
+    active_slot_suffix, build_tb323fu_arb_overlays, efisp_asset_suffix, find_firmware_loader,
+    fingerprint_token_match, is_rollback_protected_model, open_edl_session,
     read_device_rollback_index_via_edl, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
@@ -667,10 +667,23 @@ fn run_country_change(
     target_code: &str,
     ll: &LiveLabels,
     log: &mut Vec<String>,
+    phases: Option<&PhaseReporter>,
 ) -> Result<(), String> {
     use ltbox_patch::region::{EU_COUNTRY_CODES as EU_CODES, KNOWN_COUNTRY_CODES as KNOWN_CODES};
+
+    struct CountryPartitionWork {
+        label: &'static str,
+        lun: u8,
+        dump_path: std::path::PathBuf,
+        detected: Option<String>,
+    }
+
     let country_partitions = country_partitions_for(device_model, firmware_fingerprint);
     let mut country_progress = CountryPatchProgress::new(country_partitions);
+    if let Some(phases) = phases {
+        live!(log, "[Country] {}", phases.marker(3));
+    }
+    let mut staged = Vec::with_capacity(country_partitions.len());
     for label in country_partitions.iter().copied() {
         let Some(lun) = ltbox_core::partition_lun::lun_for_partition(label) else {
             let reason = ltbox_core::i18n::tr("country_reason_no_lun");
@@ -745,9 +758,28 @@ fn run_country_change(
                     )
                 );
                 country_progress.mark_failed(label, reason);
-                None
+                continue;
             }
         };
+
+        staged.push(CountryPartitionWork {
+            label,
+            lun,
+            dump_path,
+            detected,
+        });
+    }
+
+    if let Some(phases) = phases {
+        live!(log, "[Country] {}", phases.marker(4));
+    }
+    for work in staged {
+        let CountryPartitionWork {
+            label,
+            lun,
+            dump_path,
+            detected,
+        } = work;
         let patched_path = work_dir.join(format!("{label}.patched.img"));
         // Patch the country code when the partition carries
         // one. `persist` has no real country code (its only

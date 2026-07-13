@@ -4,7 +4,7 @@
 
 use crate::{
     ConnectionStatus, DumpPartRow, DumpPartsScanResult, FlashPartRow, FlashPartsScanResult,
-    FlashRowState, ensure_edl,
+    FlashRowState, PhaseReporter, ensure_edl,
 };
 use ltbox_core::tr_args;
 
@@ -139,8 +139,10 @@ pub(crate) fn flash_parts_scan(
 pub(crate) fn flash_parts_execute(
     loader_path: String,
     rows: Vec<FlashPartRow>,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
+    ltbox_core::live!(log, "[FlashParts] {}", phases.marker(1));
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
@@ -163,6 +165,7 @@ pub(crate) fn flash_parts_execute(
         }
     };
 
+    ltbox_core::live!(log, "[FlashParts] {}", phases.marker(2));
     for row in &rows {
         match row.state {
             FlashRowState::Flash => {
@@ -265,6 +268,7 @@ pub(crate) fn flash_parts_execute(
         }
     }
 
+    ltbox_core::live!(log, "[FlashParts] {}", phases.marker(3));
     ltbox_core::live!(
         log,
         "[FlashParts] {}",
@@ -437,6 +441,7 @@ pub(crate) fn dump_parts_execute(
     loader_path: String,
     output_folder: String,
     rows: Vec<DumpPartRow>,
+    phases: PhaseReporter,
 ) -> Vec<String> {
     let mut log = Vec::new();
     let out_dir = std::path::PathBuf::from(&output_folder);
@@ -449,6 +454,7 @@ pub(crate) fn dump_parts_execute(
         return log;
     }
 
+    ltbox_core::live!(log, "[DumpParts] {}", phases.marker(1));
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
@@ -463,6 +469,7 @@ pub(crate) fn dump_parts_execute(
         }
     };
 
+    ltbox_core::live!(log, "[DumpParts] {}", phases.marker(2));
     let mut critical_failures: Vec<String> = Vec::new();
     for row in &rows {
         let out_path =
@@ -526,6 +533,7 @@ pub(crate) fn dump_parts_execute(
         }
     }
 
+    ltbox_core::live!(log, "[DumpParts] {}", phases.marker(3));
     ltbox_core::live!(
         log,
         "[DumpParts] {}",
@@ -535,6 +543,7 @@ pub(crate) fn dump_parts_execute(
         )
     );
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
+    ltbox_core::live!(log, "[DumpParts] {}", phases.marker(4));
     ltbox_core::live!(
         log,
         "[DumpParts] {}",
@@ -571,8 +580,10 @@ pub(crate) fn dump_physical_execute(
     loader_path: String,
     output_folder: String,
     luns: Vec<u8>,
+    phases: PhaseReporter,
 ) -> Vec<String> {
     let mut log = Vec::new();
+    ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(1));
     if ensure_edl(conn, "DumpPhys", &mut log).is_err() {
         flush_worker_logs(&mut log);
         return Vec::new();
@@ -589,6 +600,7 @@ pub(crate) fn dump_physical_execute(
         return Vec::new();
     }
 
+    ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(2));
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
@@ -605,6 +617,7 @@ pub(crate) fn dump_physical_execute(
     };
     flush_worker_logs(&mut log);
 
+    ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(3));
     for lun in &luns {
         let out_path = out_dir.join(format!("lun_{lun}.img"));
         ltbox_core::live!(
@@ -631,6 +644,7 @@ pub(crate) fn dump_physical_execute(
         flush_worker_logs(&mut log);
     }
 
+    ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(4));
     ltbox_core::live!(
         log,
         "[DumpPhys] {}",
@@ -641,6 +655,7 @@ pub(crate) fn dump_physical_execute(
     );
     flush_worker_logs(&mut log);
     std::thread::sleep(EDL_POST_DUMP_STABILIZE);
+    ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(5));
     ltbox_core::live!(
         log,
         "[DumpPhys] {}",
@@ -662,12 +677,15 @@ pub(crate) fn flash_physical_execute(
     conn: ConnectionStatus,
     loader_path: String,
     pairs: Vec<(u8, String)>,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
+    ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(1));
     if ensure_edl(conn, "FlashPhys", &mut log).is_err() {
         return Err(ltbox_core::i18n::tr("err_edl_transition_failed"));
     }
 
+    ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(2));
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
@@ -690,6 +708,7 @@ pub(crate) fn flash_physical_execute(
         }
     };
 
+    ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(3));
     for (lun, path) in &pairs {
         let img = std::path::Path::new(path);
         if !img.exists() {
@@ -736,6 +755,7 @@ pub(crate) fn flash_physical_execute(
         }
     }
 
+    ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(4));
     ltbox_core::live!(
         log,
         "[FlashPhys] {}",

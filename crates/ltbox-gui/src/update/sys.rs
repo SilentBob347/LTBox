@@ -130,7 +130,12 @@ impl App {
                 let device_model = self.device_model.clone();
                 let conn = self.connection;
                 let ll = self.live_labels();
-                self.begin_op(View::SystemUpdate);
+                let phase_kind = match action {
+                    SysUpdateAction::Disable => OperationPhaseKind::SysUpdateDisable,
+                    SysUpdateAction::Enable => OperationPhaseKind::SysUpdateEnable,
+                    SysUpdateAction::Rescue => OperationPhaseKind::BootRecovery,
+                };
+                let phases = self.begin_phased_op(View::SystemUpdate, phase_kind);
                 self.error_msg = None;
                 self.log_push(format!(
                     "[SysUpdate] {}",
@@ -149,6 +154,7 @@ impl App {
                                 device_model,
                                 conn,
                                 ll,
+                                phases,
                             )
                         })
                         .await

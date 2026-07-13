@@ -187,8 +187,7 @@ impl App {
                 Task::none()
             }
             FlashMsg::FlashExecStart => {
-                self.begin_op(View::Flash);
-                self.op_steps = self.derive_flash_op_steps();
+                let phases = self.begin_phased_op(View::Flash, OperationPhaseKind::Flash);
                 self.error_msg = None;
                 let cfg = self.wf_config.clone();
                 let conn = self.connection;
@@ -240,6 +239,7 @@ impl App {
                                     loader_override,
                                     rb_mode,
                                     ll,
+                                    phases,
                                 )
                             })
                             .and_then(|r| r)

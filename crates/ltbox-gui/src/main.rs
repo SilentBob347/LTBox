@@ -21,6 +21,7 @@ mod device_name;
 mod loader;
 mod message;
 mod model;
+mod operation_phase;
 mod pickers;
 mod root_manager;
 mod settings_store;
@@ -41,6 +42,7 @@ pub(crate) use loader::*;
 pub(crate) use message::*;
 pub(crate) use model::device::*;
 pub(crate) use model::wizard::*;
+pub(crate) use operation_phase::*;
 pub(crate) use root_manager::{
     install_root_manager_apk, stage_manager_apk_for_manual_install,
     wait_and_install_root_manager_apk,
@@ -1105,31 +1107,6 @@ impl ThemeChoice {
     }
 }
 
-// =========================================================================
-// Operation progress steps
-// =========================================================================
-
-/// One phase of a long-running op. The GUI advances through
-/// `Vec<OpStep>` by matching phase markers (`N/M`) in the log stream —
-/// no separate event channel.
-#[derive(Debug, Clone)]
-struct OpStep {
-    /// Pre-translated label for the single-step card. Derived at op
-    /// start so language changes only re-run `derive_*_op_steps`.
-    label: String,
-}
-
-/// Localized phase marker text that still includes a stable `N/M` token
-/// for progress parsing.
-pub(crate) fn phase_marker<S: AsRef<str>>(phase: usize, total: usize, label: S) -> String {
-    tr_args!(
-        "live_phase_marker",
-        phase = phase.to_string(),
-        total = total.to_string(),
-        label = label.as_ref()
-    )
-}
-
 /// Match a SKU token (e.g. `"TB323FU"`) inside an arbitrary string with
 /// alphanumeric word boundaries so a future variant like `TB323FUX` does
 /// not collide with the bare match. Used by the flash worker to gate
@@ -1871,9 +1848,6 @@ fn parse_hwboardid_ram_storage(hwboardid: &str) -> (String, String) {
 /// can't carry `self` across thread boundaries.
 #[derive(Debug, Clone)]
 pub(crate) struct LiveLabels {
-    pub(crate) op_root_phase: [String; 7],
-    pub(crate) op_unroot_phase: [String; 3],
-    pub(crate) op_flash_phase: [String; 4],
     pub(crate) closing_dump: String,
     pub(crate) flash_completed: String,
     pub(crate) root_completed: String,
@@ -2715,62 +2689,23 @@ impl App {
         self.log_separator(Some(&label));
     }
 
-    /// 7-phase Root flow (Phase 1/7 → 7/7).
-    fn derive_root_op_steps(&self) -> Vec<OpStep> {
-        [
-            "op_root_phase_1",
-            "op_root_phase_2",
-            "op_root_phase_3",
-            "op_root_phase_4",
-            "op_root_phase_5",
-            "op_root_phase_6",
-            "op_root_phase_7",
-        ]
-        .iter()
-        .map(|k| OpStep {
-            label: self.t(k).to_string(),
-        })
-        .collect()
-    }
-
-    /// 3-phase Unroot flow.
-    fn derive_unroot_op_steps(&self) -> Vec<OpStep> {
-        [
-            "op_unroot_phase_1",
-            "op_unroot_phase_2",
-            "op_unroot_phase_3",
-        ]
-        .iter()
-        .map(|k| OpStep {
-            label: self.t(k).to_string(),
-        })
-        .collect()
+    fn begin_phased_op(&mut self, view: View, kind: OperationPhaseKind) -> PhaseReporter {
+        debug_assert!(OperationPhaseKind::all().contains(&kind));
+        let reporter = PhaseReporter::from_labels(
+            kind.keys()
+                .iter()
+                .map(|key| self.t(key).to_string())
+                .collect(),
+        );
+        self.begin_op(view);
+        self.op_steps = reporter.steps();
+        reporter
     }
 
     /// Snapshot localized log strings for use across thread boundaries.
     fn live_labels(&self) -> LiveLabels {
         let t = |k: &str| self.t(k).to_string();
         LiveLabels {
-            op_root_phase: [
-                t("op_root_phase_1"),
-                t("op_root_phase_2"),
-                t("op_root_phase_3"),
-                t("op_root_phase_4"),
-                t("op_root_phase_5"),
-                t("op_root_phase_6"),
-                t("op_root_phase_7"),
-            ],
-            op_unroot_phase: [
-                t("op_unroot_phase_1"),
-                t("op_unroot_phase_2"),
-                t("op_unroot_phase_3"),
-            ],
-            op_flash_phase: [
-                t("op_flash_phase_1"),
-                t("op_flash_phase_2"),
-                t("op_flash_phase_3"),
-                t("op_flash_phase_4"),
-            ],
             closing_dump: t("live_closing_dump_session"),
             flash_completed: t("live_flash_completed"),
             root_completed: t("live_root_completed"),
@@ -2780,22 +2715,6 @@ impl App {
             root_resolved_prefix: t("live_root_resolved_prefix"),
             root_backup_copy_prefix: t("live_root_backup_copy_prefix"),
         }
-    }
-
-    /// 4-phase Flash flow (validate, EDL, partitions, reboot). Grow
-    /// in lockstep if the backend adds a phase.
-    fn derive_flash_op_steps(&self) -> Vec<OpStep> {
-        [
-            "op_flash_phase_1",
-            "op_flash_phase_2",
-            "op_flash_phase_3",
-            "op_flash_phase_4",
-        ]
-        .iter()
-        .map(|k| OpStep {
-            label: self.t(k).to_string(),
-        })
-        .collect()
     }
 
     /// Pairs with `begin_op`. END separator dropped per user request —
@@ -3819,6 +3738,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn primary_phase_plans_use_refined_counts() {
+        assert_eq!(OperationPhaseKind::Flash.keys().len(), 9);
+        assert_eq!(OperationPhaseKind::Root.keys().len(), 8);
+        assert_eq!(OperationPhaseKind::Unroot.keys().len(), 5);
+    }
+
+    #[test]
+    fn system_update_phase_plans_match_each_action() {
+        assert_eq!(OperationPhaseKind::SysUpdateDisable.keys().len(), 3);
+        assert_eq!(OperationPhaseKind::SysUpdateEnable.keys().len(), 3);
+        assert_eq!(OperationPhaseKind::BootRecovery.keys().len(), 7);
+    }
+
+    #[test]
+    fn advanced_edl_phase_plans_match_each_action() {
+        assert_eq!(OperationPhaseKind::ChangeCountry.keys().len(), 5);
+        assert_eq!(OperationPhaseKind::DetectArb.keys().len(), 5);
+        assert_eq!(OperationPhaseKind::SimpleFlash.keys().len(), 5);
+        assert_eq!(OperationPhaseKind::FlashPartitions.keys().len(), 3);
+        assert_eq!(OperationPhaseKind::DumpPartitions.keys().len(), 4);
+        assert_eq!(OperationPhaseKind::FlashPhysical.keys().len(), 4);
+        assert_eq!(OperationPhaseKind::DumpPhysical.keys().len(), 5);
+    }
+
+    #[test]
+    fn offline_advanced_phase_plans_match_each_action() {
+        assert_eq!(OperationPhaseKind::OfflineConvertXml.keys().len(), 3);
+        assert_eq!(OperationPhaseKind::RegionConversion.keys().len(), 4);
+        assert_eq!(OperationPhaseKind::PatchArb.keys().len(), 4);
+        assert_eq!(OperationPhaseKind::RebuildVbmeta.keys().len(), 3);
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::ConvertXml),
+            Some(OperationPhaseKind::OfflineConvertXml)
+        );
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::RegionConvert),
+            Some(OperationPhaseKind::RegionConversion)
+        );
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::PatchArb),
+            Some(OperationPhaseKind::PatchArb)
+        );
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::RebuildVbmeta),
+            Some(OperationPhaseKind::RebuildVbmeta)
+        );
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::ImageInfo),
+            None
+        );
+    }
+
+    #[test]
+    fn operation_phase_reporter_marker_uses_the_same_snapshot_total_and_label() {
+        install_core_translator(Language::En);
+        let reporter =
+            PhaseReporter::from_labels(vec!["Prepare".into(), "Write".into(), "Reboot".into()]);
+        let marker = reporter.marker(2);
+        assert!(marker.contains("2/3"));
+        assert!(marker.contains("Write"));
+        assert_eq!(reporter.steps()[1].label, "Write");
+    }
+
+    #[test]
+    fn operation_phase_every_plan_has_unique_nonempty_keys() {
+        for kind in OperationPhaseKind::all() {
+            let keys = kind.keys();
+            assert!(!keys.is_empty());
+            let unique = keys
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(unique.len(), keys.len(), "duplicate key in {kind:?}");
+        }
+    }
+
+    #[test]
     fn all_lang_jsons_parse_and_share_keys() {
         let en = Translations::load(Language::En);
         for lang in [Language::Ko, Language::Zh, Language::Ru, Language::Ja] {
@@ -4012,6 +4008,222 @@ mod tests {
     fn phase_marker_no_slash_returns_none() {
         assert_eq!(parse_phase_marker("[Root] Manager APK installed"), None);
         assert_eq!(parse_phase_marker("[dl] file 45%"), None);
+    }
+
+    #[test]
+    fn primary_workers_emit_every_phase_in_order() {
+        let compact = |source: &str| {
+            source
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        let assert_marker_order = |source: &str, total: usize| {
+            let mut previous = None;
+            for phase in 1..=total {
+                let marker = format!("phases.marker({phase})");
+                let positions = source
+                    .match_indices(&marker)
+                    .map(|(position, _)| position)
+                    .collect::<Vec<_>>();
+                assert_eq!(positions.len(), 1, "expected one {marker}");
+                if let Some(previous) = previous {
+                    assert!(previous < positions[0], "{marker} is out of order");
+                }
+                previous = positions.first().copied();
+            }
+        };
+        let flash = compact(include_str!("workers/flash/full.rs"));
+        let root = compact(include_str!("workers/root.rs"));
+        let unroot = compact(include_str!("workers/unroot.rs"));
+        assert_marker_order(&flash, 9);
+        assert_marker_order(&root, 8);
+        assert_marker_order(&unroot, 5);
+    }
+
+    #[test]
+    fn system_update_worker_reports_each_action_phase_in_order() {
+        let compact = include_str!("workers/sysupdate.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        for phase in 1..=7 {
+            assert!(
+                compact.contains(&format!("phases.marker({phase})")),
+                "missing System Update phase {phase}"
+            );
+        }
+        assert!(!compact.contains("phase_marker("));
+    }
+
+    #[test]
+    fn advanced_edl_workers_report_their_phase_boundaries() {
+        let compact = |source: &str| {
+            source
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        let function = |source: &str, start: &str, end: Option<&str>| {
+            let (_, tail) = source.split_once(start).expect("worker function exists");
+            end.and_then(|end| tail.split_once(end).map(|(body, _)| body))
+                .unwrap_or(tail)
+                .to_string()
+        };
+        let assert_once_in_order = |source: &str, total: usize| {
+            let mut previous = None;
+            for phase in 1..=total {
+                let marker = format!("phases.marker({phase})");
+                let positions = source
+                    .match_indices(&marker)
+                    .map(|(position, _)| position)
+                    .collect::<Vec<_>>();
+                assert_eq!(positions.len(), 1, "expected one {marker}");
+                if let Some(previous) = previous {
+                    assert!(previous < positions[0], "{marker} is out of order");
+                }
+                previous = positions.first().copied();
+            }
+        };
+
+        let transfer = compact(include_str!("workers/transfer.rs"));
+        let flash_parts = function(
+            &transfer,
+            "pub(crate)fnflash_parts_execute(",
+            Some("pub(crate)fndump_parts_scan("),
+        );
+        let dump_parts = function(
+            &transfer,
+            "pub(crate)fndump_parts_execute(",
+            Some("pub(crate)fndump_physical_execute("),
+        );
+        let dump_physical = function(
+            &transfer,
+            "pub(crate)fndump_physical_execute(",
+            Some("pub(crate)fnflash_physical_execute("),
+        );
+        let flash_physical = function(&transfer, "pub(crate)fnflash_physical_execute(", None);
+        assert_once_in_order(&flash_parts, 3);
+        assert_once_in_order(&dump_parts, 4);
+        assert_once_in_order(&dump_physical, 5);
+        assert_once_in_order(&flash_physical, 4);
+
+        let simple = compact(include_str!("workers/flash/simple.rs"));
+        assert_once_in_order(&simple, 5);
+
+        let country = compact(include_str!("workers/flash/country.rs"));
+        for phase in [1, 2, 5] {
+            assert_eq!(
+                country.matches(&format!("phases.marker({phase})")).count(),
+                1
+            );
+        }
+        let country_shared = compact(include_str!("workers/flash/mod.rs"));
+        for phase in [3, 4] {
+            assert_eq!(
+                country_shared
+                    .matches(&format!("phases.marker({phase})"))
+                    .count(),
+                1
+            );
+        }
+
+        let arb = compact(include_str!("arb.rs"));
+        assert_eq!(arb.matches("phases.marker(1)").count(), 1);
+        assert_eq!(arb.matches("phases.marker(2)").count(), 1);
+        assert_eq!(arb.matches("phases.marker(3)").count(), 1);
+        assert_eq!(arb.matches("phases.marker(4)").count(), 3);
+        assert_eq!(arb.matches("phases.marker(5)").count(), 3);
+    }
+
+    #[test]
+    fn offline_advanced_worker_reports_each_phase_boundary() {
+        let source = include_str!("workers/advanced.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let action = |start: &str, end: Option<&str>| {
+            let (_, tail) = source.split_once(start).expect("action arm exists");
+            end.and_then(|end| tail.split_once(end).map(|(body, _)| body))
+                .unwrap_or(tail)
+                .to_string()
+        };
+        let assert_once_in_order = |body: &str, total: usize| {
+            let mut previous = None;
+            for phase in 1..=total {
+                let marker = format!("phases.marker({phase})");
+                let positions = body
+                    .match_indices(&marker)
+                    .map(|(position, _)| position)
+                    .collect::<Vec<_>>();
+                assert_eq!(positions.len(), 1, "expected one {marker}");
+                if let Some(previous) = previous {
+                    assert!(previous < positions[0], "{marker} is out of order");
+                }
+                previous = positions.first().copied();
+            }
+        };
+
+        let xml = action("AdvAction::ConvertXml=>{", Some("AdvAction::DetectArb=>{"));
+        let region = action(
+            "AdvAction::RegionConvert=>{",
+            Some("AdvAction::PatchDevinfo=>{"),
+        );
+        let patch_arb = action(
+            "AdvAction::PatchArb=>{",
+            Some("AdvAction::RebuildVbmeta=>{"),
+        );
+        let rebuild = action("AdvAction::RebuildVbmeta=>{", None);
+        assert_once_in_order(&xml, 3);
+        assert_once_in_order(&patch_arb, 4);
+        assert_once_in_order(&rebuild, 3);
+        assert_eq!(region.matches("phases.marker(1)").count(), 1);
+        assert!(region.contains("RegionBuildStage::Inspect=>2"));
+        assert!(region.contains("RegionBuildStage::PatchVendorBoot=>3"));
+        assert!(region.contains("RegionBuildStage::RebuildVbmeta=>4"));
+        assert_eq!(region.matches("phases.marker(4)").count(), 1);
+        assert!(!source.contains("phase_marker("));
+    }
+
+    #[test]
+    fn refined_phase_labels_exist_in_every_locale() {
+        let keys = [
+            "op_flash_phase_5",
+            "op_flash_phase_6",
+            "op_flash_phase_7",
+            "op_unroot_phase_4",
+            "op_unroot_phase_5",
+        ];
+        for lang in [
+            Language::En,
+            Language::Ko,
+            Language::Zh,
+            Language::Ru,
+            Language::Ja,
+        ] {
+            let translations = Translations::load(lang);
+            for key in keys {
+                assert_ne!(translations.t(key), key, "{lang:?} missing {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_operation_phase_label_exists_in_every_locale() {
+        for lang in [
+            Language::En,
+            Language::Ko,
+            Language::Zh,
+            Language::Ru,
+            Language::Ja,
+        ] {
+            let translations = Translations::load(lang);
+            for kind in OperationPhaseKind::all() {
+                for key in kind.keys() {
+                    assert_ne!(translations.t(key), *key, "{lang:?} missing {key}");
+                }
+            }
+        }
     }
 
     // Wizard state-machine tests ------------------------------------------

@@ -76,8 +76,7 @@ impl App {
                         Ok(p) => Some(p),
                         Err(()) => return Task::none(),
                     };
-                self.begin_op(View::Unroot);
-                self.op_steps = self.derive_unroot_op_steps();
+                let phases = self.begin_phased_op(View::Unroot, OperationPhaseKind::Unroot);
                 self.error_msg = None;
                 self.log_push(format!(
                     "[Unroot] {}",
@@ -88,7 +87,14 @@ impl App {
                     async move {
                         tokio::task::spawn_blocking(move || {
                             ltbox_core::runtime::run_heavy(move || {
-                                unroot_worker(folder, unroot_type, loader_override, conn, ll)
+                                unroot_worker(
+                                    folder,
+                                    unroot_type,
+                                    loader_override,
+                                    conn,
+                                    ll,
+                                    phases,
+                                )
                             })
                             .and_then(|r| r)
                         })

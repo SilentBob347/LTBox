@@ -10,8 +10,10 @@ pub(crate) fn change_country_worker(
     target_code: String,
     loader: std::path::PathBuf,
     ll: LiveLabels,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
+    live!(log, "[Country] {}", phases.marker(1));
     live!(
         log,
         "[Country] {}",
@@ -33,6 +35,7 @@ pub(crate) fn change_country_worker(
     let critical_backup = ltbox_core::app_paths::backup_dir_for(&format!("backup_critical_{ts}"));
     std::fs::create_dir_all(&critical_backup)
         .map_err(|e| tr_args!("err_country_backup_dir_failed", error = e.to_string()))?;
+    live!(log, "[Country] {}", phases.marker(2));
     transition_to_edl(conn, &ll, &mut log)?;
     let mut session = open_edl_session(&loader, true, &mut log)?;
     let outcome = run_country_change(
@@ -44,12 +47,17 @@ pub(crate) fn change_country_worker(
         &target_code,
         &ll,
         &mut log,
+        Some(&phases),
     );
-    // Reset to system regardless (don't strand the device in EDL), then surface
-    // any failure: for the standalone op the country change IS the operation, so
-    // a partial failure must not report success.
+    // Reset to system regardless (don't strand the device in EDL). Preserve
+    // phase 4 on a country-write failure so the failed card names the stage
+    // that actually failed instead of the cleanup reboot that followed it.
+    if let Err(error) = outcome {
+        session.reset_tolerant(&mut log);
+        return Err(error);
+    }
+    live!(log, "[Country] {}", phases.marker(5));
     session.reset_tolerant(&mut log);
-    outcome?;
     live!(
         log,
         "[Country] {}",

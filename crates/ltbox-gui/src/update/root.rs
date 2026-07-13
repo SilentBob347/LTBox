@@ -353,8 +353,7 @@ impl App {
                 {
                     return Task::none();
                 }
-                self.begin_op(View::Root);
-                self.op_steps = self.derive_root_op_steps();
+                let phases = self.begin_phased_op(View::Root, OperationPhaseKind::Root);
                 self.error_msg = None;
                 let family = self.root.family;
                 let mode = self.root.mode;
@@ -465,6 +464,7 @@ impl App {
                                     nightly_run_id,
                                     preinit_device,
                                     ll,
+                                    phases,
                                 )
                             })
                             .and_then(|r| r)

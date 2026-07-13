@@ -1,5 +1,7 @@
 use super::*;
+use crate::PhaseReporter;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn flash_worker(
     cfg: WorkflowConfig,
     conn: ConnectionStatus,
@@ -8,14 +10,15 @@ pub(crate) fn flash_worker(
     loader_override: Option<String>,
     mut rb_mode: ltbox_patch::rollback::RollbackMode,
     ll: LiveLabels,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let edl_start = matches!(conn, ConnectionStatus::Edl);
     let started_in_fastboot = matches!(conn, ConnectionStatus::Fastboot);
     let fw_dir = std::path::Path::new(&fw_folder);
 
-    // 1. Validate firmware folder
-    live!(log, "[Flash] {}", phase_marker(1, 4, &ll.op_flash_phase[0]));
+    // Phase 1/9 — Validate firmware inputs.
+    live!(log, "[Flash] {}", phases.marker(1));
     if !fw_dir.exists() {
         return Err(tr_args!(
             "err_flash_firmware_folder_missing",
@@ -34,9 +37,14 @@ pub(crate) fn flash_worker(
     // still untouched (rather than leaving it parked in the bootloader), and so
     // a compressed boot-chain image is present for the scan + region/AVB/ARB
     // planning below. On failure the device has not been moved, so just return.
+    // Phase 2/9 — Decompress packaged images.
+    live!(log, "[Flash] {}", phases.marker(2));
     decompress_zst_images(fw_dir, &mut log)?;
 
-    // 2. Device detection
+    // Phase 3/9 — Inspect device and firmware compatibility.
+    live!(log, "[Flash] {}", phases.marker(3));
+
+    // Device detection
     //
     // Run the ADB device probe BEFORE the
     // Fastboot bridge below. The previous
@@ -266,6 +274,9 @@ pub(crate) fn flash_worker(
             }
         }
     }
+
+    // Phase 4/9 — Prepare the flash and safety plan.
+    live!(log, "[Flash] {}", phases.marker(4));
 
     // TB323FU keeps region boot-chain conversion off (it
     // provisions a GBL on efisp instead) but DOES take ARB
@@ -630,10 +641,14 @@ pub(crate) fn flash_worker(
         }
     };
 
-    live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
+    // Phase 5/9 — Enter EDL and open the Firehose transport.
+    live!(log, "[Flash] {}", phases.marker(5));
     transition_to_edl(conn, &ll, &mut log)?;
 
     let mut session = open_edl_session(&loader, true, &mut log)?;
+
+    // Phase 6/9 — Read live device state and stage safeguards.
+    live!(log, "[Flash] {}", phases.marker(6));
 
     // EDL-start: fastboot/ADB never ran, so the device model + committed
     // rollback index are unknown. Read them off the device by dumping BOTH
@@ -1143,7 +1158,7 @@ pub(crate) fn flash_worker(
     live!(
         log,
         "[Flash] {} ({})",
-        phase_marker(3, 4, &ll.op_flash_phase[2]),
+        phases.marker(7),
         tr_args!(
             "live_flash_phase3_xml_counts",
             raw = raw_xmls.len().to_string(),
@@ -1161,6 +1176,9 @@ pub(crate) fn flash_worker(
         restore_abl_best_effort(&mut session, &abl_restore, &mut log);
         return Err(err);
     }
+
+    // Phase 8/9 — Apply overlays and activate the target slot.
+    live!(log, "[Flash] {}", phases.marker(8));
 
     // Overlay ARB-patched boot/vbmeta_system by GPT name.
     for (label, lun, patched) in &arb_patched {
@@ -1355,6 +1373,7 @@ pub(crate) fn flash_worker(
             target_code,
             &ll,
             &mut log,
+            None,
         ) {
             live!(
                 log,
@@ -1383,7 +1402,8 @@ pub(crate) fn flash_worker(
         ));
     }
 
-    live!(log, "[Flash] {}", phase_marker(4, 4, &ll.op_flash_phase[3]));
+    // Phase 9/9 — Reboot to the system.
+    live!(log, "[Flash] {}", phases.marker(9));
     session.reset_tolerant(&mut log);
     live!(log, "[Flash] {}", ll.flash_completed);
     // Flash succeeded — drop the `work_*` scratch (a mid-flow abort keeps it).

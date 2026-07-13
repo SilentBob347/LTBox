@@ -68,7 +68,8 @@ impl App {
                     self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_phys.output_dir = Some(folder.clone());
                     self.dump_phys.step = 2;
-                    self.begin_op(View::Advanced);
+                    let phases =
+                        self.begin_phased_op(View::Advanced, OperationPhaseKind::DumpPhysical);
                     self.error_msg = None;
                     let conn = self.connection;
                     let luns = self.dump_phys.selected_luns();
@@ -81,7 +82,7 @@ impl App {
                         )
                     ));
                     return task_heavy(
-                        move || dump_physical_execute(conn, loader, folder, luns),
+                        move || dump_physical_execute(conn, loader, folder, luns, phases),
                         |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
                         |e| vec![format!("[DumpPhys] {e}")],
                     );
@@ -166,7 +167,8 @@ impl App {
                     Err(()) => return Task::none(),
                 };
                 self.flash_phys.next(); // advance to Exec screen
-                self.begin_op(View::Advanced);
+                let phases =
+                    self.begin_phased_op(View::Advanced, OperationPhaseKind::FlashPhysical);
                 self.error_msg = None;
                 let conn = self.connection;
                 let pairs = self.flash_phys.active_pairs();
@@ -175,7 +177,7 @@ impl App {
                     tr_args!("log_flashphys_starting", count = pairs.len())
                 ));
                 return task_heavy(
-                    move || flash_physical_execute(conn, loader, pairs),
+                    move || flash_physical_execute(conn, loader, pairs, phases),
                     |result| match result {
                         Ok(lines) => Message::FlashPhys(FlashPhysMsg::FlashPhysExecDone(lines)),
                         Err(e) => Message::OperationError(e),
@@ -315,7 +317,8 @@ impl App {
                     self.remember_recent(pickers::PickerKind::OutputFolder, &folder);
                     self.dump_parts.output_dir = Some(folder.clone());
                     self.dump_parts.step = 2;
-                    self.begin_op(View::Advanced);
+                    let phases =
+                        self.begin_phased_op(View::Advanced, OperationPhaseKind::DumpPartitions);
                     self.error_msg = None;
                     let loader = self.dump_parts.loader_path.clone().unwrap_or_default();
                     let rows = self.dump_parts.selected_rows();
@@ -328,7 +331,7 @@ impl App {
                         )
                     ));
                     return task_heavy(
-                        move || dump_parts_execute(loader, folder, rows),
+                        move || dump_parts_execute(loader, folder, rows, phases),
                         |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
                         |e| vec![format!("[DumpParts] {e}")],
                     );
@@ -474,7 +477,8 @@ impl App {
                 // Advanced busy view (not Flash) so the busy dialog shows the
                 // partition-write message via `busy_body_override`, not
                 // "Flash Firmware is in progress".
-                self.begin_op(View::Advanced);
+                let phases =
+                    self.begin_phased_op(View::Advanced, OperationPhaseKind::FlashPartitions);
                 self.error_msg = None;
                 let loader = self.flash_parts.loader_path.clone().unwrap_or_default();
                 let rows = self.flash_parts.active_rows();
@@ -495,7 +499,7 @@ impl App {
                     )
                 ));
                 return task_heavy(
-                    move || flash_parts_execute(loader, rows),
+                    move || flash_parts_execute(loader, rows, phases),
                     |result| match result {
                         Ok(lines) => Message::FlashParts(FlashPartsMsg::FlashPartsExecDone(lines)),
                         Err(e) => Message::OperationError(e),
@@ -559,7 +563,7 @@ impl App {
             }
             SimpleFlashMsg::SimpleFlashExecStart => {
                 self.simple_flash.next(); // → Exec screen
-                self.begin_op(View::Advanced);
+                let phases = self.begin_phased_op(View::Advanced, OperationPhaseKind::SimpleFlash);
                 self.error_msg = None;
                 let conn = self.connection;
                 let fw_folder = self
@@ -573,7 +577,7 @@ impl App {
                     tr_args!("live_flash_firmware_folder", path = fw_folder.clone())
                 ));
                 return task_heavy(
-                    move || simple_flash_worker(conn, fw_folder, ll),
+                    move || simple_flash_worker(conn, fw_folder, ll, phases),
                     |result| match result {
                         Ok(lines) => {
                             Message::SimpleFlash(SimpleFlashMsg::SimpleFlashExecDone(lines))
@@ -777,7 +781,8 @@ impl App {
                             }
                         };
                         self.adv_wizard.next(); // → exec screen
-                        self.begin_op(View::Advanced);
+                        let phases =
+                            self.begin_phased_op(View::Advanced, OperationPhaseKind::ChangeCountry);
                         self.error_msg = None;
                         let conn = self.connection;
                         let device_model = self.device_model.clone();
@@ -792,6 +797,7 @@ impl App {
                                     target_code,
                                     std::path::PathBuf::from(loader),
                                     ll,
+                                    phases,
                                 )
                             },
                             |result| match result {
@@ -960,10 +966,14 @@ impl App {
             }
             AdvMsg::AdvFileSelected(action, path) => {
                 if let Some(input_path) = path {
+                    let Some(phase_kind) = OperationPhaseKind::for_advanced_file(action) else {
+                        self.error_msg = Some(ltbox_core::i18n::tr("live_advanced_use_dedicated"));
+                        return Task::none();
+                    };
                     // See AdvWizBrowseDone — trust the action's kind over
                     // the runtime is_dir() probe.
                     self.remember_recent(self.adv_wizard.picker_kind(), &input_path);
-                    self.begin_op(View::Advanced);
+                    let phases = self.begin_phased_op(View::Advanced, phase_kind);
                     self.error_msg = None;
                     let action_label = self.t(action.label_key()).to_string();
                     self.log_push(format!("[Advanced] {}: {}", action_label, input_path));
@@ -992,6 +1002,7 @@ impl App {
                                         adv_arb_index,
                                         output_dir,
                                         action_label,
+                                        phases,
                                     )
                                 })
                                 .and_then(|r| r)
@@ -1059,7 +1070,7 @@ impl App {
                 Task::none()
             }
             AdvMsg::AdvDetectArbExecStart => {
-                self.begin_op(View::Advanced);
+                let phases = self.begin_phased_op(View::Advanced, OperationPhaseKind::DetectArb);
                 self.error_msg = None;
                 let conn = self.connection;
                 let device_model = self.device_model.clone();
@@ -1081,6 +1092,7 @@ impl App {
                             &i_reboot_fastboot,
                             &i_reboot_system,
                             &i_edl_dump,
+                            phases,
                             &mut log,
                         ) {
                             Ok(()) => Ok(log),

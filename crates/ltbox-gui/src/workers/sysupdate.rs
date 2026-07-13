@@ -3,7 +3,7 @@
 //! from the update_sys handler.
 
 use crate::{
-    ConnectionStatus, LiveLabels, RescueRegion, SysUpdateAction, open_edl_session,
+    ConnectionStatus, LiveLabels, PhaseReporter, RescueRegion, SysUpdateAction, open_edl_session,
     transition_to_edl,
 };
 use ltbox_core::tr_args;
@@ -15,6 +15,7 @@ pub(crate) fn sysupdate_worker(
     device_model: String,
     conn: ConnectionStatus,
     ll: LiveLabels,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     // Disable/Enable need a running Android shell;
@@ -30,6 +31,9 @@ pub(crate) fn sysupdate_worker(
     //   * Rescue: hand off to `transition_to_edl`,
     //     which already handles all three source
     //     modes via `ensure_edl`.
+    if action != SysUpdateAction::Rescue {
+        ltbox_core::live!(log, "[SysUpdate] {}", phases.marker(1));
+    }
     if action != SysUpdateAction::Rescue && matches!(conn, ConnectionStatus::Fastboot) {
         ltbox_core::live!(
             log,
@@ -81,11 +85,13 @@ pub(crate) fn sysupdate_worker(
             // Command echoes (`$ settings put …` / `$ pm clear …`)
             // were noise — the user only needs to see the outcome
             // (Uninstalled / Reinstalled / failure). Suppressed.
+            ltbox_core::live!(log, "[SysUpdate] {}", phases.marker(2));
             adb.shell("settings put global ota_disable_automatic_update 1")
                 .map_err(|e| e.to_string())?;
             adb.shell("settings put secure lenovo_ota_new_version_found 0")
                 .map_err(|e| e.to_string())?;
 
+            ltbox_core::live!(log, "[SysUpdate] {}", phases.marker(3));
             for pkg in &packages {
                 let _ = adb.shell(&format!("pm clear {pkg}"));
 
@@ -108,9 +114,11 @@ pub(crate) fn sysupdate_worker(
         }
         SysUpdateAction::Enable => {
             // Command echoes suppressed — same rationale as Disable.
+            ltbox_core::live!(log, "[SysUpdate] {}", phases.marker(2));
             adb.shell("settings put global ota_disable_automatic_update 0")
                 .map_err(|e| e.to_string())?;
 
+            ltbox_core::live!(log, "[SysUpdate] {}", phases.marker(3));
             for pkg in &packages {
                 match adb.shell(&format!("cmd package install-existing {pkg}")) {
                     Ok(out) if out.to_lowercase().contains("installed") => ltbox_core::live!(
@@ -130,6 +138,7 @@ pub(crate) fn sysupdate_worker(
             Ok(log)
         }
         SysUpdateAction::Rescue => {
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(1));
             // Precondition: loader file + region
             // picked in the wizard.
             let Some(loader_path) = rescue_folder else {
@@ -210,6 +219,7 @@ pub(crate) fn sysupdate_worker(
                 )
             );
 
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(2));
             ltbox_core::live!(
                 log,
                 "[Rescue] {}",
@@ -230,6 +240,7 @@ pub(crate) fn sysupdate_worker(
             // modes.
             transition_to_edl(conn, &ll, &mut log)?;
 
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(3));
             let mut session = open_edl_session(&loader, true, &mut log)?;
 
             // vendor_boot + vbmeta land on LUN 0
@@ -239,6 +250,7 @@ pub(crate) fn sysupdate_worker(
             const RESCUE_PARTITIONS_LUN: u8 = 0;
             let slots = ["a", "b"];
             let mut dumped: Vec<(String, String, std::path::PathBuf)> = Vec::new();
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(4));
             for slot in &slots {
                 for base in &["vendor_boot", "vbmeta"] {
                     let part_name = format!("{base}_{slot}");
@@ -349,6 +361,7 @@ pub(crate) fn sysupdate_worker(
                 (row_i.clone(), prc_i.clone()),
             ];
 
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(5));
             let mut flash_plan: Vec<(String, std::path::PathBuf)> = Vec::new();
             for slot in &slots {
                 let vb_src = dumped
@@ -515,6 +528,7 @@ pub(crate) fn sysupdate_worker(
                 return Err(ltbox_core::i18n::tr("err_rescue_nothing_to_flash"));
             }
 
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(6));
             ltbox_core::live!(
                 log,
                 "[Rescue] {}",
@@ -547,6 +561,7 @@ pub(crate) fn sysupdate_worker(
                 }
             }
 
+            ltbox_core::live!(log, "[Rescue] {}", phases.marker(7));
             ltbox_core::live!(
                 log,
                 "[Rescue] {}",

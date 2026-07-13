@@ -2,7 +2,7 @@
 //! folder over EDL. Extracted from the update_unroot handler.
 
 use crate::{
-    ConnectionStatus, LiveLabels, UnrootType, find_edl_loader, open_edl_session, phase_marker,
+    ConnectionStatus, LiveLabels, PhaseReporter, UnrootType, find_edl_loader, open_edl_session,
     transition_to_edl,
 };
 use ltbox_core::{i18n::tr, live, tr_args};
@@ -13,9 +13,12 @@ pub(crate) fn unroot_worker(
     loader_override: Option<String>,
     conn: ConnectionStatus,
     ll: LiveLabels,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let dir = std::path::Path::new(&folder);
+
+    live!(log, "[Unroot] {}", phases.marker(1));
 
     let (boot_name, base_part) = match unroot_type {
         UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
@@ -93,20 +96,18 @@ pub(crate) fn unroot_worker(
         )
     );
 
-    live!(
-        log,
-        "[Unroot] {}",
-        phase_marker(1, 3, &ll.op_unroot_phase[0])
-    );
+    live!(log, "[Unroot] {}", phases.marker(2));
     transition_to_edl(conn, &ll, &mut log)?;
+
+    live!(log, "[Unroot] {}", phases.marker(3));
+    let mut session = open_edl_session(&loader, true, &mut log)?;
 
     live!(
         log,
         "[Unroot] {} ({})",
-        phase_marker(2, 3, &ll.op_unroot_phase[1]),
+        phases.marker(4),
         tr_args!("live_unroot_backup_pair", boot = boot_name)
     );
-    let mut session = open_edl_session(&loader, true, &mut log)?;
     session
         .flash_partition(&boot_label, &boot_path, 0, boot_lun, &mut log)
         .map_err(|e| tr_args!("err_unroot_flash_failed", label = boot_label, error = e))?;
@@ -115,11 +116,7 @@ pub(crate) fn unroot_worker(
         .map_err(|e| tr_args!("err_unroot_flash_failed", label = vbm_label, error = e))?;
 
     println!();
-    live!(
-        log,
-        "[Unroot] {}",
-        phase_marker(3, 3, &ll.op_unroot_phase[2])
-    );
+    live!(log, "[Unroot] {}", phases.marker(5));
     session
         .reset(&mut log)
         .map_err(|e| tr_args!("err_reset_failed", error = e))?;

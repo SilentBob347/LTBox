@@ -3,14 +3,14 @@
 //! Extracted from the update_root handler.
 
 use crate::{
-    ConnectionStatus, Family, LiveLabels, Provider, RootMode, VerChoice, efisp_asset_suffix,
-    efisp_is_empty, fingerprint_token_match, install_root_manager_apk, open_edl_session,
-    phase_marker, stage_manager_apk_for_manual_install, transition_to_edl,
+    ConnectionStatus, Family, LiveLabels, PhaseReporter, Provider, RootMode, VerChoice,
+    efisp_asset_suffix, efisp_is_empty, fingerprint_token_match, install_root_manager_apk,
+    open_edl_session, stage_manager_apk_for_manual_install, transition_to_edl,
     wait_and_install_root_manager_apk,
 };
 use ltbox_core::{i18n::tr, live, tr_args};
 
-// The 13 params are the closure's captured locals, threaded through verbatim
+// The 14 params are the closure's captured locals, threaded through verbatim
 // from the update_root handler; bundling them into a struct would only move the
 // noise. Extraction is mechanical, so keep the 1:1 capture->param mapping.
 #[allow(clippy::too_many_arguments)]
@@ -28,6 +28,7 @@ pub(crate) fn root_worker(
     nightly_run_id: Option<u64>,
     preinit_device: String,
     ll: LiveLabels,
+    phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let skip_adb = conn.skip_adb();
@@ -124,10 +125,10 @@ pub(crate) fn root_worker(
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| tr_args!("err_root_output_dir_failed", error = e))?;
 
-    // Phase 1/7 — ADB connect + slot/kver detect.
+    // Phase 1/8 — Inspect the device, slot, and kernel.
     // Front-loaded so the user sees something happen
     // before the long manager-APK / payload download.
-    live!(log, "[Root] {}", phase_marker(1, 7, &ll.op_root_phase[0]));
+    live!(log, "[Root] {}", phases.marker(1));
     // Slot detection MUST succeed — root flashes
     // boot_<slot> + vbmeta_<slot> + init_boot_<slot>,
     // and silently defaulting to `_a` previously
@@ -198,8 +199,8 @@ pub(crate) fn root_worker(
         },
         nightly_run_id,
     };
-    // Phase 2/7: download all root payloads before EDL.
-    live!(log, "[Root] {}", phase_marker(2, 7, &ll.op_root_phase[1]));
+    // Phase 2/8 — Resolve and download root files before EDL.
+    live!(log, "[Root] {}", phases.marker(2));
     // Pin the nightly workflow run ID once so
     // every fetch in this Phase 2 pulls from
     // the SAME upstream build. Without this,
@@ -247,8 +248,8 @@ pub(crate) fn root_worker(
     // Device phase errors still attempt an EDL -> system reset.
     let device_phase_result: std::result::Result<(), String> =
         (|| -> std::result::Result<(), String> {
-            // Phase 3/7 — Reboot to EDL (was Phase 1/6).
-            live!(log, "[Root] {}", phase_marker(3, 7, &ll.op_root_phase[2]));
+            // Phase 3/8 — Enter EDL mode.
+            live!(log, "[Root] {}", phases.marker(3));
             transition_to_edl(conn, &ll, &mut log)?;
 
             // GKI/APatch use boot_<slot>; Magisk/KSU use
@@ -274,8 +275,8 @@ pub(crate) fn root_worker(
                 vbmeta_primary,
             );
 
-            // Phase 4/7 — Read stock images (was Phase 2/6).
-            live!(log, "[Root] {}", phase_marker(4, 7, &ll.op_root_phase[3]));
+            // Phase 4/8 — Read stock boot-chain images.
+            live!(log, "[Root] {}", phases.marker(4));
             // Hoisted so Phase 6 can echo the path.
             // Routed through `app_paths::backup_dir_for`
             // so AppImage / distro Linux installs don't
@@ -483,12 +484,12 @@ pub(crate) fn root_worker(
                 // the post-patch open gets a fresh handle.
             }
 
-            // Phase 5/7 — Offline patch + AVB resign +
+            // Phase 5/8 — Offline boot patch + AVB metadata rebuild.
             // vbmeta rebuild. Network downloads moved
             // up to Phase 2; this step never touches
             // the network so progress now matches the
             // "patching" label.
-            live!(log, "[Root] {}", phase_marker(5, 7, &ll.op_root_phase[4]));
+            live!(log, "[Root] {}", phases.marker(5));
 
             // The patch phase reuses the same config the
             // download phase built — none of the input
@@ -504,11 +505,8 @@ pub(crate) fn root_worker(
             if manager_apk.is_none() {
                 manager_apk = artifacts.manager_apk.clone();
             }
-            // Phase 6/7 — Write patched images (was Phase
-            // 5/6). Old standalone Phase 4 marker dropped
-            // since there was no real work between it and
-            // flash open — collapsed into this one phase.
-            live!(log, "[Root] {}", phase_marker(6, 7, &ll.op_root_phase[5]));
+            // Phase 6/8 — Write patched images.
+            live!(log, "[Root] {}", phases.marker(6));
             let mut session = open_edl_session(&loader, true, &mut log)?;
             // Mirror of the equivalent one-shot `qdl-rs
             // --phys-part-idx 4 write <name> <img>` — GPT
@@ -563,8 +561,6 @@ pub(crate) fn root_worker(
                     })?;
             }
             println!();
-            // Phase 7/7 — Reboot to system (was Phase 6/6).
-            live!(log, "[Root] {}", phase_marker(7, 7, &ll.op_root_phase[6]));
             // Surface the backup folder before the reset
             // so the user doesn't have to scroll.
             if backup_dir.exists() {
@@ -575,7 +571,11 @@ pub(crate) fn root_worker(
                     backup_dir.display()
                 );
             }
+            // Phase 7/8 — Reboot to Android.
+            live!(log, "[Root] {}", phases.marker(7));
             session.reset_tolerant(&mut log);
+            // Phase 8/8 — Finish Android setup and manager installation.
+            live!(log, "[Root] {}", phases.marker(8));
             // Skip post-reboot retry if the pre-EDL install
             // already failed for a deterministic reason
             // (e.g. `INSTALL_FAILED_VERSION_DOWNGRADE`) — the
