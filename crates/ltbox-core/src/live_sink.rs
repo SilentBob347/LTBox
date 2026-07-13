@@ -18,12 +18,20 @@ fn buffer() -> &'static Mutex<Vec<String>> {
 /// lines instead of unbounded growth that would OOM a 24h CI run.
 pub fn push(line: String) {
     if let Ok(mut g) = buffer().lock() {
-        if g.len() >= MAX_BUFFERED {
-            let drop = g.len() - MAX_BUFFERED + 1;
-            g.drain(..drop);
-        }
-        g.push(line);
+        push_into(&mut g, line);
     }
+}
+
+/// Bounded insert into an arbitrary line buffer. Extracted so unit
+/// tests can exercise the drop-oldest policy on a private `Vec`
+/// without racing the process-wide [`SINK`] that other modules touch
+/// via `live!` while `cargo test` runs in parallel.
+fn push_into(buf: &mut Vec<String>, line: String) {
+    if buf.len() >= MAX_BUFFERED {
+        let drop = buf.len() - MAX_BUFFERED + 1;
+        buf.drain(..drop);
+    }
+    buf.push(line);
 }
 
 /// Take every queued line since the last drain, returning ownership
@@ -40,42 +48,25 @@ pub fn drain() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// `cargo test` runs unit tests in parallel inside the same
-    /// process, so the static `SINK` is shared. Serialise via a local
-    /// mutex so push/drain assertions don't see another test's lines.
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     #[test]
-    fn push_and_drain_roundtrip() {
-        let _g = lock_for_test();
-        let _ = drain();
-        push("alpha".into());
-        push("beta".into());
-        let pulled = drain();
-        assert_eq!(pulled, vec!["alpha".to_string(), "beta".to_string()]);
-        assert!(drain().is_empty());
+    fn push_into_appends_in_order() {
+        // Local buffer only: a module-local mutex cannot isolate the
+        // process-wide SINK from other modules' tests calling `live!`.
+        let mut buf = Vec::new();
+        push_into(&mut buf, "alpha".into());
+        push_into(&mut buf, "beta".into());
+        assert_eq!(buf, vec!["alpha".to_string(), "beta".to_string()]);
     }
 
     #[test]
     fn push_above_cap_drops_oldest() {
-        let _g = lock_for_test();
-        let _ = drain();
+        let mut buf = Vec::new();
         for i in 0..(MAX_BUFFERED + 5) {
-            push(format!("line {i}"));
+            push_into(&mut buf, format!("line {i}"));
         }
-        let pulled = drain();
-        assert_eq!(pulled.len(), MAX_BUFFERED);
+        assert_eq!(buf.len(), MAX_BUFFERED);
         // Oldest 5 dropped; first surviving line is `line 5`.
-        assert_eq!(pulled[0], "line 5");
-        assert_eq!(
-            pulled.last().unwrap(),
-            &format!("line {}", MAX_BUFFERED + 4)
-        );
+        assert_eq!(buf[0], "line 5");
+        assert_eq!(buf.last().unwrap(), &format!("line {}", MAX_BUFFERED + 4));
     }
 }
