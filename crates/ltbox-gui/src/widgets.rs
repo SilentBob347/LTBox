@@ -2,8 +2,180 @@
 //! color blend/easing, device portrait, layout consts). Extracted from main.rs.
 
 use crate::*;
-use iced::widget::{Space, button, container, row, text};
-use iced::{Element, Length, Theme};
+use iced::widget::{Space, button, canvas, container, row, text};
+use iced::{Element, Length, Point, Radians, Rectangle, Renderer, Theme, mouse, window};
+
+const MATERIAL_PROGRESS_PERIOD: std::time::Duration = std::time::Duration::from_millis(1_400);
+const MATERIAL_PROGRESS_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaterialProgressSize {
+    Standard,
+    Hero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MaterialProgressMetrics {
+    diameter: f32,
+    stroke_width: f32,
+    track_gap: f32,
+}
+
+fn material_progress_metrics(size: MaterialProgressSize) -> MaterialProgressMetrics {
+    match size {
+        MaterialProgressSize::Standard => MaterialProgressMetrics {
+            diameter: 40.0,
+            stroke_width: 4.0,
+            track_gap: 4.0,
+        },
+        MaterialProgressSize::Hero => MaterialProgressMetrics {
+            diameter: 52.0,
+            stroke_width: 8.0,
+            track_gap: 4.0,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MaterialProgressArc {
+    start_angle: f32,
+    sweep_angle: f32,
+}
+
+fn material_progress_arc(phase: f32) -> MaterialProgressArc {
+    let phase = phase.rem_euclid(1.0);
+    let pulse = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos();
+    MaterialProgressArc {
+        start_angle: -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * phase,
+        sweep_angle: std::f32::consts::TAU * (0.12 + 0.55 * pulse),
+    }
+}
+
+fn material_progress_gap_angle(metrics: MaterialProgressMetrics, radius: f32) -> f32 {
+    // Round caps extend half a stroke beyond each path endpoint. Add one full
+    // stroke width to the token gap so the visible cap-to-cap space stays 4px.
+    (metrics.track_gap + metrics.stroke_width) / radius
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MaterialProgress {
+    size: MaterialProgressSize,
+}
+
+#[derive(Debug, Default)]
+struct MaterialProgressState {
+    started_at: Option<iced::time::Instant>,
+    phase: f32,
+}
+
+impl canvas::Program<Message> for MaterialProgress {
+    type State = MaterialProgressState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let canvas::Event::Window(window::Event::RedrawRequested(now)) = event else {
+            return None;
+        };
+        let started_at = *state.started_at.get_or_insert(*now);
+        state.phase =
+            now.duration_since(started_at).as_secs_f32() / MATERIAL_PROGRESS_PERIOD.as_secs_f32();
+        state.phase = state.phase.rem_euclid(1.0);
+        Some(canvas::Action::request_redraw_at(
+            *now + MATERIAL_PROGRESS_FRAME,
+        ))
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let metrics = material_progress_metrics(self.size);
+        let arc = material_progress_arc(state.phase);
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let radius = (bounds.width.min(bounds.height) - metrics.stroke_width) / 2.0;
+        let gap_angle = material_progress_gap_angle(metrics, radius);
+        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+
+        let active_end = arc.start_angle + arc.sweep_angle;
+        let track_start = active_end + gap_angle;
+        let track_end = arc.start_angle + std::f32::consts::TAU - gap_angle;
+        let track = canvas::Path::new(|builder| {
+            builder.arc(canvas::path::Arc {
+                center,
+                radius,
+                start_angle: Radians(track_start),
+                end_angle: Radians(track_end),
+            });
+        });
+        let active = canvas::Path::new(|builder| {
+            builder.arc(canvas::path::Arc {
+                center,
+                radius,
+                start_angle: Radians(arc.start_angle),
+                end_angle: Radians(active_end),
+            });
+        });
+        let palette = pal_of(theme);
+        let stroke = canvas::Stroke::default()
+            .with_width(metrics.stroke_width)
+            .with_line_cap(canvas::LineCap::Round);
+        frame.stroke(&track, stroke.with_color(palette.surface_container_highest));
+        frame.stroke(&active, stroke.with_color(palette.primary));
+        vec![frame.into_geometry()]
+    }
+}
+
+pub(crate) fn material_circular_progress(size: MaterialProgressSize) -> Element<'static, Message> {
+    let metrics = material_progress_metrics(size);
+    canvas::Canvas::new(MaterialProgress { size })
+        .width(Length::Fixed(metrics.diameter))
+        .height(Length::Fixed(metrics.diameter))
+        .into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecPrimaryAction {
+    StartOver,
+    OpenFolder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecActionLayout {
+    pub(crate) primary: Option<ExecPrimaryAction>,
+    pub(crate) start_over_utility: bool,
+}
+
+pub(crate) const fn exec_action_layout(
+    is_busy: bool,
+    is_error: bool,
+    has_output: bool,
+) -> ExecActionLayout {
+    if is_busy {
+        ExecActionLayout {
+            primary: None,
+            start_over_utility: false,
+        }
+    } else if has_output && !is_error {
+        ExecActionLayout {
+            primary: Some(ExecPrimaryAction::OpenFolder),
+            start_over_utility: true,
+        }
+    } else {
+        ExecActionLayout {
+            primary: Some(ExecPrimaryAction::StartOver),
+            start_over_utility: false,
+        }
+    }
+}
 
 /// True for the localized "Start" / "Dump" labels — the primary-action button
 /// shown only on a wizard's confirm/start screen (intermediate steps use
@@ -11,6 +183,20 @@ use iced::{Element, Length, Theme};
 pub(crate) fn is_start_label(label: &str) -> bool {
     label == ltbox_core::i18n::tr("btn_start").as_str()
         || label == ltbox_core::i18n::tr("btn_dump").as_str()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WizardNavLayout {
+    pub(crate) grouped_leading: bool,
+    pub(crate) extended_primary: bool,
+}
+
+pub(crate) fn wizard_nav_layout(next_label: &str) -> WizardNavLayout {
+    let confirmation = is_start_label(next_label);
+    WizardNavLayout {
+        grouped_leading: confirmation,
+        extended_primary: confirmation,
+    }
 }
 
 fn fab_icon_content(
@@ -32,6 +218,14 @@ fn fab_next_icon(next_label: &str) -> iced::widget::Text<'static, Theme, iced::R
     }
 }
 
+fn fab_elevation_level(status: button::Status) -> u8 {
+    match status {
+        button::Status::Disabled => 0,
+        button::Status::Hovered => 4,
+        _ => 3,
+    }
+}
+
 fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color) -> button::Style {
     let p = pal_of(t);
     if matches!(status, button::Status::Disabled) {
@@ -47,12 +241,6 @@ fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color
         };
     }
 
-    let elevation = if matches!(status, button::Status::Hovered) {
-        4
-    } else {
-        3
-    };
-
     button::Style {
         background: Some(blend(bg, fg, theme::state_alpha(status)).into()),
         text_color: fg,
@@ -60,7 +248,7 @@ fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color
             radius: theme::shape::FULL.into(),
             ..Default::default()
         },
-        shadow: theme::elevation(elevation, theme::is_dark(t)),
+        shadow: theme::elevation(fab_elevation_level(status), theme::is_dark(t)),
         ..Default::default()
     }
 }
@@ -75,9 +263,50 @@ fn fab_surface_style(t: &Theme, status: button::Status) -> button::Style {
     fab_style(t, status, p.surface_container_high, p.on_surface_variant)
 }
 
-fn fab_error_style(t: &Theme, status: button::Status) -> button::Style {
+fn utility_action_style(t: &Theme, status: button::Status) -> button::Style {
     let p = pal_of(t);
-    fab_style(t, status, p.error_container, p.on_error_container)
+    button::Style {
+        background: Some(
+            blend(
+                p.surface_container_high,
+                p.on_surface_variant,
+                theme::state_alpha(status),
+            )
+            .into(),
+        ),
+        text_color: p.on_surface_variant,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn utility_error_action_style(t: &Theme, status: button::Status) -> button::Style {
+    let p = pal_of(t);
+    button::Style {
+        background: Some(
+            blend(
+                p.surface_container_high,
+                p.error,
+                theme::state_alpha(status),
+            )
+            .into(),
+        ),
+        text_color: p.error,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn extended_fab_primary_style(t: &Theme, status: button::Status) -> button::Style {
+    let mut style = fab_primary_style(t, status);
+    style.border.radius = theme::shape::LG.into();
+    style
 }
 
 fn fab_tooltip<'a>(inner: Element<'a, Message>, label: String) -> Element<'a, Message> {
@@ -132,12 +361,89 @@ pub(crate) fn wizard_surface_fab<'a>(
     wizard_fab(icon, label, msg, fab_surface_style, None)
 }
 
-pub(crate) fn wizard_error_fab<'a>(
+pub(crate) fn wizard_utility_action<'a>(
     icon: iced::widget::Text<'static, Theme, iced::Renderer>,
     label: String,
     msg: Option<Message>,
 ) -> Element<'a, Message> {
-    wizard_fab(icon, label, msg, fab_error_style, None)
+    let mut action = button(fab_icon_content(icon))
+        .width(Length::Fixed(48.0))
+        .height(Length::Fixed(48.0))
+        .padding(0)
+        .style(utility_action_style);
+    if let Some(msg) = msg {
+        action = action.on_press(msg);
+    }
+    fab_tooltip(action.into(), label)
+}
+
+pub(crate) fn wizard_error_utility_action<'a>(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    label: String,
+    msg: Option<Message>,
+) -> Element<'a, Message> {
+    let mut action = button(fab_icon_content(icon))
+        .width(Length::Fixed(48.0))
+        .height(Length::Fixed(48.0))
+        .padding(0)
+        .style(utility_error_action_style);
+    if let Some(msg) = msg {
+        action = action.on_press(msg);
+    }
+    fab_tooltip(action.into(), label)
+}
+
+pub(crate) fn wizard_utility_toolbar<'a>(
+    actions: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    container(actions)
+        .padding(4)
+        .height(Length::Fixed(WIZARD_FAB_SIZE))
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(p.surface_container_high.into()),
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                // This is a low-emphasis utility island, not a FAB. The
+                // labeled and circular FAB shapes both use level 3/4 via
+                // `fab_style`; this toolbar deliberately stays at level 1.
+                shadow: theme::elevation(1, theme::is_dark(t)),
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+pub(crate) fn wizard_primary_extended_fab<'a>(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    label: String,
+    msg: Option<Message>,
+    disabled_hint: Option<String>,
+) -> Element<'a, Message> {
+    let mut action = button(
+        container(
+            row![icon.size(20), text(label).size(14)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        )
+        .height(Length::Fill)
+        .center_y(Length::Fill),
+    )
+    .height(Length::Fixed(WIZARD_FAB_SIZE))
+    .padding([0, 20])
+    .style(extended_fab_primary_style);
+    let enabled = msg.is_some();
+    if let Some(msg) = msg {
+        action = action.on_press(msg);
+    }
+    let action = action.into();
+    if !enabled && let Some(hint) = disabled_hint {
+        return fab_tooltip(action, hint);
+    }
+    action
 }
 
 pub(crate) fn wizard_fab_footer<'a>(
@@ -178,12 +484,28 @@ fn wizard_nav_fabs<'a>(
     back_msg: Message,
     next_msg: Message,
 ) -> Element<'a, Message> {
+    let layout = wizard_nav_layout(next_label);
     let mut leading = row![]
         .spacing(WIZARD_FAB_SPACING)
         .align_y(iced::Alignment::Center)
         .height(Length::Fill);
 
-    if can_back {
+    if layout.grouped_leading {
+        let mut utility_actions = row![].spacing(0).align_y(iced::Alignment::Center);
+        if can_back {
+            utility_actions = utility_actions.push(wizard_utility_action(
+                icon::fab_back(),
+                back_label.to_string(),
+                Some(back_msg),
+            ));
+        }
+        utility_actions = utility_actions.push(wizard_error_utility_action(
+            icon::fab_cancel(),
+            ltbox_core::i18n::tr("btn_cancel").to_string(),
+            Some(Message::StartOver),
+        ));
+        leading = leading.push(wizard_utility_toolbar(utility_actions));
+    } else if can_back {
         leading = leading.push(wizard_fab(
             icon::fab_back(),
             back_label.to_string(),
@@ -198,23 +520,22 @@ fn wizard_nav_fabs<'a>(
         .align_y(iced::Alignment::Center)
         .height(Length::Fill);
 
-    if is_start_label(next_label) {
+    if layout.extended_primary {
+        trailing = trailing.push(wizard_primary_extended_fab(
+            fab_next_icon(next_label),
+            next_label.to_string(),
+            can_next.then_some(next_msg),
+            disabled_next_hint,
+        ));
+    } else {
         trailing = trailing.push(wizard_fab(
-            icon::fab_cancel(),
-            ltbox_core::i18n::tr("btn_cancel").to_string(),
-            Some(Message::StartOver),
-            fab_error_style,
-            None,
+            fab_next_icon(next_label),
+            next_label.to_string(),
+            can_next.then_some(next_msg),
+            fab_primary_style,
+            disabled_next_hint,
         ));
     }
-
-    trailing = trailing.push(wizard_fab(
-        fab_next_icon(next_label),
-        next_label.to_string(),
-        can_next.then_some(next_msg),
-        fab_primary_style,
-        disabled_next_hint,
-    ));
 
     wizard_fab_footer(leading, trailing)
 }
@@ -588,4 +909,91 @@ pub(crate) fn wizard_nav_generic_with_disabled_next_tooltip<'a>(
         back_msg,
         next_msg,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MaterialProgressSize, extended_fab_primary_style, fab_elevation_level, fab_primary_style,
+        fab_surface_style, material_progress_arc, material_progress_gap_angle,
+        material_progress_metrics, wizard_nav_layout,
+    };
+    use iced::widget::button;
+
+    #[test]
+    fn material_progress_metrics_match_m3_tokens() {
+        let standard = material_progress_metrics(MaterialProgressSize::Standard);
+        assert_eq!(standard.diameter, 40.0);
+        assert_eq!(standard.stroke_width, 4.0);
+        assert_eq!(standard.track_gap, 4.0);
+
+        let hero = material_progress_metrics(MaterialProgressSize::Hero);
+        assert_eq!(hero.diameter, 52.0);
+        assert_eq!(hero.stroke_width, 8.0);
+        assert_eq!(hero.track_gap, 4.0);
+    }
+
+    #[test]
+    fn material_progress_arc_wraps_phase_and_bounds_sweep() {
+        let start = material_progress_arc(0.0);
+        let wrapped = material_progress_arc(1.0);
+        assert!((start.start_angle - wrapped.start_angle).abs() < f32::EPSILON);
+        assert!((start.sweep_angle - wrapped.sweep_angle).abs() < f32::EPSILON);
+
+        for phase in [0.0, 0.125, 0.25, 0.5, 0.75, 0.999] {
+            let arc = material_progress_arc(phase);
+            assert!(arc.sweep_angle >= std::f32::consts::TAU * 0.12);
+            assert!(arc.sweep_angle <= std::f32::consts::TAU * 0.67);
+        }
+    }
+
+    #[test]
+    fn material_progress_gap_accounts_for_round_caps() {
+        for size in [MaterialProgressSize::Standard, MaterialProgressSize::Hero] {
+            let metrics = material_progress_metrics(size);
+            let radius = (metrics.diameter - metrics.stroke_width) / 2.0;
+            let centerline_gap = material_progress_gap_angle(metrics, radius) * radius;
+            assert_eq!(centerline_gap, metrics.track_gap + metrics.stroke_width);
+        }
+    }
+
+    #[test]
+    fn all_fab_shapes_share_the_same_elevation_policy() {
+        assert_eq!(fab_elevation_level(button::Status::Active), 3);
+        assert_eq!(fab_elevation_level(button::Status::Hovered), 4);
+        assert_eq!(fab_elevation_level(button::Status::Pressed), 3);
+        assert_eq!(fab_elevation_level(button::Status::Disabled), 0);
+
+        let theme = iced::Theme::custom(
+            "test",
+            crate::theme::iced_palette(crate::theme::ThemeSeed::Indigo, false),
+        );
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+        ] {
+            let circular_shadow = fab_primary_style(&theme, status).shadow;
+            assert_eq!(
+                extended_fab_primary_style(&theme, status).shadow,
+                circular_shadow
+            );
+            assert_eq!(fab_surface_style(&theme, status).shadow, circular_shadow);
+        }
+    }
+
+    #[test]
+    fn wizard_nav_layout_groups_confirmation_actions() {
+        for key in ["btn_start", "btn_dump"] {
+            let label = ltbox_core::i18n::tr(key);
+            let layout = wizard_nav_layout(label.as_str());
+            assert!(layout.grouped_leading);
+            assert!(layout.extended_primary);
+        }
+
+        let next_label = ltbox_core::i18n::tr("btn_next");
+        let next = wizard_nav_layout(next_label.as_str());
+        assert!(!next.grouped_leading);
+        assert!(!next.extended_primary);
+    }
 }

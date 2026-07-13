@@ -73,6 +73,7 @@ fn pal_of(t: &Theme) -> Palette {
 
 /// Upper bound on `App.log_lines` — keeps memory flat over long sessions.
 const LOG_MAX_LINES: usize = 500;
+const EXEC_ERROR_SUMMARY_MAX_CHARS: usize = 180;
 
 /// 32×32 RGBA image handle for the custom title-bar brand icon. Built once,
 /// cheap to clone (ref-counted). Only used by the custom borderless title bar
@@ -1195,6 +1196,26 @@ fn parse_phase_marker(line: &str) -> Option<usize> {
     None
 }
 
+fn concise_error_summary(error: &str, max_chars: usize) -> String {
+    let summary = error
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if summary.chars().count() <= max_chars {
+        return summary;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut truncated: String = summary.chars().take(max_chars - 1).collect();
+    truncated.push('…');
+    truncated
+}
+
 // Icon glyphs for the current-step card (running / done / failed).
 // Colour is applied at the call site so running/done/failed each paint
 // with the palette role appropriate to the outcome (primary / success
@@ -1781,11 +1802,11 @@ struct DevicePollResult {
 }
 
 /// Loading state for the device-info popup. The popup view branches on
-/// this to render a spinner / table / error banner while keeping the
+/// this to render a progress indicator / table / error banner while keeping the
 /// modal open so the user has a clear target to dismiss.
 #[derive(Debug, Clone)]
 enum DeviceInfoState {
-    /// Fetch is in flight; render a spinner and disable retry.
+    /// Fetch is in flight; render a progress indicator and disable retry.
     Loading,
     /// `device_info_cache[serial]` is populated; render the table.
     Ready,
@@ -2209,7 +2230,7 @@ struct App {
     /// (errors not cached), so reopening the popup never re-queries.
     qfil_cache: std::collections::HashMap<String, QfilPopupState>,
     /// `probe_id` of the in-flight on-entry region-detection query, or `None`
-    /// when idle. Doubles as the spinner gate (the region step shows a spinner
+    /// when idle. Doubles as the progress gate (the region step shows an indicator
     /// while `Some`) and the staleness token — a result whose id doesn't match
     /// has been superseded (re-entry, device swap, disconnect) and is ignored.
     flash_region_pending: Option<u64>,
@@ -2271,6 +2292,7 @@ struct App {
     image_info_log_editor: iced::widget::text_editor::Content,
     pending_log_save_source: LogSaveSource,
     error_msg: Option<String>,
+    operation_error: Option<String>,
     picker_target: PickerTarget,
     driver_status: Option<ltbox_device::driver::DriverStatus>,
     installing_drivers: bool,
@@ -2462,6 +2484,7 @@ impl Default for App {
             image_info_log_editor: iced::widget::text_editor::Content::with_text(""),
             pending_log_save_source: LogSaveSource::Main,
             error_msg: None,
+            operation_error: None,
             picker_target: PickerTarget::None,
             driver_status: None,
             installing_drivers: false,
@@ -2679,6 +2702,7 @@ impl App {
         self.busy = true;
         self.busy_view = Some(v);
         self.error_msg = None;
+        self.operation_error = None;
         self.op_steps.clear();
         self.current_op_step = 0;
         // Single START banner; no closing rule.
@@ -2782,10 +2806,16 @@ impl App {
         self.busy_view = None;
     }
 
+    fn fail_op(&mut self) {
+        self.busy = false;
+        self.busy_view = None;
+    }
+
     fn begin_silent_op(&mut self, v: View) {
         self.busy = true;
         self.busy_view = Some(v);
         self.error_msg = None;
+        self.operation_error = None;
         self.op_steps.clear();
         self.current_op_step = 0;
     }
@@ -2905,6 +2935,17 @@ impl App {
             View::Advanced => self.advanced_inline_exec_surface_active(),
             View::Dashboard | View::Reboot | View::Settings | View::About => false,
         }
+    }
+
+    fn current_view_shows_shared_exec_surface(&self) -> bool {
+        self.current_view_has_inline_exec_surface() && !self.image_info_exec_active()
+    }
+
+    fn should_show_error_banner(&self) -> bool {
+        let shared_surface_owns_error = self.current_view_shows_shared_exec_surface()
+            && self.operation_error.is_some()
+            && self.operation_error.as_deref() == self.error_msg.as_deref();
+        self.error_msg.is_some() && !shared_surface_owns_error
     }
 
     fn blocking_popup_open(&self) -> bool {
@@ -3101,7 +3142,7 @@ impl App {
     /// Kick off region auto-detection on entering the Flash wizard (called
     /// right after `flash.reset()`):
     /// * PRC-only model (TB322FC) → preselect PRC and jump to the target step.
-    /// * usable polled serial → probe PTSTPD (region step shows a spinner).
+    /// * usable polled serial → probe PTSTPD (region step shows an indicator).
     /// * no usable serial → open the manual-serial prompt.
     ///
     /// On a fetch failure / inconclusive SaleArea the handler falls back to the
@@ -3122,7 +3163,7 @@ impl App {
         Task::none()
     }
 
-    /// Mint a fresh probe id, mark it pending (shows the spinner), and spawn
+    /// Mint a fresh probe id, mark it pending (shows the progress indicator), and spawn
     /// the lookup. The id is the staleness token the result handler checks.
     fn start_region_probe(&mut self, serial: String) -> Task<Message> {
         self.flash_region_probe_seq += 1;
@@ -3154,7 +3195,7 @@ impl App {
             )));
         }
         // The fallback (heavy-thread spawn failure / panic) carries the same id
-        // + serial so the handler clears the spinner and falls back to manual
+        // + serial so the handler clears the progress indicator and falls back to manual
         // instead of treating it as stale.
         let serial_fb = serial.clone();
         task_heavy(
@@ -4381,6 +4422,203 @@ mod tests {
         app.current_view = View::Flash;
         app.flash.step = FLASH_STEPS.len() - 1;
         assert!(!app.should_show_busy_progress_dialog());
+    }
+
+    #[test]
+    fn material_progress_replaces_iced_aw_spinner() {
+        let loading_views = concat!(
+            include_str!("view/chrome.rs"),
+            include_str!("view/flash.rs"),
+            include_str!("view/sysupdate.rs"),
+        );
+        assert!(
+            !loading_views.contains("Spinner::new"),
+            "all loading surfaces must use the shared Material progress ring"
+        );
+    }
+
+    #[test]
+    fn log_popup_groups_utility_actions() {
+        let source = include_str!("view/popups.rs");
+        let popup = source
+            .split_once("pub(crate) fn log_popup_view")
+            .expect("log popup view must exist")
+            .1;
+        assert!(
+            popup.contains("wizard_utility_toolbar(utility_actions)"),
+            "save and close must share the compact utility toolbar"
+        );
+        assert!(
+            !popup.contains("wizard_surface_fab("),
+            "the log popup must not render utility actions as separate FABs"
+        );
+    }
+
+    #[test]
+    fn wizard_step_state_tracks_completed_active_and_upcoming() {
+        assert_eq!(wizard_step_state(0, 2), WizardStepState::Completed);
+        assert_eq!(wizard_step_state(2, 2), WizardStepState::Active);
+        assert_eq!(wizard_step_state(3, 2), WizardStepState::Upcoming);
+    }
+
+    #[test]
+    fn image_info_result_uses_shared_action_hierarchy() {
+        let source = include_str!("view/advanced.rs");
+        let result = source
+            .split_once("pub(crate) fn adv_image_info_exec_step")
+            .expect("image info execution view must exist")
+            .1
+            .split_once("pub(crate) fn view_simple_flash_wizard")
+            .expect("simple flash view must follow image info")
+            .0;
+        assert!(result.contains("wizard_utility_toolbar"));
+        assert!(result.contains("wizard_primary_extended_fab"));
+        assert!(!result.contains("wizard_surface_fab"));
+        assert!(!result.contains("wizard_error_fab"));
+    }
+
+    #[test]
+    fn concise_error_summary_collapses_lines_and_truncates_unicode() {
+        assert_eq!(
+            concise_error_summary("\n  loader   handshake failed  \nfull detail", 80),
+            "loader handshake failed"
+        );
+        assert_eq!(concise_error_summary("가나다라마바사", 5), "가나다라…");
+    }
+
+    #[test]
+    fn shared_execution_failure_owns_error_presentation() {
+        let mut app = App {
+            error_msg: Some("failed".into()),
+            operation_error: Some("failed".into()),
+            ..App::default()
+        };
+        app.current_view = View::Flash;
+        app.flash.step = FLASH_STEPS.len() - 1;
+        assert!(!app.should_show_error_banner());
+
+        app.current_view = View::Dashboard;
+        assert!(app.should_show_error_banner());
+
+        app.current_view = View::Advanced;
+        app.adv_wizard.open(AdvAction::ImageInfo);
+        app.adv_wizard.step = app.adv_wizard.exec_step();
+        assert!(app.should_show_error_banner());
+    }
+
+    #[test]
+    fn non_operation_error_on_execution_surface_stays_global() {
+        let mut app = App {
+            current_view: View::Flash,
+            error_msg: Some("log save failed".into()),
+            operation_error: None,
+            ..App::default()
+        };
+        app.flash.step = FLASH_STEPS.len() - 1;
+
+        assert!(app.should_show_error_banner());
+    }
+
+    #[test]
+    fn operation_error_drives_shared_failure_status() {
+        let app = App {
+            operation_error: Some("firehose failed".into()),
+            ..App::default()
+        };
+
+        assert_eq!(app.exec_status_copy().0, app.t("exec_failed_title"));
+    }
+
+    #[test]
+    fn failed_operation_preserves_the_phase_that_failed() {
+        let mut app = App {
+            busy: true,
+            busy_view: Some(View::Flash),
+            op_steps: vec![
+                OpStep {
+                    label: "one".into(),
+                },
+                OpStep {
+                    label: "two".into(),
+                },
+            ],
+            current_op_step: 0,
+            ..App::default()
+        };
+
+        app.fail_op();
+
+        assert_eq!(app.current_op_step, 0);
+        assert!(!app.busy);
+        assert_eq!(app.busy_view, None);
+    }
+
+    #[test]
+    fn shared_execution_error_is_inline_instead_of_floating() {
+        let exec = include_str!("view/sysupdate.rs");
+        assert!(exec.contains("concise_error_summary"));
+        assert!(exec.contains("exec_error_log_hint"));
+
+        let chrome = include_str!("view/chrome.rs");
+        assert!(chrome.contains("should_show_error_banner"));
+    }
+
+    #[test]
+    fn execution_error_log_hint_exists_in_every_locale() {
+        let en = Translations::load(Language::En);
+        assert!(en.fallback.contains_key("exec_error_log_hint"));
+        for lang in [Language::Ko, Language::Zh, Language::Ru, Language::Ja] {
+            let translations = Translations::load(lang);
+            assert!(translations.primary.contains_key("exec_error_log_hint"));
+        }
+    }
+
+    #[test]
+    fn extended_fab_content_is_vertically_centered() {
+        let source = include_str!("widgets.rs");
+        let implementation = source
+            .split_once("pub(crate) fn wizard_primary_extended_fab")
+            .expect("extended FAB helper must exist")
+            .1
+            .split_once("pub(crate) fn wizard_fab_footer")
+            .expect("footer helper must follow the extended FAB")
+            .0;
+        assert!(
+            implementation.contains(".center_y(Length::Fill)"),
+            "the extended FAB must explicitly center its content vertically"
+        );
+    }
+
+    #[test]
+    fn exec_action_layout_keeps_one_primary_action() {
+        assert_eq!(
+            exec_action_layout(true, false, false),
+            ExecActionLayout {
+                primary: None,
+                start_over_utility: false,
+            }
+        );
+        assert_eq!(
+            exec_action_layout(false, false, false),
+            ExecActionLayout {
+                primary: Some(ExecPrimaryAction::StartOver),
+                start_over_utility: false,
+            }
+        );
+        assert_eq!(
+            exec_action_layout(false, false, true),
+            ExecActionLayout {
+                primary: Some(ExecPrimaryAction::OpenFolder),
+                start_over_utility: true,
+            }
+        );
+        assert_eq!(
+            exec_action_layout(false, true, true),
+            ExecActionLayout {
+                primary: Some(ExecPrimaryAction::StartOver),
+                start_over_utility: false,
+            }
+        );
     }
 
     #[test]

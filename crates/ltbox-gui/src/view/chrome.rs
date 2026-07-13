@@ -3,7 +3,6 @@
 use crate::*;
 use iced::widget::{self, Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
-use iced_aw::widget::Spinner;
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -54,7 +53,9 @@ impl App {
         // Error banner below popups so the scrim dims the banner too.
         let mut layers: Vec<Element<'_, Message>> = vec![framed];
 
-        if let Some(err) = &self.error_msg {
+        if self.should_show_error_banner()
+            && let Some(err) = &self.error_msg
+        {
             layers.push(self.error_banner(err));
         }
         if self.country_popup_open {
@@ -935,12 +936,8 @@ impl App {
             .busy_body_override()
             .unwrap_or_else(|| tr_args!("progress_dialog_body", operation = op_name));
 
-        let spinner: Element<'_, Message> = Spinner::new()
-            .width(Length::Fixed(42.0))
-            .height(Length::Fixed(42.0))
-            .circle_radius(3.0)
-            .into();
-        let spinner_box = container(spinner)
+        let indicator = material_circular_progress(MaterialProgressSize::Standard);
+        let indicator_box = container(indicator)
             .width(56)
             .height(56)
             .center_x(56)
@@ -963,7 +960,7 @@ impl App {
         .width(Length::Fill);
 
         let content = column![
-            row![spinner_box, title_col]
+            row![indicator_box, title_col]
                 .spacing(18)
                 .align_y(iced::Alignment::Center),
         ]
@@ -979,11 +976,11 @@ impl App {
     }
 
     /// Shared loading-state body for any `_popup_view` that fetches
-    /// upstream data. 48 px tall slim box with a centred spinner —
+    /// upstream data. 48 px tall slim box with a centred progress ring —
     /// every popup uses the same shape, so consolidate here instead
     /// of duplicating the container chain in each call site.
     pub(crate) fn popup_loading_view(&self) -> Element<'_, Message> {
-        container(Spinner::new())
+        container(material_circular_progress(MaterialProgressSize::Standard))
             .width(Length::Fill)
             .height(48)
             .center_x(Length::Fill)

@@ -256,7 +256,8 @@ impl App {
                 self.error_msg = Some(self.t(key).to_string());
             }
             Message::OperationError(e) => {
-                self.end_op();
+                self.fail_op();
+                self.operation_error = Some(e.clone());
                 self.error_msg = Some(e.clone());
                 self.log_push(tr_args!("log_operation_error", error = e.to_string()));
             }
@@ -302,6 +303,7 @@ impl App {
                     _ => {}
                 }
                 self.error_msg = None;
+                self.operation_error = None;
             }
             Message::DrainStdoutTap => {
                 // Pull from BOTH the Windows stdout pipe (`stdout_tap`,

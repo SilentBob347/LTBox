@@ -16,5 +16,7 @@ output*/
 .claude/
 AGENTS.md
 CLAUDE.md
+/PRODUCT.md
+/DESIGN.md
 desktop.ini
 .DS_Store

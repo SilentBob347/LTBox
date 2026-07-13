@@ -1096,13 +1096,12 @@ impl App {
                 match result {
                     Ok(lines) => {
                         self.flush_exec_done_log(lines);
+                        self.end_op();
                     }
                     Err(e) => {
-                        self.error_msg = Some(e.clone());
-                        self.log_push(tr_args!("log_operation_error", error = e.to_string()));
+                        return self.update(Message::OperationError(e));
                     }
                 }
-                self.end_op();
                 Task::none()
             }
         }

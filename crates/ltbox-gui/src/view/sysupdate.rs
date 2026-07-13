@@ -3,7 +3,6 @@
 use crate::*;
 use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length, Theme};
-use iced_aw::widget::Spinner;
 use ltbox_core::tr_args;
 impl App {
     pub(crate) fn view_sysupdate_wizard(&self) -> Element<'_, Message> {
@@ -302,7 +301,7 @@ impl App {
                 self.t("exec_executing_title").to_string(),
                 self.t("exec_executing_subtitle").to_string(),
             )
-        } else if self.error_msg.is_some() {
+        } else if self.operation_error.is_some() {
             (
                 self.t("exec_failed_title").to_string(),
                 self.t("exec_failed_subtitle").to_string(),
@@ -323,33 +322,57 @@ impl App {
     /// Reusable exec-step view with collapsible log panel.
     pub(crate) fn exec_step_view(&self) -> Element<'_, Message> {
         let (_, detail) = self.exec_status_copy();
-        let is_error = self.error_msg.is_some();
+        let is_error = self.operation_error.is_some();
         let is_busy = self.busy;
 
         // Shared progress/result card for wizard exec steps.
         let step_icon: Element<'_, Message> = if is_error {
-            lucide_icon(icon::op_failed(), 72.0, |t: &Theme| pal_of(t).error)
-        } else if is_busy {
-            container(
-                Spinner::new()
-                    .width(Length::Fixed(56.0))
-                    .height(Length::Fixed(56.0))
-                    .circle_radius(3.5),
-            )
-            .width(72)
-            .height(72)
-            .center_x(72)
-            .center_y(72)
+            container(lucide_icon(icon::op_failed(), 52.0, |t: &Theme| {
+                pal_of(t).error
+            }))
+            .width(80)
+            .height(80)
+            .center_x(80)
+            .center_y(80)
             .style(|t: &Theme| {
                 let p = pal_of(t);
                 container::Style {
-                    text_color: Some(p.primary),
+                    background: Some(p.error_container.into()),
+                    border: iced::Border {
+                        radius: theme::shape::FULL.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }
             })
             .into()
+        } else if is_busy {
+            container(material_circular_progress(MaterialProgressSize::Hero))
+                .width(80)
+                .height(80)
+                .center_x(80)
+                .center_y(80)
+                .into()
         } else {
-            lucide_icon(icon::op_done(), 72.0, |t: &Theme| pal_of(t).success)
+            container(lucide_icon(icon::op_done(), 52.0, |t: &Theme| {
+                pal_of(t).success
+            }))
+            .width(80)
+            .height(80)
+            .center_x(80)
+            .center_y(80)
+            .style(|t: &Theme| {
+                let p = pal_of(t);
+                container::Style {
+                    background: Some(blend(p.surface_container_high, p.success, 0.12).into()),
+                    border: iced::Border {
+                        radius: theme::shape::FULL.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .into()
         };
 
         let (eyebrow_text, label_text) = if self.op_steps.is_empty() {
@@ -377,7 +400,7 @@ impl App {
             Space::new().height(0).into()
         } else {
             text(eyebrow_text)
-                .size(11)
+                .size(12)
                 .style(move |t: &Theme| {
                     let p = pal_of(t);
                     let color = if is_error {
@@ -392,80 +415,107 @@ impl App {
                 .into()
         };
 
-        let card_body = column![
+        let mut card_body = column![
             eyebrow_node,
-            text(label_text).size(16).style(on_surface_style),
+            text(label_text).size(18).style(on_surface_style),
         ]
-        .spacing(4)
+        .spacing(6)
         .width(Length::Fill);
+        if is_error {
+            if let Some(error) = self.operation_error.as_deref() {
+                let summary = concise_error_summary(error, EXEC_ERROR_SUMMARY_MAX_CHARS);
+                if !summary.is_empty() {
+                    card_body = card_body.push(text(summary).size(13).style(|t: &Theme| {
+                        iced::widget::text::Style {
+                            color: Some(pal_of(t).error),
+                        }
+                    }));
+                }
+            }
+            card_body = card_body.push(
+                text(self.t("exec_error_log_hint").to_string())
+                    .size(12)
+                    .style(muted_style),
+            );
+        }
         let card_row = row![step_icon, card_body]
-            .spacing(20)
+            .spacing(24)
             .align_y(iced::Alignment::Center);
         let step_card = container(card_row)
-            .padding([24, 28])
-            .max_width(560)
+            .padding([28, 32])
+            .max_width(600)
             .width(Length::Fill)
             .style(move |t: &Theme| {
                 let p = pal_of(t);
-                let accent = if is_error {
-                    p.error
+                let background = if is_error {
+                    blend(p.surface_container, p.error, 0.08)
                 } else if is_busy {
-                    p.primary
+                    p.surface_container_high
                 } else {
-                    p.success
+                    blend(p.surface_container, p.success, 0.08)
                 };
                 container::Style {
-                    background: Some(p.surface_container.into()),
+                    background: Some(background.into()),
                     border: iced::Border {
-                        color: accent,
-                        width: 1.5,
-                        radius: theme::shape::MD.into(),
+                        radius: theme::shape::XL.into(),
+                        ..Default::default()
                     },
-                    shadow: theme::elevation(2, theme::is_dark(t)),
+                    shadow: theme::elevation(1, theme::is_dark(t)),
                     ..Default::default()
                 }
             });
 
-        let mut actions = row![
-            wizard_surface_fab(
-                icon::fab_show_log(),
-                self.t("btn_show_log").to_string(),
-                Some(Message::ToggleLogPopup(true)),
-            ),
-            wizard_surface_fab(
-                icon::fab_save_log(),
-                self.t("btn_save_log").to_string(),
-                Some(Message::SaveLog),
-            ),
-        ]
-        .spacing(WIZARD_FAB_SPACING)
-        .align_y(iced::Alignment::Center)
-        .height(Length::Fill);
-
-        // "Open Folder" FAB for Advanced ops that produce output —
-        // guarded on non-busy to avoid racing the file-manager launch.
-        if !self.busy
+        let has_output = !is_busy
             && self.current_view == View::Advanced
             && self.adv_wizard.output_dir.is_some()
             && self
                 .adv_wizard
                 .action
-                .map(|a| a.produces_output())
-                .unwrap_or(false)
-        {
-            actions = actions.push(wizard_surface_fab(
-                icon::fab_open_folder(),
-                self.t("btn_open_folder").to_string(),
-                Some(Message::Adv(AdvMsg::AdvWizOpenOutputFolder)),
-            ));
-        }
+                .map(|action| action.produces_output())
+                .unwrap_or(false);
+        let action_layout = exec_action_layout(is_busy, is_error, has_output);
+        let mut utility_actions = row![
+            wizard_utility_action(
+                icon::fab_show_log(),
+                self.t("btn_show_log").to_string(),
+                Some(Message::ToggleLogPopup(true)),
+            ),
+            wizard_utility_action(
+                icon::fab_save_log(),
+                self.t("btn_save_log").to_string(),
+                Some(Message::SaveLog),
+            ),
+        ]
+        .spacing(0)
+        .align_y(iced::Alignment::Center);
 
-        if !self.busy {
-            actions = actions.push(wizard_error_fab(
+        if action_layout.start_over_utility {
+            utility_actions = utility_actions.push(wizard_utility_action(
                 icon::fab_start_over(),
                 self.t("btn_start_over").to_string(),
                 Some(Message::StartOver),
             ));
+        }
+
+        let mut actions = row![wizard_utility_toolbar(utility_actions)]
+            .spacing(WIZARD_FAB_SPACING)
+            .align_y(iced::Alignment::Center)
+            .height(Length::Fill);
+        if let Some(primary) = action_layout.primary {
+            actions = match primary {
+                ExecPrimaryAction::StartOver => actions.push(wizard_primary_extended_fab(
+                    icon::fab_start_over(),
+                    self.t("btn_start_over").to_string(),
+                    Some(Message::StartOver),
+                    None,
+                )),
+                ExecPrimaryAction::OpenFolder => actions.push(wizard_primary_extended_fab(
+                    icon::fab_open_folder(),
+                    self.t("btn_open_folder").to_string(),
+                    Some(Message::Adv(AdvMsg::AdvWizOpenOutputFolder)),
+                    None,
+                )),
+            };
         }
 
         let col = column![step_card]

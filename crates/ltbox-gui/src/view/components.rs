@@ -116,11 +116,29 @@ fn m3_dialog_layers(inner: Element<'_, Message>) -> Element<'_, Message> {
     iced::widget::stack![scrim, centered].into()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WizardStepState {
+    Completed,
+    Active,
+    Upcoming,
+}
+
+pub(crate) fn wizard_step_state(index: usize, current: usize) -> WizardStepState {
+    use WizardStepState::{Active, Completed, Upcoming};
+
+    match index.cmp(&current) {
+        std::cmp::Ordering::Less => Completed,
+        std::cmp::Ordering::Equal => Active,
+        std::cmp::Ordering::Greater => Upcoming,
+    }
+}
+
 pub(crate) fn wizard_step_bar<'a>(steps: &[&str], current: usize) -> Element<'a, Message> {
     let mut r = row![]
-        .spacing(6)
+        .spacing(0)
         .align_y(iced::Alignment::Center)
-        .padding([14, 24]);
+        .padding([8, 24])
+        .height(Length::Fixed(48.0));
 
     for (i, &label) in steps.iter().enumerate() {
         if i > 0 {
@@ -129,7 +147,7 @@ pub(crate) fn wizard_step_bar<'a>(steps: &[&str], current: usize) -> Element<'a,
                 move |t: &Theme| {
                     let p = pal_of(t);
                     let color = if completed {
-                        p.success
+                        p.primary
                     } else {
                         p.outline_variant
                     };
@@ -141,77 +159,94 @@ pub(crate) fn wizard_step_bar<'a>(steps: &[&str], current: usize) -> Element<'a,
             ));
         }
 
-        let done = i < current;
-        let active = i == current;
-        let dot_text = if done {
+        let state = wizard_step_state(i, current);
+        let marker_text = if state == WizardStepState::Completed {
             "\u{2713}".to_string()
         } else {
             (i + 1).to_string()
         };
 
-        let dot = container(text(dot_text).size(12).center().style(move |t: &Theme| {
+        let marker = container(text(marker_text).size(12).center().style(move |t: &Theme| {
             let p = pal_of(t);
-            let fg = if done || active {
-                iced::Color::WHITE
-            } else {
-                p.on_surface_variant
+            let color = match state {
+                WizardStepState::Completed => p.on_primary_container,
+                WizardStepState::Active => p.on_primary,
+                WizardStepState::Upcoming => p.on_surface_variant,
             };
-            iced::widget::text::Style { color: Some(fg) }
+            iced::widget::text::Style { color: Some(color) }
         }))
-        .width(28)
-        .height(28)
-        .center_x(28)
-        .center_y(28)
+        .width(32)
+        .height(32)
+        .center_x(32)
+        .center_y(32)
         .style(move |t: &Theme| {
             let p = pal_of(t);
-            let bg = if done {
-                p.success
-            } else if active {
-                p.primary
-            } else {
-                p.surface_container_high
-            };
-            let border_color = if done || active {
-                bg
-            } else {
-                p.outline_variant
+            let (background, border_color) = match state {
+                WizardStepState::Completed => (p.primary_container, p.primary_container),
+                WizardStepState::Active => (p.primary, p.primary),
+                WizardStepState::Upcoming => (p.surface_container_high, p.outline_variant),
             };
             container::Style {
-                background: Some(bg.into()),
+                background: Some(background.into()),
                 border: iced::Border {
                     color: border_color,
                     width: 1.0,
-                    radius: 14.0.into(),
+                    radius: theme::shape::FULL.into(),
                 },
                 ..Default::default()
             }
         });
 
-        let lbl_widget = text(label.to_string()).size(12).style(move |t: &Theme| {
-            let p = pal_of(t);
-            let color = if done {
-                p.success
-            } else if active {
-                p.primary
-            } else {
-                p.on_surface_variant
-            };
-            iced::widget::text::Style { color: Some(color) }
-        });
-        r = r.push(
-            row![dot, lbl_widget]
-                .spacing(6)
+        let step_node: Element<'a, Message> = if state == WizardStepState::Active {
+            container(
+                row![
+                    marker,
+                    text(label.to_string())
+                        .size(12)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                        .style(move |t: &Theme| iced::widget::text::Style {
+                            color: Some(pal_of(t).on_primary_container),
+                        }),
+                ]
+                .spacing(8)
                 .align_y(iced::Alignment::Center),
-        );
+            )
+            .height(Length::Fixed(40.0))
+            .padding(iced::Padding {
+                top: 4.0,
+                right: 14.0,
+                bottom: 4.0,
+                left: 4.0,
+            })
+            .style(|t: &Theme| container::Style {
+                background: Some(pal_of(t).primary_container.into()),
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+        } else {
+            widget::tooltip(
+                marker,
+                container(text(label.to_string()).size(12))
+                    .padding([6, 10])
+                    .style(|t: &Theme| theme::tooltip_style(t, theme::shape::SM)),
+                widget::tooltip::Position::Bottom,
+            )
+            .into()
+        };
+        r = r.push(step_node);
     }
 
-    // Bottom-edge divider only — top + sides come from the
-    // surrounding window outline / sidebar rule, so a 4-side
-    // border here would render the bottom + left as a double line.
     column![
         container(r)
             .width(Length::Fill)
-            .style(|t: &Theme| panel_bg(t)),
+            .style(|t: &Theme| container::Style {
+                background: Some(pal_of(t).surface_container_low.into()),
+                ..Default::default()
+            }),
         widget::rule::horizontal(1).style(shell_rule_style),
     ]
     .into()

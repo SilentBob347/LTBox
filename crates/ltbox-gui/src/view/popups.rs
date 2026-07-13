@@ -138,7 +138,7 @@ impl App {
 
     /// Lenovo OTA "querynewfirmware" popup. Opens when the user clicks
     /// the dashboard firmware version. Mirrors `device_info_popup_view`
-    /// for header / spinner / error / close-button shape, but renders
+    /// for header / progress / error / close-button shape, but renders
     /// the OTA payload as a stacked card (From / To / Size / MD5 /
     /// Changelog / Download) instead of a flat key-value table.
     pub(crate) fn ota_popup_view(&self) -> Element<'_, Message> {
@@ -928,21 +928,22 @@ impl App {
         .padding(20)
         .width(Length::Fill)
         .height(Length::Fill);
-        let actions = row![
-            wizard_surface_fab(
+        let utility_actions = row![
+            wizard_utility_action(
                 icon::fab_save_log(),
                 self.t("btn_save_log").to_string(),
                 Some(Message::SaveLog),
             ),
-            wizard_surface_fab(
+            wizard_utility_action(
                 icon::fab_cancel(),
                 self.t("btn_close").to_string(),
                 Some(Message::ToggleLogPopup(false)),
             ),
         ]
-        .spacing(WIZARD_FAB_SPACING)
+        .spacing(0)
         .align_y(iced::Alignment::Center)
         .height(Length::Fill);
+        let actions = wizard_utility_toolbar(utility_actions);
 
         column![
             container(body).width(Length::Fill).height(Length::Fill),

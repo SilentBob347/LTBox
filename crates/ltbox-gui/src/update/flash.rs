@@ -45,7 +45,7 @@ impl App {
             FlashMsg::FlashAutoRegionFetched(id, serial, result) => {
                 // Ignore a superseded lookup — a newer probe (re-entry, device
                 // swap, or a fresh manual serial) has taken over. Leaves the
-                // active probe's spinner up untouched.
+                // active probe's progress indicator untouched.
                 if self.flash_region_pending != Some(id) {
                     return Task::none();
                 }

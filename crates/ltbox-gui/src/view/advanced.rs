@@ -739,20 +739,24 @@ impl App {
             })
             .style(m3_log_text_editor_style);
 
-        let mut actions = row![wizard_surface_fab(
+        let utility_actions = row![wizard_utility_action(
             icon::fab_save_log(),
             self.t("btn_save_log").to_string(),
             Some(Message::SaveLog),
         )]
-        .spacing(WIZARD_FAB_SPACING)
-        .align_y(iced::Alignment::Center)
-        .height(Length::Fill);
+        .spacing(0)
+        .align_y(iced::Alignment::Center);
+        let mut actions = row![wizard_utility_toolbar(utility_actions)]
+            .spacing(WIZARD_FAB_SPACING)
+            .align_y(iced::Alignment::Center)
+            .height(Length::Fill);
 
         if !self.busy {
-            actions = actions.push(wizard_error_fab(
+            actions = actions.push(wizard_primary_extended_fab(
                 icon::fab_start_over(),
                 self.t("btn_start_over").to_string(),
                 Some(Message::StartOver),
+                None,
             ));
         }
 
