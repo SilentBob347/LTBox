@@ -31,6 +31,11 @@ impl App {
             Message::PersistWindowSize => return self.update_persist_window_size(),
             // Navigation
             Message::Noop => {}
+            Message::ResumeBusyOperation => {
+                if let Some(view) = busy_navigation_target(self.busy, self.busy_view) {
+                    return self.update(Message::Navigate(view));
+                }
+            }
             Message::Navigate(v) => {
                 self.current_view = v;
                 // Keep wizard state during a running op or on the

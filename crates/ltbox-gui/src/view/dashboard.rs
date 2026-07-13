@@ -78,15 +78,17 @@ impl App {
         } else {
             &self.device_storage
         };
-        let op_text = if self.busy {
+        let op_text: Element<'_, Message> = if self.busy {
             let base = self.t("dash_operation_in_progress").to_string();
-            let label = format!("{base} - {}", self.busy_operation_label());
-            text(label).size(13).style(accent_style)
+            let label = format!("{} - {base}", self.busy_operation_label());
+            text(label).size(13).style(accent_style).into()
         } else {
             text(self.t("dash_no_operation").to_string())
                 .size(13)
                 .style(muted_style)
+                .into()
         };
+        let can_resume = busy_navigation_target(self.busy, self.busy_view).is_some();
         let _log_preview_len = self.log_lines.len();
 
         // Title + divider dropped — sidebar already labels the active view,
@@ -351,7 +353,26 @@ impl App {
                 theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
             }),
         );
-        content = content.push(card(self.t("dash_current_operation"), op_text));
+        let operation_card = if can_resume {
+            let open_action = row![
+                text(self.t("dash_open_operation").to_string())
+                    .size(12)
+                    .style(accent_style),
+                icon::fab_next().size(18).style(accent_style),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center);
+            clickable_card(
+                self.t("dash_current_operation"),
+                row![op_text, Space::new().width(Length::Fill), open_action]
+                    .spacing(12)
+                    .align_y(iced::Alignment::Center),
+                Message::ResumeBusyOperation,
+            )
+        } else {
+            card(self.t("dash_current_operation"), op_text)
+        };
+        content = content.push(operation_card);
         // Read-only text_editor so drag-select + Ctrl+C work. `Length::Fill`
         // height lets the M3 text field claim the remaining dashboard space
         // directly, without wrapping the log in a second card.

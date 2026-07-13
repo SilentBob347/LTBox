@@ -333,32 +333,63 @@ pub(crate) fn sec_hdr<'a>(label: &str, label_alpha: f32) -> Element<'a, Message>
     .into()
 }
 
+fn card_content<'a>(title: &str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    column![
+        text(title.to_string())
+            .size(13)
+            .style(label_style)
+            .line_height(1.0),
+        content.into(),
+    ]
+    .spacing(6)
+    .padding(iced::Padding {
+        top: 10.0,
+        right: 18.0,
+        bottom: 14.0,
+        left: 18.0,
+    })
+    .width(Length::Fill)
+    .into()
+}
+
 pub(crate) fn card<'a>(
     title: &str,
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    container(
-        column![
-            text(title.to_string())
-                .size(13)
-                .style(label_style)
-                .line_height(1.0),
-            content.into(),
-        ]
-        .spacing(6)
-        .padding(iced::Padding {
-            top: 10.0,
-            right: 18.0,
-            bottom: 14.0,
-            left: 18.0,
+    container(card_content(title, content))
+        .width(Length::Fill)
+        .style(|t: &Theme| {
+            theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
         })
-        .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .style(|t: &Theme| {
-        theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
-    })
-    .into()
+        .into()
+}
+
+pub(crate) fn clickable_card<'a>(
+    title: &str,
+    content: impl Into<Element<'a, Message>>,
+    message: Message,
+) -> Element<'a, Message> {
+    button(card_content(title, content))
+        .on_press(message)
+        .padding(0)
+        .width(Length::Fill)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            button::Style {
+                background: Some(
+                    blend(p.surface_container, p.primary, theme::state_alpha(status)).into(),
+                ),
+                text_color: p.on_surface,
+                border: iced::Border {
+                    color: p.outline_variant,
+                    width: 1.0,
+                    radius: theme::shape::MD.into(),
+                },
+                shadow: theme::elevation(1, theme::is_dark(t)),
+                ..Default::default()
+            }
+        })
+        .into()
 }
 
 pub(crate) fn info_kv<'a>(label: &str, value: &str) -> Element<'a, Message> {

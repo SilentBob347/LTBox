@@ -1216,6 +1216,10 @@ fn concise_error_summary(error: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn busy_navigation_target(busy: bool, busy_view: Option<View>) -> Option<View> {
+    if busy { busy_view } else { None }
+}
+
 // Icon glyphs for the current-step card (running / done / failed).
 // Colour is applied at the call site so running/done/failed each paint
 // with the palette role appropriate to the outcome (primary / success
@@ -4644,6 +4648,34 @@ mod tests {
 
         app.busy_view = Some(View::Reboot);
         assert_eq!(app.busy_operation_label(), app.t("nav_reboot").to_string());
+    }
+
+    #[test]
+    fn busy_navigation_target_requires_a_live_operation() {
+        assert_eq!(
+            busy_navigation_target(true, Some(View::Flash)),
+            Some(View::Flash)
+        );
+        assert_eq!(busy_navigation_target(false, Some(View::Flash)), None);
+        assert_eq!(busy_navigation_target(true, None), None);
+    }
+
+    #[test]
+    fn dashboard_active_operation_uses_guarded_clickable_card() {
+        let source = include_str!("view/dashboard.rs");
+        assert!(source.contains("clickable_card("));
+        assert!(source.contains("Message::ResumeBusyOperation"));
+        assert!(source.contains("busy_navigation_target(self.busy, self.busy_view).is_some()"));
+    }
+
+    #[test]
+    fn dashboard_open_operation_label_exists_in_every_locale() {
+        let en = Translations::load(Language::En);
+        assert!(en.fallback.contains_key("dash_open_operation"));
+        for lang in [Language::Ko, Language::Zh, Language::Ru, Language::Ja] {
+            let translations = Translations::load(lang);
+            assert!(translations.primary.contains_key("dash_open_operation"));
+        }
     }
 
     #[test]
