@@ -5,11 +5,17 @@
 
 use crate::{
     ConnectionStatus, CountryPatchProgress, LiveLabels, WorkflowConfig, active_slot_suffix,
-    build_tb323fu_arb_overlays, efisp_asset_suffix, find_edl_loader, fingerprint_token_match,
+    build_tb323fu_arb_overlays, efisp_asset_suffix, find_firmware_loader, fingerprint_token_match,
     is_rollback_protected_model, open_edl_session, phase_marker,
     read_device_rollback_index_via_edl, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
+
+fn require_firmware_loader(
+    loader: Option<std::path::PathBuf>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    loader.ok_or_else(|| ltbox_core::i18n::tr("live_edl_loader_missing"))
+}
 
 fn should_reboot_fastboot_to_system_after_pre_edl_abort(started_in_fastboot: bool) -> bool {
     !started_in_fastboot
@@ -523,13 +529,69 @@ fn decompress_zst_images(
 /// flush, so an interrupted run (kill / power loss) never leaves a
 /// complete-looking but truncated `*.img` that a later run would skip
 /// (`target.exists()`) and then flash.
+const ZSTD_FREE_SPACE_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+const ZSTD_PROGRESS_INTERVAL_BYTES: u64 = 1 << 30;
+
+fn zstd_output_limit(available_space: u64) -> std::result::Result<u64, String> {
+    available_space
+        .checked_sub(ZSTD_FREE_SPACE_RESERVE_BYTES)
+        .filter(|limit| *limit > 0)
+        .ok_or_else(|| {
+            format!(
+                "need more than {} GiB free before decompressing a zstd image",
+                ZSTD_FREE_SPACE_RESERVE_BYTES / (1024 * 1024 * 1024)
+            )
+        })
+}
+
+fn stream_zstd_decoder<R: std::io::Read, W: std::io::Write>(
+    mut decoder: R,
+    mut out: W,
+    name: &str,
+    log: &mut Vec<String>,
+    output_limit: u64,
+) -> std::result::Result<W, String> {
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    let mut total = 0u64;
+    let mut next_mark = ZSTD_PROGRESS_INTERVAL_BYTES;
+    loop {
+        let n = decoder.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        let next_total = total
+            .checked_add(u64::try_from(n).map_err(|e| e.to_string())?)
+            .ok_or_else(|| "zstd output size overflowed u64".to_string())?;
+        if next_total > output_limit {
+            return Err(format!(
+                "zstd output limit of {} GiB reached while decompressing {name}",
+                output_limit / (1024 * 1024 * 1024)
+            ));
+        }
+        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        total = next_total;
+        if total >= next_mark {
+            live!(
+                log,
+                "[Flash] {}",
+                tr_args!(
+                    "live_flash_zst_progress",
+                    name = name,
+                    gb = format!("{:.1}", total as f64 / 1_073_741_824.0)
+                )
+            );
+            next_mark = next_mark.saturating_add(ZSTD_PROGRESS_INTERVAL_BYTES);
+        }
+    }
+    Ok(out)
+}
+
 fn decompress_zst_file(
     src: &std::path::Path,
     dst: &std::path::Path,
     name: &str,
     log: &mut Vec<String>,
 ) -> std::result::Result<(), String> {
-    use std::io::{Read, Write};
     // `<dst>.ltbox-zst-tmp`, a sibling so the rename stays on one filesystem.
     let tmp = {
         let mut s = dst.as_os_str().to_owned();
@@ -537,34 +599,22 @@ fn decompress_zst_file(
         std::path::PathBuf::from(s)
     };
     let result = (|| -> std::result::Result<(), String> {
+        let dst_parent = dst.parent().ok_or_else(|| {
+            format!(
+                "cannot determine destination directory for {}",
+                dst.display()
+            )
+        })?;
+        // Preserve enough room for LTBox, logs, and recovery files.  This is a
+        // per-output limit instead of a fixed image-size cap because firmware
+        // images legitimately span many tens of GiB.
+        let output_limit =
+            zstd_output_limit(fs2::available_space(dst_parent).map_err(|e| e.to_string())?)?;
         let input = std::fs::File::open(src).map_err(|e| e.to_string())?;
         // `Decoder::new` wraps the reader in its own `BufReader`.
-        let mut decoder = zstd::stream::Decoder::new(input).map_err(|e| e.to_string())?;
-        let mut out =
-            std::io::BufWriter::new(std::fs::File::create(&tmp).map_err(|e| e.to_string())?);
-        let mut buf = vec![0u8; 4 * 1024 * 1024];
-        let mut total: u64 = 0;
-        let mut next_mark: u64 = 1 << 30; // 1 GiB
-        loop {
-            let n = decoder.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            total += n as u64;
-            if total >= next_mark {
-                live!(
-                    log,
-                    "[Flash] {}",
-                    tr_args!(
-                        "live_flash_zst_progress",
-                        name = name,
-                        gb = format!("{:.1}", total as f64 / 1_073_741_824.0)
-                    )
-                );
-                next_mark += 1 << 30;
-            }
-        }
+        let decoder = zstd::stream::Decoder::new(input).map_err(|e| e.to_string())?;
+        let out = std::io::BufWriter::new(std::fs::File::create(&tmp).map_err(|e| e.to_string())?);
+        let out = stream_zstd_decoder(decoder, out, name, log, output_limit)?;
         // Drain the buffer, then fsync the data BEFORE publishing the name —
         // `flush` only reaches the OS cache, so without `sync_all` a crash after
         // the rename could leave `dst` pointing at unflushed (truncated) bytes
@@ -844,8 +894,9 @@ pub(crate) use simple::simple_flash_worker;
 #[cfg(test)]
 mod tests {
     use super::{
-        FixedFirmwareDevicePolicy, fixed_firmware_device_policy,
-        should_reboot_fastboot_to_system_after_pre_edl_abort,
+        FixedFirmwareDevicePolicy, ZSTD_FREE_SPACE_RESERVE_BYTES, fixed_firmware_device_policy,
+        require_firmware_loader, should_reboot_fastboot_to_system_after_pre_edl_abort,
+        stream_zstd_decoder, zstd_output_limit,
     };
 
     #[test]
@@ -874,6 +925,34 @@ mod tests {
     #[test]
     fn pre_edl_abort_keeps_fastboot_when_flash_started_in_fastboot() {
         assert!(!should_reboot_fastboot_to_system_after_pre_edl_abort(true));
+    }
+
+    #[test]
+    fn missing_firmware_loader_is_an_error() {
+        assert!(require_firmware_loader(None).is_err());
+    }
+
+    #[test]
+    fn zstd_output_limit_preserves_the_disk_reserve() {
+        let free = ZSTD_FREE_SPACE_RESERVE_BYTES * 3;
+        assert_eq!(
+            zstd_output_limit(free).unwrap(),
+            free - ZSTD_FREE_SPACE_RESERVE_BYTES
+        );
+        assert!(zstd_output_limit(ZSTD_FREE_SPACE_RESERVE_BYTES).is_err());
+    }
+
+    #[test]
+    fn zstd_stream_rejects_an_output_larger_than_its_limit() {
+        let original = vec![0xAB; 1024];
+        let compressed = zstd::stream::encode_all(&original[..], 1).unwrap();
+        let decoder = zstd::stream::Decoder::new(&compressed[..]).unwrap();
+        let mut log = Vec::new();
+
+        let err = stream_zstd_decoder(decoder, Vec::new(), "test.img.zst", &mut log, 1023)
+            .expect_err("an over-limit decompression must fail");
+
+        assert!(err.contains("output limit"), "got: {err}");
     }
 
     #[test]

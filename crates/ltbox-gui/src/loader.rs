@@ -56,6 +56,13 @@ pub(crate) fn find_edl_loader(dir: &std::path::Path) -> Option<std::path::PathBu
     None
 }
 
+/// Locate the EDL loader beside a selected firmware directory or at the
+/// firmware package root. Extracted firmware commonly keeps rawprogram XMLs
+/// under `image/` and the loader one directory above it.
+pub(crate) fn find_firmware_loader(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    find_edl_loader(dir).or_else(|| dir.parent().and_then(find_edl_loader))
+}
+
 /// Redirect a picked firmware folder to its `image/` subfolder when that is
 /// the flashable one.
 ///
@@ -168,7 +175,7 @@ pub(crate) fn loader_ext_fits_model(is_tb323fu: bool, path: &std::path::Path) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{loader_ext_fits_model, redirect_to_image_subdir};
+    use super::{find_firmware_loader, loader_ext_fits_model, redirect_to_image_subdir};
     use std::path::Path;
 
     fn touch(dir: &Path, name: &str) {
@@ -239,5 +246,27 @@ mod tests {
         assert!(loader_ext_fits_model(false, Path::new("x/prog.melf")));
         assert!(!loader_ext_fits_model(false, Path::new("x/qsahara.xml")));
         assert!(!loader_ext_fits_model(false, Path::new("x/prog.mbn")));
+    }
+
+    #[test]
+    fn firmware_loader_falls_back_to_the_firmware_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let firmware = root.path().join("image");
+        std::fs::create_dir(&firmware).unwrap();
+        touch(root.path(), "xbl_s_devprg_ns.melf");
+
+        assert_eq!(
+            find_firmware_loader(&firmware),
+            Some(root.path().join("xbl_s_devprg_ns.melf"))
+        );
+    }
+
+    #[test]
+    fn firmware_loader_returns_none_when_neither_location_has_one() {
+        let root = tempfile::tempdir().unwrap();
+        let firmware = root.path().join("image");
+        std::fs::create_dir(&firmware).unwrap();
+
+        assert_eq!(find_firmware_loader(&firmware), None);
     }
 }

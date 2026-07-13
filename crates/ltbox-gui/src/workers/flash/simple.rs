@@ -48,9 +48,7 @@ pub(crate) fn simple_flash_worker(
     // 3. Locate the EDL loader inside the firmware folder (or its parent).
     //    A missing loader is a hard error — nothing can be flashed, so the run
     //    must fail rather than report success.
-    let loader = find_edl_loader(fw_dir)
-        .or_else(|| fw_dir.parent().and_then(find_edl_loader))
-        .ok_or_else(|| ltbox_core::i18n::tr("live_edl_loader_missing"))?;
+    let loader = require_firmware_loader(find_firmware_loader(fw_dir))?;
 
     // 4. XML selection — identical to the full firmware flash so the
     //    persist-less rawprogram0 stays first and only it is included.

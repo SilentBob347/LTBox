@@ -3071,8 +3071,7 @@ impl App {
         // when one exists so the common mis-selection just works.
         let path = redirect_str(path);
         let dir = std::path::Path::new(&path);
-        let has_loader =
-            find_edl_loader(dir).is_some() || dir.parent().and_then(find_edl_loader).is_some();
+        let has_loader = find_firmware_loader(dir).is_some();
         self.flash.loader_required = !has_loader;
         self.flash.loader_override = if self.flash.loader_required {
             self.resolved_default_loader()

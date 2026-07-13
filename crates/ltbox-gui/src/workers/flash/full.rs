@@ -617,18 +617,17 @@ pub(crate) fn flash_worker(
     // over the in-folder lookup.
     let loader = match loader_override {
         Some(p) => std::path::PathBuf::from(p),
-        None => match find_edl_loader(fw_dir).or_else(|| fw_dir.parent().and_then(find_edl_loader))
-        {
-            Some(l) => l,
-            None => {
+        None => {
+            let loader = find_firmware_loader(fw_dir);
+            if loader.is_none() {
                 ltbox_core::live!(
                     log,
                     "[EDL] {}",
                     ltbox_core::i18n::tr("live_edl_loader_missing")
                 );
-                return Ok(log);
             }
-        },
+            require_firmware_loader(loader)?
+        }
     };
 
     live!(log, "[Flash] {}", phase_marker(2, 4, &ll.op_flash_phase[1]));
