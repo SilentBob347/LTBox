@@ -243,11 +243,10 @@ pub(crate) fn sysupdate_worker(
             ltbox_core::live!(log, "[Rescue] {}", phases.marker(3));
             let mut session = open_edl_session(&loader, true, &mut log)?;
 
-            // vendor_boot + vbmeta land on LUN 0
-            // for supported models. GPT-by-name
-            // resolves sector geometry, no
-            // rawprogram*.xml needed.
-            const RESCUE_PARTITIONS_LUN: u8 = 0;
+            // vendor_boot + vbmeta resolve through the
+            // shared partition LUN map (LUN 4 on supported
+            // models). GPT-by-name resolves sector geometry,
+            // no rawprogram*.xml needed.
             let slots = ["a", "b"];
             let mut dumped: Vec<(String, String, std::path::PathBuf)> = Vec::new();
             ltbox_core::live!(log, "[Rescue] {}", phases.marker(4));
@@ -255,14 +254,24 @@ pub(crate) fn sysupdate_worker(
                 for base in &["vendor_boot", "vbmeta"] {
                     let part_name = format!("{base}_{slot}");
                     let out = work_dir.join(format!("{part_name}.img"));
+                    let Some(lun) = rescue_partition_lun(&part_name) else {
+                        ltbox_core::live!(
+                            log,
+                            "[Rescue] {}",
+                            tr_args!(
+                                "live_rescue_skip_dump",
+                                name = part_name,
+                                error = tr_args!("err_no_hardcoded_lun", partition = part_name)
+                            )
+                        );
+                        continue;
+                    };
                     ltbox_core::live!(
                         log,
                         "[Rescue] {}",
                         tr_args!("live_rescue_dumping", name = part_name)
                     );
-                    if let Err(e) =
-                        session.dump_partition(&part_name, &out, 0, RESCUE_PARTITIONS_LUN, &mut log)
-                    {
+                    if let Err(e) = session.dump_partition(&part_name, &out, 0, lun, &mut log) {
                         ltbox_core::live!(
                             log,
                             "[Rescue] {}",
@@ -281,10 +290,10 @@ pub(crate) fn sysupdate_worker(
             // Model-agnostic safety net for the EDL-first
             // path where `device_model` is unknown so the
             // TB323FU action gate can't fire: if none of
-            // vendor_boot/vbmeta resolved on LUN 0, the
-            // device doesn't have the layout Boot Recovery
-            // assumes (e.g. TB323FU keeps them on LUN 4).
-            // Abort before any write — nothing was flashed.
+            // vendor_boot/vbmeta resolved via the shared
+            // LUN map + GPT, the device doesn't have the
+            // layout Boot Recovery assumes. Abort before
+            // any write — nothing was flashed.
             if dumped.is_empty() {
                 return Err(ltbox_core::i18n::tr("err_rescue_unsupported_layout"));
             }
@@ -538,9 +547,9 @@ pub(crate) fn sysupdate_worker(
                 )
             );
             for (part_name, image) in &flash_plan {
-                if let Err(e) =
-                    session.flash_partition(part_name, image, 0, RESCUE_PARTITIONS_LUN, &mut log)
-                {
+                let lun = rescue_partition_lun(part_name)
+                    .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = part_name))?;
+                if let Err(e) = session.flash_partition(part_name, image, 0, lun, &mut log) {
                     ltbox_core::live!(
                         log,
                         "[Rescue] {}",
@@ -575,5 +584,35 @@ pub(crate) fn sysupdate_worker(
             );
             Ok(log)
         }
+    }
+}
+
+/// Resolve Boot Recovery partition LUN via the shared map.
+/// Expected LUN 4 for vendor_boot / vbmeta on supported models.
+fn rescue_partition_lun(part_name: &str) -> Option<u8> {
+    ltbox_core::partition_lun::lun_for_partition(part_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescue_vendor_boot_and_vbmeta_use_lun4() {
+        for name in [
+            "vendor_boot",
+            "vendor_boot_a",
+            "vendor_boot_b",
+            "vbmeta",
+            "vbmeta_a",
+            "vbmeta_b",
+        ] {
+            assert_eq!(rescue_partition_lun(name), Some(4), "{name}");
+        }
+    }
+
+    #[test]
+    fn rescue_unknown_partition_returns_none() {
+        assert_eq!(rescue_partition_lun("nonexistent_part"), None);
     }
 }

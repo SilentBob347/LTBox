@@ -33,10 +33,23 @@ impl App {
                     iced::window::maximize(id, maximized)
                 })
                 .unwrap_or_else(Task::none),
-            WindowMsg::WindowClose => self
-                .window_id
-                .map(iced::window::close)
-                .unwrap_or_else(Task::none),
+            WindowMsg::WindowClose => {
+                // Closing while a flash/root/probe (or any other busy op)
+                // is live would tear down the process mid-work. Refuse and
+                // surface the same "X is in progress" wording the progress
+                // dialog uses — no new locale keys required.
+                if self.busy {
+                    let op_name = self.busy_operation_label();
+                    self.error_msg = Some(ltbox_core::tr_args!(
+                        "progress_dialog_body",
+                        operation = op_name
+                    ));
+                    return Task::none();
+                }
+                self.window_id
+                    .map(iced::window::close)
+                    .unwrap_or_else(Task::none)
+            }
             WindowMsg::WindowResize(direction) => self
                 .window_id
                 .map(|id| iced::window::drag_resize(id, direction))
@@ -71,5 +84,44 @@ impl App {
             self.window_size_last_save = std::time::Instant::now();
         }
         Task::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn window_close_refuses_while_busy() {
+        let mut app = App {
+            busy: true,
+            busy_view: Some(View::Root),
+            ..App::default()
+        };
+        let _task = app.update_window(WindowMsg::WindowClose);
+        assert!(app.busy, "busy op must remain active");
+        assert_eq!(app.busy_view, Some(View::Root));
+        // Reuses progress_dialog_body with the busy op label. Locale may be
+        // non-English, so compare against the same formatter rather than
+        // hard-coded English fragments.
+        let expected = ltbox_core::tr_args!(
+            "progress_dialog_body",
+            operation = app.busy_operation_label()
+        );
+        assert_eq!(app.error_msg.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn window_close_allows_when_idle() {
+        let mut app = App {
+            busy: false,
+            busy_view: None,
+            error_msg: None,
+            window_id: None,
+            ..App::default()
+        };
+        let _task = app.update_window(WindowMsg::WindowClose);
+        assert!(app.error_msg.is_none());
+        assert!(!app.busy);
     }
 }

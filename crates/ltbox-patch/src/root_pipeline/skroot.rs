@@ -76,9 +76,16 @@ fn apply_kernel_writes(kernel: &mut [u8], plan: &SkrootCorePatchPlan) -> Result<
 }
 
 fn write_root_key(kernel: &mut [u8], root_key_addr: u64, root_key: &str) -> Result<()> {
+    let key_bytes = root_key.as_bytes();
+    if key_bytes.len() != ROOT_KEY_STORED_TEXT_LEN {
+        return Err(LtboxError::Patch(format!(
+            "SKRoot root key must be {ROOT_KEY_STORED_TEXT_LEN} bytes (NUL-terminated image slot), got {}",
+            key_bytes.len()
+        )));
+    }
     let mut stored = [0u8; ROOT_KEY_LEN];
-    stored[..ROOT_KEY_STORED_TEXT_LEN]
-        .copy_from_slice(&root_key.as_bytes()[..ROOT_KEY_STORED_TEXT_LEN]);
+    // Image slot is a 48-byte C string: 47 payload bytes + trailing NUL.
+    stored[..ROOT_KEY_STORED_TEXT_LEN].copy_from_slice(key_bytes);
     apply_write(
         kernel,
         &PatchBytes {
@@ -115,9 +122,11 @@ fn apply_write(kernel: &mut [u8], write: &PatchBytes) -> Result<()> {
 }
 
 fn generate_root_key() -> Result<String> {
-    let mut out = String::with_capacity(ROOT_KEY_LEN);
+    // Generate the effective C-string payload only (47 chars). The image slot is
+    // 48 bytes with a trailing NUL, so logging a 48-char key would not match.
+    let mut out = String::with_capacity(ROOT_KEY_STORED_TEXT_LEN);
     let mut random = [0u8; 64];
-    while out.len() < ROOT_KEY_LEN {
+    while out.len() < ROOT_KEY_STORED_TEXT_LEN {
         getrandom::fill(&mut random)
             .map_err(|e| LtboxError::Patch(format!("generate SKRoot root key: {e}")))?;
         for byte in random {
@@ -127,7 +136,7 @@ fn generate_root_key() -> Result<String> {
             }
             let idx = (byte as usize) % ROOT_KEY_ALPHABET.len();
             out.push(ROOT_KEY_ALPHABET[idx] as char);
-            if out.len() == ROOT_KEY_LEN {
+            if out.len() == ROOT_KEY_STORED_TEXT_LEN {
                 break;
             }
         }
@@ -140,25 +149,38 @@ mod tests {
     use super::{ROOT_KEY_LEN, ROOT_KEY_STORED_TEXT_LEN, generate_root_key, write_root_key};
 
     #[test]
-    fn generated_root_key_matches_upstream_input_len() {
+    fn generated_root_key_matches_effective_c_string_len() {
         let key = generate_root_key().expect("key");
-        assert_eq!(key.len(), ROOT_KEY_LEN);
+        assert_eq!(key.len(), ROOT_KEY_STORED_TEXT_LEN);
         assert!(key.chars().all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]
     fn root_key_storage_matches_upstream_c_string_slot() {
-        let key = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV".to_string();
-        assert_eq!(key.len(), ROOT_KEY_LEN);
+        let key = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU".to_string();
+        assert_eq!(key.len(), ROOT_KEY_STORED_TEXT_LEN);
         let mut kernel = vec![0xff; 96];
 
         write_root_key(&mut kernel, 16, &key).expect("write");
 
-        assert_eq!(
-            &kernel[16..16 + ROOT_KEY_STORED_TEXT_LEN],
-            &key.as_bytes()[..ROOT_KEY_STORED_TEXT_LEN]
-        );
+        assert_eq!(&kernel[16..16 + ROOT_KEY_STORED_TEXT_LEN], key.as_bytes());
         assert_eq!(kernel[16 + ROOT_KEY_STORED_TEXT_LEN], 0);
         assert_eq!(kernel[16 + ROOT_KEY_LEN], 0xff);
+    }
+
+    #[test]
+    fn generated_and_logged_root_key_matches_image_c_string() {
+        let key = generate_root_key().expect("key");
+        let mut kernel = vec![0xff; 96];
+
+        write_root_key(&mut kernel, 16, &key).expect("write");
+
+        let stored = std::ffi::CStr::from_bytes_until_nul(&kernel[16..16 + ROOT_KEY_LEN])
+            .expect("NUL-terminated key slot")
+            .to_str()
+            .expect("ascii key");
+        assert_eq!(stored, key);
+        assert_eq!(stored.len(), ROOT_KEY_STORED_TEXT_LEN);
+        assert_eq!(kernel[16 + ROOT_KEY_STORED_TEXT_LEN], 0);
     }
 }

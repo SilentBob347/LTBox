@@ -83,8 +83,11 @@ impl App {
                     ));
                     return task_heavy(
                         move || dump_physical_execute(conn, loader, folder, luns, phases),
-                        |__v| Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(__v)),
-                        |e| vec![format!("[DumpPhys] {e}")],
+                        |result| match result {
+                            Ok(lines) => Message::DumpPhys(DumpPhysMsg::DumpPhysExecDone(lines)),
+                            Err(e) => Message::OperationError(e),
+                        },
+                        |e| Err(format!("[DumpPhys] {e}")),
                     );
                 }
                 Task::none()
@@ -332,8 +335,11 @@ impl App {
                     ));
                     return task_heavy(
                         move || dump_parts_execute(loader, folder, rows, phases),
-                        |__v| Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(__v)),
-                        |e| vec![format!("[DumpParts] {e}")],
+                        |result| match result {
+                            Ok(lines) => Message::DumpParts(DumpPartsMsg::DumpPartsExecDone(lines)),
+                            Err(e) => Message::OperationError(e),
+                        },
+                        |e| Err(format!("[DumpParts] {e}")),
                     );
                 }
                 Task::none()

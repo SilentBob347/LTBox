@@ -14,6 +14,9 @@
 //! pure filesystem state and is implemented + tested here today.
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ltbox_core::{live, tr_args};
 
@@ -188,11 +191,16 @@ fn install_kernel_driver(log: &mut Vec<String>) -> Result<()> {
         tr_args!("live_driver_asset", name = &asset.name)
     );
 
-    let tmp_dir =
-        std::env::temp_dir().join(format!("ltbox_qcom_kernel_drv_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir)?;
-    let zip_path = tmp_dir.join(&asset.name);
-    let deb_path = tmp_dir.join(format!("{KERNEL_DEB_PACKAGE}_{tag}.deb"));
+    // Private, exclusive temp dir under the process temp root. A predictable
+    // `temp_dir()/ltbox_*_{pid}` path is a classic local symlink / content-
+    // swap race before the elevated `pkexec dpkg -i`; create_dir with a
+    // unique name + owner-only mode rejects pre-created paths and keeps the
+    // downloaded package private until install completes.
+    let tmp_dir = PrivateTempDir::create("ltbox_qcom_kernel_drv")?;
+    let zip_path = tmp_dir.path().join(&asset.name);
+    let deb_path = tmp_dir
+        .path()
+        .join(format!("{KERNEL_DEB_PACKAGE}_{tag}.deb"));
     let result = (|| {
         if asset.size > MAX_KERNEL_DRIVER_ZIP_BYTES {
             return Err(DriverError::Parse(format!(
@@ -235,8 +243,111 @@ fn install_kernel_driver(log: &mut Vec<String>) -> Result<()> {
         );
         Ok(())
     })();
-    cleanup(&tmp_dir);
+    drop(tmp_dir);
     result
+}
+
+/// Owner-only scratch directory that is removed on drop.
+struct PrivateTempDir {
+    path: PathBuf,
+}
+
+impl PrivateTempDir {
+    fn create(prefix: &str) -> Result<Self> {
+        let path = create_private_temp_dir(prefix)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        cleanup(&self.path);
+    }
+}
+
+fn unique_temp_token() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{seq}", std::process::id())
+}
+
+/// Create an exclusive, non-symlink directory under `std::env::temp_dir()`
+/// with owner-only permissions on Unix. Retries on name collision.
+fn create_private_temp_dir(prefix: &str) -> Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..32 {
+        let path = base.join(format!("{prefix}_{}", unique_temp_token()));
+        match create_exclusive_private_dir(&path) {
+            Ok(()) => {
+                verify_private_dir(&path)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(DriverError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("create private temp dir {}: {e}", path.display()),
+                )));
+            }
+        }
+    }
+    Err(DriverError::Io(std::io::Error::other(format!(
+        "exhausted unique names while creating private temp dir under {}",
+        base.display()
+    ))))
+}
+
+fn create_exclusive_private_dir(path: &Path) -> std::io::Result<()> {
+    // `create_dir` (not `create_dir_all`) is exclusive: fails if the path
+    // already exists, including as a symlink planted by another user.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)
+    }
+}
+
+fn verify_private_dir(path: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        DriverError::Io(std::io::Error::new(
+            e.kind(),
+            format!("stat private temp dir {}: {e}", path.display()),
+        ))
+    })?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(DriverError::Io(std::io::Error::other(format!(
+            "private temp path {} is not a plain directory",
+            path.display()
+        ))));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Owner-only: reject group/other bits so a pre-existing open umask or
+        // unexpected mode does not leave the package world-readable before
+        // `pkexec`. We created this directory moments ago, so ownership is
+        // the creating process's euid by construction.
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(DriverError::Io(std::io::Error::other(format!(
+                "private temp dir {} has overly permissive mode {mode:o}",
+                path.display()
+            ))));
+        }
+    }
+    Ok(())
 }
 
 fn fetch_latest_linux_kernel_release() -> Result<(String, GithubAsset)> {
@@ -419,7 +530,7 @@ fn extract_first_deb(zip_path: &std::path::Path, out_path: &std::path::Path) -> 
                     member.size()
                 )));
             }
-            let mut out = std::fs::File::create(out_path)?;
+            let mut out = create_private_file(out_path)?;
             let copied = std::io::copy(
                 &mut std::io::Read::by_ref(&mut member).take(MAX_KERNEL_DEB_BYTES + 1),
                 &mut out,
@@ -435,6 +546,23 @@ fn extract_first_deb(zip_path: &std::path::Path, out_path: &std::path::Path) -> 
         }
     }
     Err(DriverError::NoAsset)
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::create(path)
+    }
 }
 
 fn cleanup(path: &std::path::Path) {
@@ -487,5 +615,50 @@ mod tests {
         );
         assert_eq!(version_from_tag("release-lnx-v1..6").as_deref(), None);
         assert_eq!(version_from_tag("release-lnx-1.0.6.4").as_deref(), None);
+    }
+
+    #[test]
+    fn private_temp_dir_is_exclusive_and_cleaned_on_drop() {
+        let dir = PrivateTempDir::create("ltbox_qcom_kernel_drv_test").expect("create temp dir");
+        let path = dir.path().to_path_buf();
+        assert!(path.is_dir());
+        assert!(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("ltbox_qcom_kernel_drv_test_"))
+        );
+
+        // Exclusive create must refuse a pre-existing path (race resistance).
+        let conflict = create_exclusive_private_dir(&path);
+        assert!(conflict.is_err());
+        assert_eq!(
+            conflict.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "owner-only temp dir");
+        }
+
+        drop(dir);
+        assert!(
+            !path.exists(),
+            "PrivateTempDir drop must remove the scratch tree"
+        );
+    }
+
+    #[test]
+    fn private_temp_dir_rejects_non_directory_path() {
+        let base = std::env::temp_dir().join(format!(
+            "ltbox_qcom_kernel_drv_file_{}",
+            unique_temp_token()
+        ));
+        std::fs::write(&base, b"not-a-dir").expect("write decoy file");
+        let err = verify_private_dir(&base).expect_err("file must not pass dir verification");
+        let _ = std::fs::remove_file(&base);
+        assert!(err.to_string().contains("not a plain directory"));
     }
 }

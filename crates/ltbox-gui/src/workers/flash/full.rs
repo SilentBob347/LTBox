@@ -985,16 +985,17 @@ pub(crate) fn flash_worker(
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    ltbox_core::live!(
-                        log,
-                        "[ARB] {}",
-                        tr_args!(
-                            "live_arb_analyze_failed",
-                            name = log_name,
-                            error = e.to_string()
-                        )
+                    // On/Auto require a reliable rollback decision. Failing open
+                    // here would rawprogram stock images that may sit below the
+                    // device floor and brick on first boot.
+                    let err = tr_args!(
+                        "err_patch_arb_inspect_failed",
+                        image = log_name,
+                        error = e.to_string()
                     );
-                    continue;
+                    ltbox_core::live!(log, "[ARB] {err}");
+                    session.reset_tolerant(&mut log);
+                    return Err(err);
                 }
             };
             ltbox_core::live!(
@@ -1011,12 +1012,17 @@ pub(crate) fn flash_worker(
                 continue;
             }
             let Some(target) = loc_floor else {
+                // needs_patch implies a committed device floor under On/Auto;
+                // missing one is an internal inconsistency — abort rather than
+                // flash an unpatched image that still needs a raised index.
+                let err = ltbox_core::i18n::tr("err_patch_arb_target_missing");
                 ltbox_core::live!(
                     log,
                     "[ARB] {}",
                     tr_args!("live_arb_skip_unknown_device", name = log_name)
                 );
-                continue;
+                session.reset_tolerant(&mut log);
+                return Err(err);
             };
 
             // Non-TB323FU rollback bypass only supports stock keys in KEY_MAP.
@@ -1049,14 +1055,11 @@ pub(crate) fn flash_worker(
                         )
                         .map_err(|e| format!("resign {log_name}: {e}"))
                     }
-                    None => {
-                        ltbox_core::live!(
-                            log,
-                            "[ARB] {}",
-                            tr_args!("live_arb_unsigned_skip_resign", name = log_name)
-                        );
-                        continue;
-                    }
+                    None => Err(tr_args!(
+                        "err_patch_arb_resign_failed",
+                        image = log_name,
+                        error = "unsigned image; cannot stage required ARB overlay"
+                    )),
                 }
             } else if analysis.image_info.algorithm == "NONE" {
                 std::fs::copy(&source, &patched).map_err(|e| format!("copy chained: {e}"))?;
@@ -1077,24 +1080,24 @@ pub(crate) fn flash_worker(
                 )
                 .map_err(|e| format!("resign {log_name}: {e}"))
             } else {
-                ltbox_core::live!(
-                    log,
-                    "[ARB] {}",
-                    tr_args!("live_arb_unsigned_skip_resign", name = log_name)
-                );
-                continue;
+                Err(tr_args!(
+                    "err_patch_arb_resign_failed",
+                    image = log_name,
+                    error = "unsigned image; cannot stage required ARB overlay"
+                ))
             };
             if let Err(e) = patch_result {
-                ltbox_core::live!(
-                    log,
-                    "[ARB] {}",
-                    tr_args!(
-                        "live_arb_patch_failed",
-                        name = log_name,
-                        error = e.to_string()
-                    )
+                // needs_patch is true: a required overlay must be staged before
+                // rawprogram. Log-and-continue would flash the stock image and
+                // leave the device exposed to an ARB brick on reboot.
+                let err = tr_args!(
+                    "live_arb_patch_failed",
+                    name = log_name,
+                    error = e.to_string()
                 );
-                continue;
+                ltbox_core::live!(log, "[ARB] {err}");
+                session.reset_tolerant(&mut log);
+                return Err(err);
             }
 
             live!(

@@ -977,8 +977,8 @@ impl EdlSession {
 
     /// Whole-LUN raw flash. Mirrors qdlrs `OverwriteStorage`: empty
     /// partition name + start sector "0", file sector count derived
-    /// from the image length. No GPT lookup, no bounds check — the
-    /// image is written verbatim to sector 0 of `lun`.
+    /// from the image length. Queries the target LUN capacity first and
+    /// refuses images that would program past the end of the disk.
     pub fn flash_physical_storage(
         &mut self,
         lun: u8,
@@ -988,7 +988,18 @@ impl EdlSession {
         let mut file = std::fs::File::open(image)?;
         let file_len = file.metadata()?.len();
         let sector_size = self.dev.fh_config().storage_sector_size as u64;
-        let num_sectors = file_len.div_ceil(sector_size) as usize;
+        let image_sectors = file_len.div_ceil(sector_size);
+        // Capacity probe before the write: an oversized image would spill
+        // past the last LBA (and on some Firehose implementations wrap or
+        // corrupt adjacent storage). Mirrors the partition-span check in
+        // `flash_partition` / `flash_partition_at`.
+        let lun_capacity = self.physical_lun_sector_count(lun, log)?;
+        ensure_image_fits_physical_lun(image_sectors, lun_capacity, lun)?;
+        let num_sectors = usize::try_from(image_sectors).map_err(|_| {
+            EdlError::Session(format!(
+                "Flash LUN {lun}: image sector count {image_sectors} exceeds usize"
+            ))
+        })?;
         ltbox_core::live!(
             log,
             "[EDL] {}",
@@ -1353,6 +1364,10 @@ impl EdlSession {
                 if num_sectors == 0 {
                     continue;
                 }
+                // Same coordinate gate as `<program>` / `<erase>` flash paths:
+                // missing LUN or start would silently default to LUN0/LBA0
+                // (primary GPT) via `parse_xml_attr` / `unwrap_or("0")`.
+                require_destructive_coords(&node, &ctx)?;
                 let lun: u8 = parse_xml_attr(&node, "physical_partition_number", 0u8, &ctx)?;
                 let start_sector = node.attribute("start_sector").unwrap_or("0");
                 plan.push(WipeErasePlanEntry {
@@ -1613,6 +1628,21 @@ fn require_destructive_coords(node: &roxmltree::Node<'_, '_>, context: &str) -> 
                 "{context}: missing required {attr} on a destructive node"
             )));
         }
+    }
+    Ok(())
+}
+
+/// Refuse a whole-LUN flash whose image exceeds the target LUN capacity.
+/// An oversized image would program past the end of the disk.
+fn ensure_image_fits_physical_lun(
+    image_sectors: u64,
+    lun_capacity_sectors: u64,
+    lun: u8,
+) -> Result<()> {
+    if image_sectors > lun_capacity_sectors {
+        return Err(EdlError::Session(format!(
+            "Flash LUN {lun}: image is {image_sectors} sectors but the LUN holds only {lun_capacity_sectors}"
+        )));
     }
     Ok(())
 }
@@ -1878,6 +1908,20 @@ mod tests {
     }
 
     #[test]
+    fn ensure_image_fits_physical_lun_rejects_oversize() {
+        // Exact fit and undersize are accepted.
+        assert!(ensure_image_fits_physical_lun(100, 100, 0).is_ok());
+        assert!(ensure_image_fits_physical_lun(1, 100, 1).is_ok());
+        assert!(ensure_image_fits_physical_lun(0, 0, 0).is_ok());
+        // One sector over capacity must refuse before any Firehose write.
+        let err = ensure_image_fits_physical_lun(101, 100, 2).expect_err("oversize image");
+        let msg = err.to_string();
+        assert!(msg.contains("LUN 2"), "{msg}");
+        assert!(msg.contains("101"), "{msg}");
+        assert!(msg.contains("100"), "{msg}");
+    }
+
+    #[test]
     fn partition_span_sectors_counts_inclusive_and_rejects_inverted() {
         // end is the inclusive last LBA, so span = end - start + 1.
         assert_eq!(
@@ -2089,6 +2133,39 @@ mod tests {
         assert_eq!(
             plan[2].log_line_with_template(template),
             "[EDL] erase userdata_b (LUN 3, start 65536, 8192 sectors)"
+        );
+    }
+
+    #[test]
+    fn wipe_erase_plan_rejects_missing_destructive_coords() {
+        // Missing start_sector would previously default to LBA 0 (primary GPT).
+        let missing_start = TempXml::new(
+            r#"
+            <data>
+              <program label="metadata" physical_partition_number="0" num_partition_sectors="2048" />
+            </data>
+            "#,
+        );
+        let err = EdlSession::collect_wipe_erase_plan(&[missing_start.path()])
+            .expect_err("missing start_sector must fail");
+        assert!(
+            err.to_string().contains("start_sector"),
+            "unexpected error: {err}"
+        );
+
+        // Missing physical_partition_number would previously default to LUN 0.
+        let missing_lun = TempXml::new(
+            r#"
+            <data>
+              <program label="frp" start_sector="24576" num_partition_sectors="128" />
+            </data>
+            "#,
+        );
+        let err = EdlSession::collect_wipe_erase_plan(&[missing_lun.path()])
+            .expect_err("missing physical_partition_number must fail");
+        assert!(
+            err.to_string().contains("physical_partition_number"),
+            "unexpected error: {err}"
         );
     }
 

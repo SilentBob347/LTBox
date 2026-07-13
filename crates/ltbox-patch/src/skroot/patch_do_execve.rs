@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use super::asm::{Asm, Cond, ZR};
+use super::insn;
 use super::patch_base::{CurrentMode, PatchBase};
 use super::patch_bytes::PatchBytes;
 use super::symbol_analyze::{KernelSymbolOffset, SymbolRegion};
@@ -95,6 +96,55 @@ impl PatchDoExecve {
         self.param.do_execve_addr
     }
 
+    /// True when the hooked instruction branches to an SKRoot root-key slot.
+    ///
+    /// Re-patching would copy that PC-relative branch into a new trampoline and
+    /// relocate it incorrectly, so callers must refuse a second pass.
+    pub fn is_already_patched(&self, base: &PatchBase<'_>) -> bool {
+        let buf = base.buf();
+        let Ok(i) = usize::try_from(self.param.do_execve_addr) else {
+            return false;
+        };
+        let Some(i_end) = i.checked_add(4) else {
+            return false;
+        };
+        if i_end > buf.len() {
+            return false;
+        }
+        let word = u32::from_le_bytes(buf[i..i_end].try_into().expect("four-byte instruction"));
+        if !insn::is_b(word) {
+            return false;
+        }
+
+        let displacement = insn::branch_b_displacement(word);
+        let target_addr = if displacement < 0 {
+            self.param
+                .do_execve_addr
+                .checked_sub(u64::from(displacement.unsigned_abs()))
+        } else {
+            self.param.do_execve_addr.checked_add(displacement as u64)
+        };
+        let Some(target) = target_addr.and_then(|addr| usize::try_from(addr).ok()) else {
+            return false;
+        };
+        let Some(target_end) = target.checked_add(4) else {
+            return false;
+        };
+        let Some(key_start) = target.checked_sub(ROOT_KEY_LEN) else {
+            return false;
+        };
+        if target_end > buf.len() {
+            return false;
+        }
+
+        let key = &buf[key_start..target];
+        key.iter().all(|&byte| byte == 0)
+            || (key[ROOT_KEY_LEN - 1] == 0
+                && key[..ROOT_KEY_LEN - 1]
+                    .iter()
+                    .all(u8::is_ascii_alphanumeric))
+    }
+
     /// Assemble and place the hook stub in `region`. Returns the stub size in
     /// bytes, or 0 if it does not fit / could not be built. Also emits the entry
     /// branch from `do_execve_addr` into the stub.
@@ -106,6 +156,12 @@ impl PatchDoExecve {
         seccomp_offset: u64,
         out: &mut Vec<PatchBytes>,
     ) -> usize {
+        // Refuse before any trampoline construction: a second pass would treat
+        // the existing PC-relative entry branch as the "original" instruction.
+        if self.is_already_patched(base) {
+            return 0;
+        }
+
         let hook_addr = region.offset;
         if hook_addr == 0 {
             return 0;
@@ -236,6 +292,9 @@ mod tests {
     use super::*;
     use crate::skroot::insn;
 
+    const FINALIZED_ROOT_KEY: &[u8; ROOT_KEY_LEN - 1] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU";
+
     fn region(off: u64, size: u64) -> SymbolRegion {
         SymbolRegion { offset: off, size }
     }
@@ -277,6 +336,13 @@ mod tests {
             do_execveat_common: region(off, size),
             ..Default::default()
         }
+    }
+
+    fn write_branch(buf: &mut [u8], from: usize, to: usize) {
+        let mut a = Asm::new();
+        a.b_off((to as i64 - from as i64) as i32);
+        let bytes = a.to_bytes().expect("branch encoding");
+        buf[from..from + bytes.len()].copy_from_slice(&bytes);
     }
 
     #[test]
@@ -335,6 +401,89 @@ mod tests {
         let n = pde.patch_do_execve(&mut base, &region(0x4000, 16), 0x838, 0x900, &mut out);
         assert_eq!(n, 0);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn rejects_planning_placeholder_before_new_trampoline() {
+        let exec_off = 0x2000usize;
+        let region_off = 0x4000usize;
+        let mut buf = fake_kernel(exec_off, 0x100, 0x8000);
+        let mut base = base_for(&buf);
+        let sym = sym_with_execve(exec_off as u64, 0x40);
+        let pde = PatchDoExecve::new(&base, &sym, (6, 1, 0)).expect("execve picked");
+
+        let mut out = Vec::new();
+        let n = pde.patch_do_execve(
+            &mut base,
+            &region(region_off as u64, 0x300),
+            0x838,
+            0x900,
+            &mut out,
+        );
+        assert!(n > ROOT_KEY_LEN);
+        assert_eq!(out.len(), 2);
+
+        // Materialize the first patch so the entry site becomes a real `b`.
+        for write in &out {
+            let start = write.addr as usize;
+            buf[start..start + write.bytes.len()].copy_from_slice(&write.bytes);
+        }
+
+        let mut base2 = base_for(&buf);
+        let pde2 = PatchDoExecve::new(&base2, &sym, (6, 1, 0)).expect("execve picked");
+        assert!(pde2.is_already_patched(&base2));
+
+        let mut out2 = Vec::new();
+        let n2 = pde2.patch_do_execve(
+            &mut base2,
+            &region(region_off as u64, 0x300),
+            0x838,
+            0x900,
+            &mut out2,
+        );
+        assert_eq!(n2, 0, "second patch must not emit a relocated trampoline");
+        assert!(
+            out2.is_empty(),
+            "already-patched images must not produce new writes"
+        );
+    }
+
+    #[test]
+    fn detects_finalized_root_key_slot() {
+        let exec_off = 0x2000usize;
+        let branch_from = exec_off + 4;
+        let branch_target = 0x4000usize + ROOT_KEY_LEN;
+        let mut buf = fake_kernel(exec_off, 0x100, 0x8000);
+        let key_start = branch_target - ROOT_KEY_LEN;
+        buf[key_start..branch_target - 1].copy_from_slice(FINALIZED_ROOT_KEY);
+        buf[branch_target - 1] = 0;
+        write_branch(&mut buf, branch_from, branch_target);
+
+        let base = base_for(&buf);
+        let sym = sym_with_execve(exec_off as u64, 0x40);
+        let pde = PatchDoExecve::new(&base, &sym, (6, 1, 0)).expect("execve picked");
+
+        assert!(pde.is_already_patched(&base));
+    }
+
+    #[test]
+    fn unrelated_branch_without_root_key_slot_is_not_rejected() {
+        let exec_off = 0x2000usize;
+        let branch_from = exec_off + 4;
+        let branch_target = 0x3000usize;
+        let mut buf = fake_kernel(exec_off, 0x100, 0x8000);
+        buf[branch_target - ROOT_KEY_LEN..branch_target].fill(0xff);
+        write_branch(&mut buf, branch_from, branch_target);
+
+        let mut base = base_for(&buf);
+        let sym = sym_with_execve(exec_off as u64, 0x40);
+        let pde = PatchDoExecve::new(&base, &sym, (6, 1, 0)).expect("execve picked");
+        assert!(!pde.is_already_patched(&base));
+
+        let mut out = Vec::new();
+        let n = pde.patch_do_execve(&mut base, &region(0x4000, 0x300), 0x838, 0x900, &mut out);
+        assert!(n > ROOT_KEY_LEN, "unrelated branch must remain patchable");
+        assert_eq!(out.len(), 2);
     }
 
     #[test]

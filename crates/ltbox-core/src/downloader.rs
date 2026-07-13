@@ -73,7 +73,10 @@ pub enum DownloadEvent {
 /// re-implement the streaming logic just to swap the log prefix and
 /// i18n keys.
 ///
-/// Creates missing parent dirs; overwrites existing file.
+/// Creates missing parent dirs. Bytes land in a sibling temporary file
+/// and are atomically renamed onto `out_path` only after a successful
+/// full download; partials are removed on failure so a concurrent
+/// reader never observes a truncated destination.
 pub fn stream_with_progress<F>(
     agent: &ureq::Agent,
     url: &str,
@@ -89,6 +92,7 @@ where
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let tmp_path = sibling_partial_path(out_path);
     let mut resp = agent
         .get(url)
         .call()
@@ -99,74 +103,136 @@ where
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
     let mut reader = resp.body_mut().as_reader();
-    let mut file = std::fs::File::create(out_path)?;
-    let mut buf = [0u8; 64 * 1024];
-    let mut downloaded: u64 = 0;
-    let mut last_pct_bucket: i32 = -1;
-    let started_at = std::time::Instant::now();
-    let mut last_emit_at = started_at;
 
-    on_event(log, DownloadEvent::Start);
+    let write_result = (|| -> Result<(u64, std::time::Instant)> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .map_err(|e| {
+                LtboxError::Download(format!("create partial {}: {e}", tmp_path.display()))
+            })?;
+        let mut buf = [0u8; 64 * 1024];
+        let mut downloaded: u64 = 0;
+        let mut last_pct_bucket: i32 = -1;
+        let started_at = std::time::Instant::now();
+        let mut last_emit_at = started_at;
 
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| LtboxError::Download(format!("read: {e}")))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])?;
-        downloaded += n as u64;
+        on_event(log, DownloadEvent::Start);
 
-        let now = std::time::Instant::now();
-        let dl_mb = downloaded as f64 / 1_000_000.0;
-        let elapsed = now.duration_since(started_at).as_secs_f64().max(0.001);
-        let speed_mbps = dl_mb / elapsed;
-        if let Some(total) = total
-            && total > 0
-        {
-            let pct = (downloaded * 100 / total) as i32;
-            let bucket = pct / 5;
-            if bucket > last_pct_bucket {
-                last_pct_bucket = bucket;
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| LtboxError::Download(format!("read: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])?;
+            downloaded += n as u64;
+
+            let now = std::time::Instant::now();
+            let dl_mb = downloaded as f64 / 1_000_000.0;
+            let elapsed = now.duration_since(started_at).as_secs_f64().max(0.001);
+            let speed_mbps = dl_mb / elapsed;
+            if let Some(total) = total
+                && total > 0
+            {
+                let pct = (downloaded * 100 / total) as i32;
+                let bucket = pct / 5;
+                if bucket > last_pct_bucket {
+                    last_pct_bucket = bucket;
+                    last_emit_at = now;
+                    let total_mb = total as f64 / 1_000_000.0;
+                    on_event(
+                        log,
+                        DownloadEvent::ProgressPct {
+                            downloaded_mb: dl_mb,
+                            total_mb,
+                            pct,
+                            speed_mbps,
+                        },
+                    );
+                }
+            } else if now.duration_since(last_emit_at) >= std::time::Duration::from_millis(750) {
                 last_emit_at = now;
-                let total_mb = total as f64 / 1_000_000.0;
                 on_event(
                     log,
-                    DownloadEvent::ProgressPct {
+                    DownloadEvent::ProgressChunked {
                         downloaded_mb: dl_mb,
-                        total_mb,
-                        pct,
                         speed_mbps,
                     },
                 );
             }
-        } else if now.duration_since(last_emit_at) >= std::time::Duration::from_millis(750) {
-            last_emit_at = now;
+        }
+
+        file.flush()?;
+        file.sync_all().map_err(|e| {
+            LtboxError::Download(format!("sync partial {}: {e}", tmp_path.display()))
+        })?;
+        // Drop the file handle before rename — Windows cannot replace a
+        // destination while the source still has an open writer.
+        drop(file);
+        Ok((downloaded, started_at))
+    })();
+
+    match write_result {
+        Ok((downloaded, started_at)) => {
+            if let Err(e) = replace_file(&tmp_path, out_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(LtboxError::Download(format!(
+                    "finalize {} -> {}: {e}",
+                    tmp_path.display(),
+                    out_path.display()
+                )));
+            }
+            let elapsed_s = started_at.elapsed().as_secs_f64().max(0.001);
+            let dl_mb = downloaded as f64 / 1_000_000.0;
             on_event(
                 log,
-                DownloadEvent::ProgressChunked {
+                DownloadEvent::Done {
                     downloaded_mb: dl_mb,
-                    speed_mbps,
+                    elapsed_s,
                 },
             );
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(e)
         }
     }
+}
 
-    let elapsed_s = started_at.elapsed().as_secs_f64().max(0.001);
-    let dl_mb = downloaded as f64 / 1_000_000.0;
-    on_event(
-        log,
-        DownloadEvent::Done {
-            downloaded_mb: dl_mb,
-            elapsed_s,
-        },
-    );
-    Ok(())
+fn sibling_partial_path(out_path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let token = format!("{}-{nanos}-{seq}", std::process::id());
+    let file_name = out_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(format!(".{file_name}.ltbox-partial-{token}"))
+}
+
+fn replace_file(tmp_path: &Path, out_path: &Path) -> std::io::Result<()> {
+    // The sibling source keeps this on one filesystem, so the platform
+    // rename primitive provides replacement semantics without exposing a
+    // delete-then-rename window. If finalization fails, the destination is
+    // left untouched and the caller removes only the partial file.
+    std::fs::rename(tmp_path, out_path)
 }
 
 /// Download `url` to `out_path` in 64 KiB chunks. Progress is throttled to
-/// one log line per 5 %. Creates missing parent dirs; overwrites existing file.
+/// one log line per 5 %. Creates missing parent dirs; replaces the destination
+/// only after a complete download (via a sibling partial + rename).
 pub fn download_to_file(url: &str, out_path: &Path, log: &mut Vec<String>) -> Result<()> {
     let display_name = out_path
         .file_name()
@@ -263,4 +329,115 @@ fn render_progress_bar(pct: u32, width: usize) -> String {
     }
     s.push(']');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn serve_bytes(body: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).expect("header");
+            stream.write_all(body).expect("body");
+        });
+        format!("http://{addr}/file.bin")
+    }
+
+    #[test]
+    fn sibling_partial_path_is_hidden_sibling() {
+        let out = Path::new("/tmp/assets/firmware.zip");
+        let partial = sibling_partial_path(out);
+        assert_eq!(partial.parent(), out.parent());
+        let name = partial.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with(".firmware.zip.ltbox-partial-"));
+        assert_ne!(partial, out);
+    }
+
+    #[test]
+    fn download_replaces_destination_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("payload.bin");
+        std::fs::write(&out, b"stale-content").unwrap();
+
+        let url = serve_bytes(b"fresh-payload-bytes");
+        let mut log = Vec::new();
+        download_to_file(&url, &out, &mut log).expect("download");
+        assert_eq!(std::fs::read(&out).unwrap(), b"fresh-payload-bytes");
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("ltbox-partial"))
+            .collect();
+        assert!(leftovers.is_empty(), "partials left behind: {leftovers:?}");
+        assert!(
+            log.iter().any(|l| l.contains("[dl]")),
+            "progress / done logging should still fire"
+        );
+    }
+
+    #[test]
+    fn failed_download_keeps_existing_destination_and_cleans_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("payload.bin");
+        std::fs::write(&out, b"keep-me").unwrap();
+
+        // Claim more bytes than sent; ureq/read should error when the
+        // connection closes early relative to Content-Length on some
+        // stacks, or we force failure via a closed listener path below.
+        // Use an immediate connection-refused URL after binding+dropping.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let url = format!("http://{addr}/missing.bin");
+
+        let mut log = Vec::new();
+        let err = download_to_file(&url, &out, &mut log).expect_err("must fail");
+        assert!(matches!(err, LtboxError::Download(_)));
+        assert_eq!(std::fs::read(&out).unwrap(), b"keep-me");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("ltbox-partial"))
+            .collect();
+        assert!(leftovers.is_empty(), "partials left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn replace_file_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out.bin");
+        let tmp = dir.path().join("out.bin.partial");
+        std::fs::write(&dest, b"old").unwrap();
+        std::fs::write(&tmp, b"new").unwrap();
+        replace_file(&tmp, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn replace_file_error_preserves_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out.bin");
+        let missing_tmp = dir.path().join("missing.partial");
+        std::fs::write(&dest, b"keep-me").unwrap();
+
+        replace_file(&missing_tmp, &dest).expect_err("missing source must fail");
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"keep-me");
+    }
 }

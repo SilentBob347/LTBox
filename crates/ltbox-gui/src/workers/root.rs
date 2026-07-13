@@ -245,7 +245,11 @@ pub(crate) fn root_worker(
         false
     };
 
-    // Device phase errors still attempt an EDL -> system reset.
+    // Track whether Phase 6 has started any partition write.
+    // Pre-write failures still attempt an EDL -> system reset;
+    // once a write has begun, leave the device in EDL instead of
+    // rebooting into a half-written boot chain.
+    let mut writes_started = false;
     let device_phase_result: std::result::Result<(), String> =
         (|| -> std::result::Result<(), String> {
             // Phase 3/8 — Enter EDL mode.
@@ -514,10 +518,10 @@ pub(crate) fn root_worker(
             // sector attrs to thread through.
             // Provision efisp with the region GBL fetched above (only set
             // when the dumped efisp was empty) BEFORE flashing the patched
-            // boot. Ordering matters for brick-safety: if the GBL flash
-            // fails, boot is still the stock image, so the error-path
-            // `reset_tolerant` below boots stock — not a patched boot left
-            // without its GBL root of trust.
+            // boot. Ordering still matters for brick-safety: if the GBL
+            // flash fails, boot is still the stock image. After any write
+            // begins, the error path leaves the device in EDL rather than
+            // rebooting a partial chain.
             if let Some(efi) = &root_efisp_efi {
                 let efisp_lun = ltbox_core::partition_lun::lun_for_partition("efisp").unwrap_or(4);
                 live!(
@@ -525,6 +529,7 @@ pub(crate) fn root_worker(
                     "[Root] {}",
                     ltbox_core::i18n::tr("live_flash_efisp_flash")
                 );
+                writes_started = true;
                 session
                     .flash_partition("efisp", efi, 0, efisp_lun, &mut log)
                     .map_err(|e| tr_args!("err_root_efisp_provision_failed", error = e))?;
@@ -534,6 +539,7 @@ pub(crate) fn root_worker(
                     ltbox_core::i18n::tr("live_flash_efisp_flashed")
                 );
             }
+            writes_started = true;
             session
                 .flash_partition(
                     &boot_primary,
@@ -632,28 +638,60 @@ pub(crate) fn root_worker(
             Ok(log)
         }
         Err(e) => {
-            // Best-effort: open a fresh session on the same
-            // loader and ask the device to boot. `reset_tolerant`
-            // already swallows the post-handoff error some
-            // devices return, so this never masks the real
-            // error — failures here are only logged.
-            let mut reset_log: Vec<String> = Vec::new();
-            reset_log.push(format!(
-                "[EDL] {}",
-                tr_args!("log_edl_attempt_reset_after_error", error = e.to_string())
-            ));
-            if let Ok(mut s) = ltbox_device::edl::EdlSession::open(&loader, false, &mut reset_log) {
-                s.reset_tolerant(&mut reset_log);
+            if !should_reset_after_root_device_error(writes_started) {
+                // A partition write already began. Rebooting now risks
+                // booting a half-written boot/vbmeta/efisp chain. Leave
+                // the device in EDL and surface recovery guidance.
+                let msg = tr_args!("err_root_partial_write_recovery", error = e);
+                println!("[Root] {msg}");
+                Err(msg)
             } else {
+                // Pre-write failure: best-effort open a fresh session on
+                // the same loader and ask the device to boot.
+                // `reset_tolerant` already swallows the post-handoff error
+                // some devices return, so this never masks the real error
+                // — failures here are only logged.
+                let mut reset_log: Vec<String> = Vec::new();
                 reset_log.push(format!(
                     "[EDL] {}",
-                    ltbox_core::i18n::tr("log_edl_reset_reopen_skipped")
+                    tr_args!("log_edl_attempt_reset_after_error", error = e.to_string())
                 ));
+                if let Ok(mut s) =
+                    ltbox_device::edl::EdlSession::open(&loader, false, &mut reset_log)
+                {
+                    s.reset_tolerant(&mut reset_log);
+                } else {
+                    reset_log.push(format!(
+                        "[EDL] {}",
+                        ltbox_core::i18n::tr("log_edl_reset_reopen_skipped")
+                    ));
+                }
+                for line in reset_log {
+                    println!("{line}");
+                }
+                Err(e)
             }
-            for line in reset_log {
-                println!("{line}");
-            }
-            Err(e)
         }
+    }
+}
+
+/// Whether the root device-phase error path should attempt an EDL reset.
+/// Pre-write failures may reset; post-write failures must not.
+fn should_reset_after_root_device_error(writes_started: bool) -> bool {
+    !writes_started
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_write_failures_still_reset() {
+        assert!(should_reset_after_root_device_error(false));
+    }
+
+    #[test]
+    fn post_write_failures_leave_device_in_edl() {
+        assert!(!should_reset_after_root_device_error(true));
     }
 }

@@ -134,6 +134,77 @@ pub(crate) fn flash_parts_scan(
     }
 }
 
+/// Preflight every Flash-state partition row before any device write.
+/// Returns `Err` listing all missing sources so the whole batch aborts
+/// instead of silently skipping and reporting success.
+pub(crate) fn preflight_flash_part_sources(rows: &[FlashPartRow]) -> Result<(), String> {
+    let mut missing = Vec::new();
+    for row in rows {
+        if row.state != FlashRowState::Flash {
+            continue;
+        }
+        match row.file_path.as_ref() {
+            None => missing.push(format!("{}: no file selected", row.label)),
+            Some(path) if !std::path::Path::new(path).is_file() => {
+                missing.push(format!(
+                    "{}: {}",
+                    row.label,
+                    tr_args!("err_path_missing", path = path)
+                ));
+            }
+            _ => {}
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing.join("; "))
+    }
+}
+
+/// Preflight every selected physical-flash `(lun, path)` pair before any
+/// device write. Missing images fail the whole operation.
+pub(crate) fn preflight_flash_phys_sources(pairs: &[(u8, String)]) -> Result<(), String> {
+    let mut missing = Vec::new();
+    for (lun, path) in pairs {
+        if !std::path::Path::new(path).is_file() {
+            missing.push(format!(
+                "LUN {lun}: {}",
+                tr_args!("err_path_missing", path = path)
+            ));
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing.join("; "))
+    }
+}
+
+/// Surface dump failures to the UI. Critical partition failures take
+/// priority; any remaining partial failures still become an error so a
+/// partial dump is never reported as unconditional success.
+pub(crate) fn dump_parts_outcome_error(
+    critical_failures: &[String],
+    all_failures: &[String],
+) -> Option<String> {
+    if !critical_failures.is_empty() {
+        let labels = critical_failures.join(", ");
+        let translated = tr_args!("live_dumpparts_critical_failure", labels = labels.clone());
+        // Keep labels visible even before a GUI translator is installed
+        // (tr falls back to the bare key, which has no `{labels}` slot).
+        Some(if translated.contains(&labels) {
+            translated
+        } else {
+            format!("{translated}: {labels}")
+        })
+    } else if !all_failures.is_empty() {
+        Some(format!("Dump incomplete: {}", all_failures.join(", ")))
+    } else {
+        None
+    }
+}
+
 /// Exec phase. Reopens the EDL session, walks the active rows, flashing
 /// or erasing each, then reboots to system.
 pub(crate) fn flash_parts_execute(
@@ -142,6 +213,12 @@ pub(crate) fn flash_parts_execute(
     phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
+    // Fail closed before opening Firehose / writing anything when a
+    // selected flash image is missing on disk.
+    if let Err(e) = preflight_flash_part_sources(&rows) {
+        ltbox_core::live!(log, "[FlashParts] {e}");
+        return Err(e);
+    }
     ltbox_core::live!(log, "[FlashParts] {}", phases.marker(1));
     std::thread::sleep(std::time::Duration::from_secs(2));
     let loader = std::path::PathBuf::from(&loader_path);
@@ -169,26 +246,18 @@ pub(crate) fn flash_parts_execute(
     for row in &rows {
         match row.state {
             FlashRowState::Flash => {
+                // Sources were preflighted; treat absence as a hard error if
+                // state races somehow remove the path between checks.
                 let Some(path) = row.file_path.as_ref() else {
-                    ltbox_core::live!(
-                        log,
-                        "[FlashParts] {}",
-                        tr_args!("live_flashparts_skipping", label = row.label)
-                    );
-                    continue;
+                    return Err(format!("{}: no file selected", row.label));
                 };
                 let img = std::path::Path::new(path);
-                if !img.exists() {
-                    ltbox_core::live!(
-                        log,
-                        "[FlashParts] {}",
-                        tr_args!(
-                            "live_flashparts_skipping_missing",
-                            label = row.label,
-                            path = path
-                        )
-                    );
-                    continue;
+                if !img.is_file() {
+                    return Err(format!(
+                        "{}: {}",
+                        row.label,
+                        tr_args!("err_path_missing", path = path)
+                    ));
                 }
                 let file_name = img
                     .file_name()
@@ -437,21 +506,23 @@ pub(crate) fn flush_worker_logs(log: &mut Vec<String>) {
 /// Dump selected partitions to `output_folder` as `<label>.img`. Reopens
 /// the EDL session (previous scan left device waiting at Sahara), runs
 /// the reads back-to-back, then reboots to system.
+///
+/// Returns `Err` when any selected partition fails (critical failures use
+/// the dedicated critical message). The UI must not treat a partial dump
+/// as unconditional success.
 pub(crate) fn dump_parts_execute(
     loader_path: String,
     output_folder: String,
     rows: Vec<DumpPartRow>,
     phases: PhaseReporter,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     let out_dir = std::path::PathBuf::from(&output_folder);
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        ltbox_core::live!(
-            log,
-            "[DumpParts] {}",
-            tr_args!("live_dumpparts_create_output_failed", error = e.to_string())
-        );
-        return log;
+        let msg = tr_args!("live_dumpparts_create_output_failed", error = e.to_string());
+        ltbox_core::live!(log, "[DumpParts] {msg}");
+        flush_worker_logs(&mut log);
+        return Err(msg);
     }
 
     ltbox_core::live!(log, "[DumpParts] {}", phases.marker(1));
@@ -460,17 +531,16 @@ pub(crate) fn dump_parts_execute(
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(
-                log,
-                "[DumpParts] {}",
-                tr_args!("live_dumpparts_edl_open_failed", error = e.to_string())
-            );
-            return log;
+            let msg = tr_args!("live_dumpparts_edl_open_failed", error = e.to_string());
+            ltbox_core::live!(log, "[DumpParts] {msg}");
+            flush_worker_logs(&mut log);
+            return Err(msg);
         }
     };
 
     ltbox_core::live!(log, "[DumpParts] {}", phases.marker(2));
     let mut critical_failures: Vec<String> = Vec::new();
+    let mut all_failures: Vec<String> = Vec::new();
     for row in &rows {
         let out_path =
             match ltbox_core::safe_path::safe_join(&out_dir, &format!("{}.img", row.label)) {
@@ -488,6 +558,7 @@ pub(crate) fn dump_parts_execute(
                             error = e.to_string()
                         )
                     );
+                    all_failures.push(row.label.clone());
                     if is_critical_dump_label(&row.label) {
                         critical_failures.push(row.label.clone());
                     }
@@ -527,6 +598,7 @@ pub(crate) fn dump_parts_execute(
                 "[DumpParts] {}",
                 tr_args!("live_dumpparts_part_failed", label = row.label, error = e)
             );
+            all_failures.push(row.label.clone());
             if is_critical_dump_label(&row.label) {
                 critical_failures.push(row.label.clone());
             }
@@ -550,54 +622,48 @@ pub(crate) fn dump_parts_execute(
         ltbox_core::i18n::tr("live_dumpparts_resetting")
     );
     session.reset_tolerant(&mut log);
-    // Surface critical-partition failures prominently — region/board state
-    // (devinfo/persist) can't be reconstructed from a partial dump and a
-    // silent "Done." would hide the hazard.
-    if !critical_failures.is_empty() {
-        ltbox_core::live!(
-            log,
-            "[DumpParts] {}",
-            tr_args!(
-                "live_dumpparts_critical_failure",
-                labels = critical_failures.join(", ")
-            )
-        );
+    // Surface critical/partial failures after reset so the UI can fail the
+    // op; a silent "Done." would hide incomplete rescue material.
+    if let Some(err) = dump_parts_outcome_error(&critical_failures, &all_failures) {
+        ltbox_core::live!(log, "[DumpParts] {err}");
+        flush_worker_logs(&mut log);
+        return Err(err);
     }
     ltbox_core::live!(
         log,
         "[DumpParts] {}",
         ltbox_core::i18n::tr("live_dumpparts_done")
     );
-    log
+    Ok(log)
 }
 
 /// Whole-LUN dump. Walks each selected LUN and writes it as
 /// `lun_N.img` into `output_folder`. Unlike `dump_parts_execute` there
 /// is no prior scan phase — the LUN set comes straight from the user's
 /// checkboxes.
+///
+/// Returns `Err` on setup failure or when any selected LUN dump fails so
+/// the UI does not report unconditional success for a partial dump.
 pub(crate) fn dump_physical_execute(
     conn: ConnectionStatus,
     loader_path: String,
     output_folder: String,
     luns: Vec<u8>,
     phases: PhaseReporter,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
     ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(1));
     if ensure_edl(conn, "DumpPhys", &mut log).is_err() {
         flush_worker_logs(&mut log);
-        return Vec::new();
+        return Err(ltbox_core::i18n::tr("err_edl_transition_failed"));
     }
     flush_worker_logs(&mut log);
     let out_dir = std::path::PathBuf::from(&output_folder);
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        ltbox_core::live!(
-            log,
-            "[DumpPhys] {}",
-            tr_args!("live_dump_phys_create_output_failed", error = e.to_string())
-        );
+        let msg = tr_args!("live_dump_phys_create_output_failed", error = e.to_string());
+        ltbox_core::live!(log, "[DumpPhys] {msg}");
         flush_worker_logs(&mut log);
-        return Vec::new();
+        return Err(msg);
     }
 
     ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(2));
@@ -606,18 +672,16 @@ pub(crate) fn dump_physical_execute(
     let mut session = match ltbox_device::edl::EdlSession::open(&loader, true, &mut log) {
         Ok(s) => s,
         Err(e) => {
-            ltbox_core::live!(
-                log,
-                "[DumpPhys] {}",
-                tr_args!("live_dump_phys_edl_open_failed", error = e.to_string())
-            );
+            let msg = tr_args!("live_dump_phys_edl_open_failed", error = e.to_string());
+            ltbox_core::live!(log, "[DumpPhys] {msg}");
             flush_worker_logs(&mut log);
-            return Vec::new();
+            return Err(msg);
         }
     };
     flush_worker_logs(&mut log);
 
     ltbox_core::live!(log, "[DumpPhys] {}", phases.marker(3));
+    let mut failure_msgs: Vec<String> = Vec::new();
     for lun in &luns {
         let out_path = out_dir.join(format!("lun_{lun}.img"));
         ltbox_core::live!(
@@ -631,15 +695,13 @@ pub(crate) fn dump_physical_execute(
         );
         flush_worker_logs(&mut log);
         if let Err(e) = session.dump_physical_storage(*lun, &out_path, &mut log) {
-            ltbox_core::live!(
-                log,
-                "[DumpPhys] {}",
-                tr_args!(
-                    "live_dump_phys_lun_failed",
-                    lun = lun.to_string(),
-                    error = e.to_string()
-                )
+            let msg = tr_args!(
+                "live_dump_phys_lun_failed",
+                lun = lun.to_string(),
+                error = e.to_string()
             );
+            ltbox_core::live!(log, "[DumpPhys] {msg}");
+            failure_msgs.push(msg);
         }
         flush_worker_logs(&mut log);
     }
@@ -662,13 +724,19 @@ pub(crate) fn dump_physical_execute(
         ltbox_core::i18n::tr("live_dump_phys_resetting_system")
     );
     session.reset_tolerant(&mut log);
+    if !failure_msgs.is_empty() {
+        let err = failure_msgs.join("; ");
+        ltbox_core::live!(log, "[DumpPhys] {err}");
+        flush_worker_logs(&mut log);
+        return Err(err);
+    }
     ltbox_core::live!(
         log,
         "[DumpPhys] {}",
         ltbox_core::i18n::tr("live_dump_phys_done")
     );
     flush_worker_logs(&mut log);
-    Vec::new()
+    Ok(log)
 }
 
 /// Whole-LUN raw flash. Each `(lun, path)` pair is written verbatim
@@ -680,6 +748,12 @@ pub(crate) fn flash_physical_execute(
     phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
     let mut log = Vec::new();
+    // Fail closed before EDL transition / any write when a selected image
+    // is missing on disk.
+    if let Err(e) = preflight_flash_phys_sources(&pairs) {
+        ltbox_core::live!(log, "[FlashPhys] {e}");
+        return Err(e);
+    }
     ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(1));
     if ensure_edl(conn, "FlashPhys", &mut log).is_err() {
         return Err(ltbox_core::i18n::tr("err_edl_transition_failed"));
@@ -711,17 +785,12 @@ pub(crate) fn flash_physical_execute(
     ltbox_core::live!(log, "[FlashPhys] {}", phases.marker(3));
     for (lun, path) in &pairs {
         let img = std::path::Path::new(path);
-        if !img.exists() {
-            ltbox_core::live!(
-                log,
-                "[FlashPhys] {}",
-                tr_args!(
-                    "live_flashphys_skipping_missing",
-                    lun = lun.to_string(),
-                    path = path
-                )
-            );
-            continue;
+        if !img.is_file() {
+            // Preflight already checked; re-check is a hard failure.
+            return Err(format!(
+                "LUN {lun}: {}",
+                tr_args!("err_path_missing", path = path)
+            ));
         }
         let file_name = img
             .file_name()
@@ -768,4 +837,114 @@ pub(crate) fn flash_physical_execute(
         ltbox_core::i18n::tr("live_flashphys_done")
     );
     Ok(log)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flash_row(label: &str, path: Option<&str>, state: FlashRowState) -> FlashPartRow {
+        FlashPartRow {
+            lun: 0,
+            label: label.to_string(),
+            start_sector: 0,
+            num_sectors: 1,
+            size_bytes: 4096,
+            file_path: path.map(|p| p.to_string()),
+            state,
+        }
+    }
+
+    #[test]
+    fn preflight_flash_part_sources_fails_when_missing() {
+        let rows = vec![flash_row(
+            "boot_a",
+            Some("Z:/ltbox-definitely-missing-boot_a.img"),
+            FlashRowState::Flash,
+        )];
+        let err = preflight_flash_part_sources(&rows).expect_err("missing image must fail");
+        assert!(err.contains("boot_a"), "err={err}");
+        assert!(
+            err.contains("ltbox-definitely-missing-boot_a.img") || err.contains("err_path_missing"),
+            "err={err}"
+        );
+    }
+
+    #[test]
+    fn preflight_flash_part_sources_ok_when_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("boot_a.img");
+        std::fs::write(&img, b"x").unwrap();
+        let rows = vec![flash_row(
+            "boot_a",
+            Some(img.to_str().unwrap()),
+            FlashRowState::Flash,
+        )];
+        preflight_flash_part_sources(&rows).expect("existing image must pass");
+    }
+
+    #[test]
+    fn preflight_flash_part_sources_ignores_erase_rows() {
+        let rows = vec![flash_row("userdata", None, FlashRowState::Erase)];
+        preflight_flash_part_sources(&rows).expect("erase rows need no source path");
+    }
+
+    #[test]
+    fn preflight_flash_part_sources_rejects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = vec![flash_row(
+            "boot_a",
+            Some(dir.path().to_str().unwrap()),
+            FlashRowState::Flash,
+        )];
+
+        let err = preflight_flash_part_sources(&rows)
+            .expect_err("directory must not pass as a partition image");
+        assert!(err.contains("boot_a"), "err={err}");
+    }
+
+    #[test]
+    fn preflight_flash_phys_sources_fails_when_missing() {
+        let pairs = vec![(0u8, "Z:/ltbox-definitely-missing-lun0.img".to_string())];
+        let err = preflight_flash_phys_sources(&pairs).expect_err("missing LUN image must fail");
+        assert!(err.contains("LUN 0"), "err={err}");
+        assert!(
+            err.contains("ltbox-definitely-missing-lun0.img") || err.contains("err_path_missing"),
+            "err={err}"
+        );
+    }
+
+    #[test]
+    fn preflight_flash_phys_sources_rejects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let pairs = vec![(0u8, dir.path().to_string_lossy().into_owned())];
+
+        let err = preflight_flash_phys_sources(&pairs)
+            .expect_err("directory must not pass as a physical image");
+        assert!(err.contains("LUN 0"), "err={err}");
+    }
+
+    #[test]
+    fn dump_parts_outcome_surfaces_critical_and_partial() {
+        assert!(dump_parts_outcome_error(&[], &[]).is_none());
+
+        let critical = dump_parts_outcome_error(
+            &["persist".to_string()],
+            &["persist".to_string(), "modem".to_string()],
+        )
+        .expect("critical must surface");
+        assert!(critical.contains("persist"), "err={critical}");
+
+        let partial =
+            dump_parts_outcome_error(&[], &["modem".to_string()]).expect("partial must surface");
+        assert!(partial.contains("modem"), "err={partial}");
+    }
+
+    #[test]
+    fn is_critical_dump_label_matches_bases_and_slots() {
+        assert!(is_critical_dump_label("persist"));
+        assert!(is_critical_dump_label("devinfo_a"));
+        assert!(is_critical_dump_label("OEMOWNINFO_B"));
+        assert!(!is_critical_dump_label("boot_a"));
+    }
 }

@@ -3,7 +3,7 @@
 
 use adb_client::usb::{ADBUSBDevice, find_all_connected_adb_devices};
 use adb_client::{ADBDeviceExt, RebootType};
-use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
@@ -166,26 +166,10 @@ impl AdbManager {
     }
 
     /// Resolve LTBox's owned ADB private key, generating + persisting
-    /// a fresh PKCS8 PEM if the file is missing. 2048-bit modulus is
-    /// what modern adbd's public key validation requires.
+    /// a fresh PKCS8 PEM if the file is missing or corrupt. 2048-bit
+    /// modulus is what modern adbd's public key validation requires.
     fn ensure_key_path() -> Result<PathBuf> {
-        let path = ltbox_core::app_paths::adb_key_path();
-        if path.exists() {
-            return Ok(path);
-        }
-        let parent = path.parent().ok_or_else(|| {
-            AdbError::Key(format!("adb key path has no parent: {}", path.display()))
-        })?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AdbError::Key(format!("create_dir_all {}: {e}", parent.display())))?;
-        let private_key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
-            .map_err(|e| AdbError::Key(format!("RSA keygen: {e}")))?;
-        let pem = private_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| AdbError::Key(format!("PKCS8 encode: {e}")))?;
-        std::fs::write(&path, pem.as_bytes())
-            .map_err(|e| AdbError::Key(format!("write {}: {e}", path.display())))?;
-        Ok(path)
+        ensure_key_at_path(ltbox_core::app_paths::adb_key_path())
     }
 
     /// Open (or reuse) the cached `ADBUSBDevice`. On a fresh open,
@@ -534,6 +518,160 @@ impl AdbManager {
     }
 }
 
+/// Ensure `path` holds a usable PKCS8 PEM RSA private key.
+///
+/// Missing or corrupt material is replaced atomically via a sibling
+/// temp file (`create_new` + rename) so concurrent writers cannot leave
+/// a half-written key. On Unix the final file is mode `0600`.
+fn ensure_key_at_path(path: PathBuf) -> Result<PathBuf> {
+    if path.exists() {
+        match validate_key_file(&path) {
+            Ok(()) => {
+                harden_key_permissions(&path)?;
+                return Ok(path);
+            }
+            Err(err) => {
+                // Corrupt / unreadable material would otherwise surface as a
+                // mysterious USB-auth failure. Recover by regenerating when
+                // the current PKCS8 decode path rejects the bytes.
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "ADB private key unusable; regenerating"
+                );
+                remove_corrupt_key(&path)?;
+            }
+        }
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| AdbError::Key(format!("adb key path has no parent: {}", path.display())))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| AdbError::Key(format!("create_dir_all {}: {e}", parent.display())))?;
+
+    let private_key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
+        .map_err(|e| AdbError::Key(format!("RSA keygen: {e}")))?;
+    let pem = private_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| AdbError::Key(format!("PKCS8 encode: {e}")))?;
+    write_key_atomic(&path, pem.as_bytes())?;
+    Ok(path)
+}
+
+fn validate_key_file(path: &Path) -> Result<()> {
+    let pem = std::fs::read_to_string(path)
+        .map_err(|e| AdbError::Key(format!("read {}: {e}", path.display())))?;
+    rsa::RsaPrivateKey::from_pkcs8_pem(&pem)
+        .map_err(|e| AdbError::Key(format!("decode {}: {e}", path.display())))?;
+    Ok(())
+}
+
+fn harden_key_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| AdbError::Key(format!("chmod 0600 {}: {e}", path.display())))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn remove_corrupt_key(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AdbError::Key(format!(
+            "remove corrupt adb key {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+fn write_key_atomic(path: &Path, pem: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AdbError::Key(format!("adb key path has no parent: {}", path.display())))?;
+    let token = unique_key_temp_token();
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("adbkey");
+    let tmp_path = parent.join(format!(".{file_name}.tmp-{token}"));
+
+    let write_tmp = (|| -> Result<()> {
+        let mut file = open_new_private_file(&tmp_path)
+            .map_err(|e| AdbError::Key(format!("create temp key {}: {e}", tmp_path.display())))?;
+        file.write_all(pem)
+            .map_err(|e| AdbError::Key(format!("write temp key {}: {e}", tmp_path.display())))?;
+        file.sync_all()
+            .map_err(|e| AdbError::Key(format!("sync temp key {}: {e}", tmp_path.display())))?;
+        Ok(())
+    })();
+    if let Err(err) = write_tmp {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    // Another process may have published a valid key while we generated
+    // ours. Prefer the already-published key over clobbering it.
+    if path.exists() {
+        if validate_key_file(path).is_ok() {
+            let _ = std::fs::remove_file(&tmp_path);
+            harden_key_permissions(path)?;
+            return Ok(());
+        }
+        // Still corrupt / empty — fall through and replace.
+        remove_corrupt_key(path)?;
+    }
+
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        AdbError::Key(format!(
+            "rename temp key {} -> {}: {e}",
+            tmp_path.display(),
+            path.display()
+        ))
+    })?;
+
+    harden_key_permissions(path)?;
+
+    Ok(())
+}
+
+fn open_new_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    }
+}
+
+fn unique_key_temp_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{seq}", std::process::id())
+}
+
 /// Heuristic: did the most recent ADB transaction fail because adbd
 /// disconnected mid-call (the typical signature of "reboot fired,
 /// transport dropped before ack made it back")? Matches the wording
@@ -570,7 +708,12 @@ impl Default for AdbManager {
 
 #[cfg(test)]
 mod tests {
-    use super::is_adbd_dropped_after_reboot;
+    use super::{
+        ensure_key_at_path, is_adbd_dropped_after_reboot, remove_corrupt_key,
+        unique_key_temp_token, validate_key_file, write_key_atomic,
+    };
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+    use std::path::PathBuf;
 
     #[test]
     fn matches_libusb_pipe() {
@@ -607,5 +750,94 @@ mod tests {
         assert!(!is_adbd_dropped_after_reboot("command not found"));
         assert!(!is_adbd_dropped_after_reboot("Protocol error: 4 bytes"));
         assert!(!is_adbd_dropped_after_reboot(""));
+    }
+
+    fn temp_key_path(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ltbox-adbkey-test-dir-{}-{}",
+            label,
+            unique_key_temp_token()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp key dir");
+        dir.join("adbkey")
+    }
+
+    #[test]
+    fn ensure_key_creates_valid_private_key() {
+        let path = temp_key_path("create");
+        let _ = std::fs::remove_file(&path);
+        let got = ensure_key_at_path(path.clone()).expect("create key");
+        assert_eq!(got, path);
+        validate_key_file(&path).expect("created key must decode");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "owner-only adb key");
+        }
+        // Idempotent: second call keeps the same valid material.
+        let pem_before = std::fs::read_to_string(&path).unwrap();
+        ensure_key_at_path(path.clone()).expect("reuse key");
+        let pem_after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(pem_before, pem_after);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn ensure_key_recovers_from_corrupt_material() {
+        let path = temp_key_path("corrupt");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"not-a-pkcs8-key").expect("seed corrupt key");
+        ensure_key_at_path(path.clone()).expect("recover key");
+        validate_key_file(&path).expect("recovered key must decode");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn corrupt_key_removal_tolerates_concurrent_remover() {
+        let path = temp_key_path("concurrent-remove");
+        remove_corrupt_key(&path).expect("already-removed key must be tolerated");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_key_hardens_existing_valid_key_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_key_path("permissions");
+        ensure_key_at_path(path.clone()).expect("create key");
+        let pem_before = std::fs::read(&path).expect("read key");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make key permissive");
+
+        ensure_key_at_path(path.clone()).expect("harden existing key");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing valid key must be owner-only");
+        assert_eq!(std::fs::read(&path).unwrap(), pem_before);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn write_key_atomic_does_not_leave_partial_on_success() {
+        let path = temp_key_path("atomic");
+        let parent = path.parent().unwrap().to_path_buf();
+        let _ = std::fs::remove_file(&path);
+        let private_key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
+        let pem = private_key.to_pkcs8_pem(LineEnding::LF).unwrap();
+        write_key_atomic(&path, pem.as_bytes()).expect("atomic write");
+        assert!(path.is_file());
+        let leftovers: Vec<_> = std::fs::read_dir(&parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("adbkey") && n.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp siblings must be cleaned: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
