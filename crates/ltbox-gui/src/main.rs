@@ -4926,6 +4926,22 @@ mod tests {
     }
 
     #[test]
+    fn firmware_write_phase_labels_use_progress_wording() {
+        let expected = [
+            (Language::En, "Flashing firmware"),
+            (Language::Ko, "펌웨어 플래싱 진행"),
+            (Language::Zh, "正在刷写固件"),
+            (Language::Ru, "Прошивка устройства"),
+            (Language::Ja, "ファームウェアをフラッシュ中"),
+        ];
+        for (lang, label) in expected {
+            let translations = Translations::load(lang);
+            assert_eq!(translations.t("op_flash_phase_7"), label);
+            assert_eq!(translations.t("op_simple_phase_write"), label);
+        }
+    }
+
+    #[test]
     fn shared_execution_error_is_inline_instead_of_floating() {
         let exec = include_str!("view/sysupdate.rs");
         assert!(exec.contains("concise_error_summary"));
