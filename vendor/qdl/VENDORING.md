@@ -13,8 +13,12 @@ carrying the minimal patches we need.
 
 ## Source
 
-- Upstream: `qualcomm/qdlrs` at `cdec5ea`
-  (`Merge pull request #44 … sahara-archive`).
+- Upstream: `qualcomm/qdlrs` at `394e341`
+  (`Merge pull request #49 … CLAUDE.md`).
+- The `qdl` crate source and `Cargo.toml` are unchanged since the previous
+  base `cdec5ea`. Intervening upstream commits are repository-only
+  (`.github/workflows/build.yml`, root `AGENTS.md` / `CLAUDE.md`); those
+  unrelated workflow/agent files were not copied into this vendor tree.
 
 ## Local patches
 
