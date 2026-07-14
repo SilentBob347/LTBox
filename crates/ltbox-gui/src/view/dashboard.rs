@@ -104,99 +104,44 @@ impl App {
         // Unauthorized ADB wins over the platform warning — empty
         // `ro.boot.hardware` otherwise reads as "unsupported platform".
         if self.connection == ConnectionStatus::AdbServerBlocking {
-            let msg: Element<'_, Message> = text(self.t("dash_adb_server_blocking").to_string())
-                .size(12)
+            let msg = text(self.t("dash_adb_server_blocking").to_string())
+                .size(theme::text_size::BODY_SMALL)
                 .style(warning_container_text_style)
-                .width(Length::Fill)
-                .into();
-            let kill_btn: Element<'_, Message> = button(
+                .width(Length::Fill);
+            let kill_btn = button(
                 text(self.t("btn_kill_adb_server").to_string())
-                    .size(12)
-                    .style(warning_container_text_style),
+                    .size(theme::text_size::LABEL_LARGE)
+                    .wrapping(iced::widget::text::Wrapping::None),
             )
             .on_press(Message::KillAdbServer)
-            .padding([6, 12])
-            .style(|t: &Theme, status| {
-                let p = pal_of(t);
-                button::Style {
-                    background: Some(
-                        with_alpha(p.on_warning_container, theme::state_alpha(status).max(0.10))
-                            .into(),
-                    ),
-                    text_color: p.on_warning_container,
-                    border: iced::Border {
-                        radius: theme::shape::XS.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            })
-            .into();
+            .padding([10, 18])
+            .height(40)
+            .style(banner_filled_btn_style);
             content = content.push(
-                container(
+                self.warning_banner(
                     row![msg, kill_btn]
                         .spacing(12)
                         .width(Length::Fill)
                         .align_y(iced::Alignment::Center),
-                )
-                .padding([6, 16])
-                .width(Length::Fill)
-                .style(move |t: &Theme| {
-                    let p = pal_of(t);
-                    container::Style {
-                        background: Some(p.warning_container.into()),
-                        border: iced::Border {
-                            color: p.warning_container,
-                            radius: theme::shape::SM.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }),
+                ),
             );
         } else if self.connection == ConnectionStatus::AdbUnauthorized {
             content = content.push(
-                container(
+                self.warning_banner(
                     text(self.t("dash_adb_unauthorized").to_string())
-                        .size(12)
-                        .style(warning_container_text_style),
-                )
-                .padding([10, 16])
-                .width(Length::Fill)
-                .style(move |t: &Theme| {
-                    let p = pal_of(t);
-                    container::Style {
-                        background: Some(p.warning_container.into()),
-                        border: iced::Border {
-                            color: p.warning_container,
-                            radius: theme::shape::SM.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }),
+                        .size(theme::text_size::BODY_SMALL)
+                        .style(warning_container_text_style)
+                        .width(Length::Fill),
+                ),
             );
         } else if self.platform_supported == Some(false) {
             content = content.push(
-                container(
+                self.warning_banner(
                     text(self.t("dash_unsupported_platform").to_string())
-                        .size(12)
-                        .style(warning_container_text_style),
-                )
-                .padding([10, 16])
-                .width(Length::Fill)
-                .style(move |t: &Theme| {
-                    let p = pal_of(t);
-                    container::Style {
-                        background: Some(p.warning_container.into()),
-                        border: iced::Border {
-                            color: p.warning_container,
-                            radius: theme::shape::SM.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                }),
+                        .size(theme::text_size::BODY_SMALL)
+                        .style(warning_container_text_style)
+                        .width(Length::Fill),
+                ),
             );
         }
 

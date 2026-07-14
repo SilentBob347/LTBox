@@ -42,6 +42,10 @@ op_running        = "loader-circle"
 op_done           = "circle-check-big"
 op_failed         = "circle-x"
 
+# Alert banners (18 px)
+banner_warning    = "triangle-alert"
+banner_error      = "circle-alert"
+
 # Window chrome (10 px)
 win_minimize      = "minus"
 win_maximize      = "square"

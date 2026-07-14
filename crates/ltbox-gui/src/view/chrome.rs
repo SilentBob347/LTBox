@@ -488,35 +488,73 @@ impl App {
 
     pub(crate) fn error_banner(&self, msg: &str) -> Element<'_, Message> {
         // Floating overlay via `view()`'s stack so the layout below
-        // doesn't shift.
+        // doesn't shift. Inset card (not an edge-to-edge strip) so the
+        // alert reads as a discrete surface above content.
+        const INSET: f32 = 12.0;
+        const ICON_SIZE: f32 = 18.0;
+        const ICON_BADGE: f32 = 32.0;
+        const DISMISS_TARGET: f32 = 40.0;
+
+        let icon = container(lucide_icon(icon::banner_error(), ICON_SIZE, |t: &Theme| {
+            pal_of(t).on_error_container
+        }))
+        .width(ICON_BADGE)
+        .height(ICON_BADGE)
+        .center_x(ICON_BADGE)
+        .center_y(ICON_BADGE)
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                // Subtle round tonal backing on the error role.
+                background: Some(with_alpha(p.on_error_container, 0.12).into()),
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
+        let dismiss = button(
+            container(lucide_icon(icon::win_close(), 16.0, |t: &Theme| {
+                pal_of(t).on_error_container
+            }))
+            .width(DISMISS_TARGET)
+            .height(DISMISS_TARGET)
+            .center_x(DISMISS_TARGET)
+            .center_y(DISMISS_TARGET),
+        )
+        .on_press(Message::DismissError)
+        .padding(0)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            let a = theme::state_alpha(status);
+            button::Style {
+                background: if a > 0.0 {
+                    Some(with_alpha(p.on_error_container, a).into())
+                } else {
+                    None
+                },
+                text_color: p.on_error_container,
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
         let card = container(
             row![
-                text(format!("  {msg}"))
-                    .size(12)
-                    .style(error_container_text_style),
-                Space::new().width(Length::Fill),
-                button(text(" × ").size(14).style(error_container_text_style))
-                    .on_press(Message::DismissError)
-                    .padding([2, 10])
-                    .style(|t: &Theme, status| {
-                        let p = pal_of(t);
-                        let a = theme::state_alpha(status);
-                        button::Style {
-                            background: if a > 0.0 {
-                                Some(with_alpha(p.on_error_container, a).into())
-                            } else {
-                                None
-                            },
-                            text_color: p.on_error_container,
-                            border: iced::Border {
-                                radius: theme::shape::XS.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        }
-                    }),
+                icon,
+                text(msg.to_string())
+                    .size(theme::text_size::BODY_MEDIUM)
+                    .style(error_container_text_style)
+                    .width(Length::Fill),
+                dismiss,
             ]
-            .padding([8, 16])
+            .spacing(12)
+            .padding([10, 12])
             .align_y(iced::Alignment::Center),
         )
         .width(Length::Fill)
@@ -525,18 +563,30 @@ impl App {
             container::Style {
                 background: Some(p.error_container.into()),
                 border: iced::Border {
-                    color: p.error_container,
-                    width: 0.0,
-                    radius: 0.0.into(),
+                    color: with_alpha(p.on_error_container, 0.18),
+                    width: 1.0,
+                    radius: theme::shape::LG.into(),
                 },
                 shadow: theme::elevation(2, theme::is_dark(t)),
                 ..Default::default()
             }
         });
-        // Pin to y=0 via a Fill-height spacer below.
-        column![card, Space::new().width(Length::Fill).height(Length::Fill)]
-            .width(Length::Fill)
-            .into()
+
+        // Top/side inset + Fill-height spacer below keeps the overlay
+        // non-layout-shifting and floating instead of edge-flush.
+        column![
+            container(card)
+                .padding(iced::Padding {
+                    top: INSET,
+                    right: INSET,
+                    bottom: 0.0,
+                    left: INSET,
+                })
+                .width(Length::Fill),
+            Space::new().width(Length::Fill).height(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .into()
     }
 
     pub(crate) fn status_bar(&self) -> Element<'_, Message> {
@@ -592,15 +642,46 @@ impl App {
         .into()
     }
 
-    /// Warning-container banner shell shared by the
-    /// missing-driver install prompt and the optional update prompt. The
-    /// Qualcomm USB driver is not strictly mandatory for every LTBox
-    /// feature, so both prompts use a warning tone rather than a hard error.
-    fn driver_banner_container<'a>(
+    /// Shared Material 3–inspired warning banner shell. Prepends a
+    /// semantic warning icon on a round tonal badge, then hosts the
+    /// caller-supplied body (text + actions). Used by every dashboard
+    /// warning so ADB / platform / driver / dual-USB prompts share one
+    /// surface language: `warning_container` fill, low-alpha warning
+    /// outline, `shape::LG`, no shadow.
+    pub(crate) fn warning_banner<'a>(
         &self,
         content: impl Into<Element<'a, Message>>,
     ) -> Element<'a, Message> {
-        container(content)
+        const ICON_SIZE: f32 = 18.0;
+        const ICON_BADGE: f32 = 32.0;
+
+        let icon = container(lucide_icon(
+            icon::banner_warning(),
+            ICON_SIZE,
+            |t: &Theme| pal_of(t).on_warning_container,
+        ))
+        .width(ICON_BADGE)
+        .height(ICON_BADGE)
+        .center_x(ICON_BADGE)
+        .center_y(ICON_BADGE)
+        .style(|t: &Theme| {
+            let p = pal_of(t);
+            container::Style {
+                background: Some(with_alpha(p.on_warning_container, 0.12).into()),
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
+        let body = row![icon, content.into()]
+            .spacing(12)
+            .width(Length::Fill)
+            .align_y(iced::Alignment::Center);
+
+        container(body)
             .padding([12, 16])
             .width(Length::Fill)
             .style(move |t: &Theme| {
@@ -608,10 +689,11 @@ impl App {
                 container::Style {
                     background: Some(p.warning_container.into()),
                     border: iced::Border {
-                        color: p.warning_container,
+                        color: with_alpha(p.on_warning_container, 0.18),
                         width: 1.0,
-                        radius: theme::shape::SM.into(),
+                        radius: theme::shape::LG.into(),
                     },
+                    shadow: theme::elevation(0, theme::is_dark(t)),
                     ..Default::default()
                 }
             })
@@ -731,8 +813,9 @@ impl App {
             .wrapping(iced::widget::text::Wrapping::None);
         let action: Element<'_, Message> = if can_install {
             let mut btn = button(btn_label_text)
-                .padding([8, 18])
-                .style(md_filled_btn_style);
+                .padding([10, 18])
+                .height(40)
+                .style(banner_filled_btn_style);
             // Offline → the fetch can only fail, so disable + explain on hover.
             if !installing && !offline {
                 btn = btn.on_press(Message::InstallDrivers);
@@ -769,7 +852,7 @@ impl App {
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
 
-        self.driver_banner_container(content)
+        self.warning_banner(content)
     }
 
     /// Optional "driver update available" banner — shown when the installed
@@ -795,8 +878,9 @@ impl App {
                 .size(theme::text_size::LABEL_LARGE)
                 .wrapping(iced::widget::text::Wrapping::None),
         )
-        .padding([8, 18])
-        .style(md_filled_btn_style);
+        .padding([10, 18])
+        .height(40)
+        .style(banner_filled_btn_style);
         if !installing && !offline {
             update_btn = update_btn.on_press(Message::InstallDrivers);
         }
@@ -811,7 +895,8 @@ impl App {
                 .size(theme::text_size::LABEL_LARGE)
                 .wrapping(iced::widget::text::Wrapping::None),
         )
-        .padding([8, 18])
+        .padding([10, 18])
+        .height(40)
         .style(banner_text_btn_style);
         // Dismiss needs no network — only gate it on an in-flight install.
         if !installing {
@@ -838,7 +923,7 @@ impl App {
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
 
-        self.driver_banner_container(content)
+        self.warning_banner(content)
     }
 
     /// Dual-USB-C port advisory for TB320FC / TB321FU / TB322FC / TB323FU —
@@ -853,7 +938,8 @@ impl App {
                 .size(theme::text_size::LABEL_LARGE)
                 .wrapping(iced::widget::text::Wrapping::None),
         )
-        .padding([8, 18])
+        .padding([10, 18])
+        .height(40)
         .style(banner_text_btn_style)
         .on_press(Message::DismissDualUsbAdvisory(model.clone()));
         let close = button(
@@ -861,8 +947,9 @@ impl App {
                 .size(theme::text_size::LABEL_LARGE)
                 .wrapping(iced::widget::text::Wrapping::None),
         )
-        .padding([8, 18])
-        .style(md_filled_btn_style)
+        .padding([10, 18])
+        .height(40)
+        .style(banner_filled_btn_style)
         .on_press(Message::CloseDualUsbAdvisory(model));
 
         let body = column![
@@ -881,7 +968,7 @@ impl App {
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
 
-        self.driver_banner_container(content)
+        self.warning_banner(content)
     }
 
     /// Bottom-of-screen transient toast. Renders a low-attention pill

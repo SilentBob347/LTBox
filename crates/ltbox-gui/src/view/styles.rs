@@ -367,6 +367,42 @@ pub(crate) fn md_text_btn_style(t: &Theme, status: button::Status) -> button::St
     }
 }
 
+/// Filled button for primary actions inside warning banners. Uses the
+/// warning role pair (`on_warning_container` fill / `warning_container`
+/// label) with M3 state layers and a FULL pill shape so the action
+/// reads as the banner's primary control without borrowing the app-wide
+/// primary fill.
+pub(crate) fn banner_filled_btn_style(t: &Theme, status: button::Status) -> button::Style {
+    let p = pal_of(t);
+    if matches!(status, button::Status::Disabled) {
+        return button::Style {
+            background: Some(with_alpha(p.on_warning_container, 0.12).into()),
+            text_color: with_alpha(p.on_warning_container, 0.38),
+            border: iced::Border {
+                radius: theme::shape::FULL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
+    // Filled on a warning-container surface: dark/light role inversion of
+    // the container pair, with the on-color state layer mixed in.
+    let bg = blend(
+        p.on_warning_container,
+        p.warning_container,
+        theme::state_alpha(status),
+    );
+    button::Style {
+        background: Some(bg.into()),
+        text_color: p.warning_container,
+        border: iced::Border {
+            radius: theme::shape::FULL.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 /// Text button for warning banners ("Don't show again"). Uses the matching
 /// warning on-container role and state layer. The default
 /// `md_text_btn_style` uses the theme `primary`, which can be low-contrast
