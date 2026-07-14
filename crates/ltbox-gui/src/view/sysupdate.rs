@@ -421,6 +421,9 @@ impl App {
         ]
         .spacing(6)
         .width(Length::Fill);
+        if let Some(progress_label) = self.firmware_flash_progress_label() {
+            card_body = card_body.push(text(progress_label).size(13).style(muted_style));
+        }
         if is_error {
             if let Some(error) = self.operation_error.as_deref() {
                 let summary = concise_error_summary(error, EXEC_ERROR_SUMMARY_MAX_CHARS);

@@ -10,6 +10,7 @@
 
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -67,6 +68,77 @@ fn send_firehose_erase(
 const EDL_STABILITY_INTERVAL: Duration = Duration::from_secs(1);
 const EDL_DISCONNECT_OBSERVE: Duration = Duration::from_secs(5);
 const EDL_SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Latest per-partition firmware write progress for GUI consumers.
+///
+/// Published by the rawprogram flash path (`EdlSession::flash_program_node`)
+/// without parsing terminal `pbr` output. The last value remains available
+/// until [`clear_flash_progress`] so short gaps between partitions do not
+/// flicker empty in the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlashProgress {
+    pub partition: String,
+    pub percent: u8,
+}
+
+fn flash_progress_slot() -> &'static Mutex<Option<FlashProgress>> {
+    static SLOT: OnceLock<Mutex<Option<FlashProgress>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Latest process-wide flash progress snapshot, if any.
+pub fn flash_progress() -> Option<FlashProgress> {
+    match flash_progress_slot().lock() {
+        Ok(guard) => guard.clone(),
+        // Poisoning should not panic production flash/GUI polling paths.
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Clear the process-wide flash progress snapshot.
+pub fn clear_flash_progress() {
+    match flash_progress_slot().lock() {
+        Ok(mut guard) => *guard = None,
+        Err(poisoned) => *poisoned.into_inner() = None,
+    }
+}
+
+fn publish_flash_progress(partition: &str, percent: u8) {
+    let next = FlashProgress {
+        partition: partition.to_string(),
+        percent,
+    };
+    match flash_progress_slot().lock() {
+        Ok(mut guard) => *guard = Some(next),
+        // Poisoning should not panic production flash/GUI polling paths.
+        Err(poisoned) => *poisoned.into_inner() = Some(next),
+    }
+}
+
+/// Integer percent in `0..=100`, overflow-safe for large byte totals.
+fn flash_percent(completed: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 100;
+    }
+    let completed = completed.min(total);
+    // Prefer saturating math over `completed * 100` which can overflow u64.
+    let pct = ((completed as u128) * 100 / (total as u128)) as u64;
+    pct.min(100) as u8
+}
+
+/// Publish progress only when the integer percentage changes.
+fn update_flash_progress(
+    last_percent: &mut Option<u8>,
+    partition: &str,
+    completed: u64,
+    total: u64,
+) {
+    let percent = flash_percent(completed, total);
+    if *last_percent != Some(percent) {
+        *last_percent = Some(percent);
+        publish_flash_progress(partition, percent);
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum EdlError {
@@ -1497,7 +1569,10 @@ impl EdlSession {
                 .replace("{sectors}", &num_sectors.to_string())
         );
 
-        qdl::firehose_program_storage(
+        // Publish only when the integer percentage changes so the process-wide
+        // slot is not locked/allocated on every Firehose chunk.
+        let mut last_percent: Option<u8> = None;
+        qdl::firehose_program_storage_with_progress(
             &mut self.dev,
             &mut file,
             &label,
@@ -1505,6 +1580,7 @@ impl EdlSession {
             slot,
             lun,
             start_sector,
+            |completed, total| update_flash_progress(&mut last_percent, &label, completed, total),
         )
         .map_err(|e| EdlError::Session(format!("Program {label} failed: {e}")))?;
         Ok(())
@@ -1882,6 +1958,50 @@ mod tests {
 
     fn first_node<'a>(doc: &'a roxmltree::Document<'a>, tag: &str) -> roxmltree::Node<'a, 'a> {
         doc.descendants().find(|n| n.has_tag_name(tag)).unwrap()
+    }
+
+    #[test]
+    fn flash_percent_clamps_and_avoids_overflow() {
+        assert_eq!(flash_percent(0, 0), 100);
+        assert_eq!(flash_percent(0, 100), 0);
+        assert_eq!(flash_percent(50, 100), 50);
+        assert_eq!(flash_percent(100, 100), 100);
+        assert_eq!(flash_percent(150, 100), 100);
+        // Large even totals that would overflow `completed * 100` in u64.
+        let total = 1u64 << 63; // even, so half is exact
+        assert_eq!(flash_percent(total / 2, total), 50);
+        assert_eq!(flash_percent(total, total), 100);
+        assert_eq!(flash_percent(u64::MAX, u64::MAX), 100);
+    }
+
+    #[test]
+    fn flash_progress_latest_value_and_clear() {
+        // Keep process-wide static state isolated for parallel cargo test.
+        clear_flash_progress();
+        let mut last = None;
+        update_flash_progress(&mut last, "boot", 0, 200); // initial 0
+        assert_eq!(last, Some(0));
+        assert_eq!(flash_progress().unwrap().percent, 0);
+
+        update_flash_progress(&mut last, "boot", 1, 200); // unchanged integer %
+        assert_eq!(last, Some(0));
+        assert_eq!(flash_progress().unwrap().percent, 0);
+
+        update_flash_progress(&mut last, "boot", 200, 200); // final 100
+        assert_eq!(last, Some(100));
+        assert_eq!(flash_progress().unwrap().percent, 100);
+
+        last = None;
+        update_flash_progress(&mut last, "system", 0, 400); // new partition
+        assert_eq!(
+            flash_progress(),
+            Some(FlashProgress {
+                partition: "system".into(),
+                percent: 0,
+            })
+        );
+        clear_flash_progress();
+        assert_eq!(flash_progress(), None);
     }
 
     #[test]

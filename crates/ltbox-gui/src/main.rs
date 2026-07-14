@@ -2313,6 +2313,11 @@ struct App {
     op_steps: Vec<OpStep>,
     /// Index advanced by parsing `Phase N/M` markers in `log_push`.
     current_op_step: usize,
+    /// Active phased-operation kind. Tracks firmware-progress eligibility
+    /// without relying on magic step indices in the view layer.
+    active_op_kind: Option<OperationPhaseKind>,
+    /// Latest live firmware flash progress snapshot for the shared exec card.
+    flash_progress: Option<ltbox_device::edl::FlashProgress>,
     log_popup_open: bool,
 }
 
@@ -2480,6 +2485,8 @@ impl Default for App {
             advanced_wizard_open: AdvancedWizardOpen::default(),
             op_steps: Vec::new(),
             current_op_step: 0,
+            active_op_kind: None,
+            flash_progress: None,
             log_popup_open: false,
         }
     }
@@ -2683,6 +2690,8 @@ impl App {
         self.operation_error = None;
         self.op_steps.clear();
         self.current_op_step = 0;
+        self.active_op_kind = None;
+        self.clear_flash_progress();
         // Single START banner; no closing rule.
         let _ = v;
         let label = self.t("log_separator_start").to_string();
@@ -2698,6 +2707,7 @@ impl App {
                 .collect(),
         );
         self.begin_op(view);
+        self.active_op_kind = Some(kind);
         self.op_steps = reporter.steps();
         reporter
     }
@@ -2727,11 +2737,15 @@ impl App {
         }
         self.busy = false;
         self.busy_view = None;
+        self.active_op_kind = None;
+        self.clear_flash_progress();
     }
 
     fn fail_op(&mut self) {
         self.busy = false;
         self.busy_view = None;
+        self.active_op_kind = None;
+        self.clear_flash_progress();
     }
 
     fn begin_silent_op(&mut self, v: View) {
@@ -2741,11 +2755,55 @@ impl App {
         self.operation_error = None;
         self.op_steps.clear();
         self.current_op_step = 0;
+        self.active_op_kind = None;
+        self.clear_flash_progress();
     }
 
     fn end_silent_op(&mut self) {
         self.busy = false;
         self.busy_view = None;
+        self.active_op_kind = None;
+        self.clear_flash_progress();
+    }
+
+    fn clear_flash_progress(&mut self) {
+        self.flash_progress = None;
+        ltbox_device::edl::clear_flash_progress();
+    }
+
+    /// True only while a busy op is on the exact firmware-write progress phase.
+    fn firmware_write_progress_phase_active(&self) -> bool {
+        if !self.busy {
+            return false;
+        }
+        let Some(step) = self
+            .active_op_kind
+            .and_then(OperationPhaseKind::firmware_progress_step)
+        else {
+            return false;
+        };
+        // Overflow-safe: current_op_step is zero-based, step is one-based.
+        self.current_op_step.checked_add(1) == Some(step)
+    }
+
+    fn refresh_flash_progress_snapshot(&mut self) {
+        self.flash_progress = if self.firmware_write_progress_phase_active() {
+            ltbox_device::edl::flash_progress()
+        } else {
+            None
+        };
+    }
+
+    /// Secondary line under the firmware-write phase label, e.g. `super (42%)`.
+    pub(crate) fn firmware_flash_progress_label(&self) -> Option<String> {
+        if !self.firmware_write_progress_phase_active() || self.operation_error.is_some() {
+            return None;
+        }
+        let progress = self.flash_progress.as_ref()?;
+        if progress.partition.is_empty() {
+            return None;
+        }
+        Some(format!("{} ({}%)", progress.partition, progress.percent))
     }
 
     fn set_image_info_log(&mut self, text: String) {
@@ -4767,6 +4825,104 @@ mod tests {
         assert_eq!(app.current_op_step, 0);
         assert!(!app.busy);
         assert_eq!(app.busy_view, None);
+    }
+
+    #[test]
+    fn firmware_progress_step_maps_only_full_and_simple_flash() {
+        assert_eq!(OperationPhaseKind::Flash.firmware_progress_step(), Some(7));
+        assert_eq!(
+            OperationPhaseKind::SimpleFlash.firmware_progress_step(),
+            Some(3)
+        );
+        for kind in OperationPhaseKind::all() {
+            if !matches!(
+                kind,
+                OperationPhaseKind::Flash | OperationPhaseKind::SimpleFlash
+            ) {
+                assert_eq!(kind.firmware_progress_step(), None, "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn firmware_flash_progress_label_visibility_and_format() {
+        let app = |kind: OperationPhaseKind, step: usize, busy: bool, err: Option<&str>| App {
+            busy,
+            active_op_kind: Some(kind),
+            current_op_step: step,
+            flash_progress: Some(ltbox_device::edl::FlashProgress {
+                partition: "super".into(),
+                percent: 42,
+            }),
+            operation_error: err.map(str::to_string),
+            ..App::default()
+        };
+        assert_eq!(
+            app(OperationPhaseKind::Flash, 6, true, None)
+                .firmware_flash_progress_label()
+                .as_deref(),
+            Some("super (42%)")
+        );
+        let mut simple = app(OperationPhaseKind::SimpleFlash, 2, true, None);
+        simple.flash_progress = Some(ltbox_device::edl::FlashProgress {
+            partition: "boot_a".into(),
+            percent: 7,
+        });
+        assert_eq!(
+            simple.firmware_flash_progress_label().as_deref(),
+            Some("boot_a (7%)")
+        );
+        assert!(
+            app(OperationPhaseKind::Flash, 5, true, None)
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+        assert!(
+            app(OperationPhaseKind::FlashPartitions, 1, true, None)
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+        assert!(
+            app(OperationPhaseKind::FlashPhysical, 2, true, None)
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+        assert!(
+            app(OperationPhaseKind::Root, 5, true, None)
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+        assert!(
+            app(OperationPhaseKind::Flash, 6, false, None)
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+        assert!(
+            app(OperationPhaseKind::Flash, 6, true, Some("boom"))
+                .firmware_flash_progress_label()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn flash_progress_clears_across_op_lifecycle() {
+        let mut app = App::default();
+        for clear in [
+            |a: &mut App| a.begin_op(View::Flash),
+            |a: &mut App| a.end_op(),
+            |a: &mut App| a.fail_op(),
+            |a: &mut App| a.begin_silent_op(View::Root),
+            |a: &mut App| a.end_silent_op(),
+        ] {
+            app.flash_progress = Some(ltbox_device::edl::FlashProgress {
+                partition: "super".into(),
+                percent: 10,
+            });
+            app.active_op_kind = Some(OperationPhaseKind::Flash);
+            clear(&mut app);
+            assert!(app.flash_progress.is_none());
+            assert_eq!(app.active_op_kind, None);
+        }
     }
 
     #[test]

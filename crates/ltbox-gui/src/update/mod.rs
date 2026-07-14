@@ -329,6 +329,9 @@ impl App {
                 // ordering (which interleaves third-party output with
                 // ours in real chronological order) is preserved.
                 self.drain_pending_log_streams();
+                // Snapshot live firmware-write progress only while the
+                // busy op is on the exact firmware-progress phase.
+                self.refresh_flash_progress_snapshot();
                 // Batched rebuild — at most one cosmic-text reshape per tick.
                 if self.log_dirty {
                     self.rebuild_log_editor();

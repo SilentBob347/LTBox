@@ -534,6 +534,37 @@ pub fn firehose_program_storage<T: QdlChan>(
     phys_part_idx: u8,
     start_sector: &str,
 ) -> anyhow::Result<()> {
+    firehose_program_storage_with_progress(
+        channel,
+        data,
+        label,
+        num_sectors,
+        slot,
+        phys_part_idx,
+        start_sector,
+        |_, _| {},
+    )
+}
+
+/// Write to Device storage, reporting byte progress to `on_progress`.
+///
+/// `on_progress` receives `(completed_bytes, total_bytes)`. It is invoked with
+/// `0` after the device accepts the `<program>` command, then again after each
+/// successful chunk write. Terminal `pbr` output is unchanged.
+pub fn firehose_program_storage_with_progress<T, F>(
+    channel: &mut T,
+    data: &mut impl Read,
+    label: &str,
+    num_sectors: usize,
+    slot: u8,
+    phys_part_idx: u8,
+    start_sector: &str,
+    mut on_progress: F,
+) -> anyhow::Result<()>
+where
+    T: QdlChan,
+    F: FnMut(u64, u64),
+{
     let mut sectors_left = num_sectors;
     let mut xml = firehose_xml_setup(
         "program",
@@ -559,10 +590,15 @@ pub fn firehose_program_storage<T: QdlChan>(
         bail!("<program> was NAKed. Did you set sector-size correctly?");
     }
 
-    let mut pb = ProgressBar::new((sectors_left * channel.fh_config().storage_sector_size) as u64);
+    let total_bytes = (sectors_left * channel.fh_config().storage_sector_size) as u64;
+    let mut pb = ProgressBar::new(total_bytes);
     pb.show_time_left = true;
     pb.message(&format!("Sending partition {label}: "));
     pb.set_units(Units::Bytes);
+
+    // Structured progress for GUI consumers; terminal bar stays independent.
+    on_progress(0, total_bytes);
+    let mut completed_bytes: u64 = 0;
 
     while sectors_left > 0 {
         let chunk_size_sectors = min(
@@ -584,7 +620,10 @@ pub fn firehose_program_storage<T: QdlChan>(
         }
 
         sectors_left -= chunk_size_sectors;
-        pb.add((chunk_size_sectors * channel.fh_config().storage_sector_size) as u64);
+        let chunk_bytes = (chunk_size_sectors * channel.fh_config().storage_sector_size) as u64;
+        completed_bytes = completed_bytes.saturating_add(chunk_bytes);
+        pb.add(chunk_bytes);
+        on_progress(completed_bytes, total_bytes);
     }
 
     // The USB `Write` impl already terminates every transfer through

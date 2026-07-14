@@ -71,6 +71,16 @@ impl OperationPhaseKind {
         }
     }
 
+    /// One-based firmware-write phase that may surface live flash progress.
+    /// Only full Flash (step 7) and Advanced SimpleFlash (step 3) qualify.
+    pub(crate) const fn firmware_progress_step(self) -> Option<usize> {
+        match self {
+            Self::Flash => Some(7),
+            Self::SimpleFlash => Some(3),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn keys(self) -> &'static [&'static str] {
         match self {
             Self::Flash => &[

@@ -36,6 +36,13 @@ carrying the minimal patches we need.
   timeouts. This keeps the serial path usable when the user selects Qualcomm's
   kernel driver family while avoiding hard failure on hosts whose serial
   driver rejects one of the advisory termios settings.
+- **Add `firehose_program_storage_with_progress`** (`src/lib.rs`). Additive
+  API that accepts a `FnMut(u64, u64)` callback `(completed_bytes,
+  total_bytes)`. Existing `firehose_program_storage` delegates to it with a
+  no-op callback, preserving behavior and terminal `pbr` output. Reports `0`
+  after the device ACKs `<program>`, then again after each successful chunk
+  write. LTBox needs this for structured, cross-platform per-partition flash
+  progress in the GUI without scraping terminal progress-bar text.
 
 ## Updating
 
