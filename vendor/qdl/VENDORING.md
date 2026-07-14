@@ -13,12 +13,15 @@ carrying the minimal patches we need.
 
 ## Source
 
-- Upstream: `qualcomm/qdlrs` at `394e341`
-  (`Merge pull request #49 … CLAUDE.md`).
-- The `qdl` crate source and `Cargo.toml` are unchanged since the previous
-  base `cdec5ea`. Intervening upstream commits are repository-only
-  (`.github/workflows/build.yml`, root `AGENTS.md` / `CLAUDE.md`); those
-  unrelated workflow/agent files were not copied into this vendor tree.
+- Upstream: `qualcomm/qdlrs` base `main` `394e341`
+  (`Merge pull request #49 … CLAUDE.md`), with library changes from
+  PR #50 head `5508b08` (`qdl: Add context to program/loader file I/O
+  errors`) merged on top.
+- Only the `qdl` library crate files under `qdl/src/` and the crate
+  `Cargo.toml` were vendored. Upstream CLI files under `cli/` were not
+  copied into this vendor tree.
+- Intervening repository-only files outside the library crate (for
+  example workflows and agent docs) were not copied.
 
 ## Local patches
 
@@ -33,7 +36,10 @@ carrying the minimal patches we need.
   indefinitely (the endpoint write timeout does not cancel the queued
   transfer). Symptom: a multi-partition flash hung on the partition after
   the first packet-aligned one (e.g. `xbl_config_a`, 245760 B = exact
-  512-multiple).
+  512-multiple). PR #50's non-panicking ZLP write context was therefore
+  not adopted; the explicit ZLP remains absent, while the PR's
+  `.with_context()` on data-channel writes is retained in the local
+  progress implementation.
 - **Make the serial backend tolerant enough for Qualcomm kernel-driver mode**
   (`src/serial.rs`). LTBox opens the port with an identity configuration,
   applies raw mode + 115200 baud best-effort, and sets explicit read/write
@@ -51,5 +57,5 @@ carrying the minimal patches we need.
 ## Updating
 
 To re-sync with upstream: re-copy `src/` + `Cargo.toml` from the desired
-`qualcomm/qdlrs` revision, then re-apply the patches above. Update the
-revision recorded here.
+`qualcomm/qdlrs` revision (library crate only; skip CLI files), then
+re-apply the patches above. Update the revision recorded here.

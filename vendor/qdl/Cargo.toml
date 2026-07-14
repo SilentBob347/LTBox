@@ -1,4 +1,4 @@
-# Vendored from qualcomm/qdlrs (@394e341), BSD-3-Clause. See VENDORING.md
+# Vendored from qualcomm/qdlrs (@394e341 + PR #50 @5508b08), BSD-3-Clause. See VENDORING.md
 # for provenance + the local patch (drop redundant program ZLP).
 [package]
 name = "qdl"

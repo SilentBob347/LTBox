@@ -871,8 +871,6 @@ impl EdlSession {
         // Reject degenerate GPT entries up-front: end<start wraps under
         // u64, end==start is a zero-sector partition (valid but nothing to
         // dump), and a sector count past usize::MAX cannot be allocated.
-        // Firehose's `start_sector` protocol field is u32 so also refuse
-        // >u32::MAX starting LBAs rather than silently truncating.
         let span = end
             .checked_sub(start)
             .and_then(|d| d.checked_add(1))
@@ -883,11 +881,6 @@ impl EdlSession {
             })?;
         let sectors = usize::try_from(span).map_err(|_| {
             EdlError::Session(format!("Partition {part_name} span {span} exceeds usize"))
-        })?;
-        let start_u32 = u32::try_from(start).map_err(|_| {
-            EdlError::Session(format!(
-                "Partition {part_name} start LBA {start} exceeds Firehose u32 limit"
-            ))
         })?;
         ltbox_core::live!(
             log,
@@ -902,7 +895,7 @@ impl EdlSession {
             tr("log_edl_dump_cmd"),
             output.display()
         );
-        qdl::firehose_read_storage(&mut self.dev, &mut out_file, sectors, slot, lun, start_u32)
+        qdl::firehose_read_storage(&mut self.dev, &mut out_file, sectors, slot, lun, start)
             .map_err(|e| EdlError::Session(format!("Partition read failed: {e}")))?;
         ltbox_core::live!(log, "[EDL] {} {part_name}", tr("log_edl_dumped"));
         Ok(())
@@ -917,7 +910,7 @@ impl EdlSession {
         part_name: &str,
         output: &Path,
         lun: u8,
-        start_sector: u32,
+        start_sector: u64,
         num_sectors: usize,
         log: &mut Vec<String>,
     ) -> Result<()> {
@@ -2049,6 +2042,13 @@ mod tests {
             100
         );
         assert_eq!(EdlSession::partition_span_sectors("p", 5, 5).unwrap(), 1);
+        // Start LBAs past the historical Firehose u32 limit must still
+        // compute an inclusive span correctly (no hardware / no truncation).
+        let start = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            EdlSession::partition_span_sectors("p", start, start + 99).unwrap(),
+            100
+        );
         // Inverted range must error, never produce a tiny bogus span.
         assert!(EdlSession::partition_span_sectors("p", 200, 100).is_err());
     }

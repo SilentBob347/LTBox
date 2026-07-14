@@ -576,18 +576,20 @@ pub(crate) fn dump_parts_execute(
                 bytes = row.size_bytes.to_string()
             )
         );
-        // GPT sector values are u64; Firehose takes a u32 start + usize
-        // count. Reject out-of-range rather than silently truncating
-        // `as u32` — a start LBA past u32::MAX would wrap and dump the
-        // wrong region of the LUN.
-        let dump_outcome = match (
-            u32::try_from(row.start_sector),
-            usize::try_from(row.num_sectors),
-        ) {
-            (Ok(start), Ok(count)) => session
-                .dump_partition_at(&row.label, &out_path, row.lun, start, count, &mut log)
+        // GPT sector counts are u64; the dump path still needs a usize
+        // length. Reject out-of-range counts rather than truncating.
+        let dump_outcome = match usize::try_from(row.num_sectors) {
+            Ok(count) => session
+                .dump_partition_at(
+                    &row.label,
+                    &out_path,
+                    row.lun,
+                    row.start_sector,
+                    count,
+                    &mut log,
+                )
                 .map_err(|e| e.to_string()),
-            _ => Err(format!(
+            Err(_) => Err(format!(
                 "partition geometry out of range (start_sector={}, num_sectors={})",
                 row.start_sector, row.num_sectors
             )),
