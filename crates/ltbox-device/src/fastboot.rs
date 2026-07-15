@@ -216,25 +216,20 @@ impl FastbootDevice {
     /// `vendor_bootxyz` lookups that failed with misleading errors.
     pub fn get_slot_suffix(&mut self) -> Result<Option<String>> {
         match self.getvar("current-slot") {
-            Ok(slot) => {
-                let trimmed = slot.trim();
-                let normalized = match trimmed {
-                    "a" | "_a" => Some("_a".to_string()),
-                    "b" | "_b" => Some("_b".to_string()),
-                    _ => None,
-                };
-                Ok(normalized)
-            }
+            Ok(slot) => Ok(normalize_slot_suffix(&slot)),
             _ => Ok(None),
         }
     }
 
     /// Parse vars from `getvar:all` INFO lines.
     pub fn get_all_vars(&mut self) -> Result<FastbootVars> {
-        let mut vars = FastbootVars {
-            current_slot: self.get_slot_suffix()?,
-            ..FastbootVars::default()
-        };
+        let mut vars = FastbootVars::default();
+        // Standalone current-slot is best-effort only. A transient USB
+        // failure here must not discard model/RAM/storage/build from
+        // getvar:all (PollDevice maps Err → default empty fields).
+        if let Ok(slot) = self.get_slot_suffix() {
+            vars.current_slot = slot;
+        }
         if let Ok(sn) = self.getvar("serialno")
             && !sn.is_empty()
         {
@@ -242,44 +237,7 @@ impl FastbootDevice {
         }
         if let Ok(lines) = self.command_all("getvar:all") {
             for line in &lines {
-                // Spec lives in some `_`-separated segment of `hwboardid`
-                // (varies per SKU + sometimes has a trailing suffix); the
-                // helper walks every segment and picks the first
-                // `<digits>+<digits>` block, so layout drift in newer
-                // bootloaders doesn't silently drop RAM/storage.
-                // Model identification moved to the dedicated
-                // `modelname:` line below — the leading hwboardid token
-                // is the SoC name on stripped SKUs and not a reliable
-                // model source.
-                if let Some(val) = line.strip_prefix("hwboardid:")
-                    && let Some((ram, storage)) = parse_hwboardid_ram_storage(val.trim())
-                {
-                    vars.ram_gb = Some(ram);
-                    vars.storage_gb = Some(storage);
-                }
-                // `modelname:TB322FC` — the bootloader-published model
-                // identifier. Stable across SKUs that strip the model
-                // token from `hwboardid`.
-                if let Some(val) = line.strip_prefix("modelname:") {
-                    let val = val.trim();
-                    if !val.is_empty() {
-                        vars.model = Some(val.to_string());
-                    }
-                }
-                if let Some((slot, val)) = parse_stored_rollback_line(line) {
-                    vars.rollback_indices.insert(slot, val);
-                }
-                if let Some(val) = line.strip_prefix("build-display-id:") {
-                    let v = val.trim();
-                    if !v.is_empty() {
-                        vars.build_display_id = Some(v.to_string());
-                    }
-                } else if let Some(val) = line.strip_prefix("build.display.id:") {
-                    let v = val.trim();
-                    if !v.is_empty() {
-                        vars.build_display_id = Some(v.to_string());
-                    }
-                }
+                apply_getvar_all_line(&mut vars, line);
             }
             // Preserve the raw dump for `getvar.txt`. Guarantee a `serialno:`
             // line at the top (some bootloaders omit it from `getvar:all`, but
@@ -309,6 +267,68 @@ impl FastbootDevice {
 
     pub fn reboot_bootloader(&mut self) -> Result<()> {
         self.command("reboot-bootloader").map(|_| ())
+    }
+}
+
+/// Normalize a fastboot `current-slot` payload to `_a` / `_b`.
+fn normalize_slot_suffix(slot: &str) -> Option<String> {
+    match slot.trim() {
+        "a" | "_a" => Some("_a".to_string()),
+        "b" | "_b" => Some("_b".to_string()),
+        _ => None,
+    }
+}
+
+/// Apply one `getvar:all` INFO line into `vars`.
+///
+/// Extracted so unit tests can cover TB322FC (and similar) dumps without
+/// opening real USB hardware. Does not fetch product/serialno — those are
+/// still separate getvar queries in [`FastbootDevice::get_all_vars`].
+pub(crate) fn apply_getvar_all_line(vars: &mut FastbootVars, line: &str) {
+    // Spec lives in some `_`-separated segment of `hwboardid`
+    // (varies per SKU + sometimes has a trailing suffix); the
+    // helper walks every segment and picks the first
+    // `<digits>+<digits>` block, so layout drift in newer
+    // bootloaders doesn't silently drop RAM/storage.
+    // Model identification moved to the dedicated
+    // `modelname:` line below — the leading hwboardid token
+    // is the SoC name on stripped SKUs and not a reliable
+    // model source.
+    if let Some(val) = line.strip_prefix("hwboardid:")
+        && let Some((ram, storage)) = parse_hwboardid_ram_storage(val.trim())
+    {
+        vars.ram_gb = Some(ram);
+        vars.storage_gb = Some(storage);
+    }
+    // `modelname:TB322FC` — the bootloader-published model
+    // identifier. Stable across SKUs that strip the model
+    // token from `hwboardid`.
+    if let Some(val) = line.strip_prefix("modelname:") {
+        let val = val.trim();
+        if !val.is_empty() {
+            vars.model = Some(val.to_string());
+        }
+    }
+    // Prefer an explicit current-slot from the dump when present so a
+    // failed standalone slot query still leaves the dashboard filled.
+    if vars.current_slot.is_none()
+        && let Some(val) = line.strip_prefix("current-slot:")
+    {
+        vars.current_slot = normalize_slot_suffix(val);
+    }
+    if let Some((slot, val)) = parse_stored_rollback_line(line) {
+        vars.rollback_indices.insert(slot, val);
+    }
+    if let Some(val) = line.strip_prefix("build-display-id:") {
+        let v = val.trim();
+        if !v.is_empty() {
+            vars.build_display_id = Some(v.to_string());
+        }
+    } else if let Some(val) = line.strip_prefix("build.display.id:") {
+        let v = val.trim();
+        if !v.is_empty() {
+            vars.build_display_id = Some(v.to_string());
+        }
     }
 }
 
@@ -355,7 +375,10 @@ pub(crate) fn parse_hwboardid_ram_storage(val: &str) -> Option<(String, String)>
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_hwboardid_ram_storage, parse_stored_rollback_line};
+    use super::{
+        FastbootVars, apply_getvar_all_line, parse_hwboardid_ram_storage,
+        parse_stored_rollback_line,
+    };
 
     #[test]
     fn bare_hex_parses_as_base16() {
@@ -427,5 +450,49 @@ mod tests {
     #[test]
     fn hwboardid_no_spec_returns_none() {
         assert_eq!(parse_hwboardid_ram_storage("SM8750P_only"), None);
+    }
+
+    #[test]
+    fn tb322fc_getvar_all_populates_dashboard_fields() {
+        // Observed live TB322FC dump. Standalone current-slot may fail
+        // transiently; the INFO lines alone must still fill model/RAM/
+        // storage/slot/firmware so the dashboard is not blank until the
+        // next 3s poll.
+        let lines = [
+            "modelname:TB322FC",
+            "hwboardid:TB322FC_SM8750P_16+512",
+            "current-slot:a",
+            "build.display.id:TB322FC_CN_OPEN_USER_Q00041.1_W_ZUXOS_1.5.10.259_ST_2606119",
+            "product:elden_prc_wifi",
+            "serialno:HA289EBP",
+        ];
+        let mut vars = FastbootVars::default();
+        for line in lines {
+            apply_getvar_all_line(&mut vars, line);
+        }
+        assert_eq!(vars.model.as_deref(), Some("TB322FC"));
+        assert_eq!(vars.ram_gb.as_deref(), Some("16 GB"));
+        assert_eq!(vars.storage_gb.as_deref(), Some("512 GB"));
+        assert_eq!(vars.current_slot.as_deref(), Some("_a"));
+        assert_eq!(
+            vars.build_display_id.as_deref(),
+            Some("TB322FC_CN_OPEN_USER_Q00041.1_W_ZUXOS_1.5.10.259_ST_2606119")
+        );
+        // No stored_rollback_index on this dump — GUI ARB falls back to
+        // model classification (TB322FC => no protection) once model is set.
+        assert!(vars.rollback_indices.is_empty());
+        // product/serialno remain separate getvar queries in get_all_vars.
+        assert!(vars.product.is_none());
+        assert!(vars.serialno.is_none());
+    }
+
+    #[test]
+    fn getvar_all_line_does_not_overwrite_existing_slot() {
+        let mut vars = FastbootVars {
+            current_slot: Some("_b".into()),
+            ..FastbootVars::default()
+        };
+        apply_getvar_all_line(&mut vars, "current-slot:a");
+        assert_eq!(vars.current_slot.as_deref(), Some("_b"));
     }
 }

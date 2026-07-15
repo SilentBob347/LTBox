@@ -459,38 +459,40 @@ impl App {
                                     // Offline / noperm / detached fall through to Fastboot/EDL.
                                 }
                             }
-                            if ltbox_device::fastboot::FastbootDevice::check_device() {
+                            // One open/claim only: a prior check_device()
+                            // open+drop followed by an immediate re-open can
+                            // fail transiently on Windows WinUSB and leave
+                            // Fastboot status with blank fields until a later
+                            // poll. Reuse the successful handle for get_all_vars.
+                            if let Ok(mut dev) = ltbox_device::fastboot::FastbootDevice::open() {
                                 r.status = ConnectionStatus::Fastboot;
-                                if let Ok(mut dev) = ltbox_device::fastboot::FastbootDevice::open()
-                                {
-                                    let vars = dev.get_all_vars().unwrap_or_default();
-                                    r.model = vars.model.unwrap_or_default();
-                                    r.slot = vars.current_slot.unwrap_or_default();
-                                    let fw_raw = vars.build_display_id.unwrap_or_default();
-                                    r.firmware = trim_build_display(&fw_raw);
-                                    r.firmware_full = fw_raw.trim().to_string();
-                                    r.ram = vars.ram_gb.unwrap_or_default();
-                                    r.storage = vars.storage_gb.unwrap_or_default();
-                                    r.market_name = vars.product.unwrap_or_default();
-                                    r.serial = vars.serialno.unwrap_or_default();
-                                    // Numeric → raw string (dashboard falls through
-                                    // when i18n lookup misses).
-                                    let arb_val = vars
-                                        .rollback_indices
-                                        .values()
-                                        .filter(|&&v| v > 1)
-                                        .max()
-                                        .copied();
-                                    r.arb = if let Some(v) = arb_val {
-                                        // Real committed index — shown as-is, with a
-                                        // UTC hover tooltip on the dashboard.
-                                        v.to_string()
-                                    } else {
-                                        // No stored index over fastboot → yes/no by
-                                        // model (only TB322FC lacks rollback protection).
-                                        arb_from_model(&r.model).to_string()
-                                    };
-                                }
+                                let vars = dev.get_all_vars().unwrap_or_default();
+                                r.model = vars.model.unwrap_or_default();
+                                r.slot = vars.current_slot.unwrap_or_default();
+                                let fw_raw = vars.build_display_id.unwrap_or_default();
+                                r.firmware = trim_build_display(&fw_raw);
+                                r.firmware_full = fw_raw.trim().to_string();
+                                r.ram = vars.ram_gb.unwrap_or_default();
+                                r.storage = vars.storage_gb.unwrap_or_default();
+                                r.market_name = vars.product.unwrap_or_default();
+                                r.serial = vars.serialno.unwrap_or_default();
+                                // Numeric → raw string (dashboard falls through
+                                // when i18n lookup misses).
+                                let arb_val = vars
+                                    .rollback_indices
+                                    .values()
+                                    .filter(|&&v| v > 1)
+                                    .max()
+                                    .copied();
+                                r.arb = if let Some(v) = arb_val {
+                                    // Real committed index — shown as-is, with a
+                                    // UTC hover tooltip on the dashboard.
+                                    v.to_string()
+                                } else {
+                                    // No stored index over fastboot → yes/no by
+                                    // model (only TB322FC lacks rollback protection).
+                                    arb_from_model(&r.model).to_string()
+                                };
                                 return r;
                             }
                             if ltbox_device::edl::check_device() {
