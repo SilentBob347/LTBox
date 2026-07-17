@@ -683,8 +683,11 @@ fn unique_key_temp_token() -> String {
 /// success.
 fn is_adbd_dropped_after_reboot(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
-    lower.contains("pipe")
-        || lower.contains("broken pipe")
+    // Keep the pipe match exact: bare "pipe" also hits unrelated wording
+    // (named-pipe helpers, "pipeline", etc.). Observed adbd teardown forms
+    // use "broken pipe" or the rusb/libusb "pipe error" phrasing.
+    lower.contains("broken pipe")
+        || lower.contains("pipe error")
         || lower.contains("no device")
         || lower.contains("no such device")
         || lower.contains("device disconnected")
@@ -722,6 +725,9 @@ mod tests {
             "USB Error: LIBUSB_ERROR_PIPE: pipe error"
         ));
         assert!(is_adbd_dropped_after_reboot("write failed: broken pipe"));
+        // Bare "pipe" alone is too broad and must not match.
+        assert!(!is_adbd_dropped_after_reboot("named pipe helper failed"));
+        assert!(!is_adbd_dropped_after_reboot("pipeline aborted"));
     }
 
     #[test]

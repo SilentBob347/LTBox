@@ -30,6 +30,7 @@ sys-locale = { workspace = true }
 semver = { workspace = true }
 open = { workspace = true }
 zstd = { workspace = true }
+sha2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

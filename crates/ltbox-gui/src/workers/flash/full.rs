@@ -162,6 +162,15 @@ pub(crate) fn flash_worker(
                         "[ADB] {}",
                         tr_args!("live_adb_reboot_failed", error = error)
                     );
+                } else {
+                    // reboot() returned Ok, but Fastboot never appeared.
+                    // Keep going for Auto/Off (EDL path still works); only
+                    // surface an explicit timeout so the log is not silent.
+                    ltbox_core::live!(
+                        log,
+                        "[ADB] {}",
+                        tr_args!("live_flash_fastboot_timeout", seconds = "60")
+                    );
                 }
             }
         }
@@ -1144,6 +1153,13 @@ pub(crate) fn flash_worker(
         let is_prc = ltbox_patch::region::detect_product_region(&vendor_boot)
             == Some(ltbox_patch::region::RegionTarget::Prc);
         let suffix = efisp_asset_suffix(is_prc, tb323fu_arb_need);
+        let expected_name = efisp_expected_asset(suffix).ok_or_else(|| {
+            tr_args!(
+                "err_flash_efisp_asset_unknown",
+                asset = suffix,
+                tag = EFISP_GBL_RELEASE_TAG
+            )
+        })?;
         ltbox_core::live!(
             log,
             "[Flash] {}",
@@ -1151,9 +1167,28 @@ pub(crate) fn flash_worker(
         );
         let gh = ltbox_core::github::GitHubClient::from_url("github.com/miner7222/gbl_root_baldur")
             .map_err(|e| tr_args!("err_flash_efisp_github_failed", error = e))?;
-        let (asset_name, asset_url) = gh
-            .latest_release_asset_where(|n| n.to_ascii_lowercase().ends_with(suffix))
-            .map_err(|e| tr_args!("err_flash_efisp_asset_missing", suffix = suffix, error = e))?;
+        // Pin to a known-good release tag instead of floating `latest`.
+        let assets = gh
+            .release_by_tag(EFISP_GBL_RELEASE_TAG)
+            .map_err(|e| tr_args!("err_flash_efisp_github_failed", error = e))?;
+        let (asset_name, asset_url) = assets
+            .into_iter()
+            .find(|(name, _)| name == expected_name)
+            .ok_or_else(|| {
+                tr_args!(
+                    "err_flash_efisp_asset_missing",
+                    suffix = expected_name,
+                    error = format!("tag {EFISP_GBL_RELEASE_TAG}")
+                )
+            })?;
+        // Refuse any name that is not in the pinned allow-list.
+        if efisp_expected_sha256(&asset_name).is_none() {
+            return Err(tr_args!(
+                "err_flash_efisp_asset_unknown",
+                asset = asset_name,
+                tag = EFISP_GBL_RELEASE_TAG
+            ));
+        }
         let efi_dir = ltbox_core::app_paths::work_dir_for("flash_efisp");
         let _ = std::fs::remove_dir_all(&efi_dir);
         std::fs::create_dir_all(&efi_dir)
@@ -1166,6 +1201,8 @@ pub(crate) fn flash_worker(
                 error = e
             )
         })?;
+        // Integrity check after download and before flash.
+        verify_efisp_asset(&efi_path, &asset_name)?;
         ltbox_core::live!(
             log,
             "[Flash] {}",
@@ -1428,4 +1465,158 @@ pub(crate) fn flash_worker(
     // Flash succeeded — drop the `work_*` scratch (a mid-flow abort keeps it).
     ltbox_core::app_paths::clean_work_dirs();
     Ok(log)
+}
+
+/// Pinned gbl_root_baldur release used for TB323FU efisp GBL images.
+const EFISP_GBL_RELEASE_TAG: &str = "5.3.120-mod5";
+
+/// Exact asset names accepted for the pinned efisp release.
+const EFISP_EXPECTED_ASSETS: &[(&str, &str)] = &[
+    (
+        "generic_superfastboot_prc.efi",
+        "22471c543e13a433cb05c5c54bcfaf107f2643a6cfd7e46d8d73764b349e8cf2",
+    ),
+    (
+        "generic_superfastboot_prc_arb.efi",
+        "fc55e6a4912f20c1bf0c664bb985e10d0c4e0944f92fab5e4f855b22e2aefcdf",
+    ),
+    (
+        "generic_superfastboot_row.efi",
+        "90b16cacc4f2f6aded2c5bf0eed7d20b6a294115f6cf09dab555b4a4496e2628",
+    ),
+    (
+        "generic_superfastboot_row_arb.efi",
+        "99b62f4aeca619df4f480f6bffa3f0fea3ef2516a8fe48a092613c2aa68d10e2",
+    ),
+];
+
+/// Map a region/ARB suffix to the exact pinned asset name for the
+/// `5.3.120-mod5` gbl_root_baldur release. Unknown suffixes refuse.
+fn efisp_expected_asset(suffix: &str) -> Option<&'static str> {
+    match suffix {
+        "_prc.efi" => Some("generic_superfastboot_prc.efi"),
+        "_prc_arb.efi" => Some("generic_superfastboot_prc_arb.efi"),
+        "_row.efi" => Some("generic_superfastboot_row.efi"),
+        "_row_arb.efi" => Some("generic_superfastboot_row_arb.efi"),
+        _ => None,
+    }
+}
+
+/// SHA-256 hex for a pinned efisp asset name. Unknown names refuse.
+fn efisp_expected_sha256(asset_name: &str) -> Option<&'static str> {
+    EFISP_EXPECTED_ASSETS
+        .iter()
+        .find(|(name, _)| *name == asset_name)
+        .map(|(_, hash)| *hash)
+}
+
+fn sha256_hex_file(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Verify a downloaded efisp EFI against the pinned name → SHA-256 map.
+/// Unknown names and hash mismatches both refuse.
+fn verify_efisp_asset(path: &std::path::Path, asset_name: &str) -> Result<(), String> {
+    let expected = efisp_expected_sha256(asset_name).ok_or_else(|| {
+        tr_args!(
+            "err_flash_efisp_asset_unknown",
+            asset = asset_name,
+            tag = EFISP_GBL_RELEASE_TAG
+        )
+    })?;
+    let actual = sha256_hex_file(path)?;
+    if actual != expected {
+        return Err(tr_args!(
+            "err_flash_efisp_hash_mismatch",
+            asset = asset_name,
+            expected = expected,
+            actual = actual
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod efisp_pin_tests {
+    use super::{
+        EFISP_EXPECTED_ASSETS, EFISP_GBL_RELEASE_TAG, efisp_expected_asset, efisp_expected_sha256,
+        verify_efisp_asset,
+    };
+
+    #[test]
+    fn maps_suffix_to_exact_asset_name() {
+        assert_eq!(
+            efisp_expected_asset("_prc.efi"),
+            Some("generic_superfastboot_prc.efi")
+        );
+        assert_eq!(
+            efisp_expected_asset("_prc_arb.efi"),
+            Some("generic_superfastboot_prc_arb.efi")
+        );
+        assert_eq!(
+            efisp_expected_asset("_row.efi"),
+            Some("generic_superfastboot_row.efi")
+        );
+        assert_eq!(
+            efisp_expected_asset("_row_arb.efi"),
+            Some("generic_superfastboot_row_arb.efi")
+        );
+        assert_eq!(efisp_expected_asset("_prc.elf"), None);
+        assert_eq!(efisp_expected_asset("generic_superfastboot_prc.efi"), None);
+    }
+
+    #[test]
+    fn expected_hashes_cover_all_accepted_assets() {
+        assert_eq!(EFISP_GBL_RELEASE_TAG, "5.3.120-mod5");
+        assert_eq!(EFISP_EXPECTED_ASSETS.len(), 4);
+        for (name, hash) in EFISP_EXPECTED_ASSETS {
+            assert_eq!(hash.len(), 64, "{name} hash length");
+            assert!(
+                hash.chars().all(|c| c.is_ascii_hexdigit()),
+                "{name} hash is not hex"
+            );
+            assert_eq!(efisp_expected_sha256(name), Some(*hash));
+        }
+        assert_eq!(efisp_expected_sha256("unknown.efi"), None);
+    }
+
+    #[test]
+    fn sha256_hex_file_matches_known_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("abc.bin");
+        std::fs::write(&path, b"abc").expect("write");
+        // FIPS 180-2 SHA-256("abc")
+        assert_eq!(
+            super::sha256_hex_file(&path).expect("hash"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_unknown_name_and_hash_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("generic_superfastboot_prc.efi");
+        std::fs::write(&path, b"ltbox-efisp-hash-fixture").expect("write");
+        // Body is not the pinned release asset, so the pinned hash must refuse.
+        assert!(verify_efisp_asset(&path, "generic_superfastboot_prc.efi").is_err());
+        assert!(efisp_expected_sha256("not-a-real-asset.efi").is_none());
+        assert!(verify_efisp_asset(&path, "not-a-real-asset.efi").is_err());
+    }
 }
