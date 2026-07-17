@@ -125,26 +125,42 @@ pub(crate) fn flash_worker(
             ltbox_core::i18n::tr("live_flash_adb_to_bootloader")
         );
         if let Some(mut adb) = ltbox_device::adb::AdbManager::new_if_connected() {
-            match adb.reboot("bootloader") {
-                Ok(()) => {
-                    // Poll for Fastboot up to
-                    // 60s — ADB→bootloader
-                    // typically lands inside 8 s
-                    // but cold boots can drag.
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-                    while std::time::Instant::now() < deadline {
-                        if ltbox_device::fastboot::FastbootDevice::check_device() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                    probe = probe_fastboot();
+            // `adb reboot bootloader` often returns a
+            // disconnect/transport error even when the
+            // reboot physically succeeds. Treat the
+            // observed Fastboot state as authoritative:
+            // always poll after the attempt, and only
+            // surface the reboot error if Fastboot never
+            // appears.
+            let reboot_err = match adb.reboot("bootloader") {
+                Ok(()) => None,
+                Err(e) => Some(e.to_string()),
+            };
+            // Poll for Fastboot up to 60s — ADB→bootloader
+            // typically lands inside 8 s but cold boots
+            // can drag. Open/parse once per attempt and
+            // reuse that probe result instead of
+            // check_device()+immediate reopen.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline {
+                probe = probe_fastboot();
+                if probe.1 {
+                    break;
                 }
-                Err(e) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            // Final probe after the wait loop so the full
+            // 60s deadline is covered (loop may last probe
+            // slightly before the boundary due to sleep).
+            if !probe.1 {
+                probe = probe_fastboot();
+            }
+            if !probe.1 {
+                if let Some(error) = reboot_err {
                     ltbox_core::live!(
                         log,
                         "[ADB] {}",
-                        tr_args!("live_adb_reboot_failed", error = e.to_string())
+                        tr_args!("live_adb_reboot_failed", error = error)
                     );
                 }
             }

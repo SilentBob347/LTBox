@@ -686,6 +686,7 @@ fn is_adbd_dropped_after_reboot(msg: &str) -> bool {
     lower.contains("pipe")
         || lower.contains("broken pipe")
         || lower.contains("no device")
+        || lower.contains("no such device")
         || lower.contains("device disconnected")
         || lower.contains("unexpected eof")
         || lower.contains("end of file")
@@ -737,6 +738,12 @@ mod tests {
     fn matches_no_device_and_eof() {
         assert!(is_adbd_dropped_after_reboot(
             "USB Error: LIBUSB_ERROR_NO_DEVICE: no device"
+        ));
+        // Observed on Linux after a successful reboot: rusb surfaces
+        // LIBUSB_ERROR_NO_DEVICE as "No such device (...)", which does
+        // not contain the contiguous substring "no device".
+        assert!(is_adbd_dropped_after_reboot(
+            "Command failed: USB Error: No such device (it may have been disconnected)."
         ));
         assert!(is_adbd_dropped_after_reboot("Unexpected EOF on socket"));
         assert!(is_adbd_dropped_after_reboot("end of file reached"));
