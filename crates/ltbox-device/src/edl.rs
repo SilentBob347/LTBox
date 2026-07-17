@@ -1023,12 +1023,10 @@ impl EdlSession {
         ltbox_core::live!(
             log,
             "[EDL] {}",
-            tr("log_edl_dump_lun_cmd").replace(
-                "{lun}",
-                &lun.to_string()
-                    .replace("{path}", &output.display().to_string())
-                    .replace("{total}", &total.to_string())
-            )
+            tr("log_edl_dump_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &output.display().to_string())
+                .replace("{total}", &total.to_string())
         );
         qdl::firehose_read_storage(&mut self.dev, &mut out_file, total as usize, 0, lun, 0)
             .map_err(|e| EdlError::Session(format!("Physical LUN read failed: {e}")))?;
@@ -1068,13 +1066,11 @@ impl EdlSession {
         ltbox_core::live!(
             log,
             "[EDL] {}",
-            tr("log_edl_flash_lun_cmd").replace(
-                "{lun}",
-                &lun.to_string()
-                    .replace("{path}", &image.display().to_string())
-                    .replace("{bytes}", &file_len.to_string())
-                    .replace("{sectors}", &num_sectors.to_string())
-            )
+            tr("log_edl_flash_lun_cmd")
+                .replace("{lun}", &lun.to_string())
+                .replace("{path}", &image.display().to_string())
+                .replace("{bytes}", &file_len.to_string())
+                .replace("{sectors}", &num_sectors.to_string())
         );
         qdl::firehose_program_storage(&mut self.dev, &mut file, "", num_sectors, 0, lun, "0")
             .map_err(|e| EdlError::Session(format!("Physical LUN write failed: {e}")))?;
@@ -1102,12 +1098,9 @@ impl EdlSession {
             "[EDL] {}",
             tr("log_edl_erase_part_cmd")
                 .replace("{part}", part_name)
-                .replace(
-                    "{lun}",
-                    &lun.to_string()
-                        .replace("{start}", start_sector)
-                        .replace("{sectors}", &num_sectors.to_string())
-                )
+                .replace("{lun}", &lun.to_string())
+                .replace("{start}", start_sector)
+                .replace("{sectors}", &num_sectors.to_string())
         );
         send_firehose_erase(&mut self.dev, num_sectors, lun, start_sector)
             .map_err(|e| EdlError::Session(format!("Erase {part_name} failed: {e}")))?;
