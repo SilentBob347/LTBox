@@ -34,6 +34,10 @@ const KERNEL_DEB_PACKAGE: &str = "qud";
 const MAX_KERNEL_DRIVER_ZIP_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_KERNEL_DEB_BYTES: u64 = 256 * 1024 * 1024;
 
+/// System directories trusted for elevated helpers (`pkexec`, elevated `dpkg`).
+/// Never search arbitrary `PATH` for tools that will run with root privileges.
+const TRUSTED_BIN_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
     #[serde(default)]
@@ -128,12 +132,11 @@ fn install_udev_rules(log: &mut Vec<String>) -> Result<()> {
 
     // Require pkexec — never silently fall back to a terminal `sudo` from the
     // GUI, which has no controlling terminal to prompt on.
-    let pkexec = which_pkexec().ok_or_else(|| {
-        DriverError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "pkexec not found — install polkit, or run `sudo ltbox --install-udev` in a terminal"
-                .to_string(),
-        ))
+    let pkexec = resolve_trusted_executable("pkexec").map_err(|e| {
+        map_not_found(
+            e,
+            "pkexec not found — install polkit, or run `sudo ltbox --install-udev` in a terminal",
+        )
     })?;
 
     log.push(format!("[driver] pkexec {} --install-udev", exe.display()));
@@ -166,17 +169,18 @@ fn install_udev_rules(log: &mut Vec<String>) -> Result<()> {
 }
 
 fn install_kernel_driver(log: &mut Vec<String>) -> Result<()> {
-    let pkexec = which_pkexec().ok_or_else(|| {
-        DriverError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
+    let pkexec = resolve_trusted_executable("pkexec").map_err(|e| {
+        map_not_found(
+            e,
             "pkexec not found — install polkit or install the Qualcomm kernel driver package manually",
-        ))
+        )
     })?;
-    let dpkg = which_program("dpkg").ok_or_else(|| {
-        DriverError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
+    // Elevated target: never honor an attacker-controlled `dpkg` from PATH.
+    let dpkg = resolve_trusted_executable("dpkg").map_err(|e| {
+        map_not_found(
+            e,
             "dpkg not found — automatic Linux kernel-driver install is only supported on Debian-style systems",
-        ))
+        )
     })?;
 
     live!(
@@ -571,11 +575,6 @@ fn cleanup(path: &std::path::Path) {
     }
 }
 
-/// Locate `pkexec` on `PATH` without pulling in a `which` dependency.
-fn which_pkexec() -> Option<std::path::PathBuf> {
-    which_program("pkexec")
-}
-
 /// Whether `dpkg-query` is on `PATH` — the signal that this Linux host is
 /// Debian-style and can use the Qualcomm kernel driver. Mirrors the gate in
 /// [`check_kernel_driver`] and backs [`super::kernel_mode_supported`].
@@ -583,6 +582,119 @@ pub(super) fn dpkg_available() -> bool {
     which_program("dpkg-query").is_some()
 }
 
+fn map_not_found(err: DriverError, hint: &str) -> DriverError {
+    match err {
+        DriverError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => DriverError::Io(
+            std::io::Error::new(std::io::ErrorKind::NotFound, hint.to_string()),
+        ),
+        other => other,
+    }
+}
+
+/// Resolve `name` only from [`TRUSTED_BIN_DIRS`], then canonicalize and
+/// validate it as a safe elevated helper. Used for `pkexec` and for the
+/// elevated `dpkg` target passed to `pkexec` — never for plain availability
+/// probes like `dpkg-query`.
+fn resolve_trusted_executable(name: &str) -> Result<PathBuf> {
+    for dir in TRUSTED_BIN_DIRS {
+        let candidate = Path::new(dir).join(name);
+        // Missing is fine — try the next trusted directory. An existing but
+        // untrusted candidate must not fall through to a later path.
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => return validate_trusted_executable(&candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(DriverError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("stat {}: {e}", candidate.display()),
+                )));
+            }
+        }
+    }
+    Err(DriverError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "{name} not found under trusted system paths ({})",
+            TRUSTED_BIN_DIRS.join(", ")
+        ),
+    )))
+}
+
+/// Canonicalize `path` and require a regular, root-owned executable that is
+/// not group/other-writable and still lives under a trusted system bin
+/// directory after symlink resolution (covers usrmerge `/bin` → `/usr/bin`).
+fn validate_trusted_executable(path: &Path) -> Result<PathBuf> {
+    let canonical = std::fs::canonicalize(path).map_err(|e| {
+        DriverError::Io(std::io::Error::new(
+            e.kind(),
+            format!("cannot resolve {}: {e}", path.display()),
+        ))
+    })?;
+
+    if !is_trusted_bin_path(&canonical) {
+        return Err(DriverError::Io(std::io::Error::other(format!(
+            "{} resolves outside trusted system directories to {}",
+            path.display(),
+            canonical.display()
+        ))));
+    }
+
+    let meta = std::fs::metadata(&canonical).map_err(|e| {
+        DriverError::Io(std::io::Error::new(
+            e.kind(),
+            format!("stat {}: {e}", canonical.display()),
+        ))
+    })?;
+    if !meta.is_file() {
+        return Err(DriverError::Io(std::io::Error::other(format!(
+            "{} is not a regular file",
+            canonical.display()
+        ))));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = meta.permissions().mode();
+        if !is_safe_privileged_exec_meta(meta.uid(), mode) {
+            return Err(DriverError::Io(std::io::Error::other(format!(
+                "{} is not a root-owned, non-group/other-writable executable (uid {}, mode {:o})",
+                canonical.display(),
+                meta.uid(),
+                mode & 0o777
+            ))));
+        }
+    }
+
+    Ok(canonical)
+}
+
+/// True when `canonical` is a direct child of a trusted bin directory, or of
+/// that directory after symlink resolution (usrmerge).
+fn is_trusted_bin_path(canonical: &Path) -> bool {
+    let Some(parent) = canonical.parent() else {
+        return false;
+    };
+    TRUSTED_BIN_DIRS.iter().any(|dir| {
+        let trusted = Path::new(dir);
+        parent == trusted
+            || std::fs::canonicalize(trusted)
+                .ok()
+                .is_some_and(|canon_dir| parent == canon_dir.as_path())
+    })
+}
+
+/// Root-owned, not group/other-writable, and executable. Pure so unit tests
+/// do not need a root-owned file on the development host.
+fn is_safe_privileged_exec_meta(uid: u32, mode: u32) -> bool {
+    // Require at least one execute bit so the helper matches its name and the
+    // elevated-helper error path ("… executable") rather than accepting a
+    // root-owned non-writable data file such as mode 0644.
+    uid == 0 && (mode & 0o022) == 0 && (mode & 0o111) != 0
+}
+
+/// Locate `name` on `PATH` without pulling in a `which` dependency.
+/// Used only for non-elevated probes (`dpkg-query` availability / version).
 fn which_program(name: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -660,5 +772,50 @@ mod tests {
         let err = verify_private_dir(&base).expect_err("file must not pass dir verification");
         let _ = std::fs::remove_file(&base);
         assert!(err.to_string().contains("not a plain directory"));
+    }
+
+    #[test]
+    fn privileged_exec_meta_requires_root_not_writable_and_executable() {
+        assert!(is_safe_privileged_exec_meta(0, 0o755));
+        assert!(is_safe_privileged_exec_meta(0, 0o555));
+        assert!(is_safe_privileged_exec_meta(0, 0o711));
+        assert!(is_safe_privileged_exec_meta(0, 0o700));
+        assert!(is_safe_privileged_exec_meta(0, 0o100));
+        assert!(!is_safe_privileged_exec_meta(1000, 0o755));
+        assert!(!is_safe_privileged_exec_meta(0, 0o775));
+        assert!(!is_safe_privileged_exec_meta(0, 0o757));
+        assert!(!is_safe_privileged_exec_meta(0, 0o722));
+        assert!(!is_safe_privileged_exec_meta(0, 0o644));
+        assert!(!is_safe_privileged_exec_meta(0, 0o600));
+        assert!(!is_safe_privileged_exec_meta(0, 0o444));
+        assert!(!is_safe_privileged_exec_meta(0, 0o000));
+    }
+
+    #[test]
+    fn validate_trusted_executable_rejects_user_owned_temp_file() {
+        let path =
+            std::env::temp_dir().join(format!("ltbox_trusted_exec_probe_{}", unique_temp_token()));
+        std::fs::write(&path, b"#!/bin/sh\n").expect("write probe file");
+        let err = validate_trusted_executable(&path)
+            .expect_err("user temp file must not pass trusted validation");
+        let _ = std::fs::remove_file(&path);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outside trusted system directories")
+                || msg.contains("not a root-owned")
+                || msg.contains("not a regular file"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_not_found_preserves_non_not_found_errors() {
+        let denied = DriverError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        let mapped = map_not_found(denied, "friendly hint");
+        assert!(mapped.to_string().contains("denied"));
+        assert!(!mapped.to_string().contains("friendly hint"));
     }
 }

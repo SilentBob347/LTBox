@@ -4,21 +4,84 @@
 //! Kernel mode requires `qcwdfser.inf` from Qualcomm's kernel-driver bundle.
 //! Both modes run signed per-arch installers through Windows UAC.
 
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::os::windows::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ltbox_core::i18n::tr;
 use ltbox_core::{live, tr_args};
+use rsa::rand_core::{OsRng, RngCore};
 
 use super::{DriverError, DriverStatus, DriverUpdate, QcomDriverMode, Result, qcom_driver_mode};
 
 /// `Command::new` with no console window.
-fn silent_command(program: &str) -> Command {
+fn silent_command(program: impl AsRef<OsStr>) -> Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut cmd = Command::new(program);
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// Trusted system Windows PowerShell host. Prefer this over a PATH-resolved
+/// `powershell` so signature verification and UAC elevation cannot be
+/// redirected through a same-named executable earlier on PATH.
+///
+/// Resolves System32 via `GetSystemDirectoryW` rather than the mutable
+/// `SystemRoot` environment variable, and never falls back to PATH.
+fn windows_powershell_exe() -> Result<PathBuf> {
+    let system32 = windows_system32_dir()?;
+    Ok(system32
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe"))
+}
+
+/// Absolute System32 directory from the Win32 API (not environment variables).
+fn windows_system32_dir() -> Result<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    // First call with an empty buffer returns the required UTF-16 length,
+    // including the trailing NUL (or 0 on failure).
+    let needed = unsafe { GetSystemDirectoryW(std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return Err(DriverError::Io(std::io::Error::last_os_error()));
+    }
+
+    let mut buf = vec![0u16; needed as usize];
+    let written = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), needed) };
+    if written == 0 || written >= needed {
+        // 0 = failure; written >= needed means the buffer was too small
+        // (directory changed between calls — extremely rare, still fatal).
+        let err = if written == 0 {
+            std::io::Error::last_os_error()
+        } else {
+            std::io::Error::other("GetSystemDirectoryW buffer too small")
+        };
+        return Err(DriverError::Io(err));
+    }
+
+    let path = OsString::from_wide(&buf[..written as usize]);
+    let path = PathBuf::from(path);
+    if path.as_os_str().is_empty() {
+        return Err(DriverError::Io(std::io::Error::other(
+            "GetSystemDirectoryW returned an empty path",
+        )));
+    }
+    Ok(path)
+}
+
+/// Escape a value for embedding inside a PowerShell single-quoted string
+/// literal (`'` -> `''`). Callers must still wrap the result in `'...'`.
+fn escape_powershell_single_quoted(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// `true` when an Authenticode signer `Subject` names Qualcomm
+/// (case-insensitive substring match).
+fn signer_subject_is_qualcomm(subject: &str) -> bool {
+    subject.to_ascii_lowercase().contains("qualcomm")
 }
 
 #[derive(Clone, Copy)]
@@ -358,7 +421,7 @@ pub fn installed_driver_version() -> Option<String> {
 fn installed_version_from_registry(display_name: &str) -> Option<String> {
     // Escape for a PowerShell single-quoted literal (`'` → `''`). The names are
     // static constants without quotes, but escape defensively.
-    let needle = display_name.replace('\'', "''");
+    let needle = escape_powershell_single_quoted(display_name);
     let script = format!(
         "$ErrorActionPreference='SilentlyContinue'; \
          $p=@('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',\
@@ -368,7 +431,7 @@ fn installed_version_from_registry(display_name: &str) -> Option<String> {
          Select-Object -First 1 -ExpandProperty DisplayVersion; \
          if ($v) {{ [Console]::Out.Write($v) }}"
     );
-    let out = silent_command("powershell")
+    let out = silent_command(windows_powershell_exe().ok()?)
         .arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
@@ -425,20 +488,104 @@ pub fn download_and_install(log: &mut Vec<String>) -> Result<()> {
         tr_args!("live_driver_asset", name = asset_name)
     );
 
-    let tmp_dir = std::env::temp_dir().join(format!("ltbox_qcom_drv_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir)?;
-    let exe_path = tmp_dir.join(asset_name);
+    // Private, exclusive temp dir under the process temp root. A predictable
+    // `temp_dir()/ltbox_qcom_drv_{pid}` path is a classic local symlink /
+    // content-swap race before the elevated installer runs; exclusive
+    // create_dir with a unique name rejects pre-created paths and keeps the
+    // downloaded package private until install completes.
+    let tmp_dir = PrivateTempDir::create("ltbox_qcom_drv")?;
+    let exe_path = tmp_dir.path().join(asset_name);
 
     let dl_agent = ltbox_core::downloader::build_agent();
 
-    download_with_progress(&dl_agent, &asset_url, asset_name, &exe_path, log)?;
+    let result = (|| {
+        download_with_progress(&dl_agent, &asset_url, asset_name, &exe_path, log)?;
+        verify_qualcomm_authenticode(&exe_path, log)?;
+        live!(log, "[Driver] {}", tr("live_driver_running_installer"));
+        run_installer_elevated(&exe_path, log)?;
+        live!(log, "[Driver] {}", tr("live_driver_install_finished"));
+        Ok(())
+    })();
+    drop(tmp_dir);
+    result
+}
 
-    live!(log, "[Driver] {}", tr("live_driver_running_installer"));
-    let result = run_installer_elevated(&exe_path, log);
-    cleanup(&tmp_dir);
-    result?;
+/// Require a Valid Authenticode signature whose signer Subject names Qualcomm
+/// before launching the elevated installer. Failures map to actionable
+/// `DriverError::Parse` messages (no new error variants).
+fn verify_qualcomm_authenticode(exe: &Path, log: &mut Vec<String>) -> Result<()> {
+    // Escape for a PowerShell single-quoted string literal (`'` -> `''`).
+    let exe_str = escape_powershell_single_quoted(&exe.to_string_lossy());
+    // Emit a single parseable line: STATUS|SUBJECT. STATUS is the
+    // `SignatureStatus` enum name (Valid, NotSigned, HashMismatch, ...).
+    // Subject is empty when unsigned / unavailable.
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         try {{ \
+           $s = Get-AuthenticodeSignature -LiteralPath '{exe_str}'; \
+           $status = [string]$s.Status; \
+           $subject = if ($null -ne $s.SignerCertificate) {{ [string]$s.SignerCertificate.Subject }} else {{ '' }}; \
+           [Console]::Out.Write(($status + '|' + $subject)); \
+           exit 0 \
+         }} catch {{ \
+           [Console]::Error.Write($_.Exception.Message); \
+           exit 2 \
+         }}"
+    );
 
-    live!(log, "[Driver] {}", tr("live_driver_install_finished"));
+    let out = silent_command(windows_powershell_exe()?)
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&script)
+        .output()
+        .map_err(|e| {
+            DriverError::Io(std::io::Error::new(
+                e.kind(),
+                format!("authenticode verification failed to start: {e}"),
+            ))
+        })?;
+
+    if !out.status.success() {
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if detail.is_empty() {
+            format!(
+                "authenticode verification failed (exit {})",
+                out.status.code().unwrap_or(-1)
+            )
+        } else {
+            format!("authenticode verification failed: {detail}")
+        };
+        live!(log, "[Driver] {msg}");
+        return Err(DriverError::Parse(msg));
+    }
+
+    let line = String::from_utf8_lossy(&out.stdout);
+    let line = line.trim();
+    let (status, subject) = line.split_once('|').unwrap_or((line, ""));
+    let status = status.trim();
+    let subject = subject.trim();
+
+    if !status.eq_ignore_ascii_case("Valid") {
+        let msg = if status.is_empty() {
+            "installer Authenticode signature is not Valid".to_string()
+        } else {
+            format!("installer Authenticode signature status is {status}, expected Valid")
+        };
+        live!(log, "[Driver] {msg}");
+        return Err(DriverError::Parse(msg));
+    }
+
+    if !signer_subject_is_qualcomm(subject) {
+        let msg = if subject.is_empty() {
+            "installer Authenticode signer is missing; expected Qualcomm".to_string()
+        } else {
+            format!("installer Authenticode signer is not Qualcomm (subject: {subject})")
+        };
+        live!(log, "[Driver] {msg}");
+        return Err(DriverError::Parse(msg));
+    }
+
     Ok(())
 }
 
@@ -447,7 +594,7 @@ fn run_installer_elevated(exe: &Path, log: &mut Vec<String>) -> Result<()> {
     // Escape for a PowerShell single-quoted string literal (`'` → `''`).
     // The temp path is process-id-derived so quotes are not expected, but
     // escape defensively rather than trust the environment.
-    let exe_str = exe.to_string_lossy().replace('\'', "''");
+    let exe_str = escape_powershell_single_quoted(&exe.to_string_lossy());
     // `$p.ExitCode` can be `$null` for some self-extracting installers that
     // hand off to a detached child; `exit $null` would silently become exit
     // 0 and report a false success. Treat a null exit code as a failure
@@ -459,7 +606,7 @@ fn run_installer_elevated(exe: &Path, log: &mut Vec<String>) -> Result<()> {
          catch {{ exit 1223 }}"
     );
 
-    let out = silent_command("powershell")
+    let out = silent_command(windows_powershell_exe()?)
         .arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
@@ -555,6 +702,91 @@ fn download_with_progress(
         }
     })
     .map_err(|e| DriverError::Http(format!("download: {e}")))
+}
+
+/// Owner-only scratch directory that is removed on drop.
+struct PrivateTempDir {
+    path: PathBuf,
+}
+
+impl PrivateTempDir {
+    fn create(prefix: &str) -> Result<Self> {
+        let path = create_private_temp_dir(prefix)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        cleanup(&self.path);
+    }
+}
+
+/// Cryptographically random temp-name token. Callers still rely on exclusive
+/// create retries for collision safety; this keeps names private/unpredictable
+/// so a peer cannot pre-plant a path from PID/time alone.
+fn unique_temp_token() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    OsRng.try_fill_bytes(&mut bytes).map_err(|e| {
+        DriverError::Io(std::io::Error::other(format!(
+            "failed to generate private temp token: {e}"
+        )))
+    })?;
+    // Hex keeps the token filesystem-safe without needing extra crates.
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Create an exclusive, non-symlink directory under `std::env::temp_dir()`.
+/// Retries on name collision. Mirrors the Linux driver installer's private
+/// staging helper so the elevated installer cannot race a pre-planted path.
+fn create_private_temp_dir(prefix: &str) -> Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..32 {
+        let path = base.join(format!("{prefix}_{}", unique_temp_token()?));
+        match create_exclusive_private_dir(&path) {
+            Ok(()) => {
+                verify_private_dir(&path)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(DriverError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("create private temp dir {}: {e}", path.display()),
+                )));
+            }
+        }
+    }
+    Err(DriverError::Io(std::io::Error::other(format!(
+        "exhausted unique names while creating private temp dir under {}",
+        base.display()
+    ))))
+}
+
+fn create_exclusive_private_dir(path: &Path) -> std::io::Result<()> {
+    // `create_dir` (not `create_dir_all`) is exclusive: fails if the path
+    // already exists, including as a symlink planted by another user.
+    std::fs::create_dir(path)
+}
+
+fn verify_private_dir(path: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        DriverError::Io(std::io::Error::new(
+            e.kind(),
+            format!("stat private temp dir {}: {e}", path.display()),
+        ))
+    })?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(DriverError::Io(std::io::Error::other(format!(
+            "private temp path {} is not a plain directory",
+            path.display()
+        ))));
+    }
+    Ok(())
 }
 
 fn cleanup(dir: &Path) {
@@ -684,5 +916,102 @@ mod tests {
         assert!(!version_lt("1.0.2.0", "1.0.2.0"));
         assert!(!version_lt("1.0.0", "1.0"));
         assert!(!version_lt("2.0.0.0", "1.9.9.9"));
+    }
+
+    #[test]
+    fn powershell_single_quote_escape_doubles_quotes() {
+        assert_eq!(escape_powershell_single_quoted("plain"), "plain");
+        assert_eq!(
+            escape_powershell_single_quoted(r"C:\tmp\O'Brien\a.exe"),
+            r"C:\tmp\O''Brien\a.exe"
+        );
+        assert_eq!(escape_powershell_single_quoted("''"), "''''");
+    }
+
+    #[test]
+    fn signer_subject_requires_qualcomm_case_insensitive() {
+        assert!(signer_subject_is_qualcomm(
+            "CN=Qualcomm Technologies, Inc., O=Qualcomm Technologies, Inc., L=San Diego, S=California, C=US"
+        ));
+        assert!(signer_subject_is_qualcomm("cn=qualcomm, o=qualcomm"));
+        assert!(signer_subject_is_qualcomm("CN=QUALCOMM INCORPORATED"));
+        assert!(!signer_subject_is_qualcomm(
+            "CN=Microsoft Windows, O=Microsoft Corporation"
+        ));
+        assert!(!signer_subject_is_qualcomm(""));
+        assert!(!signer_subject_is_qualcomm("CN=Acme Drivers"));
+    }
+
+    #[test]
+    fn windows_powershell_path_is_system32_host() {
+        let path = windows_powershell_exe().expect("resolve system powershell");
+        let s = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        assert!(
+            s.ends_with(r"\system32\windowspowershell\v1.0\powershell.exe"),
+            "unexpected powershell path: {s}"
+        );
+        // Must not be a bare PATH-relative name.
+        assert_ne!(path.as_os_str(), OsStr::new("powershell"));
+        assert_ne!(path.as_os_str(), OsStr::new("powershell.exe"));
+        // Must not depend on a mutable SystemRoot environment value.
+        assert!(
+            !s.contains("systemroot"),
+            "powershell path must not embed SystemRoot env text: {s}"
+        );
+    }
+
+    #[test]
+    fn unique_temp_token_is_hex_and_unpredictable() {
+        let a = unique_temp_token().expect("token a");
+        let b = unique_temp_token().expect("token b");
+        assert_eq!(a.len(), 32, "16 random bytes => 32 hex chars");
+        assert_eq!(b.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(b.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "successive OS RNG tokens must not collide");
+        // Must not be the old predictable pid-time-counter shape.
+        assert!(!a.contains('-'));
+        assert!(!b.contains('-'));
+    }
+
+    #[test]
+    fn private_temp_dir_is_exclusive_and_cleaned_on_drop() {
+        let dir = PrivateTempDir::create("ltbox_qcom_drv_test").expect("create temp dir");
+        let path = dir.path().to_path_buf();
+        assert!(path.is_dir());
+        assert!(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("ltbox_qcom_drv_test_"))
+        );
+
+        // Exclusive create must refuse a pre-existing path (race resistance).
+        let conflict = create_exclusive_private_dir(&path);
+        assert!(conflict.is_err());
+        assert_eq!(
+            conflict.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+
+        drop(dir);
+        assert!(
+            !path.exists(),
+            "PrivateTempDir drop must remove the scratch tree"
+        );
+    }
+
+    #[test]
+    fn private_temp_dir_rejects_non_directory_path() {
+        let base = std::env::temp_dir().join(format!(
+            "ltbox_qcom_drv_file_{}",
+            unique_temp_token().expect("token")
+        ));
+        std::fs::write(&base, b"not-a-dir").expect("write decoy file");
+        let err = verify_private_dir(&base).expect_err("file must not pass dir verification");
+        let _ = std::fs::remove_file(&base);
+        assert!(err.to_string().contains("not a plain directory"));
     }
 }
