@@ -1,8 +1,9 @@
 //! Anti-rollback — rollback-index detection, aggregation, patching.
 //!
-//! Device index aggregates from fastboot `stored_rollback_index:N` as
-//! `max(v > 1)`, `None` when all slots are stock. Tri-state [`RollbackMode`]:
-//! `ON` always patches, `AUTO` patches only when behind, `OFF` skips.
+//! Device indices come from fastboot `stored_rollback_index:N`. A two-entry
+//! non-recovery layout is classified per partition; other layouts retain the
+//! legacy `max(v > 1)` aggregate. Tri-state [`RollbackMode`]: `ON` always
+//! patches, `AUTO` patches only when behind, `OFF` skips.
 //! Chained images go through `avb::resign_image` when signed, else
 //! `avb::add_hash_footer`.
 
@@ -22,6 +23,50 @@ pub enum RollbackMode {
     On,
     Auto,
     Off,
+}
+
+/// Fastboot rollback floors classified from two meaningful non-recovery
+/// locations. Lenovo layouts place `vbmeta_system` at the lower location and
+/// `boot` at the higher location; numeric ordering also supports shifted pairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FastbootRollbackFloors {
+    /// Persistent rollback location classified as `vbmeta_system`.
+    pub vbmeta_system_location: u32,
+    /// Device floor stored at [`Self::vbmeta_system_location`].
+    pub vbmeta_system_index: u64,
+    /// Persistent rollback location classified as `boot`.
+    pub boot_location: u32,
+    /// Device floor stored at [`Self::boot_location`].
+    pub boot_index: u64,
+}
+
+/// Classify exactly two meaningful fastboot rollback entries excluding
+/// location 1 (`recovery`). The lower location is `vbmeta_system`; the higher
+/// location is `boot`. Returns `None` for every other shape so callers can use
+/// their compatibility fallback.
+pub fn classify_fastboot_rollback_floors(
+    stored: &HashMap<u32, u64>,
+) -> Option<FastbootRollbackFloors> {
+    let mut candidates = stored.iter().filter_map(|(&location, &index)| {
+        (location != 1 && index > 1).then_some((location, index))
+    });
+    let first = candidates.next()?;
+    let second = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+
+    let (vbmeta_system, boot) = if first.0 < second.0 {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    Some(FastbootRollbackFloors {
+        vbmeta_system_location: vbmeta_system.0,
+        vbmeta_system_index: vbmeta_system.1,
+        boot_location: boot.0,
+        boot_index: boot.1,
+    })
 }
 
 /// Aggregate fastboot `stored_rollback_index:N` → single device index.
@@ -202,6 +247,88 @@ mod tests {
     fn compute_empty_returns_none() {
         let indices = make_indices(&[]);
         assert_eq!(compute_device_rollback_index(&indices), None);
+    }
+
+    #[test]
+    fn classify_standard_non_recovery_locations() {
+        let indices = make_indices(&[(0, 0), (1, 1), (2, 0x69D0A600), (3, 0x69D1A600)]);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&indices),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 2,
+                vbmeta_system_index: 0x69D0A600,
+                boot_location: 3,
+                boot_index: 0x69D1A600,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_shifted_locations_by_numeric_order() {
+        let indices = make_indices(&[(17, 100), (18, 200)]);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&indices),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 17,
+                vbmeta_system_index: 100,
+                boot_location: 18,
+                boot_index: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_counts_locations_when_values_match() {
+        let indices = make_indices(&[(2, 0x69D1A600), (3, 0x69D1A600)]);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&indices),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 2,
+                vbmeta_system_index: 0x69D1A600,
+                boot_location: 3,
+                boot_index: 0x69D1A600,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_ignores_stock_values() {
+        let indices = make_indices(&[(0, 0), (2, 10), (3, 11), (4, 1), (31, 0)]);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&indices),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 2,
+                vbmeta_system_index: 10,
+                boot_location: 3,
+                boot_index: 11,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_always_excludes_recovery_location() {
+        let indices = make_indices(&[(1, 999), (8, 10), (9, 11)]);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&indices),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 8,
+                vbmeta_system_index: 10,
+                boot_location: 9,
+                boot_index: 11,
+            })
+        );
+    }
+
+    #[test]
+    fn classify_requires_exactly_two_candidates() {
+        assert_eq!(
+            classify_fastboot_rollback_floors(&make_indices(&[(2, 10)])),
+            None
+        );
+        assert_eq!(
+            classify_fastboot_rollback_floors(&make_indices(&[(2, 10), (3, 11), (4, 12)])),
+            None
+        );
     }
 
     #[test]

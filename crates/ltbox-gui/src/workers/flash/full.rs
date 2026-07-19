@@ -102,23 +102,47 @@ pub(crate) fn flash_worker(
     // ARB=ON abort on every PRC↔ROW flash that
     // started from the ADB-connected state, even
     // though Fastboot is reachable in principle.
-    let probe_fastboot = || -> (Option<u64>, bool, Option<String>, String) {
+    struct FastbootProbe {
+        device_index: Option<u64>,
+        rollback_floors: Option<ltbox_patch::rollback::FastbootRollbackFloors>,
+        reachable: bool,
+        active_slot: Option<String>,
+        raw_getvar_all: String,
+    }
+    let probe_fastboot = || -> FastbootProbe {
         match ltbox_device::fastboot::FastbootDevice::open() {
             Ok(mut dev) => match dev.get_all_vars() {
-                Ok(v) => (
-                    ltbox_patch::rollback::compute_device_rollback_index(&v.rollback_indices),
-                    true,
-                    v.current_slot.clone(),
-                    v.raw_getvar_all.clone(),
-                ),
-                Err(_) => (None, false, None, String::new()),
+                Ok(v) => FastbootProbe {
+                    device_index: ltbox_patch::rollback::compute_device_rollback_index(
+                        &v.rollback_indices,
+                    ),
+                    rollback_floors: ltbox_patch::rollback::classify_fastboot_rollback_floors(
+                        &v.rollback_indices,
+                    ),
+                    reachable: true,
+                    active_slot: v.current_slot,
+                    raw_getvar_all: v.raw_getvar_all,
+                },
+                Err(_) => FastbootProbe {
+                    device_index: None,
+                    rollback_floors: None,
+                    reachable: false,
+                    active_slot: None,
+                    raw_getvar_all: String::new(),
+                },
             },
-            Err(_) => (None, false, None, String::new()),
+            Err(_) => FastbootProbe {
+                device_index: None,
+                rollback_floors: None,
+                reachable: false,
+                active_slot: None,
+                raw_getvar_all: String::new(),
+            },
         }
     };
     let mut probe = probe_fastboot();
     let adb_connected = matches!(conn, ConnectionStatus::Adb | ConnectionStatus::AdbRecovery);
-    if !probe.1 && adb_connected {
+    if !probe.reachable && adb_connected {
         ltbox_core::live!(
             log,
             "[Flash] {}",
@@ -144,7 +168,7 @@ pub(crate) fn flash_worker(
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             while std::time::Instant::now() < deadline {
                 probe = probe_fastboot();
-                if probe.1 {
+                if probe.reachable {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -152,10 +176,10 @@ pub(crate) fn flash_worker(
             // Final probe after the wait loop so the full
             // 60s deadline is covered (loop may last probe
             // slightly before the boundary due to sleep).
-            if !probe.1 {
+            if !probe.reachable {
                 probe = probe_fastboot();
             }
-            if !probe.1 {
+            if !probe.reachable {
                 if let Some(error) = reboot_err {
                     ltbox_core::live!(
                         log,
@@ -175,7 +199,13 @@ pub(crate) fn flash_worker(
             }
         }
     }
-    let (device_rollback_index, fastboot_reachable, active_slot, getvar_raw) = probe;
+    let FastbootProbe {
+        device_index: device_rollback_index,
+        rollback_floors: fastboot_rollback_floors,
+        reachable: fastboot_reachable,
+        active_slot,
+        raw_getvar_all: getvar_raw,
+    } = probe;
 
     // 3. Scan firmware folder
     let vendor_boot = fw_dir.join("vendor_boot.img");
@@ -939,17 +969,16 @@ pub(crate) fn flash_worker(
         std::fs::create_dir_all(&arb_work_dir)
             .map_err(|e| tr_args!("err_arb_work_dir_failed", error = e))?;
 
-        // Per-location device rollback floors. On EDL-start we already read
-        // component-wise maxima from BOTH slots; apply each location's own floor
-        // to its partition so a higher boot floor never inflates the
-        // vbmeta_system location — which would block later stock firmware — and
-        // vice versa. Otherwise fall back to the single aggregate index
-        // (fastboot, or the active-slot EDL read) applied to every location, as
-        // before. TB322FC keeps `None` → the per-partition `else` below skips
+        // Per-location device rollback floors. Prefer the component-wise EDL
+        // floors, then a two-entry Fastboot classification: after excluding
+        // recovery location 1, the lower location is vbmeta_system and the
+        // higher is boot. Unknown Fastboot layouts retain the legacy aggregate
+        // fallback. TB322FC keeps `None` → the per-partition `else` below skips
         // patching, which is correct since it has no rollback floor.
-        let (boot_floor, vbs_floor) = match edl_floors {
-            Some((b, v)) => (Some(b), Some(v)),
-            None => {
+        let (boot_floor, vbs_floor) = match (edl_floors, fastboot_rollback_floors) {
+            (Some((b, v)), _) => (Some(b), Some(v)),
+            (None, Some(floors)) => (Some(floors.boot_index), Some(floors.vbmeta_system_index)),
+            (None, None) => {
                 let idx = match device_rollback_index {
                     Some(i) => Some(i),
                     None if is_rollback_protected_model(&device_model) => {
