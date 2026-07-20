@@ -3044,8 +3044,8 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kptools"
-version = "0.1.1"
-source = "git+https://github.com/miner7222/kptools-rs?branch=master#08a96cbea5f1b15b8187e4666da96c6b48481ccb"
+version = "0.1.2"
+source = "git+https://github.com/miner7222/kptools-rs?tag=v0.1.2#654a183a9a9bad68a81622c3ff76b3468b7e1457"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -3065,8 +3065,8 @@ dependencies = [
 
 [[package]]
 name = "kptools-base"
-version = "0.1.1"
-source = "git+https://github.com/miner7222/kptools-rs?branch=master#08a96cbea5f1b15b8187e4666da96c6b48481ccb"
+version = "0.1.2"
+source = "git+https://github.com/miner7222/kptools-rs?tag=v0.1.2#654a183a9a9bad68a81622c3ff76b3468b7e1457"
 dependencies = [
  "thiserror 2.0.19",
 ]

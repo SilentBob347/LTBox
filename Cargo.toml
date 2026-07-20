@@ -110,7 +110,7 @@ os_pipe = "1"
 # External tool crates (git dependencies)
 avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", branch = "main" }
 magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
-kptools = { git = "https://github.com/miner7222/kptools-rs", branch = "master" }
+kptools = { git = "https://github.com/miner7222/kptools-rs", tag = "v0.1.2" }
 # Vendored under vendor/qdl — qualcomm/qdlrs + a local ZLP fix. See
 # vendor/qdl/VENDORING.md.
 qdl = { path = "vendor/qdl", features = ["serial", "usb"] }
