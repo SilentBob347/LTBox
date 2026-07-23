@@ -108,7 +108,7 @@ gptman = "3"
 os_pipe = "1"
 
 # External tool crates (git dependencies)
-avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", branch = "main" }
+avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", tag = "v0.2.0" }
 magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
 kptools = { git = "https://github.com/miner7222/kptools-rs", tag = "v0.1.2" }
 # Vendored under vendor/qdl — qualcomm/qdlrs + a local ZLP fix. See
