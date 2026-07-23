@@ -143,6 +143,8 @@ struct GithubRelease {
     assets: Vec<GithubAsset>,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     /// ISO-8601 publish time, used to pick the newest matching release
     /// deterministically instead of trusting the order GitHub lists them in.
     #[serde(default)]
@@ -231,9 +233,8 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
 }
 
 /// Fetch the latest Windows release that ships the host-arch installer,
-/// pre-releases included (only drafts are skipped), returning
-/// `(tag_name, asset_download_url)`. Shared by the
-/// installer and the update check so both resolve to the same release.
+/// excluding drafts and prereleases, returning `(tag_name, asset_download_url)`.
+/// Shared by the installer and the update check so both resolve to the same release.
 fn fetch_latest_win_release() -> Result<(String, String)> {
     let spec = driver_spec(qcom_driver_mode());
     let meta_agent = ltbox_core::downloader::build_agent();
@@ -246,23 +247,7 @@ fn fetch_latest_win_release() -> Result<(String, String)> {
         .map_err(|e| DriverError::Parse(e.to_string()))?;
 
     let asset_name = arch_installer_asset(spec);
-    // Pre-releases are intentionally INCLUDED — only drafts are skipped. The
-    // upstream repo currently ships its Windows driver solely as a pre-release
-    // (`release-win-v1.0.2.0`), and a newer pre-release should win over an
-    // older stable release. Select the newest match by publish time rather
-    // than relying on the order GitHub returns the list in.
-    let mut matching: Vec<GithubRelease> = releases
-        .into_iter()
-        .filter(|r| !r.draft)
-        .filter(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
-        .filter(|r| {
-            r.assets
-                .iter()
-                .any(|a| a.name.eq_ignore_ascii_case(asset_name))
-        })
-        .collect();
-    matching.sort_unstable_by(|a, b| b.published_at.cmp(&a.published_at));
-    let release = matching.into_iter().next().ok_or(DriverError::NoAsset)?;
+    let release = select_latest_win_release(releases, asset_name).ok_or(DriverError::NoAsset)?;
 
     let tag = release.tag_name.clone();
     let asset_url = release
@@ -272,6 +257,27 @@ fn fetch_latest_win_release() -> Result<(String, String)> {
         .map(|a| a.browser_download_url)
         .ok_or(DriverError::NoAsset)?;
     Ok((tag, asset_url))
+}
+
+/// Pick the newest published stable Windows release that carries `asset_name`.
+/// Drafts and prereleases are rejected before tag/asset matching; among the
+/// remaining candidates the highest `published_at` wins.
+fn select_latest_win_release(
+    releases: Vec<GithubRelease>,
+    asset_name: &str,
+) -> Option<GithubRelease> {
+    let mut matching: Vec<GithubRelease> = releases
+        .into_iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| r.tag_name.to_ascii_lowercase().contains(WIN_TAG_NEEDLE))
+        .filter(|r| {
+            r.assets
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case(asset_name))
+        })
+        .collect();
+    matching.sort_unstable_by(|a, b| b.published_at.cmp(&a.published_at));
+    matching.into_iter().next()
 }
 
 /// Check whether a newer signed driver release exists than the one
@@ -824,6 +830,73 @@ mod tests {
                         | "qcom_usb_kernel_drivers_x86.exe"
                 ),
                 "unexpected asset name: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_latest_win_release_ignores_drafts_and_prereleases() {
+        // Shared fixture shape for both USERSPACE_SPEC and KERNEL_SPEC asset names.
+        for spec in [USERSPACE_SPEC, KERNEL_SPEC] {
+            let asset = arch_installer_asset(spec);
+            let releases = vec![
+                GithubRelease {
+                    tag_name: "release-win-v9.9.9.9".into(),
+                    assets: vec![GithubAsset {
+                        name: asset.to_string(),
+                        browser_download_url: "https://example.test/prerelease".into(),
+                    }],
+                    draft: false,
+                    prerelease: true,
+                    published_at: "2026-07-20T00:00:00Z".into(),
+                },
+                GithubRelease {
+                    tag_name: "release-win-v8.8.8.8".into(),
+                    assets: vec![GithubAsset {
+                        name: asset.to_string(),
+                        browser_download_url: "https://example.test/draft".into(),
+                    }],
+                    draft: true,
+                    prerelease: false,
+                    published_at: "2026-07-19T00:00:00Z".into(),
+                },
+                GithubRelease {
+                    tag_name: "release-win-v1.0.1.0".into(),
+                    assets: vec![GithubAsset {
+                        name: asset.to_string(),
+                        browser_download_url: "https://example.test/older-stable".into(),
+                    }],
+                    draft: false,
+                    prerelease: false,
+                    published_at: "2026-07-10T00:00:00Z".into(),
+                },
+                GithubRelease {
+                    tag_name: "release-win-v1.0.2.0".into(),
+                    assets: vec![GithubAsset {
+                        name: asset.to_string(),
+                        browser_download_url: "https://example.test/latest-stable".into(),
+                    }],
+                    draft: false,
+                    prerelease: false,
+                    published_at: "2026-07-15T00:00:00Z".into(),
+                },
+                GithubRelease {
+                    tag_name: "release-lnx-v2.0.0.0".into(),
+                    assets: vec![GithubAsset {
+                        name: asset.to_string(),
+                        browser_download_url: "https://example.test/linux-only".into(),
+                    }],
+                    draft: false,
+                    prerelease: false,
+                    published_at: "2026-07-18T00:00:00Z".into(),
+                },
+            ];
+            let selected = select_latest_win_release(releases, asset)
+                .expect("stable Windows release with matching asset");
+            assert_eq!(selected.tag_name, "release-win-v1.0.2.0");
+            assert_eq!(
+                selected.assets[0].browser_download_url,
+                "https://example.test/latest-stable"
             );
         }
     }

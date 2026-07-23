@@ -47,6 +47,8 @@ struct GithubRelease {
     #[serde(default)]
     draft: bool,
     #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
     published_at: String,
 }
 
@@ -363,14 +365,7 @@ fn fetch_latest_linux_kernel_release() -> Result<(String, GithubAsset)> {
         .read_json()
         .map_err(|e| DriverError::Parse(e.to_string()))?;
 
-    let mut matching: Vec<GithubRelease> = releases
-        .into_iter()
-        .filter(|r| !r.draft)
-        .filter(|r| r.tag_name.to_ascii_lowercase().contains(LINUX_TAG_NEEDLE))
-        .filter(|r| r.assets.iter().any(|a| linux_kernel_asset_matches(&a.name)))
-        .collect();
-    matching.sort_unstable_by(|a, b| b.published_at.cmp(&a.published_at));
-    let release = matching.into_iter().next().ok_or(DriverError::NoAsset)?;
+    let release = select_latest_linux_kernel_release(releases).ok_or(DriverError::NoAsset)?;
     let tag = release.tag_name.clone();
     let asset = release
         .assets
@@ -378,6 +373,20 @@ fn fetch_latest_linux_kernel_release() -> Result<(String, GithubAsset)> {
         .find(|a| linux_kernel_asset_matches(&a.name))
         .ok_or(DriverError::NoAsset)?;
     Ok((tag, asset))
+}
+
+/// Pick the newest published stable Linux kernel release that ships a QUD zip.
+/// Drafts and prereleases are rejected before tag/asset matching; among the
+/// remaining candidates the highest `published_at` wins.
+fn select_latest_linux_kernel_release(releases: Vec<GithubRelease>) -> Option<GithubRelease> {
+    let mut matching: Vec<GithubRelease> = releases
+        .into_iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| r.tag_name.to_ascii_lowercase().contains(LINUX_TAG_NEEDLE))
+        .filter(|r| r.assets.iter().any(|a| linux_kernel_asset_matches(&a.name)))
+        .collect();
+    matching.sort_unstable_by(|a, b| b.published_at.cmp(&a.published_at));
+    matching.into_iter().next()
 }
 
 fn linux_kernel_asset_matches(name: &str) -> bool {
@@ -705,6 +714,74 @@ fn which_program(name: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_latest_linux_kernel_release_ignores_drafts_and_prereleases() {
+        let releases = vec![
+            GithubRelease {
+                tag_name: "release-lnx-v9.9.9.9".into(),
+                assets: vec![GithubAsset {
+                    name: "qud_9.9.9.9_all.zip".into(),
+                    browser_download_url: "https://example.test/prerelease".into(),
+                    size: 1,
+                }],
+                draft: false,
+                prerelease: true,
+                published_at: "2026-07-20T00:00:00Z".into(),
+            },
+            GithubRelease {
+                tag_name: "release-lnx-v8.8.8.8".into(),
+                assets: vec![GithubAsset {
+                    name: "qud_8.8.8.8_all.zip".into(),
+                    browser_download_url: "https://example.test/draft".into(),
+                    size: 1,
+                }],
+                draft: true,
+                prerelease: false,
+                published_at: "2026-07-19T00:00:00Z".into(),
+            },
+            GithubRelease {
+                tag_name: "release-lnx-v1.0.5.0".into(),
+                assets: vec![GithubAsset {
+                    name: "qud_1.0.5.0_all.zip".into(),
+                    browser_download_url: "https://example.test/older-stable".into(),
+                    size: 1,
+                }],
+                draft: false,
+                prerelease: false,
+                published_at: "2026-07-10T00:00:00Z".into(),
+            },
+            GithubRelease {
+                tag_name: "release-lnx-v1.0.6.4".into(),
+                assets: vec![GithubAsset {
+                    name: "qud_1.0.6.4_all.zip".into(),
+                    browser_download_url: "https://example.test/latest-stable".into(),
+                    size: 1,
+                }],
+                draft: false,
+                prerelease: false,
+                published_at: "2026-07-15T00:00:00Z".into(),
+            },
+            GithubRelease {
+                tag_name: "release-win-v2.0.0.0".into(),
+                assets: vec![GithubAsset {
+                    name: "qud_2.0.0.0_all.zip".into(),
+                    browser_download_url: "https://example.test/windows-only".into(),
+                    size: 1,
+                }],
+                draft: false,
+                prerelease: false,
+                published_at: "2026-07-18T00:00:00Z".into(),
+            },
+        ];
+        let selected = select_latest_linux_kernel_release(releases)
+            .expect("stable Linux kernel release with matching asset");
+        assert_eq!(selected.tag_name, "release-lnx-v1.0.6.4");
+        assert_eq!(
+            selected.assets[0].browser_download_url,
+            "https://example.test/latest-stable"
+        );
+    }
 
     #[test]
     fn kernel_asset_matcher_accepts_qud_all_zip_only() {
