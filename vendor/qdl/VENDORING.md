@@ -13,13 +13,17 @@ carrying the minimal patches we need.
 
 ## Source
 
-- Upstream: `qualcomm/qdlrs` base `main` `394e341`
-  (`Merge pull request #49 … CLAUDE.md`), with library changes from
-  PR #50 head `5508b08` (`qdl: Add context to program/loader file I/O
-  errors`) merged on top.
+- Upstream: `qualcomm/qdlrs` `main` at `f46f233`
+  (`Merge pull request #51 from qualcomm/topic/clippy_1.97.1`).
+  That revision includes the PR #50 reliability fixes merged at
+  `3bccbc6` and the library-only Clippy 1.97.1 cleanup from PR #51
+  (`2bce116` in `qdl/src/serial.rs` and `qdl/src/usb.rs`).
 - Only the `qdl` library crate files under `qdl/src/` and the crate
   `Cargo.toml` were vendored. Upstream CLI files under `cli/` were not
   copied into this vendor tree.
+- The standalone vendored `Cargo.toml` omits upstream's `README.md`
+  pointer and placeholder description comment because that README is not
+  copied, and keeps `publish = false` without the upstream TODO comment.
 - Intervening repository-only files outside the library crate (for
   example workflows and agent docs) were not copied.
 
