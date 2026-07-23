@@ -149,10 +149,10 @@ impl DetectedRegion {
     }
 }
 
-/// Final region-converted boot chain written by
-/// [`build_region_converted_boot_chain`].
+/// Final region-converted vendor_boot/vbmeta AVB images written by
+/// [`build_region_converted_avb_images`].
 #[derive(Debug, Clone)]
-pub struct RegionBootChainOutput {
+pub struct RegionAvbOutput {
     pub vendor_boot: PathBuf,
     pub vbmeta: PathBuf,
     pub source_region: DetectedRegion,
@@ -163,8 +163,8 @@ pub struct RegionBootChainOutput {
 /// Builder result. `Skipped` means the output folder was cleared and no files
 /// were emitted because the source already matched the requested target.
 #[derive(Debug, Clone)]
-pub enum RegionBootChainBuild {
-    Built(RegionBootChainOutput),
+pub enum RegionAvbBuild {
+    Built(RegionAvbOutput),
     Skipped {
         source_region: DetectedRegion,
         target: RegionTarget,
@@ -183,17 +183,17 @@ pub enum RegionBuildStage {
 /// conversion.
 ///
 /// This is the v3 equivalent of v2 `convert_region_images()`: copy
-/// `vendor_boot`, patch region bytes, re-apply the original `vendor_boot` AVB
-/// hash footer, then rebuild `vbmeta` with descriptors from the original
-/// vbmeta plus the patched chained image.
-pub fn build_region_converted_boot_chain(
+/// `vendor_boot`, patch region bytes, add a new hash footer using the original
+/// AVB parameters, then rebuild `vbmeta`, refreshing matching descriptors from
+/// the patched `vendor_boot` image.
+pub fn build_region_converted_avb_images(
     firmware_dir: &Path,
     output_dir: &Path,
     target: RegionTarget,
     patterns: &RegionPatternSet,
     key_override: Option<&str>,
-) -> Result<RegionBootChainBuild> {
-    build_region_converted_boot_chain_with_progress(
+) -> Result<RegionAvbBuild> {
+    build_region_converted_avb_images_with_progress(
         firmware_dir,
         output_dir,
         target,
@@ -203,15 +203,15 @@ pub fn build_region_converted_boot_chain(
     )
 }
 
-/// Build a region-converted boot chain while reporting stable coarse stages.
-pub fn build_region_converted_boot_chain_with_progress(
+/// Build region-converted vendor_boot/vbmeta AVB images while reporting stable coarse stages.
+pub fn build_region_converted_avb_images_with_progress(
     firmware_dir: &Path,
     output_dir: &Path,
     target: RegionTarget,
     patterns: &RegionPatternSet,
     key_override: Option<&str>,
     mut on_stage: impl FnMut(RegionBuildStage),
-) -> Result<RegionBootChainBuild> {
+) -> Result<RegionAvbBuild> {
     if output_dir.exists() {
         fs::remove_dir_all(output_dir).map_err(|e| {
             LtboxError::Patch(format!(
@@ -250,7 +250,7 @@ pub fn build_region_converted_boot_chain_with_progress(
     info!("Region source={source_region:?}, target={target:?}");
     if source_region.matches_target(target) {
         info!("Source already matches target; output folder left empty");
-        return Ok(RegionBootChainBuild::Skipped {
+        return Ok(RegionAvbBuild::Skipped {
             source_region,
             target,
         });
@@ -277,7 +277,7 @@ pub fn build_region_converted_boot_chain_with_progress(
     let vendor_boot_info = avb::extract_image_avb_info(&vendor_boot_src)?;
     avb::add_hash_footer(&vendor_boot_out, &vendor_boot_info, None, None)?;
     info!(
-        "Repaired vendor_boot AVB footer: {}",
+        "Added AVB hash footer to vendor_boot: {}",
         vendor_boot_out.display()
     );
 
@@ -311,14 +311,14 @@ pub fn build_region_converted_boot_chain_with_progress(
                 })?,
                 None => vbmeta_info.algorithm.clone(),
             };
-            avb::rebuild_vbmeta_with_chained_images(
+            avb::rebuild_vbmeta_with_partition_descriptors(
                 &vbmeta_out,
                 &vbmeta_src,
                 &[vendor_boot_out.as_path()],
                 key_spec,
                 Some(algorithm.as_str()),
             )?;
-            info!("Rebuilt vbmeta chain: {}", vbmeta_out.display());
+            info!("Refreshed vbmeta descriptors: {}", vbmeta_out.display());
         }
         None => {
             fs::copy(&vbmeta_src, &vbmeta_out)?;
@@ -326,7 +326,7 @@ pub fn build_region_converted_boot_chain_with_progress(
         }
     }
 
-    Ok(RegionBootChainBuild::Built(RegionBootChainOutput {
+    Ok(RegionAvbBuild::Built(RegionAvbOutput {
         vendor_boot: vendor_boot_out,
         vbmeta: vbmeta_out,
         source_region,
@@ -686,7 +686,7 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let mut stages = Vec::new();
 
-        let result = build_region_converted_boot_chain_with_progress(
+        let result = build_region_converted_avb_images_with_progress(
             firmware.path(),
             output.path(),
             RegionTarget::Row,
@@ -696,7 +696,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(result, RegionBootChainBuild::Skipped { .. }));
+        assert!(matches!(result, RegionAvbBuild::Skipped { .. }));
         assert_eq!(stages, vec![RegionBuildStage::Inspect]);
     }
 
@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn real_firmware_builds_region_boot_chain_when_available() {
+    fn real_firmware_builds_region_avb_images_when_available() {
         let Some(dir) = std::env::var_os("LTBOX_REAL_FIRMWARE_DIR") else {
             return;
         };
@@ -794,7 +794,7 @@ mod tests {
         fs::create_dir_all(&output_dir).unwrap();
         fs::write(output_dir.join("vendor_boot.patched.img"), b"stale").unwrap();
 
-        let built = build_region_converted_boot_chain(
+        let built = build_region_converted_avb_images(
             &dir,
             &output_dir,
             RegionTarget::Prc,
@@ -803,7 +803,7 @@ mod tests {
         )
         .unwrap();
 
-        let RegionBootChainBuild::Built(output) = built else {
+        let RegionAvbBuild::Built(output) = built else {
             panic!("ROW firmware should build a PRC output pair");
         };
         assert!(output.vendor_boot.is_file());

@@ -354,8 +354,8 @@ pub(crate) fn sysupdate_worker(
                 }
             }
 
-            // Patch vendor_boot per region, rebuild
-            // footer, rebuild vbmeta chain per slot.
+            // Patch vendor_boot per region, rebuild its footer, then refresh
+            // the matching vbmeta descriptor per slot.
             let target = region.to_target();
             let prc_dot = vec![0x2E, 0x50, 0x52, 0x43]; // ".PRC"
             let prc_i = vec![0x49, 0x50, 0x52, 0x43]; // "IPRC"
@@ -475,8 +475,8 @@ pub(crate) fn sysupdate_worker(
                     continue;
                 }
 
-                // Rebuild vbmeta chained to the
-                // patched vendor_boot. Key fallback:
+                // Refresh matching vbmeta descriptors from those embedded in
+                // the patched vendor_boot. Key fallback:
                 // algorithm comes from the original
                 // vbmeta header.
                 let vbm_info = match ltbox_patch::avb::extract_image_avb_info(&vbm_src.2) {
@@ -509,11 +509,11 @@ pub(crate) fn sysupdate_worker(
                     continue;
                 };
                 let vbm_rebuilt = work_dir.join(format!("vbmeta_{slot}.rebuilt.img"));
-                let chained: [&std::path::Path; 1] = [vb_patched.as_path()];
-                if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                let partition_images: [&std::path::Path; 1] = [vb_patched.as_path()];
+                if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_partition_descriptors(
                     &vbm_rebuilt,
                     &vbm_src.2,
-                    &chained,
+                    &partition_images,
                     vbm_key,
                     Some(vbm_info.algorithm.as_str()),
                 ) {
@@ -561,7 +561,7 @@ pub(crate) fn sysupdate_worker(
                     );
                     // Abort before the reset — a failed recovery
                     // write must not be followed by a reboot into
-                    // a half-written chain. Stay in EDL for retry.
+                    // a half-written AVB set. Stay in EDL for retry.
                     return Err(tr_args!(
                         "err_rescue_flash_failed",
                         name = part_name,

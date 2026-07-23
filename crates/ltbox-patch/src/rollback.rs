@@ -4,8 +4,8 @@
 //! non-recovery layout is classified per partition; other layouts retain the
 //! legacy `max(v > 1)` aggregate. Tri-state [`RollbackMode`]: `ON` always
 //! patches, `AUTO` patches only when behind, `OFF` skips.
-//! Chained images go through `avb::resign_image` when signed, else
-//! `avb::add_hash_footer`.
+//! Generic AVB partition images go through `avb::resign_image` when signed,
+//! else `avb::add_hash_footer`.
 
 use fs_err as fs;
 use std::collections::HashMap;
@@ -133,10 +133,11 @@ pub fn analyze_rollback_with_mode(
     })
 }
 
-/// Patch a chained image's AVB rollback index to `target_rollback_index`.
+/// Patch an AVB image's rollback index to `target_rollback_index`.
 /// Signed → `resign_image`; NONE algorithm → `add_hash_footer`.
+/// This does not enforce or require chain partition membership.
 /// `target_rollback_index` must be the device-side value, never 0.
-pub fn patch_chained_image(
+pub fn patch_avb_image_rollback_index(
     image_path: &Path,
     output_path: &Path,
     target_rollback_index: u64,
@@ -152,7 +153,7 @@ pub fn patch_chained_image(
     }
 
     info!(
-        "Patching chained rollback: {} → {target_rollback_index}",
+        "Patching AVB image rollback index: {} → {target_rollback_index}",
         info.rollback_index
     );
 

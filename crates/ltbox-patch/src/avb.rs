@@ -109,21 +109,22 @@ pub fn extract_image_avb_info(image_path: &Path) -> Result<AvbImageInfo> {
     })
 }
 
-/// A chain-partition descriptor a vbmeta declares: the partition name and
+/// A chain partition descriptor a vbmeta declares: the partition name and
 /// whether it is flagged `DO_NOT_USE_AB` (AVB verifies the unsuffixed name, so
 /// the image is flashed to `<name>` rather than `<name>_a`).
 #[derive(Debug, Clone)]
-pub struct ChainPartition {
+pub struct ChainPartitionDescriptor {
     pub name: String,
     pub do_not_use_ab: bool,
 }
 
-/// The chain partitions a vbmeta image declares, in descriptor order (e.g.
-/// `boot`, `recovery`, `vbmeta_system`). Drives a layout-aware re-sign: only the
-/// partitions this vbmeta actually chains are re-signed + rechained, and each
-/// carries its `DO_NOT_USE_AB` flag so the caller targets the right GPT label —
-/// so a package without (say) recovery, or with non-A/B chains, still works.
-pub fn chain_partitions(vbmeta_path: &Path) -> Result<Vec<ChainPartition>> {
+/// The chain partition descriptors a vbmeta image declares, in descriptor order
+/// (e.g. `boot`, `recovery`, `vbmeta_system`). Drives a layout-aware re-sign:
+/// only the partitions this vbmeta actually chains are re-signed and have their
+/// chain partition descriptor public keys updated, and each carries its
+/// `DO_NOT_USE_AB` flag so the caller targets the right GPT label — so a package
+/// without (say) recovery, or with non-A/B chains, still works.
+pub fn chain_partition_descriptors(vbmeta_path: &Path) -> Result<Vec<ChainPartitionDescriptor>> {
     // libavb `AVB_CHAIN_PARTITION_DESCRIPTOR_FLAGS_DO_NOT_USE_AB`.
     const DO_NOT_USE_AB: u32 = 1;
     let info = avbtool_rs::image::inspect_avb_image(vbmeta_path)
@@ -136,7 +137,7 @@ pub fn chain_partitions(vbmeta_path: &Path) -> Result<Vec<ChainPartition>> {
                 partition_name,
                 flags,
                 ..
-            } => Some(ChainPartition {
+            } => Some(ChainPartitionDescriptor {
                 name: partition_name.clone(),
                 do_not_use_ab: *flags & DO_NOT_USE_AB != 0,
             }),
@@ -180,20 +181,23 @@ pub fn erase_footer(image_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Rebuild `vbmeta.img` using the original as a template, with hash
-/// descriptors recomputed from the current bytes of `chained_images`.
+/// Rebuild `vbmeta.img` using the original as a template, refreshing matching
+/// Hash / Hashtree descriptors imported from those embedded in
+/// `partition_images`. The chain partition descriptors and public keys remain
+/// unchanged. Partition images must already contain current descriptors; this
+/// does not add or update hash/hashtree footers on partition images.
 /// `key_spec` follows the [`resign_image`] convention.
-pub fn rebuild_vbmeta_with_chained_images(
+pub fn rebuild_vbmeta_with_partition_descriptors(
     output_path: &Path,
     original_vbmeta_path: &Path,
-    chained_images: &[&Path],
+    partition_images: &[&Path],
     key_spec: &str,
     algorithm: Option<&str>,
 ) -> Result<()> {
     avbtool_rs::builder::rebuild_vbmeta_image(
         output_path,
         original_vbmeta_path,
-        chained_images,
+        partition_images,
         key_spec,
         algorithm,
     )
@@ -203,21 +207,22 @@ pub fn rebuild_vbmeta_with_chained_images(
 }
 
 /// Rebuild `vbmeta.img` from the original template, re-signing with
-/// `vbmeta_key_spec` and swapping the **chain-partition public keys** of
-/// `rechain_partitions` to `chain_key_spec`'s public key.
+/// `vbmeta_key_spec` and updating the **chain partition descriptor public
+/// keys** of `chain_partition_names` to `chain_key_spec`'s public key.
 ///
 /// Needed when chained partitions (boot / recovery / vbmeta_system) are
-/// re-signed with a different key than the stock one: their chain
+/// re-signed with a different key than the stock one: their chain partition
 /// descriptors in vbmeta carry the *public key*, so the bootloader rejects
 /// the re-signed images unless vbmeta points at the new key. Unlike
-/// [`rebuild_vbmeta_with_chained_images`] (which only recomputes Hash /
-/// Hashtree descriptors and leaves chain pubkeys untouched), this rewrites
-/// the chain descriptors. Hash / Hashtree descriptors and properties for
-/// untouched partitions are preserved verbatim.
-pub fn rebuild_vbmeta_rechained(
+/// [`rebuild_vbmeta_with_partition_descriptors`] (which only refreshes Hash /
+/// Hashtree descriptors imported from partition images and leaves chain
+/// pubkeys untouched), this rewrites the chain partition descriptors. Hash /
+/// Hashtree descriptors and properties for untouched partitions are preserved
+/// verbatim.
+pub fn rebuild_vbmeta_with_chain_key_overrides(
     output_path: &Path,
     original_vbmeta_path: &Path,
-    rechain_partitions: &[&str],
+    chain_partition_names: &[&str],
     chain_key_spec: &str,
     vbmeta_key_spec: &str,
     algorithm: &str,
@@ -237,7 +242,7 @@ pub fn rebuild_vbmeta_rechained(
     let mut properties = Vec::new();
     let mut extra_descriptors = Vec::new();
     let mut chain_partitions = Vec::new();
-    let mut rechained = 0usize;
+    let mut updated_chain_keys = 0usize;
     for desc in &info.descriptors {
         match desc {
             DescriptorInfo::Property { key, value } => properties.push(PropertySpec {
@@ -250,11 +255,11 @@ pub fn rebuild_vbmeta_rechained(
                 public_key,
                 flags,
             } => {
-                let swap = rechain_partitions
+                let swap = chain_partition_names
                     .iter()
                     .any(|p| p.eq_ignore_ascii_case(partition_name));
                 if swap {
-                    rechained += 1;
+                    updated_chain_keys += 1;
                 }
                 chain_partitions.push(ChainPartitionSpec {
                     partition_name: partition_name.clone(),
@@ -276,12 +281,12 @@ pub fn rebuild_vbmeta_rechained(
             | DescriptorInfo::Unknown { .. } => extra_descriptors.push(desc.clone()),
         }
     }
-    if rechained != rechain_partitions.len() {
+    if updated_chain_keys != chain_partition_names.len() {
         return Err(LtboxError::Avb(format!(
-            "rebuild_vbmeta_rechained: expected to rechain {} partitions {:?} but matched {} chain descriptors in {}",
-            rechain_partitions.len(),
-            rechain_partitions,
-            rechained,
+            "rebuild_vbmeta_with_chain_key_overrides: expected to update chain keys for {} partitions {:?} but matched {} chain partition descriptors in {}",
+            chain_partition_names.len(),
+            chain_partition_names,
+            updated_chain_keys,
             original_vbmeta_path.display()
         )));
     }
@@ -327,7 +332,7 @@ pub fn add_hash_footer(
     new_rollback_index: Option<u64>,
 ) -> Result<()> {
     let rollback = new_rollback_index.unwrap_or(info.rollback_index);
-    // Must bail loudly — the hash footer pins this name into the re-signed blob
+    // Must bail loudly — the embedded Hash descriptor records partition_name,
     // and the bootloader refuses to mount if it doesn't match the recorded name.
     let name = info.partition_name.as_deref().ok_or_else(|| {
         LtboxError::Avb(format!(
@@ -335,7 +340,7 @@ pub fn add_hash_footer(
             image_path.display()
         ))
     })?;
-    info!("Adding AVB footer: partition={name}, rollback={rollback}");
+    info!("Adding AVB hash footer: partition={name}, rollback={rollback}");
 
     let salt_bytes = info.salt.clone();
 
@@ -530,7 +535,7 @@ mod tests {
             let vbmeta_info = extract_image_avb_info(&vbmeta).unwrap();
             let key_spec = key_map::key_spec_for_pubkey(vbmeta_info.public_key_sha1.as_deref())
                 .expect("real fixture vbmeta key should be known");
-            rebuild_vbmeta_with_chained_images(
+            rebuild_vbmeta_with_partition_descriptors(
                 &rebuilt_vbmeta,
                 &vbmeta,
                 &[patched_vendor_boot.as_path()],

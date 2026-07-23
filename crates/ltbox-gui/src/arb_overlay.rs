@@ -7,7 +7,7 @@ use crate::*;
 /// whether the anti-rollback build is needed (`arb`). Picks the
 /// `*_prc.efi` / `*_row.efi` asset (or `*_prc_arb.efi` / `*_row_arb.efi`) from
 /// the gbl_root_baldur release. The `_arb` GBL roots trust at the testkey so it
-/// accepts the testkey-re-signed boot chain LTBox stages on a downgrade. The
+/// accepts the testkey-re-signed AVB chain LTBox stages on a downgrade. The
 /// region comes from the vendor_boot `product_region` DTB marker — TB323FU's AVB
 /// fingerprint carries no `_PRC`/`_ROW` token.
 pub(crate) fn efisp_asset_suffix(is_prc: bool, arb: bool) -> &'static str {
@@ -37,14 +37,15 @@ pub(crate) type ArbOverlay = (String, u8, std::path::PathBuf);
 ///
 /// Layout-aware: it re-signs exactly the partitions the (base) vbmeta chains —
 /// each needs a matching `<part>.img` — so packages without recovery (or with a
-/// different chained set) work too. boot / vbmeta_system bump to the device
+/// different set of chained partitions) work too. boot / vbmeta_system bump to
+/// the device
 /// floor (`max`, never lowered); other chained partitions (e.g. recovery) are
-/// re-signed only; the vbmeta is rebuilt with every chained descriptor repointed
-/// at the testkey and flashed LAST (it ties the chain together — shrinks the
-/// partial-write brick window). `vbmeta_base` overrides the rebuild base: for a
-/// key2 cross-region install the caller passes the region-converted, testkey
-/// vbmeta so its recomputed vendor_boot hash is preserved; otherwise the
-/// firmware's own `vbmeta.img`.
+/// re-signed only; the vbmeta is rebuilt with selected chain partition descriptor
+/// public keys updated to the testkey and flashed LAST (it ties the chain
+/// together — shrinks the partial-write brick window). For a key2 cross-region
+/// install, `vbmeta_base` overrides the rebuild base with the region-converted,
+/// testkey vbmeta so its recomputed vendor_boot hash is preserved; otherwise it
+/// uses the firmware's own `vbmeta.img`.
 ///
 /// `force_resign` re-signs even without a downgrade (key2 firmware on a testkey
 /// device). Returns `(overlays, need)`; `need` is the downgrade flag — the
@@ -73,24 +74,25 @@ pub(crate) fn build_tb323fu_arb_overlays(
             .rollback_index)
     };
 
-    // 1. Rechain base vbmeta (caller override for cross-region, else firmware's)
-    //    and the partitions it chains. Re-sign + rechain only the ones we can
-    //    handle: a plain partition name, an install image, and a resolvable A/B
-    //    GPT label/LUN. Other chained partitions (e.g. vbmeta_vendor) keep their
-    //    stock chain descriptor + stock image.
+    // 1. Inspect base vbmeta (caller override for cross-region, else firmware's)
+    //    and the partitions it chains. Re-sign only the ones we can handle and
+    //    update their chain partition descriptor public keys: a plain partition
+    //    name, an install image, and a resolvable A/B GPT label/LUN. Other
+    //    chained partitions (e.g. vbmeta_vendor) keep their stock chain partition
+    //    descriptor + stock image.
     let inst_vbmeta = vbmeta_base
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| fw_dir.join("vbmeta.img"));
     if !inst_vbmeta.exists() {
         return Err(format!("install image missing: {}", inst_vbmeta.display()));
     }
-    let chained = ltbox_patch::avb::chain_partitions(&inst_vbmeta)
-        .map_err(|e| format!("vbmeta chain partitions: {e}"))?;
+    let chain_descriptors = ltbox_patch::avb::chain_partition_descriptors(&inst_vbmeta)
+        .map_err(|e| format!("vbmeta chain partition descriptors: {e}"))?;
     let inst_img = |p: &str| fw_dir.join(format!("{p}.img"));
-    let has = |name: &str| chained.iter().any(|c| c.name == name);
+    let has = |name: &str| chain_descriptors.iter().any(|c| c.name == name);
     // GPT label for a chained partition: `_a` for A/B, the unsuffixed name for a
     // `DO_NOT_USE_AB` chain (AVB verifies the unsuffixed partition).
-    let label_of = |c: &ltbox_patch::avb::ChainPartition| -> String {
+    let label_of = |c: &ltbox_patch::avb::ChainPartitionDescriptor| -> String {
         if c.do_not_use_ab {
             c.name.clone()
         } else {
@@ -99,7 +101,7 @@ pub(crate) fn build_tb323fu_arb_overlays(
     };
     // The floor read + index bump below assume A/B slots for the rollback-
     // protected partitions, so reject a non-A/B boot / vbmeta_system layout.
-    if chained
+    if chain_descriptors
         .iter()
         .any(|c| (c.name == "boot" || c.name == "vbmeta_system") && c.do_not_use_ab)
     {
@@ -175,8 +177,8 @@ pub(crate) fn build_tb323fu_arb_overlays(
     //     the firmware's own image, which matches its preserved (firmware-key)
     //     chain descriptor under the testkey-signed root.
     // The rollback-protected boot / vbmeta_system MUST be re-signable.
-    let mut to_resign: Vec<&ltbox_patch::avb::ChainPartition> = Vec::new();
-    for c in &chained {
+    let mut to_resign: Vec<&ltbox_patch::avb::ChainPartitionDescriptor> = Vec::new();
+    for c in &chain_descriptors {
         if c.name.is_empty()
             || !c
                 .name
@@ -235,14 +237,15 @@ pub(crate) fn build_tb323fu_arb_overlays(
         overlays.push((label, lun, out));
     }
 
-    // 7. Rebuild vbmeta on the base, repointing the re-signed chained descriptors
-    //    at the testkey (others keep their stock pubkey); flash it LAST.
+    // 7. Rebuild vbmeta on the base, updating chain partition descriptor public
+    //    keys for the re-signed chained partitions to the testkey (others keep
+    //    their stock pubkey); flash it LAST.
     let out_vbmeta = work_dir.join("vbmeta.arb.img");
-    let chained_refs: Vec<&str> = to_resign.iter().map(|c| c.name.as_str()).collect();
-    ltbox_patch::avb::rebuild_vbmeta_rechained(
+    let chain_partition_names: Vec<&str> = to_resign.iter().map(|c| c.name.as_str()).collect();
+    ltbox_patch::avb::rebuild_vbmeta_with_chain_key_overrides(
         &out_vbmeta,
         &inst_vbmeta,
-        &chained_refs,
+        &chain_partition_names,
         KEY,
         KEY,
         ALGO,

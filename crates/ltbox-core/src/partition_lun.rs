@@ -40,7 +40,7 @@ pub fn lun_for_partition(label: &str) -> Option<u8> {
         // LUN 3 — board config.
         "align_to_128k_1" | "cdt" | "ddr" => 3,
 
-        // LUN 4 — boot chain, firmware, vendor + AVB images.
+        // LUN 4 — boot-related and AVB images, firmware, vendor.
         "abl" | "aop" | "aop_config" | "bluetooth" | "boot" | "connsec" | "cpucp" | "cpucp_dtb"
         | "dcp" | "devcfg" | "devinfo" | "dip" | "dpm" | "dsp" | "dtbo" | "efisp"
         | "featenabler" | "hyp" | "hyp_ac_config" | "imagefv" | "init_boot" | "keymaster"

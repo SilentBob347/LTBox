@@ -130,7 +130,7 @@ pub(crate) fn advanced_file_worker(
                 ));
             }
             let target = target_region.to_region_target();
-            match ltbox_patch::region::build_region_converted_boot_chain_with_progress(
+            match ltbox_patch::region::build_region_converted_avb_images_with_progress(
                 firmware_dir,
                 &output_dir,
                 target,
@@ -145,7 +145,7 @@ pub(crate) fn advanced_file_worker(
                     ltbox_core::live!(log, "[Region] {}", phases.marker(phase));
                 },
             ) {
-                Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                Ok(ltbox_patch::region::RegionAvbBuild::Built(output)) => {
                     ltbox_core::live!(
                         log,
                         "[Region] {}",
@@ -173,7 +173,7 @@ pub(crate) fn advanced_file_worker(
                         )
                     );
                 }
-                Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
+                Ok(ltbox_patch::region::RegionAvbBuild::Skipped {
                     source_region,
                     target,
                 }) => {
@@ -495,9 +495,8 @@ pub(crate) fn advanced_file_worker(
         }
         AdvAction::RebuildVbmeta => {
             ltbox_core::live!(log, "[AVB] {}", phases.marker(1));
-            // `resign_image` alone won't work — chain
-            // hashes go stale once dtbo / init_boot /
-            // vendor_boot move.
+            // `resign_image` alone won't work — matching Hash/Hashtree
+            // descriptors go stale when dtbo / init_boot / vendor_boot change.
             let info = ltbox_patch::avb::extract_image_avb_info(input)
                 .map_err(|e| tr_args!("err_vbmeta_inspect_failed", error = e.to_string()))?;
             // Only the two stock test keys embedded in
@@ -522,9 +521,9 @@ pub(crate) fn advanced_file_worker(
                 Some(info.algorithm.as_str())
             };
 
-            // Advanced is file-only — user supplies
-            // the chained images (v2 dumps them).
-            let candidates: &[&str] = &[
+            // Advanced is file-only — user supplies the partition images whose
+            // embedded descriptors should be imported (v2 dumps them).
+            let partition_image_candidates: &[&str] = &[
                 "dtbo.img",
                 "dtbo_a.img",
                 "dtbo_b.img",
@@ -538,19 +537,19 @@ pub(crate) fn advanced_file_worker(
                 "boot_a.img",
                 "boot_b.img",
             ];
-            let mut chained: Vec<std::path::PathBuf> = Vec::new();
-            for name in candidates {
+            let mut partition_images: Vec<std::path::PathBuf> = Vec::new();
+            for name in partition_image_candidates {
                 let p = parent.join(name);
                 if p.exists() {
-                    chained.push(p);
+                    partition_images.push(p);
                 }
             }
             ltbox_core::live!(log, "[AVB] {}", phases.marker(2));
-            if chained.is_empty() {
+            if partition_images.is_empty() {
                 ltbox_core::live!(
                     log,
                     "[AVB] {}",
-                    ltbox_core::i18n::tr("live_avb_no_chained_fallback")
+                    ltbox_core::i18n::tr("live_avb_no_partition_images_fallback")
                 );
                 if let Err(e) = ltbox_patch::avb::resign_image(
                     input,
@@ -564,7 +563,7 @@ pub(crate) fn advanced_file_worker(
                     ));
                 }
             } else {
-                if chained.iter().any(|p| {
+                if partition_images.iter().any(|p| {
                     p.file_name()
                         .and_then(|s| s.to_str())
                         .map(|s| s.starts_with("vendor_boot"))
@@ -577,9 +576,9 @@ pub(crate) fn advanced_file_worker(
                     );
                 }
                 let output = output_dir.join("vbmeta.rebuilt.img");
-                let chained_refs: Vec<&std::path::Path> =
-                    chained.iter().map(|p| p.as_path()).collect();
-                let chained_names = chained
+                let partition_image_refs: Vec<&std::path::Path> =
+                    partition_images.iter().map(|p| p.as_path()).collect();
+                let partition_image_names = partition_images
                     .iter()
                     .map(|p| p.file_name().and_then(|s| s.to_str()).unwrap_or(""))
                     .collect::<Vec<_>>()
@@ -588,9 +587,9 @@ pub(crate) fn advanced_file_worker(
                     log,
                     "[AVB] {}",
                     tr_args!(
-                        "live_avb_rebuild_chained",
-                        count = chained.len().to_string(),
-                        names = chained_names
+                        "live_avb_rebuild_partition_images",
+                        count = partition_images.len().to_string(),
+                        names = partition_image_names
                     )
                 );
                 ltbox_core::live!(
@@ -602,10 +601,10 @@ pub(crate) fn advanced_file_worker(
                         alg = alg.unwrap_or("(from original vbmeta)")
                     )
                 );
-                if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_chained_images(
+                if let Err(e) = ltbox_patch::avb::rebuild_vbmeta_with_partition_descriptors(
                     &output,
                     input,
-                    &chained_refs,
+                    &partition_image_refs,
                     key_spec,
                     alg,
                 ) {

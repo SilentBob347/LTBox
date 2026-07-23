@@ -20,14 +20,17 @@ pub(crate) fn unroot_worker(
 
     live!(log, "[Unroot] {}", phases.marker(1));
 
-    let (boot_name, base_part) = match unroot_type {
+    let (root_image_name, base_part) = match unroot_type {
         UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
         UnrootType::APatchGki => ("boot.img", "boot"),
     };
-    let boot_path = dir.join(boot_name);
+    let root_image_path = dir.join(root_image_name);
     let vbmeta_path = dir.join("vbmeta.img");
-    if !boot_path.exists() {
-        return Err(tr_args!("err_unroot_image_missing", image = boot_name));
+    if !root_image_path.exists() {
+        return Err(tr_args!(
+            "err_unroot_image_missing",
+            image = root_image_name
+        ));
     }
     if !vbmeta_path.exists() {
         return Err(tr("err_unroot_vbmeta_missing"));
@@ -35,7 +38,7 @@ pub(crate) fn unroot_worker(
     live!(
         log,
         "[Unroot] {}",
-        tr_args!("live_unroot_backup_pair", boot = boot_name)
+        tr_args!("live_unroot_backup_pair", root_image = root_image_name)
     );
 
     // Slot resolution must succeed —
@@ -72,15 +75,15 @@ pub(crate) fn unroot_worker(
         )
     );
 
-    // Boot + vbmeta resolve through the
+    // The root image + vbmeta resolve through the
     // hardcoded LUN map; GPT-by-name reads
     // the slot's start sector from the
     // device. No rawprogram parse needed —
     // the loader's parent dir may not even
     // contain a firmware XML pair.
-    let boot_label = format!("{base_part}{slot}");
+    let root_image_label = format!("{base_part}{slot}");
     let vbm_label = format!("vbmeta{slot}");
-    let boot_lun = ltbox_core::partition_lun::lun_for_partition(base_part)
+    let root_image_lun = ltbox_core::partition_lun::lun_for_partition(base_part)
         .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = base_part))?;
     let vbm_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta")
         .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = "vbmeta"))?;
@@ -89,8 +92,8 @@ pub(crate) fn unroot_worker(
         "[Unroot] {}",
         tr_args!(
             "log_unroot_lun_resolved",
-            boot_label = boot_label,
-            boot_lun = boot_lun,
+            root_image_label = root_image_label,
+            root_image_lun = root_image_lun,
             vbm_label = vbm_label,
             vbm_lun = vbm_lun,
         )
@@ -106,11 +109,23 @@ pub(crate) fn unroot_worker(
         log,
         "[Unroot] {} ({})",
         phases.marker(4),
-        tr_args!("live_unroot_backup_pair", boot = boot_name)
+        tr_args!("live_unroot_backup_pair", root_image = root_image_name)
     );
     session
-        .flash_partition(&boot_label, &boot_path, 0, boot_lun, &mut log)
-        .map_err(|e| tr_args!("err_unroot_flash_failed", label = boot_label, error = e))?;
+        .flash_partition(
+            &root_image_label,
+            &root_image_path,
+            0,
+            root_image_lun,
+            &mut log,
+        )
+        .map_err(|e| {
+            tr_args!(
+                "err_unroot_flash_failed",
+                label = root_image_label,
+                error = e
+            )
+        })?;
     session
         .flash_partition(&vbm_label, &vbmeta_path, 0, vbm_lun, &mut log)
         .map_err(|e| tr_args!("err_unroot_flash_failed", label = vbm_label, error = e))?;

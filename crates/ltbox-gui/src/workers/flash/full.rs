@@ -35,7 +35,7 @@ pub(crate) fn flash_worker(
     // `super.img.zst`) up front — before any device probe / transition. The
     // output can be tens of GB and take a while, so do it while the device is
     // still untouched (rather than leaving it parked in the bootloader), and so
-    // a compressed boot-chain image is present for the scan + region/AVB/ARB
+    // a compressed AVB-protected partition image is present for the scan + region/AVB/ARB
     // planning below. On failure the device has not been moved, so just return.
     // Phase 2/9 — Decompress packaged images.
     live!(log, "[Flash] {}", phases.marker(2));
@@ -333,7 +333,7 @@ pub(crate) fn flash_worker(
     // Phase 4/9 — Prepare the flash and safety plan.
     live!(log, "[Flash] {}", phases.marker(4));
 
-    // TB323FU keeps region boot-chain conversion off (it
+    // TB323FU keeps region vendor_boot/vbmeta AVB conversion off (it
     // provisions a GBL on efisp instead) but DOES take ARB
     // overlays. Region detect uses fp first, then model.
     let tb323fu_skip_region = firmware_fingerprint
@@ -491,7 +491,7 @@ pub(crate) fn flash_worker(
     //    re-sign it. Cross-region key2 is handled after EDL opens, where the
     //    device key class decides between a testkey re-sign + conversion
     //    (testkey device) or an abort (fixed device).
-    let mut region_pair: Option<ltbox_patch::region::RegionBootChainOutput> = None;
+    let mut region_pair: Option<ltbox_patch::region::RegionAvbOutput> = None;
     if cfg.modify_region
         && !tb323fu_skip_region
         && fw_key_class != ltbox_patch::key_map::KeyClass::Fixed
@@ -518,14 +518,14 @@ pub(crate) fn flash_worker(
                     region = format!("{:?}", device_region)
                 )
             );
-            match ltbox_patch::region::build_region_converted_boot_chain(
+            match ltbox_patch::region::build_region_converted_avb_images(
                 fw_dir,
                 &output_dir,
                 target,
                 &ltbox_patch::region::RegionPatternSet::default(),
                 None,
             ) {
-                Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                Ok(ltbox_patch::region::RegionAvbBuild::Built(output)) => {
                     ltbox_core::live!(
                         log,
                         "[Region] {}",
@@ -548,13 +548,13 @@ pub(crate) fn flash_worker(
                         log,
                         "[Region] {}",
                         tr_args!(
-                            "live_region_pair_rebuilt",
+                            "live_region_avb_images_rebuilt",
                             path = output.vbmeta.display().to_string()
                         )
                     );
                     region_pair = Some(output);
                 }
-                Ok(ltbox_patch::region::RegionBootChainBuild::Skipped {
+                Ok(ltbox_patch::region::RegionAvbBuild::Skipped {
                     source_region,
                     target,
                 }) => {
@@ -868,14 +868,14 @@ pub(crate) fn flash_worker(
                         return Err(ltbox_core::i18n::tr("err_region_missing_device_region"));
                     };
                     let region_dir = ltbox_core::app_paths::auto_output_dir_for("region_convert");
-                    match ltbox_patch::region::build_region_converted_boot_chain(
+                    match ltbox_patch::region::build_region_converted_avb_images(
                         fw_dir,
                         &region_dir,
                         device_region.to_region_target(),
                         &ltbox_patch::region::RegionPatternSet::default(),
                         Some("testkey_rsa4096"),
                     ) {
-                        Ok(ltbox_patch::region::RegionBootChainBuild::Built(output)) => {
+                        Ok(ltbox_patch::region::RegionAvbBuild::Built(output)) => {
                             ltbox_core::live!(
                                 log,
                                 "[Region] {}",
@@ -888,7 +888,7 @@ pub(crate) fn flash_worker(
                             resign_base = Some(output.vbmeta.clone());
                             region_vendor_boot = Some(output.vendor_boot.clone());
                         }
-                        Ok(ltbox_patch::region::RegionBootChainBuild::Skipped { .. }) => {
+                        Ok(ltbox_patch::region::RegionAvbBuild::Skipped { .. }) => {
                             // Source already matches target: nothing to convert;
                             // re-sign the firmware vbmeta as in the same-region case.
                         }

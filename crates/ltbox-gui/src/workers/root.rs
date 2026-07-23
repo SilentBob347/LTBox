@@ -248,7 +248,7 @@ pub(crate) fn root_worker(
     // Track whether Phase 6 has started any partition write.
     // Pre-write failures still attempt an EDL -> system reset;
     // once a write has begun, leave the device in EDL instead of
-    // rebooting into a half-written boot chain.
+    // rebooting into a half-written AVB image set.
     let mut writes_started = false;
     let device_phase_result: std::result::Result<(), String> =
         (|| -> std::result::Result<(), String> {
@@ -260,11 +260,11 @@ pub(crate) fn root_worker(
             // init_boot_<slot>. Geometry resolves from GPT.
             let is_gki_mode = is_gki_route;
             let base_name =
-                ltbox_patch::root_pipeline::boot_partition_base(pipe_family, is_gki_mode);
+                ltbox_patch::root_pipeline::root_image_partition_base(pipe_family, is_gki_mode);
             // `slot_suffix` was poll-resolved at Phase 1
             // and propagated through `RootPipelineConfig`;
             // it is guaranteed to be `_a` or `_b` here.
-            let boot_primary = format!("{base_name}{slot_suffix}");
+            let root_primary = format!("{base_name}{slot_suffix}");
             let vbmeta_primary = format!("vbmeta{slot_suffix}");
             // Lenovo devices on Qualcomm UFS place
             // boot / init_boot / vbmeta on LUN 4 (userdata
@@ -275,11 +275,11 @@ pub(crate) fn root_worker(
                 log,
                 "[Root] {} {} / {} (LUN {ROOT_PARTITIONS_LUN})",
                 ll.root_resolved_prefix,
-                boot_primary,
+                root_primary,
                 vbmeta_primary,
             );
 
-            // Phase 4/8 — Read stock boot-chain images.
+            // Phase 4/8 — Read stock AVB-protected root images.
             live!(log, "[Root] {}", phases.marker(4));
             // Hoisted so Phase 6 can echo the path.
             // Routed through `app_paths::backup_dir_for`
@@ -291,26 +291,26 @@ pub(crate) fn root_worker(
             let is_tb323fu;
             // TB323FU only: when the dumped efisp is empty (stock,
             // GBL-unprovisioned) we download the region GBL here and
-            // flash it alongside the patched boot at Phase 6.
+            // flash it alongside the patched root target image at Phase 6.
             let mut root_efisp_efi: Option<std::path::PathBuf> = None;
             {
                 let mut session = open_edl_session(&loader, false, &mut log)?;
                 // Patch pipeline hardcodes `init_boot.img` /
                 // `vbmeta.img` regardless of device label.
-                let boot_out = if base_name == "boot" {
+                let root_image_name = if base_name == "boot" {
                     "boot.img"
                 } else {
                     "init_boot.img"
                 };
-                let dumped_boot = work_dir.join(boot_out);
+                let dumped_root_image = work_dir.join(root_image_name);
                 let dumped_vbmeta = work_dir.join("vbmeta.img");
                 // `dump_partition` scans the LUN's GPT for the
                 // named partition — matches the shell-level
                 // `qdl-rs --phys-part-idx 4 dump-part <name>`.
                 session
                     .dump_partition(
-                        &boot_primary,
-                        &dumped_boot,
+                        &root_primary,
+                        &dumped_root_image,
                         0,
                         ROOT_PARTITIONS_LUN,
                         &mut log,
@@ -318,7 +318,7 @@ pub(crate) fn root_worker(
                     .map_err(|e| {
                         tr_args!(
                             "err_root_dump_partition_failed",
-                            partition = boot_primary,
+                            partition = root_primary,
                             error = e
                         )
                     })?;
@@ -326,10 +326,10 @@ pub(crate) fn root_worker(
                 // TB323FU root needs provisioned efisp; once present,
                 // skip AVB footer and vbmeta work. Keep the fingerprint
                 // so an empty efisp can fetch the matching region GBL.
-                let boot_fp = ltbox_patch::avb::extract_image_avb_info(&dumped_boot)
+                let root_image_fp = ltbox_patch::avb::extract_image_avb_info(&dumped_root_image)
                     .ok()
                     .and_then(|info| ltbox_patch::avb::build_fingerprint(&info));
-                is_tb323fu = boot_fp
+                is_tb323fu = root_image_fp
                     .as_deref()
                     .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                     .unwrap_or(false);
@@ -356,7 +356,8 @@ pub(crate) fn root_worker(
                         // Empty efisp = stock, GBL-unprovisioned, so the
                         // firmware was never rollback-patched — fetch the
                         // non-`_arb` region GBL and flash it with the patched
-                        // boot at Phase 6. efisp flashing no longer wipes data,
+                        // root target image at Phase 6. efisp flashing no
+                        // longer wipes data,
                         // so provisioning it here is safe in any data mode. The
                         // region comes from the device vendor_boot's
                         // `product_region` DTB marker — the AVB fingerprint
@@ -445,9 +446,15 @@ pub(crate) fn root_worker(
                         error = e
                     )
                 })?;
-                std::fs::copy(&dumped_boot, backup_dir.join(boot_out)).map_err(|e| {
-                    tr_args!("err_root_backup_copy_failed", image = boot_out, error = e)
-                })?;
+                std::fs::copy(&dumped_root_image, backup_dir.join(root_image_name)).map_err(
+                    |e| {
+                        tr_args!(
+                            "err_root_backup_copy_failed",
+                            image = root_image_name,
+                            error = e
+                        )
+                    },
+                )?;
                 if !is_tb323fu {
                     std::fs::copy(&dumped_vbmeta, backup_dir.join("vbmeta.img")).map_err(|e| {
                         tr_args!(
@@ -462,7 +469,7 @@ pub(crate) fn root_worker(
                         log,
                         "[Root] {} {} → {}",
                         ll.root_backup_copy_prefix,
-                        boot_out,
+                        root_image_name,
                         backup_dir.display()
                     );
                 } else {
@@ -470,7 +477,7 @@ pub(crate) fn root_worker(
                         log,
                         "[Root] {} {} + vbmeta.img → {}",
                         ll.root_backup_copy_prefix,
-                        boot_out,
+                        root_image_name,
                         backup_dir.display()
                     );
                 }
@@ -488,7 +495,7 @@ pub(crate) fn root_worker(
                 // the post-patch open gets a fresh handle.
             }
 
-            // Phase 5/8 — Offline boot patch + AVB metadata rebuild.
+            // Phase 5/8 — Offline root target image patch + AVB metadata rebuild.
             // vbmeta rebuild. Network downloads moved
             // up to Phase 2; this step never touches
             // the network so progress now matches the
@@ -518,8 +525,9 @@ pub(crate) fn root_worker(
             // sector attrs to thread through.
             // Provision efisp with the region GBL fetched above (only set
             // when the dumped efisp was empty) BEFORE flashing the patched
-            // boot. Ordering still matters for brick-safety: if the GBL
-            // flash fails, boot is still the stock image. After any write
+            // root target image. Ordering still matters for brick-safety: if
+            // the GBL flash fails, the root target image is still stock. After
+            // any write
             // begins, the error path leaves the device in EDL rather than
             // rebooting a partial chain.
             if let Some(efi) = &root_efisp_efi {
@@ -542,8 +550,8 @@ pub(crate) fn root_worker(
             writes_started = true;
             session
                 .flash_partition(
-                    &boot_primary,
-                    &artifacts.patched_boot,
+                    &root_primary,
+                    &artifacts.patched_root_image,
                     0,
                     ROOT_PARTITIONS_LUN,
                     &mut log,
@@ -551,7 +559,7 @@ pub(crate) fn root_worker(
                 .map_err(|e| {
                     tr_args!(
                         "err_root_flash_partition_failed",
-                        partition = boot_primary,
+                        partition = root_primary,
                         error = e
                     )
                 })?;

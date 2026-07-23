@@ -1,7 +1,7 @@
 //! End-to-end root pipeline: download → dump → patch → resign → flash.
 //!
 //! Orchestrates [`crate::magisk`], [`crate::ksu`], [`crate::avb`], and
-//! `ltbox_device::edl`. Outputs land in `cfg.output_dir` (patched boot +
+//! `ltbox_device::edl`. Outputs land in `cfg.output_dir` (patched root image +
 //! rebuilt vbmeta), then flash pushes them to the active slot.
 
 use std::path::PathBuf;
@@ -106,13 +106,13 @@ pub struct RootPipelineConfig {
     pub provider: RootProvider,
     pub version: RootVersion,
 
-    /// APK extraction + boot patching workspace. Cleaned on entry.
+    /// APK extraction + root image patching workspace. Cleaned on entry.
     pub work_dir: PathBuf,
-    /// Where patched boot + vbmeta land.
+    /// Where the patched root image (boot/init_boot) + vbmeta land.
     pub output_dir: PathBuf,
     /// EDL loader path (`xbl_s_devprg_ns.melf`).
     pub loader: PathBuf,
-    /// Active slot (`_a` / `_b` / empty; empty → flash defaults to `_a`).
+    /// Active slot (`_a` / `_b`). Empty is rejected; callers must resolve it.
     pub slot_suffix: String,
     /// Magisk `PREINITDEVICE`. Empty → Magisk resolves at runtime.
     pub preinit_device: String,
@@ -241,10 +241,10 @@ pub(super) fn nightly_artifact_url(repo: &str, run_id: u64, artifact_name: &str)
     format!("https://nightly.link/{repo}/actions/runs/{run_id}/{artifact_name}{suffix}")
 }
 
-/// Which base partition this pipeline targets.
+/// Which base root image partition this pipeline targets.
 /// `"boot"` for GKI + APatch/FolkPatch (kernel-blob patching),
 /// `"init_boot"` for Magisk / KSU (ramdisk injection).
-pub fn boot_partition_base(family: RootFamily, gki_mode: bool) -> &'static str {
+pub fn root_image_partition_base(family: RootFamily, gki_mode: bool) -> &'static str {
     if gki_mode || matches!(family, RootFamily::APatch | RootFamily::Skroot) {
         "boot"
     } else {
@@ -373,12 +373,12 @@ pub fn stage_root_payload(cfg: &RootPipelineConfig, log: &mut Vec<String>) -> Re
 
 /// Offline pipeline outcome — everything before the EDL flash step.
 pub struct PatchedArtifacts {
-    pub patched_boot: PathBuf,
-    /// `None` when the original vbmeta can stay (no chain).
+    pub patched_root_image: PathBuf,
+    /// `None` when AVB is skipped (e.g. TB323FU GBL root bypasses stock AVB).
     pub patched_vbmeta: Option<PathBuf>,
     pub manager_apk: Option<PathBuf>,
     /// Target partition name (`init_boot_a`, `boot_a`, …).
-    pub boot_partition: String,
+    pub root_partition: String,
     pub vbmeta_partition: Option<String>,
 }
 
@@ -394,15 +394,15 @@ pub fn build_patched_artifacts(
     fs::create_dir_all(&cfg.output_dir)?;
 
     // GKI → boot.img; LKM → init_boot.img. GUI dump step picks the right one.
-    let base_part = boot_partition_base(cfg.family, cfg.gki_mode);
+    let base_part = root_image_partition_base(cfg.family, cfg.gki_mode);
     let stock_filename = if base_part == "boot" {
         "boot.img"
     } else {
         "init_boot.img"
     };
-    let stock_boot_src = cfg.work_dir.join(stock_filename);
+    let stock_root_image_src = cfg.work_dir.join(stock_filename);
     let vbmeta_src = cfg.work_dir.join("vbmeta.img");
-    if !stock_boot_src.exists() {
+    if !stock_root_image_src.exists() {
         return Err(LtboxError::Patch(format!(
             "work_dir is missing the stock {stock_filename} dump"
         )));
@@ -426,7 +426,7 @@ pub fn build_patched_artifacts(
         stage_root_payload(cfg, log)?;
     }
 
-    let patched_boot = if cfg.gki_mode {
+    let patched_root_image = if cfg.gki_mode {
         // GKI: swap kernel blob from user's AnyKernel3 zip — no GitHub fetch.
         let kernel_zip = cfg.gki_kernel_zip.as_ref().ok_or_else(|| {
             LtboxError::Patch("GKI mode requires a custom kernel zip — none supplied".into())
@@ -463,18 +463,18 @@ pub fn build_patched_artifacts(
         }
     };
 
-    let final_boot = cfg.output_dir.join(stock_filename);
-    if final_boot.exists() {
-        fs::remove_file(&final_boot).ok();
+    let final_root_image = cfg.output_dir.join(stock_filename);
+    if final_root_image.exists() {
+        fs::remove_file(&final_root_image).ok();
     }
-    fs::rename(&patched_boot, &final_boot)?;
+    fs::rename(&patched_root_image, &final_root_image)?;
     ltbox_core::live!(
         log,
         "[Root] {} {} {} {}",
         tr("log_root_patched"),
         stock_filename,
         tr("log_root_ready_at"),
-        final_boot.display()
+        final_root_image.display()
     );
 
     // Slot suffix must be poll-resolved by the caller. Defaulting to
@@ -495,22 +495,23 @@ pub fn build_patched_artifacts(
 
     let (patched_vbmeta, vbmeta_partition) = if skip_avb {
         // TB323FU GBL root: boot verification is handled by the GBL EFI on
-        // `efisp`, so the stock AVB chain is bypassed entirely. Flash the
-        // repacked image as-is — no re-footer, no vbmeta rebuild, no vbmeta
-        // flash (the caller skips the vbmeta dump too).
+        // `efisp`, so the stock AVB verification path is bypassed. Flash the
+        // repacked image as-is — no hash footer re-add, no vbmeta rebuild, no
+        // vbmeta flash (the caller skips the vbmeta dump too).
         ltbox_core::live!(log, "[AVB] {}", tr("log_root_skip_avb_tb323fu"));
         (None, None)
     } else {
-        // Re-apply AVB footer. Algorithm + rollback index copied from stock to
-        // preserve device's rollback state. Signing key via `KEY_MAP` on stock pubkey.
-        let stock_info = avb::extract_image_avb_info(&stock_boot_src)?;
-        let boot_key =
+        // Re-add AVB hash footer. Algorithm + rollback index copied from stock
+        // to preserve device's rollback state. Signing key via `KEY_MAP` on stock
+        // pubkey.
+        let stock_info = avb::extract_image_avb_info(&stock_root_image_src)?;
+        let root_image_key =
             resolve_signing_key(stock_info.public_key_sha1.as_deref(), stock_filename, log)?;
-        // Erase any stale AVB footer before re-applying ours. A missing footer
+        // Erase any stale AVB footer before re-adding ours. A missing footer
         // is the normal case for a freshly built image, so this is best-effort —
         // but surface a real failure (I/O, corruption) in the log instead of
         // swallowing it silently, since `add_hash_footer` then runs on this image.
-        if let Err(e) = avb::erase_footer(&final_boot) {
+        if let Err(e) = avb::erase_footer(&final_root_image) {
             ltbox_core::live!(
                 log,
                 "[AVB] {}",
@@ -518,23 +519,24 @@ pub fn build_patched_artifacts(
             );
         }
         avb::add_hash_footer(
-            &final_boot,
+            &final_root_image,
             &stock_info,
-            boot_key.as_deref(),
+            root_image_key.as_deref(),
             Some(stock_info.rollback_index),
         )?;
         ltbox_core::live!(
             log,
             "[AVB] {} {} ({} rollback={}, key={})",
-            tr("log_avb_refootered"),
+            tr("log_avb_hash_footer_added"),
             stock_filename,
             stock_info.algorithm,
             stock_info.rollback_index,
-            boot_key.as_deref().unwrap_or("(unsigned)"),
+            root_image_key.as_deref().unwrap_or("(unsigned)"),
         );
 
-        // Rebuild vbmeta with fresh hash descriptor. vbmeta pubkey may differ
-        // from boot pubkey, so verify it separately against KEY_MAP.
+        // Refresh vbmeta from the descriptor embedded in final_root_image. The
+        // vbmeta pubkey may differ from the root image pubkey, so verify it
+        // against KEY_MAP.
         let stock_vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
         let vbmeta_key = resolve_signing_key(
             stock_vbmeta_info.public_key_sha1.as_deref(),
@@ -544,24 +546,25 @@ pub fn build_patched_artifacts(
         let final_vbmeta = cfg.output_dir.join("vbmeta.img");
         match vbmeta_key.as_deref() {
             Some(key) => {
-                avb::rebuild_vbmeta_with_chained_images(
+                avb::rebuild_vbmeta_with_partition_descriptors(
                     &final_vbmeta,
                     &vbmeta_src,
-                    &[&final_boot],
+                    &[&final_root_image],
                     key,
                     None,
                 )?;
                 ltbox_core::live!(
                     log,
                     "[AVB] {} {} at {} (key={key})",
-                    tr("log_avb_rebuilt_vbmeta"),
+                    tr("log_avb_rebuilt_vbmeta_from_partition_image"),
                     stock_filename,
                     final_vbmeta.display(),
                 );
             }
             None => {
-                // Unsigned vbmeta: copy stock through. Stale chain hash is fine
-                // since NONE-algorithm bootloaders skip verification.
+                // Unsigned vbmeta: copy stock through. A stale Hash/Hashtree
+                // descriptor is fine because NONE-algorithm bootloaders skip
+                // verification.
                 fs::copy(&vbmeta_src, &final_vbmeta)?;
                 ltbox_core::live!(
                     log,
@@ -575,10 +578,10 @@ pub fn build_patched_artifacts(
     };
 
     Ok(PatchedArtifacts {
-        patched_boot: final_boot,
+        patched_root_image: final_root_image,
         patched_vbmeta,
         manager_apk: staged_manager_apk.exists().then_some(staged_manager_apk),
-        boot_partition: format!("{base_part}{suffix}"),
+        root_partition: format!("{base_part}{suffix}"),
         vbmeta_partition,
     })
 }
