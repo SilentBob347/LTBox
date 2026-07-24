@@ -89,12 +89,11 @@ struct WindowsDriverSpec {
     releases_api: &'static str,
     required_infs: &'static [&'static str],
     version_inf: &'static str,
-    /// Add/Remove Programs `DisplayName` of the installed package. Set only
-    /// when the driver's INF `DriverVer` lives in a different version namespace
-    /// than the GitHub release tag, so the update check must read the
-    /// `DisplayVersion` from the uninstall registry to compare like-for-like.
-    /// `None` → the INF `DriverVer` is already in the tag's namespace and is
-    /// used directly. Presence detection always uses the INF, regardless.
+    /// Add/Remove Programs `DisplayName` of the installed package. When set,
+    /// the update check reads its `DisplayVersion` from the uninstall registry
+    /// so it can compare in the GitHub release tag's version namespace.
+    /// `None` falls back to the INF `DriverVer`. Presence detection always uses
+    /// the required INF files, regardless of this update-version source.
     uninstall_display_name: Option<&'static str>,
     asset_x64: &'static str,
     asset_arm64: &'static str,
@@ -105,9 +104,10 @@ const USERSPACE_SPEC: WindowsDriverSpec = WindowsDriverSpec {
     releases_api: "https://api.github.com/repos/qualcomm/qcom-usb-userspace-drivers/releases?per_page=10",
     required_infs: &["qcserlib.inf"],
     version_inf: "qcserlib.inf",
-    // The userspace `qcserlib.inf` DriverVer matches the release tag version,
-    // so the INF is a valid update-comparison source.
-    uninstall_display_name: None,
+    // The userspace package can advance independently of `qcserlib.inf`
+    // (package/release 1.0.2.2 still ships INF DriverVer 1.0.2.1). Read the
+    // installer's package version to avoid a perpetual false update banner.
+    uninstall_display_name: Some("Qualcomm USB Userspace Drivers"),
     asset_x64: "qcom_usb_userspace_drivers_x64.exe",
     asset_arm64: "qcom_usb_userspace_drivers_arm64.exe",
     asset_x86: "qcom_usb_userspace_drivers_x86.exe",
@@ -408,9 +408,9 @@ fn parse_driver_ver(inf_text: &str) -> Option<String> {
 /// as [`version_from_tag`], or `None` when the driver is not installed / the
 /// version is unparseable (which collapses the update check to no banner).
 ///
-/// Userspace reads the INF `DriverVer` directly; kernel reads the QUD package
-/// `DisplayVersion` from the uninstall registry, because the kernel INF version
-/// is a different namespace than the release tag (see [`KERNEL_SPEC`]).
+/// Both Windows packages read their installer `DisplayVersion` from the
+/// uninstall registry because their INF `DriverVer` values can differ from the
+/// corresponding release tags (see [`USERSPACE_SPEC`] and [`KERNEL_SPEC`]).
 pub fn installed_driver_version() -> Option<String> {
     let spec = driver_spec(qcom_driver_mode());
     match spec.uninstall_display_name {
@@ -956,15 +956,28 @@ mod tests {
         );
     }
 
-    /// The kernel driver compares the QUD package version (uninstall-registry
-    /// `DisplayVersion`); the userspace driver compares the INF `DriverVer`.
+    /// Both Windows driver modes compare installer package versions from the
+    /// uninstall registry while required INFs remain the presence signal.
     #[test]
-    fn only_kernel_spec_uses_uninstall_registry() {
+    fn both_specs_use_uninstall_registry() {
+        assert_eq!(
+            USERSPACE_SPEC.uninstall_display_name,
+            Some("Qualcomm USB Userspace Drivers")
+        );
         assert_eq!(
             KERNEL_SPEC.uninstall_display_name,
             Some("Qualcomm USB Kernel Drivers")
         );
-        assert_eq!(USERSPACE_SPEC.uninstall_display_name, None);
+    }
+
+    /// Regression: userspace release 1.0.2.2 ships `qcserlib.inf` 1.0.2.1.
+    /// Comparing the INF against the release always reports a stale update,
+    /// while the installed package `DisplayVersion` compares equal.
+    #[test]
+    fn userspace_version_namespaces_do_not_mix() {
+        assert!(version_lt("1.0.2.1", "1.0.2.2"));
+        assert!(!version_lt("1.0.2.2", "1.0.2.2"));
+        assert!(version_lt("1.0.2.2", "1.0.2.3"));
     }
 
     /// Regression: the kernel INF `DriverVer` ("1.0.3.6") and the QUD release
