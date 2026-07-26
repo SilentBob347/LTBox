@@ -75,18 +75,6 @@ LTBox 是以侧边栏为核心的桌面 GUI，每个入口都会打开一个引�
 
 ---
 
-## 🛠️ 故障排除
-
-**启动崩溃 / 空白窗口（Windows，混合显卡笔记本）。** LTBox 现在默认使用 DirectX 12 渲染器，以避免不稳定的 OpenGL 显卡驱动崩溃。如果仍无法启动，请以软件安全模式运行：
-
-```powershell
-$env:ICED_BACKEND = "tiny-skia"; .\ltbox.exe
-```
-
-如需强制指定显卡后端，可设置 `WGPU_BACKEND`（例如 `vulkan`、`gl`、`dx12`）。
-
----
-
 ## 🙏 致谢
 
 - **Anonymous [ㅇㅇ](https://gall.dcinside.com/board/lists?id=tabletpc)**
