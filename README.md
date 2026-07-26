@@ -18,7 +18,7 @@
 
 ![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black) ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 
-See **[Quick Start](https://github.com/miner7222/LTBox/wiki/Home#quick-start)** on the wiki.
+See **[Quick Start](https://miner7222.github.io/ltbox/en/index.html#windows)** in the documentation.
 
 ---
 

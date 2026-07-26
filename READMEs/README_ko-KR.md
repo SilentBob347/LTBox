@@ -18,7 +18,7 @@
 
 ![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black) ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 
-위키의 **[빠른 시작](https://github.com/miner7222/LTBox/wiki/Home#quick-start)**을 참고하세요.
+문서의 **[빠른 시작](https://miner7222.github.io/ltbox/ko/index.html#windows)**을 참고하세요.
 
 ---
 

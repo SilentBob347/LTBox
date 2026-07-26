@@ -18,7 +18,7 @@
 
 ![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black) ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 
-请参阅 wiki 上的 **[快速开始](https://github.com/miner7222/LTBox/wiki/Home#quick-start)**。
+请参阅英文文档中的 **[快速开始](https://miner7222.github.io/ltbox/en/index.html#windows)**。
 
 ---
 
