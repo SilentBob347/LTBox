@@ -114,7 +114,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -218,7 +218,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Resolve release tag or commit
         id: meta
@@ -348,7 +348,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Resolve release tag or commit
         id: meta
@@ -432,7 +432,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Resolve release tag or commit
         id: meta
@@ -509,7 +509,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo clippy (native macOS)
         # Lints the cfg(target_os = "macos") paths that the Windows-targeted
@@ -550,7 +550,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo test --workspace
         run: cargo test --workspace --locked
@@ -593,7 +593,7 @@ jobs:
           cache-bin: false
 
       - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: cargo clippy (native Linux)
         # Lints the cfg(target_os = "linux") paths that the Windows-targeted
