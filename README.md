@@ -84,6 +84,12 @@ LTBox is a sidebar-driven desktop GUI; each entry opens a guided wizard.
 
 ---
 
+## 💛 Support
+
+LTBox is a personal hobby project and does not accept financial support of any kind — no donations, no sponsorships. Contributions, on the other hand, are always welcome: issues, pull requests, and translations all help.
+
+---
+
 ## 📄 License
 
 This work is licensed under [GPL-3.0-or-later][gpl].
