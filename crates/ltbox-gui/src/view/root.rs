@@ -159,14 +159,19 @@ impl App {
                 .align_x(iced::Alignment::Center),
             )
             .padding([20, 24])
-            .width(280)
+            .width(KPM_COLUMN_WIDTH)
             .style(move |t: &Theme| sel_card_style(t, kpm_selected)),
         )
         .on_press(Message::Root(RootMsg::RootSelectKpm))
         .padding(0)
         .style(move |t: &Theme, status| sel_card_btn_style(t, status, kpm_selected));
 
-        let mut list = column![].spacing(4).width(Length::Fill);
+        // Same width as the browse card, not `Fill`. A fill-width child
+        // ignores the parent column's centering and spans the whole
+        // content area, which packed every row against the far left edge
+        // while the card it belongs to sat centred — the two read as
+        // unrelated. Matching widths makes them one column.
+        let mut list = column![].spacing(4).width(KPM_COLUMN_WIDTH);
         for path in &self.root.kpm_paths {
             let name = std::path::Path::new(path)
                 .file_name()
@@ -189,9 +194,19 @@ impl App {
             })
             .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)));
             list = list.push(
-                row![remove, text(name).size(12).style(on_surface_style),]
-                    .spacing(10)
-                    .align_y(iced::Alignment::Center),
+                row![
+                    remove,
+                    // Module filenames can be long and have no spaces, so
+                    // break at glyph boundaries rather than overflowing
+                    // the column the list now shares with the card.
+                    text(name)
+                        .size(12)
+                        .style(on_surface_style)
+                        .width(Length::Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center),
             );
         }
 
