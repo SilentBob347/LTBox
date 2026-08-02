@@ -1255,7 +1255,8 @@ impl EdlSession {
     /// XMLs. XML coordinates drive the flash, so no slot-suffix guessing
     /// (EDL can't read slot suffix from ADB). Images resolve against the
     /// XML's own directory. Empty filename / `num_sectors=0` entries
-    /// skipped (GPT placeholders). Missing images logged and skipped.
+    /// skipped (GPT placeholders). Missing non-super images logged and
+    /// skipped; missing split-super images fail during preflight.
     /// Mirrors v2 `flash_rawprogram` in `bin/ltbox/device/edl.py`.
     pub fn flash_rawprogram(
         &mut self,
@@ -1290,6 +1291,60 @@ impl EdlSession {
         Self::label_matches_base(label, Self::KEEP_DATA_SKIP_BASES)
     }
 
+    fn is_split_super_image(filename: &str) -> bool {
+        Path::new(filename).file_name().is_some_and(|name| {
+            let name = name.to_string_lossy().to_ascii_lowercase();
+            name.starts_with("super_") && name.ends_with(".img")
+        })
+    }
+
+    /// Require every referenced split-super image before any device mutation.
+    /// Other missing images keep the existing warning-and-skip behavior in
+    /// `flash_program_node`.
+    fn preflight_rawprogram_super_images(program_xmls: &[PathBuf]) -> Result<()> {
+        for xml_path in program_xmls {
+            let xml_content = std::fs::read_to_string(xml_path)?;
+            let doc = roxmltree::Document::parse(&xml_content).map_err(|e| {
+                EdlError::Session(format!("XML parse error in {}: {e}", xml_path.display()))
+            })?;
+            let xml_dir = xml_path.parent().unwrap_or(Path::new("."));
+
+            for node in doc
+                .descendants()
+                .filter(|node| node.tag_name().name().eq_ignore_ascii_case("program"))
+            {
+                let filename = node.attribute("filename").unwrap_or("").trim();
+                if filename.is_empty() || !Self::is_split_super_image(filename) {
+                    continue;
+                }
+
+                let label = node.attribute("label").unwrap_or("").trim();
+                let ctx = format!("{} <program label={label}>", xml_path.display());
+                let num_sectors: usize =
+                    parse_xml_attr(&node, "num_partition_sectors", 0usize, &ctx)?;
+                if num_sectors == 0 {
+                    continue;
+                }
+
+                let image_path =
+                    ltbox_core::safe_path::safe_join(xml_dir, filename).map_err(|e| {
+                        EdlError::Session(format!(
+                            "invalid split-super image reference `{filename}` in {}: {e}",
+                            xml_path.display()
+                        ))
+                    })?;
+                if !image_path.exists() {
+                    return Err(EdlError::Session(format!(
+                        "required split-super image is missing: {} (referenced by {})",
+                        image_path.display(),
+                        xml_path.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Flash with explicit user-data mode.
     ///
     /// `wipe=true` (v2 `pre_erase=True`): erase userdata/metadata/frp
@@ -1305,6 +1360,8 @@ impl EdlSession {
         wipe: bool,
         log: &mut Vec<String>,
     ) -> Result<()> {
+        Self::preflight_rawprogram_super_images(program_xmls)?;
+
         if wipe {
             ltbox_core::live!(log, "[Flash] {}", tr("log_flash_wipe_enabled"));
             self.pre_erase_wipe_labels(program_xmls, log)?;
@@ -1354,6 +1411,8 @@ impl EdlSession {
         patch_xmls: &[PathBuf],
         log: &mut Vec<String>,
     ) -> Result<()> {
+        Self::preflight_rawprogram_super_images(program_xmls)?;
+
         for xml_path in program_xmls {
             ltbox_core::live!(
                 log,
@@ -2280,6 +2339,54 @@ mod tests {
             err.to_string().contains("physical_partition_number"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn rawprogram_super_image_preflight_rejects_missing_image() {
+        let fw = TempFirmwareDir::new();
+        fw.write(
+            "rawprogram0.xml",
+            r#"<data><program label="super" filename="images/SUPER_1.IMG" num_partition_sectors="1" /></data>"#,
+        );
+
+        let rawprogram = fw.path().join("rawprogram0.xml");
+        let err = EdlSession::preflight_rawprogram_super_images(&[rawprogram])
+            .expect_err("missing split-super image must fail preflight");
+
+        assert!(matches!(err, EdlError::Session(_)));
+        let message = err.to_string();
+        assert!(
+            message.contains("SUPER_1.IMG"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("rawprogram0.xml"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn rawprogram_super_image_preflight_allows_present_and_optional_missing_images() {
+        let fw = TempFirmwareDir::new();
+        let image_dir = fw.path().join("images");
+        std::fs::create_dir_all(&image_dir).expect("create split-super image directory");
+        std::fs::write(image_dir.join("SuPeR_2.ImG"), b"super").expect("write split-super image");
+        fw.write(
+            "rawprogram0.xml",
+            r#"
+            <data>
+              <program label="super" filename="images/SuPeR_2.ImG" num_partition_sectors="1" />
+              <program label="boot" filename="boot.img" num_partition_sectors="1" />
+              <program label="super" filename="super.img" num_partition_sectors="1" />
+              <program label="super" filename="super_ignored.img" num_partition_sectors="0" />
+              <program label="placeholder" filename="" num_partition_sectors="1" />
+            </data>
+            "#,
+        );
+
+        let rawprogram = fw.path().join("rawprogram0.xml");
+        EdlSession::preflight_rawprogram_super_images(&[rawprogram])
+            .expect("present split-super and optional missing images should pass preflight");
     }
 
     #[test]
