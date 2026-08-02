@@ -1076,7 +1076,11 @@ impl App {
     /// every popup uses the same shape, so consolidate here instead
     /// of duplicating the container chain in each call site.
     pub(crate) fn popup_loading_view(&self) -> Element<'_, Message> {
-        container(material_circular_progress(MaterialProgressSize::Standard))
+        // These popups wait on a single upstream fetch — squarely the
+        // 200 ms to 5 s band where M3 specifies the loading indicator in
+        // place of an indeterminate progress ring. The busy dialog keeps
+        // the ring, since a flash is not a short wait.
+        container(material_loading_indicator())
             .width(Length::Fill)
             .height(48)
             .center_x(Length::Fill)
