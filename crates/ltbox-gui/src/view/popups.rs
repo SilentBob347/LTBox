@@ -413,20 +413,7 @@ impl App {
             }
         });
 
-        let copy_btn = button(
-            container(lucide_icon(icon::action_copy(), 16.0, |t: &Theme| {
-                pal_of(t).on_surface_variant
-            }))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-        )
-        .on_press(Message::CopyToClipboard(rendered))
-        .width(Length::Fixed(32.0))
-        .height(Length::Fixed(32.0))
-        .padding(0)
-        .style(|t: &Theme, status| {
+        let copy_btn = m3_icon_button(icon::action_copy(), 16.0, |t: &Theme, status| {
             let p = pal_of(t);
             button::Style {
                 background: theme::state_layer_bg(status, p.on_surface).map(Into::into),
@@ -437,7 +424,8 @@ impl App {
                 },
                 ..Default::default()
             }
-        });
+        })
+        .on_press(Message::CopyToClipboard(rendered));
 
         let copy_btn = widget::tooltip(
             copy_btn,

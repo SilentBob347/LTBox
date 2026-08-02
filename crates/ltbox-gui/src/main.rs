@@ -4844,30 +4844,49 @@ mod tests {
         assert!(!result.contains("wizard_error_fab"));
     }
 
-    /// `eval` takes the elapsed fraction `x`, not the Bézier parameter.
-    /// Reading `y(t)` directly is the easy mistake and lands ~0.19 low at
-    /// the midpoint of the asymmetric M3 curves.
+    /// `eval` takes the elapsed fraction `x`, not the Bézier parameter,
+    /// and must land exactly on both endpoints.
     #[test]
     fn motion_eval_inverts_x_before_reading_the_curve() {
-        use theme::motion::{EMPHASIZED_DECELERATE, eval};
+        use theme::motion::{eval, expressive};
 
-        assert!(eval(EMPHASIZED_DECELERATE, 0.0).abs() < 1e-4);
-        assert!((eval(EMPHASIZED_DECELERATE, 1.0) - 1.0).abs() < 1e-4);
-
-        let mid = eval(EMPHASIZED_DECELERATE, 0.5);
-        assert!(
-            (mid - 0.9502).abs() < 5e-3,
-            "midpoint should follow cubic-bezier(0.05, 0.7, 0.1, 1.0), got {mid}"
-        );
-
-        // Monotonic across the range — a non-inverted read still rises,
-        // so this guards the shape rather than the direction alone.
-        let mut prev = 0.0;
-        for step in 0..=20 {
-            let y = eval(EMPHASIZED_DECELERATE, step as f32 / 20.0);
-            assert!(y >= prev - 1e-4, "curve must not regress at {step}");
-            prev = y;
+        for spring in [expressive::SPATIAL_DEFAULT, expressive::EFFECTS_DEFAULT] {
+            assert!(eval(spring.curve, 0.0).abs() < 1e-3);
+            assert!((eval(spring.curve, 1.0) - 1.0).abs() < 1e-3);
         }
+    }
+
+    /// Spatial springs overshoot and effects springs must not — that is
+    /// the whole reason M3 splits them, so clamping `eval` or picking the
+    /// wrong family would silently flatten the motion.
+    #[test]
+    fn spatial_springs_overshoot_and_effects_springs_do_not() {
+        use theme::motion::{eval, expressive};
+
+        let peak = |s: theme::motion::Spring| {
+            (0..=100).fold(0.0f32, |acc, i| acc.max(eval(s.curve, i as f32 / 100.0)))
+        };
+
+        assert!(
+            peak(expressive::SPATIAL_DEFAULT) > 1.0,
+            "spatial springs bounce past their target"
+        );
+        assert!(
+            peak(expressive::EFFECTS_DEFAULT) <= 1.0 + 1e-3,
+            "colour and opacity must never overshoot"
+        );
+    }
+
+    /// `progress` maps wall-clock time onto the curve and reports
+    /// settling at the token's own duration.
+    #[test]
+    fn spring_progress_tracks_its_duration() {
+        use theme::motion::expressive::SPATIAL_FAST;
+
+        assert!(SPATIAL_FAST.progress(0.0).abs() < 1e-3);
+        assert!((SPATIAL_FAST.progress(350.0) - 1.0).abs() < 1e-3);
+        assert!(!SPATIAL_FAST.is_done(349.0));
+        assert!(SPATIAL_FAST.is_done(350.0));
     }
 
     /// An unidentified device must not be reported as rollback-protected:

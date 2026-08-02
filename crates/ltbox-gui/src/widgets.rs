@@ -527,8 +527,49 @@ fn m3_button<'a>(
     )
     // Vertical padding stays 0 — the fixed height plus the centering
     // container own the vertical metrics.
-    .padding([0, 24])
+    .padding(iced::Padding {
+        top: 0.0,
+        right: M3_BUTTON_H_PADDING,
+        bottom: 0.0,
+        left: M3_BUTTON_H_PADDING,
+    })
     .height(Length::Fixed(M3_BUTTON_HEIGHT))
+    .style(style)
+}
+
+/// Horizontal padding for a common button. M3 Expressive retired the
+/// 24 dp small-button padding in favour of 16 dp, which it notes matches
+/// the padding of the new size range.
+pub(crate) const M3_BUTTON_H_PADDING: f32 = 16.0;
+
+/// Icon-button size. M3 requires extra-small and small icon buttons to
+/// carry a pointer target of at least 48x48 even when the painted
+/// container is smaller.
+///
+/// iced paints a button's style across the button's own rect, so a 32 px
+/// disc inside a 48 px target would leave the state layer on the
+/// invisible box instead of the visible shape. Rather than lose hover
+/// feedback, the container *is* the target: 48 px is a size M3 lists for
+/// icon buttons, so this stays on the scale instead of inventing one.
+pub(crate) const M3_ICON_BUTTON_SIZE: f32 = 48.0;
+
+/// Icon button at the M3 target size, with the glyph centred inside.
+/// Hand-built versions of this at two call sites came out at 32 px.
+pub(crate) fn m3_icon_button(
+    glyph: iced::widget::Text<'static, Theme, iced::Renderer>,
+    glyph_size: f32,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> button::Button<'static, Message> {
+    button(
+        container(glyph.size(glyph_size))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(M3_ICON_BUTTON_SIZE))
+    .height(Length::Fixed(M3_ICON_BUTTON_SIZE))
+    .padding(0)
     .style(style)
 }
 

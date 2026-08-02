@@ -91,6 +91,9 @@ rec_badge         = "star"
 # Rollback-index popup — copy the displayed value (16 px)
 action_copy       = "copy"
 
+# Root wizard KPM list — drop one picked module (16 px)
+kpm_remove        = "minus"
+
 # About panel
 nav_about         = "info"
 about_github      = "github"

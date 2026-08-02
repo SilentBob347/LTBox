@@ -543,44 +543,113 @@ pub fn tooltip_style(t: &iced::Theme, radius: f32) -> iced::widget::container::S
     }
 }
 
-/// M3 motion tokens — easing curves (cubic-bezier control points) and
-/// duration tokens (milliseconds). Spring-driven animations (sidebar
-/// rail) stay on their physical model; these are reference values for
-/// linear-interpolated tweens (popup fade, toast slide, page transition).
+/// M3 Expressive motion-physics tokens.
+///
+/// The expressive update replaced the easing/duration system with
+/// springs; M3 now calls the old easing and duration tokens "the legacy
+/// system", so they are deliberately not carried here. What this module
+/// holds instead are the two preset schemes' spring tokens, expressed
+/// through M3's own published spring-to-curve conversion for platforms
+/// without a spring runtime — which is what iced is.
 pub mod motion {
     /// `cubic-bezier(x1, y1, x2, y2)` — outer control points.
     pub type Easing = (f32, f32, f32, f32);
 
-    // Emphasized — primary easing for incoming/outgoing content,
-    // navigation, and other large layout changes.
-    pub const EMPHASIZED: Easing = (0.2, 0.0, 0.0, 1.0);
-    pub const EMPHASIZED_DECELERATE: Easing = (0.05, 0.7, 0.1, 1.0);
-    pub const EMPHASIZED_ACCELERATE: Easing = (0.3, 0.0, 0.8, 0.15);
-    // Standard — secondary easing for small UI elements and state
-    // changes that should feel routine rather than emphasized.
-    pub const STANDARD: Easing = (0.2, 0.0, 0.0, 1.0);
-    pub const STANDARD_DECELERATE: Easing = (0.0, 0.0, 0.0, 1.0);
-    pub const STANDARD_ACCELERATE: Easing = (0.3, 0.0, 1.0, 1.0);
-    pub const LINEAR: Easing = (0.0, 0.0, 1.0, 1.0);
+    /// One spring token expressed the way M3 publishes it for platforms
+    /// without a spring runtime: an equivalent cubic-bezier plus a
+    /// duration.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Spring {
+        pub curve: Easing,
+        pub duration_ms: u32,
+    }
 
-    // Duration tokens (ms). M3 groups durations into short / medium /
-    // long / extra long; pick by the magnitude of the layout change.
-    pub const SHORT_1: u32 = 50;
-    pub const SHORT_2: u32 = 100;
-    pub const SHORT_3: u32 = 150;
-    pub const SHORT_4: u32 = 200;
-    pub const MEDIUM_1: u32 = 250;
-    pub const MEDIUM_2: u32 = 300;
-    pub const MEDIUM_3: u32 = 350;
-    pub const MEDIUM_4: u32 = 400;
-    pub const LONG_1: u32 = 450;
-    pub const LONG_2: u32 = 500;
-    pub const LONG_3: u32 = 550;
-    pub const LONG_4: u32 = 600;
-    pub const EXTRA_LONG_1: u32 = 700;
-    pub const EXTRA_LONG_2: u32 = 800;
-    pub const EXTRA_LONG_3: u32 = 900;
-    pub const EXTRA_LONG_4: u32 = 1000;
+    impl Spring {
+        /// Progress at `elapsed_ms`. **Spatial springs overshoot**, so
+        /// this can legitimately exceed `1.0` before settling — callers
+        /// interpolating a position must not clamp it or they throw the
+        /// bounce away.
+        pub fn progress(self, elapsed_ms: f32) -> f32 {
+            if self.duration_ms == 0 {
+                return 1.0;
+            }
+            eval(self.curve, elapsed_ms / self.duration_ms as f32)
+        }
+
+        /// Whether the token has settled at `elapsed_ms`.
+        pub fn is_done(self, elapsed_ms: f32) -> bool {
+            elapsed_ms >= self.duration_ms as f32
+        }
+    }
+
+    /// Expressive motion scheme — M3's opinionated default, "used for
+    /// most situations, particularly hero moments and key interactions".
+    ///
+    /// **Spatial** tokens animate things that move: position, rotation,
+    /// size, corner radius. They overshoot and bounce into place.
+    /// **Effects** tokens animate colour and opacity, where overshoot
+    /// would be wrong, so they never exceed their target.
+    ///
+    /// Speed picks by element size: `FAST` for small components, the
+    /// default for partial-screen changes, `SLOW` for full-screen ones.
+    ///
+    /// Values are M3's own spring-to-curve conversion table for
+    /// non-spring platforms. iced has no spring runtime, so this is the
+    /// supported way to run the physics system here.
+    pub mod expressive {
+        use super::Spring;
+
+        pub const SPATIAL_FAST: Spring = Spring {
+            curve: (0.42, 1.67, 0.21, 0.90),
+            duration_ms: 350,
+        };
+        pub const SPATIAL_DEFAULT: Spring = Spring {
+            curve: (0.38, 1.21, 0.22, 1.00),
+            duration_ms: 500,
+        };
+        pub const SPATIAL_SLOW: Spring = Spring {
+            curve: (0.39, 1.29, 0.35, 0.98),
+            duration_ms: 650,
+        };
+
+        pub const EFFECTS_FAST: Spring = Spring {
+            curve: (0.31, 0.94, 0.34, 1.00),
+            duration_ms: 150,
+        };
+        pub const EFFECTS_DEFAULT: Spring = Spring {
+            curve: (0.34, 0.80, 0.34, 1.00),
+            duration_ms: 200,
+        };
+        pub const EFFECTS_SLOW: Spring = Spring {
+            curve: (0.34, 0.88, 0.34, 1.00),
+            duration_ms: 300,
+        };
+    }
+
+    /// Standard motion scheme — "more functional with minimal bounce",
+    /// for utilitarian moments. Its spatial tokens share one curve and
+    /// differ only in duration; the effects tokens are identical to the
+    /// expressive ones.
+    pub mod standard {
+        use super::Spring;
+
+        pub const SPATIAL_FAST: Spring = Spring {
+            curve: (0.27, 1.06, 0.18, 1.00),
+            duration_ms: 350,
+        };
+        pub const SPATIAL_DEFAULT: Spring = Spring {
+            curve: (0.27, 1.06, 0.18, 1.00),
+            duration_ms: 500,
+        };
+        pub const SPATIAL_SLOW: Spring = Spring {
+            curve: (0.27, 1.06, 0.18, 1.00),
+            duration_ms: 750,
+        };
+
+        pub const EFFECTS_FAST: Spring = super::expressive::EFFECTS_FAST;
+        pub const EFFECTS_DEFAULT: Spring = super::expressive::EFFECTS_DEFAULT;
+        pub const EFFECTS_SLOW: Spring = super::expressive::EFFECTS_SLOW;
+    }
 
     /// Cubic Bézier basis with the endpoints pinned at `P0 = 0` and
     /// `P3 = 1`, which is the form every CSS/M3 easing token uses.
@@ -598,17 +667,13 @@ pub mod motion {
     /// definition the M3 tokens are written in.
     ///
     /// The curve is parametric, so `x` is *not* the Bézier parameter:
-    /// reading `y(t)` directly (the earlier shortcut here) skews the
-    /// result badly on the asymmetric tokens — `EMPHASIZED_DECELERATE`
-    /// at the midpoint gives 0.76 that way versus 0.95 for the real
-    /// curve, i.e. a visibly different deceleration. Newton–Raphson
-    /// inverts `x(s)` first; the M3 curves are monotonic and well
-    /// conditioned, so a handful of iterations converge well inside
-    /// sub-pixel tolerance.
+    /// reading `y(t)` directly skews the result badly on the asymmetric
+    /// tokens. Newton–Raphson inverts `x(s)` first; these curves are
+    /// monotonic in `x` and well conditioned, so a handful of iterations
+    /// converge well inside sub-pixel tolerance.
     ///
-    /// Nothing consumes this yet — it is design-system scaffolding, per
-    /// the module-level `allow(dead_code)`. Keeping it correct means the
-    /// next consumer inherits the real curve rather than the shortcut.
+    /// The output is deliberately **not** clamped to `1.0`: spatial
+    /// springs have a `y1` above 1 and are supposed to overshoot.
     pub fn eval(curve: Easing, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
         let (p1x, p1y, p2x, p2y) = curve;
@@ -641,11 +706,20 @@ pub mod motion {
 /// cards and panels, `XL` for dialogs, `FULL` for buttons, FABs and the
 /// nav indicator.
 pub mod shape {
+    pub const NONE: f32 = 0.0;
     pub const XS: f32 = 4.0;
     pub const SM: f32 = 8.0;
     pub const MD: f32 = 12.0;
     pub const LG: f32 = 16.0;
+    /// `large-increased`. One of the three steps the Expressive update
+    /// added; they sit between the old stops precisely so a hero surface
+    /// can break from its neighbours without jumping a whole step.
+    pub const LG_INCREASED: f32 = 20.0;
     pub const XL: f32 = 28.0;
+    /// `extra-large-increased`.
+    pub const XL_INCREASED: f32 = 32.0;
+    /// `extra-extra-large` — the top of the scale, for hero containers.
+    pub const XXL: f32 = 48.0;
     pub const FULL: f32 = 9999.0;
 }
 

@@ -173,21 +173,7 @@ impl App {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.clone());
             let p_copy = path.clone();
-            // M3 extra-small icon button: a 32 px square rather than the
-            // ~22 px the old `padding([2, 10])` produced, which was a
-            // genuinely awkward target for a destructive list action.
-            let remove = button(
-                container(text("−").size(16))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
-            .width(Length::Fixed(32.0))
-            .height(Length::Fixed(32.0))
-            .padding(0)
-            .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)))
-            .style(|t: &Theme, status| {
+            let remove = m3_icon_button(icon::kpm_remove(), 16.0, |t: &Theme, status| {
                 let p = pal_of(t);
                 button::Style {
                     background: Some(
@@ -200,7 +186,8 @@ impl App {
                     },
                     ..Default::default()
                 }
-            });
+            })
+            .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)));
             list = list.push(
                 row![remove, text(name).size(12).style(on_surface_style),]
                     .spacing(10)
