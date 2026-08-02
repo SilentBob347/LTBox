@@ -90,7 +90,9 @@ fn m3_dialog_layers(inner: Element<'_, Message>) -> Element<'_, Message> {
             border: iced::Border {
                 color: p.outline_variant,
                 width: 1.0,
-                radius: 28.0.into(),
+                // M3 dialogs sit at the extra-large step — now an actual
+                // token rather than a literal that happened to match it.
+                radius: theme::shape::XL.into(),
             },
             shadow: iced::Shadow {
                 color: with_alpha(p.shadow, 0.3),
@@ -361,7 +363,7 @@ pub(crate) fn card<'a>(
     container(card_content(title, content))
         .width(Length::Fill)
         .style(|t: &Theme| {
-            theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
+            theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::LG, 1)
         })
         .into()
 }
@@ -385,7 +387,7 @@ pub(crate) fn clickable_card<'a>(
                 border: iced::Border {
                     color: p.outline_variant,
                     width: 1.0,
-                    radius: theme::shape::MD.into(),
+                    radius: theme::shape::LG.into(),
                 },
                 shadow: theme::elevation(1, theme::is_dark(t)),
                 ..Default::default()
@@ -631,25 +633,29 @@ pub(crate) fn adv_grid_btn<'a>(item: AdvAction, label: &str) -> Element<'a, Mess
     // version used `theme::surface_card_style` which paints an opaque
     // bg — that bg sat on top of the button's hover fill, swallowing
     // the highlight and making the grid feel dead on hover.
+    let destructive = item.is_destructive();
     let content = container(
         text(label.to_string())
             .size(12)
             .center()
             .width(Length::Fill)
-            .style(|t: &Theme| iced::widget::text::Style {
-                color: Some(pal_of(t).on_surface),
+            .style(move |t: &Theme| {
+                let p = pal_of(t);
+                iced::widget::text::Style {
+                    color: Some(if destructive { p.error } else { p.on_surface }),
+                }
             }),
     )
     .padding([18, 12])
     .width(Length::Fill)
     .center_x(Length::Fill)
-    .style(|t: &Theme| sel_card_style(t, false));
+    .style(move |t: &Theme| sel_card_style_for(t, false, destructive));
 
     button(content)
         .on_press(Message::Adv(AdvMsg::AdvConfirm(item)))
         .padding(0)
         .width(Length::Fill)
-        .style(|t: &Theme, status| sel_card_btn_style(t, status, false))
+        .style(move |t: &Theme, status| sel_card_btn_style_for(t, status, false, destructive))
         .into()
 }
 
@@ -702,6 +708,20 @@ pub(crate) fn lucide_primary(
         .into()
 }
 
+/// Error-coloured Lucide icon. Pairs with
+/// [`icon_option_card_sub_square_destructive_sized`] so a data-erasing
+/// option reads as destructive at the glyph, not just at the border.
+pub(crate) fn lucide_error(
+    icon: iced::widget::Text<'static, Theme, iced::Renderer>,
+    size: f32,
+) -> Element<'static, Message> {
+    icon.size(size)
+        .style(|t: &Theme| iced::widget::text::Style {
+            color: Some(pal_of(t).error),
+        })
+        .into()
+}
+
 /// Disabled-state Lucide icon — `on_surface` at 0.38 alpha (M3 disabled
 /// content tone). Pair with [`icon_option_card_sub_disabled`] so the
 /// whole card reads as "not pickable on this device".
@@ -739,7 +759,21 @@ pub(crate) fn icon_option_card_sub_square_sized(
     msg: Message,
     side: f32,
 ) -> Element<'static, Message> {
-    option_card(icon, label, sub, selected, Some(msg), Some(side))
+    option_card(icon, label, sub, selected, Some(msg), Some(side), false)
+}
+
+/// Square option card for a choice that destroys data. Renders on the
+/// `error` role instead of `primary` so "wipe" never looks like "keep"
+/// with a different label — pair it with [`lucide_error`].
+pub(crate) fn icon_option_card_sub_square_destructive_sized(
+    icon: Element<'static, Message>,
+    label: &str,
+    sub: &str,
+    selected: bool,
+    msg: Message,
+    side: f32,
+) -> Element<'static, Message> {
+    option_card(icon, label, sub, selected, Some(msg), Some(side), true)
 }
 
 pub(crate) fn icon_option_card_sub_square_disabled_sized(
@@ -748,12 +782,13 @@ pub(crate) fn icon_option_card_sub_square_disabled_sized(
     sub: &str,
     side: f32,
 ) -> Element<'static, Message> {
-    option_card(icon, label, sub, false, None, Some(side))
+    option_card(icon, label, sub, false, None, Some(side), false)
 }
 
 /// Shared body for the vertical icon → title → description option card.
 /// `msg = None` renders the disabled affordance; `square_side` swaps the
-/// full-width × fixed-height box for a fixed 1:1 square.
+/// full-width × fixed-height box for a fixed 1:1 square; `destructive`
+/// swaps the accent role from `primary` to `error`.
 fn option_card(
     icon: Element<'static, Message>,
     label: &str,
@@ -761,6 +796,7 @@ fn option_card(
     selected: bool,
     msg: Option<Message>,
     square_side: Option<f32>,
+    destructive: bool,
 ) -> Element<'static, Message> {
     let enabled = msg.is_some();
     let square = square_side.is_some();
@@ -827,13 +863,15 @@ fn option_card(
         .height(card_h)
         .center_x(card_w)
         .center_y(card_h)
-        .style(move |t: &Theme| sel_card_style(t, selected && enabled));
+        .style(move |t: &Theme| sel_card_style_for(t, selected && enabled, destructive && enabled));
 
     let btn = button(inner).padding(0).width(card_w);
     match msg {
         Some(m) => btn
             .on_press(m)
-            .style(move |t: &Theme, status| sel_card_btn_style(t, status, selected))
+            .style(move |t: &Theme, status| {
+                sel_card_btn_style_for(t, status, selected, destructive)
+            })
             .into(),
         None => btn
             // No `on_press` — iced reports Status::Disabled. Stronger M3
@@ -847,7 +885,7 @@ fn option_card(
                     border: iced::Border {
                         color: with_alpha(p.outline_variant, 0.6),
                         width: 1.0,
-                        radius: theme::shape::MD.into(),
+                        radius: theme::shape::LG.into(),
                     },
                     ..Default::default()
                 }

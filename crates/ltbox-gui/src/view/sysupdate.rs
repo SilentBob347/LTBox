@@ -164,7 +164,7 @@ impl App {
                             theme::surface_card_style(
                                 t,
                                 theme::SurfaceLevel::Lowest,
-                                theme::shape::MD,
+                                theme::shape::LG,
                                 0,
                             )
                         }),

@@ -196,7 +196,10 @@ impl App {
     pub(crate) fn flash_data_step(&self) -> Element<'_, Message> {
         let side = self.wizard_square_side();
         let shield = lucide_primary(icon::tile_shield(), 57.6);
-        let wipe = lucide_primary(icon::tile_wipe(), 57.6);
+        // Erasing `metadata` + `userdata` is the one irreversible choice
+        // on this step, so it carries the error role rather than looking
+        // like the sibling it is not.
+        let wipe = lucide_error(icon::tile_wipe(), 57.6);
         let col = column![
             row![
                 icon_option_card_sub_square_sized(
@@ -207,7 +210,7 @@ impl App {
                     Message::Flash(FlashMsg::FlashDataMode(DataMode::Keep)),
                     side,
                 ),
-                icon_option_card_sub_square_sized(
+                icon_option_card_sub_square_destructive_sized(
                     wipe,
                     self.t(DataMode::Wipe.label_key()),
                     self.t("datamode_wipe_desc"),
@@ -302,20 +305,15 @@ impl App {
             })
             .center()
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
-            let browse = button(
-                text(
-                    self.t(if has {
-                        "flash_loader_change"
-                    } else {
-                        "flash_loader_browse"
-                    })
-                    .to_string(),
-                )
-                .size(13),
+            let browse = m3_text_button(
+                self.t(if has {
+                    "flash_loader_change"
+                } else {
+                    "flash_loader_browse"
+                })
+                .to_string(),
             )
-            .on_press(Message::Flash(FlashMsg::FlashSelectLoader))
-            .padding([8, 16])
-            .style(md_text_btn_style);
+            .on_press(Message::Flash(FlashMsg::FlashSelectLoader));
             let mut loader_col = column![notice].spacing(6).align_x(iced::Alignment::Center);
             if let Some(p) = &self.flash.loader_override {
                 loader_col = loader_col.push(

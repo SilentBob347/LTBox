@@ -68,7 +68,7 @@ impl App {
                             border: iced::Border {
                                 color: iced::Color::TRANSPARENT,
                                 width: 0.0,
-                                radius: theme::shape::MD.into(),
+                                radius: theme::shape::LG.into(),
                             },
                             ..Default::default()
                         }
@@ -139,9 +139,7 @@ impl App {
                     // Mid-popup disconnect → drop the on_press so the
                     // confirm button reads as disabled instead of
                     // firing a reboot worker on a vanished transport.
-                    let mut b = button(text(self.t("btn_reboot_confirm").to_string()).size(13))
-                        .padding([8, 18])
-                        .style(md_filled_btn_style);
+                    let mut b = m3_filled_button(self.t("btn_reboot_confirm").to_string());
                     if self.device_reachable() {
                         b = b.on_press(Message::Reboot(RebootMsg::RebootConfirm));
                     }

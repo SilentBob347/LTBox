@@ -491,6 +491,59 @@ pub(crate) fn empty_wizard_nav<'a>() -> Element<'a, Message> {
     Space::new().height(0).into()
 }
 
+/// M3 common-button height. Dialog and popup actions were built ad hoc
+/// from `padding([6, 18])` at `size(12)`, which lands around 28 px —
+/// well under the 40 dp M3 gives a labeled button, and small enough to
+/// be a real pointing chore on the copy/download chips. Every action
+/// button now goes through [`m3_filled_button`] / [`m3_text_button`] so
+/// the size lives in one place.
+pub(crate) const M3_BUTTON_HEIGHT: f32 = 40.0;
+
+/// Interior padding for text fields and pick lists. At the default the
+/// dropdown options came out around 27 px tall; this puts a 13 px option
+/// at ~41 px, in reach of the 48 dp M3 asks of a menu item without
+/// making the settings rows tower over their labels.
+pub(crate) const M3_FIELD_PADDING: iced::Padding = iced::Padding {
+    top: 12.0,
+    right: 16.0,
+    bottom: 12.0,
+    left: 16.0,
+};
+
+fn m3_button<'a>(
+    label: String,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> button::Button<'a, Message> {
+    button(
+        container(
+            text(label)
+                .size(theme::text_size::LABEL_LARGE)
+                // A localized label must never shred into a per-glyph
+                // column when the parent row is tight; let it overflow.
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .height(Length::Fill)
+        .center_y(Length::Fill),
+    )
+    // Vertical padding stays 0 — the fixed height plus the centering
+    // container own the vertical metrics.
+    .padding([0, 24])
+    .height(Length::Fixed(M3_BUTTON_HEIGHT))
+    .style(style)
+}
+
+/// M3 filled button at the common height. Returns the `Button` so the
+/// caller still owns `on_press` (several sites gate it on state).
+pub(crate) fn m3_filled_button<'a>(label: String) -> button::Button<'a, Message> {
+    m3_button(label, md_filled_btn_style)
+}
+
+/// M3 text button at the common height — the low-emphasis half of a
+/// dialog's action pair.
+pub(crate) fn m3_text_button<'a>(label: String) -> button::Button<'a, Message> {
+    m3_button(label, md_text_btn_style)
+}
+
 fn wizard_nav_fabs<'a>(
     can_back: bool,
     next_label: &str,

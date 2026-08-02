@@ -103,7 +103,12 @@ pub(crate) fn m3_text_input_style(t: &Theme, status: text_input::Status) -> text
         background: if disabled {
             with_alpha(p.on_surface, 0.04).into()
         } else {
-            p.surface_container_lowest.into()
+            // M3 outlined fields have a transparent container — the
+            // outline alone defines them. `surface_container_lowest` was
+            // fine on light but in dark it is `0x0E0E13`, i.e. *darker*
+            // than the card underneath, so every field read as a hole
+            // punched in the panel instead of a control sitting on it.
+            iced::Color::TRANSPARENT.into()
         },
         border: iced::Border {
             color: if disabled {
@@ -158,7 +163,10 @@ pub(crate) fn m3_pick_list_style(t: &Theme, status: pick_list::Status) -> pick_l
         text_color: p.on_surface,
         placeholder_color: with_alpha(p.on_surface, 0.62),
         handle_color: p.on_surface_variant,
-        background: p.surface_container_lowest.into(),
+        // Transparent container, same reasoning as `m3_text_input_style`:
+        // in dark, `surface_container_lowest` sits below the card tone
+        // and the control reads as a hole rather than a raised field.
+        background: iced::Color::TRANSPARENT.into(),
         // `outline` (not the ~1.5:1 `outline_variant` divider tone) so the
         // resting control edge clears the 3:1 UI-contrast threshold.
         border: iced::Border {
@@ -460,17 +468,28 @@ pub(crate) fn panel_bg(t: &Theme) -> container::Style {
 /// so the visual outline survives without blocking the button's
 /// interactive bg.
 pub(crate) fn sel_card_style(t: &Theme, selected: bool) -> container::Style {
+    sel_card_style_for(t, selected, false)
+}
+
+/// [`sel_card_style`] with an accent switch. `destructive` swaps the
+/// primary accent for the `error` role so an option that erases user
+/// data or overwrites a partition is distinguishable from a safe one
+/// *before* it is picked, not only in the confirm copy.
+pub(crate) fn sel_card_style_for(t: &Theme, selected: bool, destructive: bool) -> container::Style {
     let p = pal_of(t);
+    let accent = if destructive { p.error } else { p.primary };
     container::Style {
         background: None,
         border: iced::Border {
-            color: if selected {
-                p.primary
+            // Destructive options keep a visible accent edge even at
+            // rest; safe ones stay on the neutral divider tone.
+            color: if selected || destructive {
+                accent
             } else {
                 p.outline_variant
             },
             width: if selected { 2.0 } else { 1.0 },
-            radius: theme::shape::MD.into(),
+            radius: theme::shape::LG.into(),
         },
         ..Default::default()
     }
@@ -492,18 +511,35 @@ pub(crate) fn sel_card_btn_style(
     status: button::Status,
     selected: bool,
 ) -> button::Style {
+    sel_card_btn_style_for(t, status, selected, false)
+}
+
+/// [`sel_card_btn_style`] with the same accent switch as
+/// [`sel_card_style_for`]. A selected destructive option fills with
+/// `error_container` rather than `secondary_container`.
+pub(crate) fn sel_card_btn_style_for(
+    t: &Theme,
+    status: button::Status,
+    selected: bool,
+    destructive: bool,
+) -> button::Style {
     let p = pal_of(t);
-    let base = if selected {
-        p.secondary_container
-    } else {
-        p.surface_container
+    let accent = if destructive { p.error } else { p.primary };
+    let base = match (selected, destructive) {
+        (true, true) => p.error_container,
+        (true, false) => p.secondary_container,
+        (false, _) => p.surface_container,
     };
-    let bg = theme::mix_color(base, p.primary, theme::state_alpha(status));
+    let bg = theme::mix_color(base, accent, theme::state_alpha(status));
     button::Style {
         background: Some(bg.into()),
-        text_color: p.on_surface,
+        text_color: if selected && destructive {
+            p.on_error_container
+        } else {
+            p.on_surface
+        },
         border: iced::Border {
-            radius: theme::shape::MD.into(),
+            radius: theme::shape::LG.into(),
             ..Default::default()
         },
         ..Default::default()

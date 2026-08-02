@@ -630,14 +630,22 @@ pub mod motion {
     }
 }
 
-/// M3 shape scale (corner radius in px). Expressive uses rounder
-/// corners than baseline M3.
+/// M3 shape scale (corner radius in px).
+///
+/// These are the spec values — extra-large is 28, not the 24 this module
+/// carried before, which quietly flattened every surface built on it.
+///
+/// Expressive asks for shape *contrast* rather than one radius
+/// everywhere, so the app assigns them by role: `SM` for controls that
+/// sit inside a surface (fields, menus, tooltips), `LG` for content
+/// cards and panels, `XL` for dialogs, `FULL` for buttons, FABs and the
+/// nav indicator.
 pub mod shape {
     pub const XS: f32 = 4.0;
     pub const SM: f32 = 8.0;
     pub const MD: f32 = 12.0;
     pub const LG: f32 = 16.0;
-    pub const XL: f32 = 24.0;
+    pub const XL: f32 = 28.0;
     pub const FULL: f32 = 9999.0;
 }
 

@@ -173,21 +173,34 @@ impl App {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.clone());
             let p_copy = path.clone();
-            let remove = button(text("−").size(14))
-                .padding([2, 10])
-                .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)))
-                .style(|t: &Theme, _s| {
-                    let p = pal_of(t);
-                    button::Style {
-                        background: Some(with_alpha(p.on_surface, 0.10).into()),
-                        text_color: p.on_surface,
-                        border: iced::Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
+            // M3 extra-small icon button: a 32 px square rather than the
+            // ~22 px the old `padding([2, 10])` produced, which was a
+            // genuinely awkward target for a destructive list action.
+            let remove = button(
+                container(text("−").size(16))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .width(Length::Fixed(32.0))
+            .height(Length::Fixed(32.0))
+            .padding(0)
+            .on_press(Message::Root(RootMsg::RootKpmRemove(p_copy)))
+            .style(|t: &Theme, status| {
+                let p = pal_of(t);
+                button::Style {
+                    background: Some(
+                        with_alpha(p.on_surface, 0.10 + theme::state_alpha(status)).into(),
+                    ),
+                    text_color: p.on_surface,
+                    border: iced::Border {
+                        radius: theme::shape::FULL.into(),
                         ..Default::default()
-                    }
-                });
+                    },
+                    ..Default::default()
+                }
+            });
             list = list.push(
                 row![remove, text(name).size(12).style(on_surface_style),]
                     .spacing(10)
@@ -262,14 +275,10 @@ impl App {
             err,
             row![
                 Space::new().width(Length::Fill),
-                button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootSuperkeyCancel))
-                    .padding([8, 18])
-                    .style(md_text_btn_style),
-                button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootSuperkeyConfirm))
-                    .padding([8, 18])
-                    .style(md_filled_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Root(RootMsg::RootSuperkeyCancel)),
+                m3_filled_button(self.t("btn_ok").to_string())
+                    .on_press(Message::Root(RootMsg::RootSuperkeyConfirm)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -315,14 +324,10 @@ impl App {
             err,
             row![
                 Space::new().width(Length::Fill),
-                button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootRunIdCancel))
-                    .padding([8, 18])
-                    .style(md_text_btn_style),
-                button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootRunIdConfirm))
-                    .padding([8, 18])
-                    .style(md_filled_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Root(RootMsg::RootRunIdCancel)),
+                m3_filled_button(self.t("btn_ok").to_string())
+                    .on_press(Message::Root(RootMsg::RootRunIdConfirm)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -367,14 +372,10 @@ impl App {
             err,
             row![
                 Space::new().width(Length::Fill),
-                button(text(self.t("btn_cancel").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootKernelVersionCancel))
-                    .padding([8, 18])
-                    .style(md_text_btn_style),
-                button(text(self.t("btn_ok").to_string()).size(13))
-                    .on_press(Message::Root(RootMsg::RootKernelVersionConfirm))
-                    .padding([8, 18])
-                    .style(md_filled_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Root(RootMsg::RootKernelVersionCancel)),
+                m3_filled_button(self.t("btn_ok").to_string())
+                    .on_press(Message::Root(RootMsg::RootKernelVersionConfirm)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -451,7 +452,7 @@ impl App {
                         border: iced::Border {
                             color: with_alpha(p.outline_variant, 0.6),
                             width: 1.0,
-                            radius: theme::shape::MD.into(),
+                            radius: theme::shape::LG.into(),
                         },
                         ..Default::default()
                     }

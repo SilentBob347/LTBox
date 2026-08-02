@@ -302,7 +302,7 @@ impl App {
             .style(|t: &Theme| {
                 // Elevation 1 to match its sibling dashboard cards (current-op,
                 // log); it was the only one flat at 0.
-                theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::MD, 1)
+                theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::LG, 1)
             }),
         );
         let operation_card = if can_resume {

@@ -640,6 +640,17 @@ enum AdvAction {
     SimpleFlash,
 }
 impl AdvAction {
+    /// Whether this action writes to the device rather than reading from
+    /// it or transforming a local file. The Advanced grid renders these
+    /// on the `error` role: a tile that flashes a partition should not
+    /// be visually interchangeable with one that dumps it.
+    fn is_destructive(&self) -> bool {
+        matches!(
+            self,
+            Self::FlashPartitions | Self::FlashPhysical | Self::SimpleFlash
+        )
+    }
+
     fn label_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_region_convert",
@@ -3438,10 +3449,7 @@ impl App {
                 }),
             text(e.to_string()).size(11).style(muted_style),
             Space::new().height(8),
-            button(text(self.t("btn_retry").to_string()).size(12))
-                .on_press(retry_msg)
-                .padding([6, 18])
-                .style(md_filled_btn_style),
+            m3_filled_button(self.t("btn_retry").to_string()).on_press(retry_msg),
         ]
         .spacing(8)
         .into()

@@ -31,6 +31,10 @@ impl App {
             // menu items inherit `text_size` for visual consistency
             // with the trigger.
             .text_size(13)
+            // Forwarded to the dropdown items too (iced builds the menu
+            // with the pick_list's padding), lifting both the trigger and
+            // each option off the ~27 px they defaulted to.
+            .padding(M3_FIELD_PADDING)
             .style(m3_pick_list_style)
             .menu_style(m3_pick_list_menu_style)
             .width(160),
@@ -63,6 +67,10 @@ impl App {
             // Match the row label's 13 px size. Same rationale as the
             // language pick list.
             .text_size(13)
+            // Forwarded to the dropdown items too (iced builds the menu
+            // with the pick_list's padding), lifting both the trigger and
+            // each option off the ~27 px they defaulted to.
+            .padding(M3_FIELD_PADDING)
             .style(m3_pick_list_style)
             .menu_style(m3_pick_list_menu_style)
             .width(160),
@@ -94,6 +102,10 @@ impl App {
                 Message::Settings(SettingsMsg::SetThemeSeed(seed))
             },)
             .text_size(13)
+            // Forwarded to the dropdown items too (iced builds the menu
+            // with the pick_list's padding), lifting both the trigger and
+            // each option off the ~27 px they defaulted to.
+            .padding(M3_FIELD_PADDING)
             .style(m3_pick_list_style)
             .menu_style(m3_pick_list_menu_style)
             .width(160),
@@ -171,6 +183,10 @@ impl App {
                 },
             )
             .text_size(13)
+            // Forwarded to the dropdown items too (iced builds the menu
+            // with the pick_list's padding), lifting both the trigger and
+            // each option off the ~27 px they defaulted to.
+            .padding(M3_FIELD_PADDING)
             .style(m3_pick_list_style)
             .menu_style(m3_pick_list_menu_style)
             .width(160)
@@ -340,7 +356,7 @@ impl App {
                 border: iced::Border {
                     color: p.outline_variant,
                     width: 1.0,
-                    radius: theme::shape::MD.into(),
+                    radius: theme::shape::LG.into(),
                 },
                 shadow: theme::elevation(1, theme::is_dark(t)),
                 ..Default::default()
@@ -488,7 +504,7 @@ impl App {
                 border: iced::Border {
                     color: p.outline_variant,
                     width: 1.0,
-                    radius: theme::shape::MD.into(),
+                    radius: theme::shape::LG.into(),
                 },
                 shadow: theme::elevation(1, theme::is_dark(t)),
                 ..Default::default()

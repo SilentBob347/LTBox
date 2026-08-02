@@ -116,10 +116,8 @@ impl App {
             }
         };
 
-        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
-            .on_press(Message::DeviceInfoClose)
-            .padding([6, 18])
-            .style(md_filled_btn_style);
+        let close_btn =
+            m3_filled_button(self.t("btn_close").to_string()).on_press(Message::DeviceInfoClose);
 
         let content = column![
             header,
@@ -243,18 +241,14 @@ impl App {
             OtaPopupState::Ready(u) if !u.download_url.is_empty() => Some(u.download_url.clone()),
             _ => None,
         };
-        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
-            .on_press(Message::OtaClose)
-            .padding([6, 18])
-            .style(md_filled_btn_style);
+        let close_btn =
+            m3_filled_button(self.t("btn_close").to_string()).on_press(Message::OtaClose);
         let mut action_row = iced::widget::row![Space::new().width(Length::Fill)]
             .spacing(8)
             .align_y(iced::Alignment::Center);
         if let Some(url) = download_url {
-            let download_btn = button(text(self.t("ota_popup_download").to_string()).size(12))
-                .on_press(Message::OtaOpenDownload(url))
-                .padding([6, 18])
-                .style(md_filled_btn_style);
+            let download_btn = m3_filled_button(self.t("ota_popup_download").to_string())
+                .on_press(Message::OtaOpenDownload(url));
             action_row = action_row.push(download_btn);
         }
         action_row = action_row.push(close_btn);
@@ -324,10 +318,8 @@ impl App {
                 let pw_row = row![
                     info_kv(self.t("qfil_popup_password"), &pw),
                     Space::new().width(Length::Fill),
-                    button(text(self.t("qfil_popup_copy").to_string()).size(11))
-                        .on_press(Message::CopyToClipboard(pw.clone()))
-                        .padding([4, 12])
-                        .style(md_filled_btn_style),
+                    m3_filled_button(self.t("qfil_popup_copy").to_string())
+                        .on_press(Message::CopyToClipboard(pw.clone())),
                 ]
                 .align_y(iced::Alignment::Center);
                 rows = rows.push(widget::rule::horizontal(1));
@@ -340,19 +332,15 @@ impl App {
             QfilPopupState::Ready(p) if !p.download_url.is_empty() => Some(p.download_url.clone()),
             _ => None,
         };
-        let close_btn = button(text(self.t("btn_close").to_string()).size(12))
-            .on_press(Message::QfilClose)
-            .padding([6, 18])
-            .style(md_filled_btn_style);
+        let close_btn =
+            m3_filled_button(self.t("btn_close").to_string()).on_press(Message::QfilClose);
         let mut action_row = row![Space::new().width(Length::Fill)]
             .spacing(8)
             .align_y(iced::Alignment::Center);
         if let Some(url) = download_url {
             action_row = action_row.push(
-                button(text(self.t("qfil_popup_download").to_string()).size(12))
-                    .on_press(Message::OpenExternalUrl(url))
-                    .padding([6, 18])
-                    .style(md_filled_btn_style),
+                m3_filled_button(self.t("qfil_popup_download").to_string())
+                    .on_press(Message::OpenExternalUrl(url)),
             );
         }
         action_row = action_row.push(close_btn);
@@ -434,20 +422,15 @@ impl App {
         .width(Length::Fill)
         .style(m3_text_input_style);
 
-        let cancel_btn = button(text(self.t("btn_cancel").to_string()).size(13))
-            .on_press(Message::Adv(AdvMsg::AdvWizArbIndexCancel))
-            .padding([8, 18])
-            .style(md_text_btn_style);
-        let ok_btn_inner = text(self.t("btn_ok").to_string()).size(13);
-        let ok_btn = if valid {
-            button(ok_btn_inner)
-                .on_press(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
-                .padding([8, 18])
-                .style(md_filled_btn_style)
-        } else {
-            button(ok_btn_inner)
-                .padding([8, 18])
-                .style(md_filled_btn_style)
+        let cancel_btn = m3_text_button(self.t("btn_cancel").to_string())
+            .on_press(Message::Adv(AdvMsg::AdvWizArbIndexCancel));
+        let ok_btn = {
+            let btn = m3_filled_button(self.t("btn_ok").to_string());
+            if valid {
+                btn.on_press(Message::Adv(AdvMsg::AdvWizArbIndexConfirm))
+            } else {
+                btn
+            }
         };
 
         let content = column![
@@ -486,18 +469,15 @@ impl App {
             .size(14)
             .width(Length::Fill)
             .style(m3_text_input_style);
-        let skip_btn = button(text(self.t("flash_serial_prompt_skip").to_string()).size(13))
-            .on_press(Message::Flash(FlashMsg::FlashSerialPromptSkip))
-            .padding([8, 18])
-            .style(md_text_btn_style);
-        let ok_inner = text(self.t("btn_ok").to_string()).size(13);
-        let ok_btn = if valid {
-            button(ok_inner)
-                .on_press(Message::Flash(FlashMsg::FlashSerialPromptSubmit))
-                .padding([8, 18])
-                .style(md_filled_btn_style)
-        } else {
-            button(ok_inner).padding([8, 18]).style(md_filled_btn_style)
+        let skip_btn = m3_text_button(self.t("flash_serial_prompt_skip").to_string())
+            .on_press(Message::Flash(FlashMsg::FlashSerialPromptSkip));
+        let ok_btn = {
+            let btn = m3_filled_button(self.t("btn_ok").to_string());
+            if valid {
+                btn.on_press(Message::Flash(FlashMsg::FlashSerialPromptSubmit))
+            } else {
+                btn
+            }
         };
         let content = column![
             title,
