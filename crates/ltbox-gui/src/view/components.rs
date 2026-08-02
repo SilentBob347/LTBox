@@ -29,32 +29,31 @@ pub(crate) fn m3_log_text_field<'a>(
     label: impl Into<String>,
     editor: Element<'a, Message>,
 ) -> Element<'a, Message> {
+    // Titled like the other dashboard cards rather than like an M2 filled
+    // text field. The old form put a `primary` caption at the top and a
+    // 2 px `primary` active indicator at the very bottom — on a
+    // full-height read-only log that indicator ended up as a stray blue
+    // rule hundreds of pixels away from its label, marking "focus" on a
+    // surface that is never focused.
     let label = label.into();
-    let label_row = container(text(label).size(12).line_height(1.0).style(|t: &Theme| {
-        iced::widget::text::Style {
-            color: Some(pal_of(t).primary),
-        }
-    }))
+    let label_row = container(
+        text(label)
+            .size(theme::text_size::TITLE_SMALL)
+            .font(theme::emphasis::medium())
+            .line_height(1.0)
+            .style(label_style),
+    )
     .padding(iced::Padding {
         top: 12.0,
-        right: 16.0,
-        bottom: 6.0,
-        left: 16.0,
+        right: 18.0,
+        bottom: 8.0,
+        left: 18.0,
     })
     .width(Length::Fill);
-
-    let active_indicator = container(Space::new().height(2).width(Length::Fill))
-        .height(2)
-        .width(Length::Fill)
-        .style(|t: &Theme| container::Style {
-            background: Some(pal_of(t).primary.into()),
-            ..Default::default()
-        });
 
     let field = column![
         label_row,
         container(editor).width(Length::Fill).height(Length::Fill),
-        active_indicator
     ]
     .spacing(0)
     .height(Length::Fill)
@@ -64,16 +63,7 @@ pub(crate) fn m3_log_text_field<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|t: &Theme| {
-            let p = pal_of(t);
-            container::Style {
-                background: Some(p.surface_container_highest.into()),
-                border: iced::Border {
-                    color: with_alpha(p.on_surface, 0.0),
-                    width: 0.0,
-                    radius: theme::shape::SM.into(),
-                },
-                ..Default::default()
-            }
+            theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::LG, 1)
         })
         .into()
 }
@@ -618,11 +608,13 @@ pub(crate) fn recommended_overlay(
     )
     .gap(6);
     // Full-size overlay pins the badge to the top-right; padding insets it
-    // from the card edge.
+    // from the card edge. The inset has to clear the card's corner arc —
+    // at 8 px against an `LG` radius the badge sat on the curve and read
+    // as clipped by it.
     let overlay = container(badge_tip)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(8)
+        .padding(12)
         .align_x(iced::Alignment::End)
         .align_y(iced::Alignment::Start);
     iced::widget::stack![card, overlay].into()

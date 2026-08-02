@@ -146,14 +146,13 @@ impl App {
         )
         .on_press(Message::Window(WindowMsg::WindowMinimize))
         .padding(0)
-        .style(|_t: &Theme, status| {
-            let hover = matches!(status, button::Status::Hovered);
+        .style(|t: &Theme, status| {
+            // Palette-driven state layer. The old flat grey at 15% ignored
+            // the theme entirely and did not distinguish hover from press.
+            let p = pal_of(t);
             button::Style {
-                background: if hover {
-                    Some(iced::Color::from_rgba(0.5, 0.5, 0.5, 0.15).into())
-                } else {
-                    None
-                },
+                background: theme::state_layer_bg(status, p.on_surface).map(Into::into),
+                text_color: p.on_surface,
                 ..Default::default()
             }
         });
@@ -174,37 +173,40 @@ impl App {
         )
         .on_press(Message::Window(WindowMsg::WindowToggleMaximize))
         .padding(0)
-        .style(|_t: &Theme, status| {
-            let hover = matches!(status, button::Status::Hovered);
+        .style(|t: &Theme, status| {
+            // Palette-driven state layer. The old flat grey at 15% ignored
+            // the theme entirely and did not distinguish hover from press.
+            let p = pal_of(t);
             button::Style {
-                background: if hover {
-                    Some(iced::Color::from_rgba(0.5, 0.5, 0.5, 0.15).into())
-                } else {
-                    None
-                },
+                background: theme::state_layer_bg(status, p.on_surface).map(Into::into),
+                text_color: p.on_surface,
                 ..Default::default()
             }
         });
 
         let close_btn = button(
-            container(lucide_icon(icon::win_close(), 12.0, |t: &Theme| {
-                pal_of(t).on_surface
-            }))
-            .width(btn_w)
-            .height(btn_h)
-            .center_x(btn_w)
-            .center_y(btn_h),
+            // No explicit glyph colour: the icon inherits the button's
+            // `text_color`, so it flips to `on_error` the moment the red
+            // wash lands instead of staying dark on red.
+            container(icon::win_close().size(12))
+                .width(btn_w)
+                .height(btn_h)
+                .center_x(btn_w)
+                .center_y(btn_h),
         )
         .on_press(Message::Window(WindowMsg::WindowClose))
         .padding(0)
-        .style(|_t: &Theme, status| {
-            let hover = matches!(status, button::Status::Hovered);
+        .style(|t: &Theme, status| {
+            // Close keeps its distinct red wash, but on the `error` role
+            // rather than a hardcoded `rgb(0.9, 0.2, 0.2)` that stayed put
+            // across every theme seed and both modes.
+            let p = pal_of(t);
+            let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: if hover {
-                    Some(iced::Color::from_rgb(0.9, 0.2, 0.2).into())
-                } else {
-                    None
-                },
+                background: hot.then(|| {
+                    theme::mix_color(p.error, p.on_error, theme::state_alpha(status)).into()
+                }),
+                text_color: if hot { p.on_error } else { p.on_surface },
                 ..Default::default()
             }
         });

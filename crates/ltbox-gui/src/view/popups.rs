@@ -580,14 +580,8 @@ impl App {
             row![
                 text(self.t("popup_select_country").to_string()).size(16),
                 Space::new().width(Length::Fill),
-                button(
-                    text(self.t("btn_cancel").to_string())
-                        .size(12)
-                        .style(muted_style)
-                )
-                .on_press(Message::DismissCountryPopup)
-                .padding([4, 12])
-                .style(neutral_pill_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::DismissCountryPopup),
             ]
             .align_y(iced::Alignment::Center),
             widget::rule::horizontal(1),
@@ -640,14 +634,8 @@ impl App {
             row![
                 text(self.t("popup_select_region_target").to_string()).size(16),
                 Space::new().width(Length::Fill),
-                button(
-                    text(self.t("btn_cancel").to_string())
-                        .size(12)
-                        .style(muted_style)
-                )
-                .on_press(Message::DismissRegionTargetPopup)
-                .padding([4, 12])
-                .style(neutral_pill_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::DismissRegionTargetPopup),
             ]
             .align_y(iced::Alignment::Center),
             widget::rule::horizontal(1),
@@ -791,14 +779,8 @@ impl App {
             row![
                 text(self.t("flash_confirm_edit_title").to_string()).size(16),
                 Space::new().width(Length::Fill),
-                button(
-                    text(self.t("btn_cancel").to_string())
-                        .size(12)
-                        .style(muted_style)
-                )
-                .on_press(Message::Flash(FlashMsg::FlashConfirmClose))
-                .padding([4, 12])
-                .style(neutral_pill_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Flash(FlashMsg::FlashConfirmClose)),
             ]
             .align_y(iced::Alignment::Center),
             widget::rule::horizontal(1),
@@ -856,14 +838,8 @@ impl App {
             row![
                 text(self.t("rescue_region_popup_title").to_string()).size(16),
                 Space::new().width(Length::Fill),
-                button(
-                    text(self.t("btn_cancel").to_string())
-                        .size(12)
-                        .style(muted_style)
-                )
-                .on_press(Message::Sys(SysMsg::SysRescueRegionPopupDismiss))
-                .padding([4, 12])
-                .style(neutral_pill_btn_style),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Sys(SysMsg::SysRescueRegionPopupDismiss)),
             ]
             .align_y(iced::Alignment::Center),
             widget::rule::horizontal(1),

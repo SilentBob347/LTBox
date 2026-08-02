@@ -116,25 +116,8 @@ impl App {
             widget::rule::horizontal(1),
             row![
                 Space::new().width(Length::Fill),
-                button(
-                    text(self.t("btn_cancel").to_string())
-                        .size(13)
-                        .style(muted_style)
-                )
-                .on_press(Message::Reboot(RebootMsg::RebootDismiss))
-                .padding([8, 18])
-                .style(|t: &Theme, _s| {
-                    let p = pal_of(t);
-                    button::Style {
-                        background: Some(with_alpha(p.on_surface, 0.06).into()),
-                        border: iced::Border {
-                            radius: 20.0.into(),
-                            ..Default::default()
-                        },
-                        text_color: p.on_surface_variant,
-                        ..Default::default()
-                    }
-                }),
+                m3_text_button(self.t("btn_cancel").to_string())
+                    .on_press(Message::Reboot(RebootMsg::RebootDismiss)),
                 {
                     // Mid-popup disconnect → drop the on_press so the
                     // confirm button reads as disabled instead of

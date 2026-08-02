@@ -65,22 +65,6 @@ pub(crate) fn error_container_text_style(t: &Theme) -> iced::widget::text::Style
     }
 }
 
-pub(crate) fn neutral_pill_btn_style(t: &Theme, status: button::Status) -> button::Style {
-    let p = pal_of(t);
-    // Tonal pill (`on_surface @ 8%`) with the M3 state layer added on
-    // hover / press instead of staying flat across every status.
-    let alpha = 0.08 + theme::state_alpha(status);
-    button::Style {
-        background: Some(with_alpha(p.on_surface, alpha).into()),
-        border: iced::Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        text_color: p.on_surface_variant,
-        ..Default::default()
-    }
-}
-
 pub(crate) fn m3_text_input_style(t: &Theme, status: text_input::Status) -> text_input::Style {
     let p = pal_of(t);
     let focused = matches!(status, text_input::Status::Focused { .. });
@@ -141,7 +125,9 @@ pub(crate) fn m3_log_text_editor_style(
     let p = pal_of(t);
     let disabled = matches!(status, text_editor::Status::Disabled);
     text_editor::Style {
-        background: p.surface_container_highest.into(),
+        // Transparent so the log reads as the body of its card rather
+        // than a second, darker slab inset into one.
+        background: iced::Color::TRANSPARENT.into(),
         border: iced::Border {
             color: iced::Color::TRANSPARENT,
             width: 0.0,
