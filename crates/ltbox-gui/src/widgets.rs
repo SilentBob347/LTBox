@@ -537,6 +537,11 @@ fn m3_button<'a>(
     .style(style)
 }
 
+/// Interior padding of the Dashboard's hero device card. Sized against
+/// its `XL_INCREASED` corner via M3's `outer radius - padding = inner
+/// radius` rule.
+pub(crate) const DEVICE_CARD_PADDING: f32 = 24.0;
+
 /// Horizontal padding for a common button. M3 Expressive retired the
 /// 24 dp small-button padding in favour of 16 dp, which it notes matches
 /// the padding of the new size range.

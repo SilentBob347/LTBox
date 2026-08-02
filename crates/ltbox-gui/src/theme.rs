@@ -796,16 +796,30 @@ pub enum SurfaceLevel {
     Highest,
     /// `surface_container_lowest` — disabled rescue card / log panels.
     Lowest,
+    /// The brightest container for the current mode, which M3 reserves
+    /// for "the most important content, tasks, or actions".
+    ///
+    /// It has to flip by mode: brightness runs opposite ways on the two
+    /// tonal ramps, so the brightest container is the *lowest* one on
+    /// light (white) and the *highest* one on dark.
+    Brightest,
 }
 
 impl SurfaceLevel {
-    fn bg(self, p: &Palette) -> iced::Color {
+    fn bg(self, p: &Palette, dark: bool) -> iced::Color {
         match self {
             Self::Lowest => p.surface_container_lowest,
             Self::Low => p.surface_container_low,
             Self::Default => p.surface_container,
             Self::High => p.surface_container_high,
             Self::Highest => p.surface_container_highest,
+            Self::Brightest => {
+                if dark {
+                    p.surface_container_highest
+                } else {
+                    p.surface_container_lowest
+                }
+            }
         }
     }
 }
@@ -822,7 +836,7 @@ pub fn surface_card_style(
     let dark = is_dark(t);
     let p = active_palette_for(t);
     container::Style {
-        background: Some(level.bg(&p).into()),
+        background: Some(level.bg(&p, dark).into()),
         border: iced::Border {
             color: p.outline_variant,
             width: 1.0,

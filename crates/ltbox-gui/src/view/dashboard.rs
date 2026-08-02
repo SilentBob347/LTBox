@@ -293,20 +293,36 @@ impl App {
         };
         content = content.push(
             container(
+                // Padding has to scale with the corner radius: M3 states
+                // the relationship as `outer radius - padding = inner
+                // radius`, so the 10/18 inset that suited a 12 px corner
+                // leaves text crowding the curve at 32 px. A uniform 24
+                // keeps a comfortable 8 px inner radius and reads evenly
+                // on all four sides, which the old asymmetric values did
+                // not.
                 container(device_card_inner)
-                    .padding(iced::Padding {
-                        top: 10.0,
-                        right: 18.0,
-                        bottom: 14.0,
-                        left: 18.0,
-                    })
+                    .padding(DEVICE_CARD_PADDING)
                     .width(Length::Fill),
             )
             .width(Length::Fill)
             .style(|t: &Theme| {
-                // Elevation 1 to match its sibling dashboard cards (current-op,
-                // log); it was the only one flat at 0.
-                theme::surface_card_style(t, theme::SurfaceLevel::Default, theme::shape::LG, 1)
+                // LTBox's hero moment. M3 asks for one or two per product
+                // and says to build them by combining tactics, so this
+                // card stacks three: it breaks from the surrounding
+                // `LG` shape story to a much rounder silhouette, takes
+                // the brightest surface the mode offers, and sits a
+                // step higher in elevation than its siblings.
+                //
+                // Deliberately no type escalation — the connected device
+                // is the subject of the whole app, but the card is mostly
+                // reference data and shouting it was already tried and
+                // rejected.
+                theme::surface_card_style(
+                    t,
+                    theme::SurfaceLevel::Brightest,
+                    theme::shape::XL_INCREASED,
+                    2,
+                )
             }),
         );
         let operation_card = if can_resume {
