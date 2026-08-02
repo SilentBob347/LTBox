@@ -476,23 +476,18 @@ impl App {
                                 r.storage = vars.storage_gb.unwrap_or_default();
                                 r.market_name = vars.product.unwrap_or_default();
                                 r.serial = vars.serialno.unwrap_or_default();
-                                // Numeric → raw string (dashboard falls through
-                                // when i18n lookup misses).
-                                let arb_val = vars
-                                    .rollback_indices
-                                    .values()
-                                    .filter(|&&v| v > 1)
-                                    .max()
-                                    .copied();
-                                r.arb = if let Some(v) = arb_val {
-                                    // Real committed index — shown as-is, with a
-                                    // UTC hover tooltip on the dashboard.
-                                    v.to_string()
-                                } else {
-                                    // No stored index over fastboot → yes/no by
-                                    // model (only TB322FC lacks rollback protection).
-                                    arb_from_model(&r.model).to_string()
-                                };
+                                // Bootloader mode reports the committed floors,
+                                // but the Dashboard cell stays a yes/no by model
+                                // like every other transport — a bare 10-digit
+                                // number in a "Rollback Protection" field read as
+                                // a different kind of answer than the question.
+                                // The numbers move into the rollback popup, which
+                                // can label and format them properly.
+                                r.arb = arb_from_model(&r.model).to_string();
+                                r.rollback_floors =
+                                    ltbox_patch::rollback::classify_fastboot_rollback_floors(
+                                        &vars.rollback_indices,
+                                    );
                                 return r;
                             }
                             if ltbox_device::edl::check_device() {
@@ -525,6 +520,18 @@ impl App {
                 if !r.arb.is_empty() {
                     self.device_arb = r.arb;
                 }
+                // Same "don't clobber on a transient blank poll" rule as the
+                // fields above. `get_all_vars` can come back empty on a
+                // single cycle while the device is still very much in
+                // bootloader mode; assigning unconditionally made the popup
+                // close under the user mid-interaction. Floors are only
+                // dropped once the transport actually changes.
+                if r.rollback_floors.is_some() {
+                    self.device_rollback_floors = r.rollback_floors;
+                } else if self.connection != ConnectionStatus::Fastboot {
+                    self.device_rollback_floors = None;
+                    self.rollback_popup_open = false;
+                }
                 if !r.ram.is_empty() {
                     self.device_ram = r.ram;
                 }
@@ -544,6 +551,8 @@ impl App {
                     self.device_firmware.clear();
                     self.device_firmware_full.clear();
                     self.device_arb.clear();
+                    self.device_rollback_floors = None;
+                    self.rollback_popup_open = false;
                     self.device_ram.clear();
                     self.device_storage.clear();
                     self.device_market_name.clear();
@@ -858,6 +867,20 @@ impl App {
                 } else {
                     self.sidebar_anim = next.clamp(-0.05, 1.05);
                 }
+            }
+            Message::RollbackDetailOpen => {
+                // Guarded so a stale click during a transport change can't
+                // open a popup with nothing to show.
+                if self.device_rollback_floors.is_some() {
+                    self.rollback_popup_open = true;
+                    self.rollback_value_format = RollbackValueFormat::default();
+                }
+            }
+            Message::RollbackDetailClose => {
+                self.rollback_popup_open = false;
+            }
+            Message::RollbackDetailCycleFormat => {
+                self.rollback_value_format = self.rollback_value_format.next();
             }
             Message::DriverCheckDone(status) => {
                 self.driver_status = Some(status);

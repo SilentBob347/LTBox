@@ -35,7 +35,7 @@ mod workers;
 
 // Extracted items live in their own modules; re-export so the rest of the
 // crate keeps referring to them unqualified.
-pub(crate) use arb::{detect_arb_run, format_unix_timestamp_utc};
+pub(crate) use arb::{detect_arb_run, format_unix_date_utc, format_unix_timestamp_utc};
 pub(crate) use arb_overlay::*;
 pub(crate) use device_name::*;
 pub(crate) use loader::*;
@@ -1781,6 +1781,10 @@ struct DevicePollResult {
     /// because the upstream key matches the full string.
     firmware_full: String,
     arb: String,
+    /// `boot` / `vbmeta_system` rollback floors classified from the
+    /// fastboot `stored_rollback_index:N` vars. Only ever `Some` on a
+    /// bootloader-mode poll — no other transport reports them.
+    rollback_floors: Option<ltbox_patch::rollback::FastbootRollbackFloors>,
     ram: String,
     storage: String,
     market_name: String,
@@ -1872,8 +1876,66 @@ pub(crate) struct LiveLabels {
 /// Classify a model → rollback-protection i18n key. Every supported model
 /// enforces AVB rollback protection except the PRC-only TB322FC, and an
 /// unknown model is assumed protected, so this is a TB322FC check.
+/// How the rollback-index popup renders a stored floor. Clicking a value
+/// steps to the next form and wraps back around.
+///
+/// A rollback index is a unix timestamp, but fastboot reports it base-16
+/// (`stored_rollback_index:N = 41B7A200`), so the raw form a user sees in
+/// `fastboot getvar all` is hex. The cycle walks outward from that raw
+/// value to progressively more readable renderings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RollbackValueFormat {
+    /// As `fastboot getvar all` prints it — base-16.
+    #[default]
+    Raw,
+    /// The same number in decimal, i.e. a plain unix timestamp.
+    Unix,
+    /// `YYYY-MM-DD`, UTC.
+    Date,
+}
+
+impl RollbackValueFormat {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Raw => Self::Unix,
+            Self::Unix => Self::Date,
+            Self::Date => Self::Raw,
+        }
+    }
+
+    /// Render `index` in this form. The returned string is exactly what
+    /// the copy button puts on the clipboard.
+    pub(crate) fn render(self, index: u64) -> String {
+        match self {
+            Self::Raw => format!("0x{index:X}"),
+            Self::Unix => index.to_string(),
+            Self::Date => format_unix_date_utc(index),
+        }
+    }
+
+    /// i18n key naming the current form, shown beside the value so the
+    /// cycle is self-explanatory rather than a guessing game.
+    pub(crate) const fn label_key(self) -> &'static str {
+        match self {
+            Self::Raw => "rollback_format_raw",
+            Self::Unix => "rollback_format_unix",
+            Self::Date => "rollback_format_date",
+        }
+    }
+}
+
+/// Rollback-protection answer for a model, or `""` when the model is
+/// unknown.
+///
+/// `is_rollback_protected_model` is a deny-list (only TB322FC is exempt),
+/// so an empty model used to come back protected — the Dashboard then
+/// asserted "Yes" for a device it could not identify, and it was the one
+/// field that never degraded to the em dash the others show. A blank
+/// answer lets the Dashboard's existing empty-string path render `—`.
 fn arb_from_model(model: &str) -> &'static str {
-    if is_rollback_protected_model(model) {
+    if model.trim().is_empty() {
+        ""
+    } else if is_rollback_protected_model(model) {
         "arb_yes"
     } else {
         "arb_no"
@@ -2231,6 +2293,14 @@ struct App {
     flash_serial_prompt: Option<String>,
     /// PatchArb wizard's unix-timestamp input popup.
     arb_index_popup_open: bool,
+    /// `boot` / `vbmeta_system` rollback floors from the last
+    /// bootloader-mode poll. `None` on every other transport, which is
+    /// also what gates the Dashboard's rollback cell as clickable.
+    device_rollback_floors: Option<ltbox_patch::rollback::FastbootRollbackFloors>,
+    rollback_popup_open: bool,
+    /// Shared across both rows so `boot` and `vbmeta_system` stay
+    /// directly comparable while cycling.
+    rollback_value_format: RollbackValueFormat,
     /// Transient toast message; auto-cleared by a delayed task.
     toast_msg: Option<String>,
     /// Sidebar hover state — true when mouse is over the rail.
@@ -2451,6 +2521,9 @@ impl Default for App {
             flash_region_probe_seq: 0,
             flash_serial_prompt: None,
             arb_index_popup_open: false,
+            device_rollback_floors: None,
+            rollback_popup_open: false,
+            rollback_value_format: RollbackValueFormat::default(),
             toast_msg: None,
             sidebar_expanded: false,
             sidebar_anim: 0.0,
@@ -3460,6 +3533,18 @@ impl App {
     /// and the subscription stops once the two match.
     fn sidebar_anim_target(&self) -> f32 {
         if self.sidebar_expanded { 1.0 } else { 0.0 }
+    }
+
+    /// Whether the Dashboard's rollback cell opens the floor breakdown.
+    ///
+    /// Both halves matter. Floors are only ever populated by a
+    /// bootloader-mode poll, so their presence *is* the "in bootloader"
+    /// test. The model check keeps an exempt SKU (TB322FC) from offering
+    /// a breakdown behind a cell that reads "No" — the two would
+    /// contradict each other even if its bootloader did report two
+    /// populated locations.
+    pub(crate) fn rollback_detail_available(&self) -> bool {
+        self.device_rollback_floors.is_some() && is_rollback_protected_model(&self.device_model)
     }
 
     fn is_nav_enabled(&self, view: View) -> bool {
@@ -4783,6 +4868,67 @@ mod tests {
             assert!(y >= prev - 1e-4, "curve must not regress at {step}");
             prev = y;
         }
+    }
+
+    /// An unidentified device must not be reported as rollback-protected:
+    /// the check is a deny-list, so an empty model would otherwise assert
+    /// "Yes" for hardware we never read.
+    #[test]
+    fn arb_answer_is_blank_until_the_model_is_known() {
+        assert_eq!(arb_from_model(""), "");
+        assert_eq!(arb_from_model("   "), "");
+        assert_eq!(arb_from_model("TB322FC"), "arb_no");
+        assert_eq!(arb_from_model("TB520FU"), "arb_yes");
+    }
+
+    /// Floors come only from a bootloader poll, so their presence is the
+    /// transport test; the model check keeps an exempt SKU from offering
+    /// a breakdown behind a cell that reads "No".
+    #[test]
+    fn rollback_detail_needs_both_floors_and_a_protected_model() {
+        let floors = ltbox_patch::rollback::FastbootRollbackFloors {
+            vbmeta_system_location: 2,
+            vbmeta_system_index: 0x69D1_A600,
+            boot_location: 3,
+            boot_index: 0x69D1_A600,
+        };
+
+        let mut app = App {
+            device_model: "TB520FU".into(),
+            device_rollback_floors: Some(floors),
+            ..App::default()
+        };
+        assert!(app.rollback_detail_available());
+
+        // Exempt SKU — the cell reads "No", so it must not be clickable.
+        app.device_model = "TB322FC".into();
+        assert!(!app.rollback_detail_available());
+
+        // Any non-bootloader transport leaves the floors unset.
+        app.device_model = "TB520FU".into();
+        app.device_rollback_floors = None;
+        assert!(!app.rollback_detail_available());
+    }
+
+    /// The popup's cycle must return to where it started, and each form
+    /// must render the value the copy button will put on the clipboard.
+    #[test]
+    fn rollback_value_format_cycles_and_renders() {
+        // Real TB520FU floor: `stored_rollback_index:3 = 69D1A600`.
+        const IDX: u64 = 0x69D1_A600;
+
+        let raw = RollbackValueFormat::Raw;
+        assert_eq!(raw.render(IDX), "0x69D1A600");
+
+        let unix = raw.next();
+        assert_eq!(unix, RollbackValueFormat::Unix);
+        assert_eq!(unix.render(IDX), "1775347200");
+
+        let date = unix.next();
+        assert_eq!(date, RollbackValueFormat::Date);
+        assert_eq!(date.render(IDX), "2026-04-05");
+
+        assert_eq!(date.next(), RollbackValueFormat::Raw);
     }
 
     #[test]

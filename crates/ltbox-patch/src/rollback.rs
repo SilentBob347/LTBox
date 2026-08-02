@@ -250,6 +250,29 @@ mod tests {
         assert_eq!(compute_device_rollback_index(&indices), None);
     }
 
+    /// Real TB520FU (`lapis`) dump: 32 locations, only 2 and 3 carry a
+    /// value, location 1 is the stock recovery `1`. Captured from
+    /// `fastboot getvar all` on hardware.
+    #[test]
+    fn classify_real_tb520fu_dump() {
+        let mut stored = HashMap::new();
+        for loc in 0..=31u32 {
+            stored.insert(loc, 0u64);
+        }
+        stored.insert(1, 1);
+        stored.insert(2, 0x69D1_A600);
+        stored.insert(3, 0x69D1_A600);
+        assert_eq!(
+            classify_fastboot_rollback_floors(&stored),
+            Some(FastbootRollbackFloors {
+                vbmeta_system_location: 2,
+                vbmeta_system_index: 0x69D1_A600,
+                boot_location: 3,
+                boot_index: 0x69D1_A600,
+            })
+        );
+    }
+
     #[test]
     fn classify_standard_non_recovery_locations() {
         let indices = make_indices(&[(0, 0), (1, 1), (2, 0x69D0A600), (3, 0x69D1A600)]);

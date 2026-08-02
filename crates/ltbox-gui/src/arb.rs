@@ -18,6 +18,14 @@ pub(crate) fn format_unix_timestamp_utc(ts: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
 }
 
+/// Date-only rendering of a rollback index (`YYYY-MM-DD`, UTC). The
+/// rollback-index popup cycles through this as its most human form —
+/// the time-of-day component carries no meaning for a rollback floor.
+pub(crate) fn format_unix_date_utc(ts: u64) -> String {
+    let (y, mo, d) = civil_from_days((ts / 86_400) as i64);
+    format!("{y:04}-{mo:02}-{d:02}")
+}
+
 /// Howard Hinnant `civil_from_days`: (days since 1970-01-01) →
 /// `(year, month, day)` in the proleptic Gregorian calendar.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {

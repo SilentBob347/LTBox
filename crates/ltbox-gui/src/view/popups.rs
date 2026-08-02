@@ -384,6 +384,147 @@ impl App {
             .into()
     }
 
+    /// One `<partition> = <value>` row of the rollback-index popup.
+    ///
+    /// The value is a button rather than static text: pressing it steps
+    /// the shared format cycle, so the same click target answers "what
+    /// number is this really" and "what date is that". The copy button
+    /// beside it copies exactly the string currently on screen.
+    fn rollback_floor_row<'a>(&'a self, partition: &str, index: u64) -> Element<'a, Message> {
+        let rendered = self.rollback_value_format.render(index);
+        let value_btn = button(
+            text(rendered.clone())
+                .size(theme::text_size::BODY_LARGE)
+                .font(theme::emphasis::medium())
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .on_press(Message::RollbackDetailCycleFormat)
+        .padding([6, 10])
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            button::Style {
+                background: theme::state_layer_bg(status, p.on_surface).map(Into::into),
+                text_color: p.on_surface,
+                border: iced::Border {
+                    radius: theme::shape::SM.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
+        let copy_btn = button(
+            container(lucide_icon(icon::action_copy(), 16.0, |t: &Theme| {
+                pal_of(t).on_surface_variant
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+        )
+        .on_press(Message::CopyToClipboard(rendered))
+        .width(Length::Fixed(32.0))
+        .height(Length::Fixed(32.0))
+        .padding(0)
+        .style(|t: &Theme, status| {
+            let p = pal_of(t);
+            button::Style {
+                background: theme::state_layer_bg(status, p.on_surface).map(Into::into),
+                text_color: p.on_surface_variant,
+                border: iced::Border {
+                    radius: theme::shape::FULL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+
+        let copy_btn = widget::tooltip(
+            copy_btn,
+            container(text(self.t("rollback_copy_tip").to_string()).size(11))
+                .padding([6, 10])
+                .style(|t: &Theme| theme::tooltip_style(t, theme::shape::SM)),
+            widget::tooltip::Position::Top,
+        )
+        .gap(6);
+
+        row![
+            text(partition.to_string())
+                .size(theme::text_size::BODY_MEDIUM)
+                .style(muted_style)
+                .width(Length::Fixed(150.0)),
+            value_btn,
+            Space::new().width(Length::Fill),
+            copy_btn,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
+    /// Rollback-index breakdown for a device in bootloader mode.
+    ///
+    /// The Dashboard cell only answers "is rollback protection on"; this
+    /// is where the two committed floors live, since a raw index is
+    /// meaningless without knowing which partition it guards and what
+    /// the number represents.
+    pub(crate) fn rollback_detail_popup_view(&self) -> Element<'_, Message> {
+        let Some(floors) = self.device_rollback_floors else {
+            return container(text("")).into();
+        };
+        let slot = active_slot_suffix(Some(&self.device_slot));
+
+        let title = text(self.t("rollback_popup_title").to_string())
+            .size(theme::text_size::WIZARD_STEP_TITLE)
+            .font(theme::emphasis::bold());
+        let desc = text(self.t("rollback_popup_desc").to_string())
+            .size(theme::text_size::BODY_MEDIUM)
+            .style(muted_style)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .width(Length::Fill);
+
+        // Naming the active form turns the cycle from a hidden trick into
+        // a legible control.
+        let format_hint = row![
+            text(self.t("rollback_format_label").to_string())
+                .size(theme::text_size::LABEL_SMALL)
+                .style(muted_style),
+            text(self.t(self.rollback_value_format.label_key()).to_string())
+                .size(theme::text_size::LABEL_SMALL)
+                .font(theme::emphasis::medium())
+                .style(accent_style),
+            Space::new().width(Length::Fill),
+            text(self.t("rollback_cycle_tip").to_string())
+                .size(theme::text_size::LABEL_SMALL)
+                .style(muted_style),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+
+        let rows = column![
+            self.rollback_floor_row(&format!("boot{slot}"), floors.boot_index),
+            self.rollback_floor_row(&format!("vbmeta_system{slot}"), floors.vbmeta_system_index),
+        ]
+        .spacing(4);
+
+        let close_btn = m3_filled_button(self.t("btn_close").to_string())
+            .on_press(Message::RollbackDetailClose);
+
+        let content = column![
+            title,
+            desc,
+            widget::rule::horizontal(1),
+            format_hint,
+            rows,
+            row![Space::new().width(Length::Fill), close_btn].align_y(iced::Alignment::Center),
+        ]
+        .spacing(14)
+        .padding(24)
+        .width(480);
+
+        m3_dialog(content.into())
+    }
+
     /// PatchArb timestamp popup. Reads `adv_wizard.arb_index_buffer`
     /// for the in-flight typing and renders the UTC representation in
     /// real time once the buffer hits exactly 10 digits. OK is enabled

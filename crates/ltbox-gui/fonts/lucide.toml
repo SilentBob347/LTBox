@@ -88,6 +88,9 @@ settings_cleanup  = "trash-2"
 # Root wizard "recommended option" corner badge (13 px)
 rec_badge         = "star"
 
+# Rollback-index popup — copy the displayed value (16 px)
+action_copy       = "copy"
+
 # About panel
 nav_about         = "info"
 about_github      = "github"

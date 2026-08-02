@@ -94,6 +94,9 @@ impl App {
         if self.flash_serial_prompt.is_some() {
             layers.push(self.flash_serial_prompt_view());
         }
+        if self.rollback_popup_open {
+            layers.push(self.rollback_detail_popup_view());
+        }
         if self.arb_index_popup_open {
             layers.push(self.arb_index_popup_view());
         }

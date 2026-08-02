@@ -104,6 +104,12 @@ pub(crate) enum Message {
     /// `sidebar_anim` toward its target via exponential decay.
     /// Subscription auto-stops once the value has settled.
     SidebarAnimTick,
+    /// Dashboard rollback cell → open the `boot` / `vbmeta_system`
+    /// floor breakdown. Only reachable in bootloader mode.
+    RollbackDetailOpen,
+    RollbackDetailClose,
+    /// Step the popup's value rendering raw → unix → date → raw.
+    RollbackDetailCycleFormat,
     DriverCheckDone(ltbox_device::driver::DriverStatus),
     InstallDrivers,
     InstallDriversDone(Result<Vec<String>, String>),

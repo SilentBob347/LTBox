@@ -221,13 +221,17 @@ impl App {
         // kv is just `label` tall — centering both within the row's
         // max height puts the two labels at the same y without
         // introducing any horizontal offset on the ARB cell.
-        // When the rollback value is a real committed index (numeric, from
-        // fastboot `stored_rollback_index`), hover shows it as a UTC datetime;
-        // the yes/no model fallback gets no tooltip.
-        let arb_kv: Element<'_, Message> = if let Ok(idx) = self.device_arb.parse::<u64>() {
+        // The cell always answers yes/no by model, on every transport. In
+        // bootloader mode the device additionally reports its committed
+        // floors, and the cell becomes a click target for the breakdown —
+        // same hover-tint affordance as the firmware cell beside it.
+        let arb_kv: Element<'_, Message> = if self.rollback_detail_available() {
             iced::widget::tooltip(
-                info_kv(self.t("device_arb"), arb),
-                container(text(crate::format_unix_timestamp_utc(idx)).size(11))
+                button(info_kv(self.t("device_arb"), arb))
+                    .on_press(Message::RollbackDetailOpen)
+                    .padding([4, 0])
+                    .style(dash_clickable_btn_style),
+                container(text(self.t("rollback_open_tip").to_string()).size(11))
                     .padding([6, 10])
                     .style(|t: &Theme| theme::tooltip_style(t, theme::shape::SM)),
                 iced::widget::tooltip::Position::Top,
