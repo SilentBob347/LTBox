@@ -582,16 +582,51 @@ pub mod motion {
     pub const EXTRA_LONG_3: u32 = 900;
     pub const EXTRA_LONG_4: u32 = 1000;
 
-    /// Parametric evaluation of a cubic Bézier at `t in [0, 1]`. This
-    /// returns `y(t)` for parameter `t`, not `y(x)` (CSS easing form).
-    /// For animation tweens both forms read close enough since the
-    /// curves are monotonic; if exact CSS parity matters, invert via
-    /// Newton's method on `x` first.
-    pub fn eval(curve: Easing, t: f32) -> f32 {
-        let t = t.clamp(0.0, 1.0);
-        let (_, p1y, _, p2y) = curve;
-        let u = 1.0 - t;
-        3.0 * u * u * t * p1y + 3.0 * u * t * t * p2y + t * t * t
+    /// Cubic Bézier basis with the endpoints pinned at `P0 = 0` and
+    /// `P3 = 1`, which is the form every CSS/M3 easing token uses.
+    fn basis(a: f32, b: f32, s: f32) -> f32 {
+        let u = 1.0 - s;
+        3.0 * u * u * s * a + 3.0 * u * s * s * b + s * s * s
+    }
+
+    /// Derivative of [`basis`] with respect to `s`.
+    fn basis_slope(a: f32, b: f32, s: f32) -> f32 {
+        3.0 * a * (1.0 - s) * (1.0 - 3.0 * s) + 3.0 * b * s * (2.0 - 3.0 * s) + 3.0 * s * s
+    }
+
+    /// Progress `y` at elapsed fraction `x`, per the CSS `cubic-bezier`
+    /// definition the M3 tokens are written in.
+    ///
+    /// The curve is parametric, so `x` is *not* the Bézier parameter:
+    /// reading `y(t)` directly (the earlier shortcut here) skews the
+    /// result badly on the asymmetric tokens — `EMPHASIZED_DECELERATE`
+    /// at the midpoint gives 0.76 that way versus 0.95 for the real
+    /// curve, i.e. a visibly different deceleration. Newton–Raphson
+    /// inverts `x(s)` first; the M3 curves are monotonic and well
+    /// conditioned, so a handful of iterations converge well inside
+    /// sub-pixel tolerance.
+    ///
+    /// Nothing consumes this yet — it is design-system scaffolding, per
+    /// the module-level `allow(dead_code)`. Keeping it correct means the
+    /// next consumer inherits the real curve rather than the shortcut.
+    pub fn eval(curve: Easing, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        let (p1x, p1y, p2x, p2y) = curve;
+        let mut s = x;
+        for _ in 0..8 {
+            let err = basis(p1x, p2x, s) - x;
+            if err.abs() < 1e-5 {
+                break;
+            }
+            let slope = basis_slope(p1x, p2x, s);
+            // Flat spot — Newton would diverge; the current estimate is
+            // the best available.
+            if slope.abs() < 1e-6 {
+                break;
+            }
+            s = (s - err / slope).clamp(0.0, 1.0);
+        }
+        basis(p1y, p2y, s)
     }
 }
 
@@ -604,6 +639,45 @@ pub mod shape {
     pub const LG: f32 = 16.0;
     pub const XL: f32 = 24.0;
     pub const FULL: f32 = 9999.0;
+}
+
+/// UI font family. Bundled at startup from `noto-fonts-dl` (see
+/// `fn main`) and re-declared here so [`emphasis`] can build weighted
+/// variants of the same family instead of falling back to iced's
+/// built-in default.
+pub const FONT_FAMILY: &str = "Noto Sans CJK KR";
+
+/// M3 Expressive type emphasis.
+///
+/// Expressive carries hierarchy on weight contrast as much as on size.
+/// The catch in this stack: the bundled CJK face ships **Regular only**,
+/// and cosmic-text 0.15 synthesizes *italic* (a skew transform) but not
+/// bold — a `Weight::Bold` request with no bold face in the family
+/// resolves silently back to Regular. These helpers therefore state the
+/// intent and light up wherever a real bold face is installed, while the
+/// hierarchy that must hold on every machine is carried by
+/// [`text_size`] steps and the `on_surface` / `on_surface_variant`
+/// color pair.
+pub mod emphasis {
+    use iced::Font;
+    use iced::font::Weight;
+
+    fn weighted(weight: Weight) -> Font {
+        Font {
+            weight,
+            ..Font::with_name(super::FONT_FAMILY)
+        }
+    }
+
+    /// Titles, active nav labels, key data values.
+    pub fn medium() -> Font {
+        weighted(Weight::Medium)
+    }
+
+    /// Headlines and the label on a screen's single primary action.
+    pub fn bold() -> Font {
+        weighted(Weight::Bold)
+    }
 }
 
 /// M3 type scale (font size in px).

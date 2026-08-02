@@ -232,9 +232,15 @@ fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color
         return button::Style {
             background: Some(with_alpha(p.on_surface, 0.12).into()),
             text_color: with_alpha(p.on_surface, 0.38),
+            // A flat `on_surface @ 12%` disc is the same neutral grey as an
+            // enabled *surface* FAB (Back), so a disabled Next and an
+            // enabled Back were indistinguishable. The dashed-weight
+            // outline gives "unavailable" its own silhouette instead of
+            // relying on fill alone.
             border: iced::Border {
+                color: with_alpha(p.on_surface, 0.24),
+                width: 1.0,
                 radius: theme::shape::FULL.into(),
-                ..Default::default()
             },
             shadow: theme::elevation(0, theme::is_dark(t)),
             ..Default::default()
@@ -253,9 +259,14 @@ fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color
     }
 }
 
+/// The wizard's single most important control. M3's default FAB color
+/// pair is `primary_container`/`on_primary_container`, which on the
+/// indigo seed is a near-neutral `0xDDE1FF` that reads as pale grey next
+/// to the surface FABs beside it. Expressive asks the one hero action to
+/// take the loudest available role, so this uses the `primary` pair.
 fn fab_primary_style(t: &Theme, status: button::Status) -> button::Style {
     let p = pal_of(t);
-    fab_style(t, status, p.primary_container, p.on_primary_container)
+    fab_style(t, status, p.primary, p.on_primary)
 }
 
 fn fab_surface_style(t: &Theme, status: button::Status) -> button::Style {
@@ -425,9 +436,14 @@ pub(crate) fn wizard_primary_extended_fab<'a>(
 ) -> Element<'a, Message> {
     let mut action = button(
         container(
-            row![icon.size(20), text(label).size(14)]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
+            row![
+                icon.size(20),
+                text(label)
+                    .size(theme::text_size::LABEL_LARGE)
+                    .font(theme::emphasis::bold())
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
         )
         .height(Length::Fill)
         .center_y(Length::Fill),
@@ -605,11 +621,11 @@ pub(crate) fn nav_btn<'a>(
     enabled: bool,
     label_alpha: f32,
 ) -> Element<'a, Message> {
-    // M3 active indicator pill: a 32x28 `secondary_container` chip
-    // wraps the icon when the item is selected. Replaces the older
-    // "tint the whole button" treatment so the active marker stays
-    // anchored to the icon and the label stays readable in its
-    // standard `on_surface` color.
+    // M3 active indicator: the whole row becomes a `secondary_container`
+    // pill (see the button style below), so the icon only has to carry
+    // the matching on-color. The previous 32x28 chip wrapped the icon
+    // alone, which left the label outside the indicator in the expanded
+    // form — M3's navigation drawer puts icon *and* label inside one pill.
     let icon = lucide_icon(view.nav_icon(), 18.0, move |t: &Theme| {
         let p = pal_of(t);
         if !enabled {
@@ -625,20 +641,6 @@ pub(crate) fn nav_btn<'a>(
         .height(Length::Fixed(28.0))
         .align_x(iced::alignment::Horizontal::Center)
         .align_y(iced::alignment::Vertical::Center)
-        .style(move |t: &Theme| {
-            if active && enabled {
-                iced::widget::container::Style {
-                    background: Some(pal_of(t).secondary_container.into()),
-                    border: iced::Border {
-                        radius: theme::shape::FULL.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            } else {
-                iced::widget::container::Style::default()
-            }
-        })
         .into();
 
     // Single base layout in both modes: icon left-anchored + optional
@@ -656,23 +658,29 @@ pub(crate) fn nav_btn<'a>(
         // Resolve the base text color (hover / disabled apply via the
         // button style below; here we just fade the label in along
         // the spring), then re-apply alpha so the glyph fades in step
-        // with the sidebar width tween. M3 nav rail uses `on_surface`
-        // for both active and inactive labels in the expanded form —
-        // the pill carries the emphasis, the label stays uniform.
+        // with the sidebar width tween. The active row sits on a
+        // `secondary_container` pill, so its label takes the matching
+        // on-color; inactive rows sit on the bare panel.
         let alpha = label_alpha;
         let base_label_color = move |t: &Theme| -> iced::Color {
             let p = pal_of(t);
             if !enabled {
                 with_alpha(p.on_surface, 0.38)
+            } else if active {
+                p.on_secondary_container
             } else {
                 p.on_surface
             }
         };
+        let mut label_text = text(label.to_string())
+            .size(theme::text_size::LABEL_LARGE)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Center);
+        if active && enabled {
+            label_text = label_text.font(theme::emphasis::medium());
+        }
         inner = inner.push(
-            text(label.to_string())
-                .size(13)
-                .height(Length::Fill)
-                .align_y(iced::alignment::Vertical::Center)
+            label_text
                 // Forbid wrapping: during the sidebar spring there is
                 // a brief window where the panel is wide enough to
                 // mount the label but too narrow for long glyphs to
@@ -692,45 +700,66 @@ pub(crate) fn nav_btn<'a>(
         .align_y(iced::Alignment::Center)
         .into();
 
-    // Outer padding 15px on each side: the 32-wide pill centered in
-    // a 62-wide content box places the pill (and the 18px icon inside)
-    // at the same on-screen x as the 18px icon at padding 22 used to.
-    // Vertical padding stays 0; height is fixed by NAV_BTN_HEIGHT.
+    // The button paints both the active indicator and the state layer, so
+    // it carries a FULL radius: every fill it draws is a pill, never the
+    // edge-to-edge square the flat-background version produced. The
+    // 12 px side inset lives on the wrapper below; the remaining 3 px of
+    // button padding keeps the 32-wide icon slot at the same on-screen x
+    // as before (12 + 3 = the previous 15).
     let btn = button(content)
-        .padding([0, 15])
+        .padding([0, 3])
         .width(Length::Fill)
         .height(Length::Fixed(NAV_BTN_HEIGHT))
         .style(move |t: &Theme, status| {
             let p = pal_of(t);
+            let pill = iced::Border {
+                radius: theme::shape::FULL.into(),
+                ..Default::default()
+            };
             if !enabled {
                 return button::Style {
                     background: None,
                     text_color: with_alpha(p.on_surface, 0.38),
+                    border: pill,
                     ..Default::default()
                 };
             }
-            // State layers per M3: hover 8%, pressed 12%. The spec
-            // does NOT add a persistent row tint to active items —
-            // the indicator pill (secondary_container chip around the
-            // icon) is the sole "selected" marker, and state layers
-            // only stack on top during interaction. Idle active items
-            // therefore get no row background.
-            let bg = theme::state_layer_bg(status, p.on_surface).map(|c| c.into());
+            // Active rows carry an opaque `secondary_container` pill;
+            // inactive rows are transparent until a state layer lands on
+            // them (hover 8%, pressed 12%). Stacking the layer on the
+            // active fill keeps an already-selected row responsive to the
+            // pointer instead of looking inert.
+            let background = if active {
+                Some(
+                    theme::mix_color(
+                        p.secondary_container,
+                        p.on_secondary_container,
+                        theme::state_alpha(status),
+                    )
+                    .into(),
+                )
+            } else {
+                theme::state_layer_bg(status, p.on_surface).map(|c| c.into())
+            };
             button::Style {
-                background: bg,
+                background,
                 text_color: if active {
-                    p.on_surface
+                    p.on_secondary_container
                 } else {
                     p.on_surface_variant
                 },
+                border: pill,
                 ..Default::default()
             }
         });
-    if enabled {
+    let btn: Element<'a, Message> = if enabled {
         btn.on_press(Message::Navigate(view)).into()
     } else {
         btn.into()
-    }
+    };
+    // M3 insets drawer/rail items from the panel edge so the indicator
+    // reads as a discrete pill rather than a full-bleed band.
+    container(btn).padding([0, 12]).into()
 }
 
 // Device portrait handles — built once, cloned each render.

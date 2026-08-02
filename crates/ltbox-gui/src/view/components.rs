@@ -260,6 +260,7 @@ pub(crate) fn large_top_app_bar<'a>(
     let mut content = column![
         text(title)
             .size(theme::text_size::HEADLINE_MEDIUM)
+            .font(theme::emphasis::bold())
             .style(on_surface_style)
             .width(Length::Fill)
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
@@ -336,7 +337,8 @@ pub(crate) fn sec_hdr<'a>(label: &str, label_alpha: f32) -> Element<'a, Message>
 fn card_content<'a>(title: &str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     column![
         text(title.to_string())
-            .size(13)
+            .size(theme::text_size::TITLE_SMALL)
+            .font(theme::emphasis::medium())
             .style(label_style)
             .line_height(1.0),
         content.into(),
@@ -394,8 +396,16 @@ pub(crate) fn clickable_card<'a>(
 
 pub(crate) fn info_kv<'a>(label: &str, value: &str) -> Element<'a, Message> {
     column![
-        text(label.to_string()).size(11).style(label_style),
-        text(value.to_string()).size(14),
+        text(label.to_string())
+            .size(theme::text_size::LABEL_SMALL)
+            .style(label_style),
+        // Value outranks its caption on weight and color rather than
+        // size — at `BODY_LARGE` the kv grid competed with the device
+        // name above it, which is what pushed that name oversized in the
+        // first place.
+        text(value.to_string())
+            .size(theme::text_size::BODY_MEDIUM)
+            .font(theme::emphasis::medium()),
     ]
     .spacing(3)
     .into()
@@ -791,7 +801,8 @@ fn option_card(
         icon_tile(icon),
         Space::new().height(14),
         text(label.to_string())
-            .size(13)
+            .size(theme::text_size::TITLE_MEDIUM)
+            .font(theme::emphasis::medium())
             .style(label_style_fn)
             .width(Length::Fill)
             .center(),

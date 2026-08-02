@@ -839,6 +839,7 @@ impl App {
         let body = column![
             text(self.t(title_key).to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
+                .font(theme::emphasis::medium())
                 .style(warning_container_text_style),
             text(self.t(desc_key).to_string())
                 .size(theme::text_size::BODY_SMALL)
@@ -906,6 +907,7 @@ impl App {
         let body = column![
             text(self.t("driver_update_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
+                .font(theme::emphasis::medium())
                 .style(warning_container_text_style),
             text(tr_args!(
                 "driver_update_desc",
@@ -955,6 +957,7 @@ impl App {
         let body = column![
             text(self.t("dual_usb_advisory_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
+                .font(theme::emphasis::medium())
                 .style(warning_container_text_style),
             text(self.t("dual_usb_advisory_desc").to_string())
                 .size(theme::text_size::BODY_SMALL)
@@ -1040,6 +1043,7 @@ impl App {
         let title_col = column![
             text(self.t("progress_dialog_title").to_string())
                 .size(theme::text_size::TITLE_MEDIUM)
+                .font(theme::emphasis::medium())
                 .style(on_surface_style),
             text(body).size(13).style(muted_style),
         ]

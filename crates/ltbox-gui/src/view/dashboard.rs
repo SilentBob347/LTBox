@@ -158,15 +158,22 @@ impl App {
         let mut device_col = column![].spacing(0).width(Length::Fill);
         device_col = device_col.push(
             text(self.t("dash_device").to_string())
-                .size(13)
+                .size(theme::text_size::TITLE_SMALL)
+                .font(theme::emphasis::medium())
                 .style(label_style)
                 .line_height(1.0),
         );
         device_col = device_col.push(Space::new().height(4));
         if !self.device_market_name.is_empty() {
+            // Top of the card's hierarchy, but only just: `TITLE_LARGE` +
+            // bold made a tablet model name shout over a card that is
+            // mostly reference data. It keeps its original size and earns
+            // the rank from `medium` weight plus the step down to
+            // `BODY_MEDIUM` on the kv values below.
             device_col = device_col.push(
                 text(self.device_market_name.clone())
-                    .size(16)
+                    .size(theme::text_size::TITLE_MEDIUM)
+                    .font(theme::emphasis::medium())
                     .line_height(1.0),
             );
         }

@@ -452,7 +452,7 @@ fn main() -> iced::Result {
         // keeps it future-proof against a renamed binary.
         .settings(iced::Settings {
             id: Some(APP_ID.to_string()),
-            default_font: iced::Font::with_name("Noto Sans CJK KR"),
+            default_font: iced::Font::with_name(theme::FONT_FAMILY),
             ..iced::Settings::default()
         })
         .theme(App::theme)
@@ -4749,6 +4749,32 @@ mod tests {
         assert!(result.contains("wizard_primary_extended_fab"));
         assert!(!result.contains("wizard_surface_fab"));
         assert!(!result.contains("wizard_error_fab"));
+    }
+
+    /// `eval` takes the elapsed fraction `x`, not the Bézier parameter.
+    /// Reading `y(t)` directly is the easy mistake and lands ~0.19 low at
+    /// the midpoint of the asymmetric M3 curves.
+    #[test]
+    fn motion_eval_inverts_x_before_reading_the_curve() {
+        use theme::motion::{EMPHASIZED_DECELERATE, eval};
+
+        assert!(eval(EMPHASIZED_DECELERATE, 0.0).abs() < 1e-4);
+        assert!((eval(EMPHASIZED_DECELERATE, 1.0) - 1.0).abs() < 1e-4);
+
+        let mid = eval(EMPHASIZED_DECELERATE, 0.5);
+        assert!(
+            (mid - 0.9502).abs() < 5e-3,
+            "midpoint should follow cubic-bezier(0.05, 0.7, 0.1, 1.0), got {mid}"
+        );
+
+        // Monotonic across the range — a non-inverted read still rises,
+        // so this guards the shape rather than the direction alone.
+        let mut prev = 0.0;
+        for step in 0..=20 {
+            let y = eval(EMPHASIZED_DECELERATE, step as f32 / 20.0);
+            assert!(y >= prev - 1e-4, "curve must not regress at {step}");
+            prev = y;
+        }
     }
 
     #[test]
