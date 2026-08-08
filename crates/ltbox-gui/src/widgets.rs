@@ -977,6 +977,12 @@ pub(crate) fn nav_btn<'a>(
 
 // Device portrait handles — built once, cloned each render.
 // Unknown models fall through to `GENERIC_TABLET_SVG_HANDLE`.
+static LAVIETAB9QHD1_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../assets/devices/9qhd1.png").as_slice(),
+        )
+    });
 static TB320FC_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
     std::sync::LazyLock::new(|| {
         iced::widget::image::Handle::from_bytes(
@@ -1028,6 +1034,7 @@ pub(crate) enum DevicePortrait {
 
 pub(crate) fn device_portrait(model: &str) -> DevicePortrait {
     match model.to_uppercase().as_str() {
+        "LAVIETAB9QHD1" => DevicePortrait::Png(LAVIETAB9QHD1_HANDLE.clone()),
         "TB320FC" => DevicePortrait::Png(TB320FC_HANDLE.clone()),
         "TB321FU" => DevicePortrait::Png(TB321FU_HANDLE.clone()),
         "TB322FC" => DevicePortrait::Png(TB322FC_HANDLE.clone()),
