@@ -1506,12 +1506,12 @@ fn pick_folder_task(
 fn loader_file_spec(target_i18n_key: &'static str) -> pickers::FilePickSpec {
     // LTBox-supported devices ship `xbl_s_devprg_ns.melf` as the only
     // viable Firehose loader, so the picker accepts `.melf`. TB323FU
-    // (kaanapali chipset) uses a multi-image manifest instead — a
-    // `qsahara_device_programmer.xml` enumerating the per-id ELF /
-    // MBN payloads — so the picker also accepts `.xml`. Filename
-    // itself is not enforced for the .melf case; the model-aware
-    // resolver upgrades a TB323FU `.melf` selection to the manifest
-    // sitting next to it.
+    // uses a multi-image manifest instead — a
+    // `qsahara_device_programmer.xml` enumerating the per-id ELF / MBN
+    // payloads — so the picker also accepts `.xml`. Filename itself is
+    // not enforced for the .melf case; the model-aware resolver
+    // upgrades a TB323FU `.melf` selection to the manifest sitting
+    // next to it.
     pickers::FilePickSpec::single(target_i18n_key).with_filter(
         "EDL loader (.melf / .mbn / .elf / .xml / .x)",
         LOADER_PICKER_EXTS,
@@ -2871,9 +2871,9 @@ impl App {
         if path.is_file() {
             self.remember_recent(pickers::PickerKind::File, selected_path);
             // TB323FU model gate: if the user picked a `.melf` but the
-            // device is a multi-image kaanapali (TB323FU), upgrade to
-            // the `qsahara_device_programmer.xml` manifest sitting in
-            // the same folder. If the manifest is missing the .melf
+            // device is a TB323FU, upgrade to the
+            // `qsahara_device_programmer.xml` manifest sitting in the
+            // same folder. If the manifest is missing the .melf
             // alone is wrong and would fail mid-Sahara — abort up
             // front. Performed during resolve so the wizard's Confirm
             // step shows the correct path.
@@ -3033,8 +3033,8 @@ impl App {
     }
 
     /// Whether the polled device is a TB323FU. Drives the multi-image
-    /// EDL loader path: TB323FU's kaanapali chipset doesn't accept a
-    /// single `xbl_s_devprg_ns.melf`; it needs the full
+    /// EDL loader path: TB323FU doesn't accept a single
+    /// `xbl_s_devprg_ns.melf`; it needs the full
     /// `qsahara_device_programmer.xml` manifest + the per-id ELF /
     /// MBN payloads it references. The loader resolver upgrades a
     /// stray `.melf` selection to the manifest when one exists in

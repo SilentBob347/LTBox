@@ -525,7 +525,7 @@ impl EdlSession {
                 loader_path
             };
 
-        // Manifest (TB323FU/kaanapali): slot array indexed by Sahara image-id.
+        // Manifest (TB323FU): slot array indexed by Sahara image-id.
         // Single loader (.melf/.mbn/.elf): one-element slice at slot 0.
         let mut slots: Vec<Option<Vec<u8>>> =
             if ltbox_core::sahara_xml::is_manifest_filename(loader_path) {

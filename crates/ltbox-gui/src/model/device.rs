@@ -8,20 +8,20 @@ use crate::theme::Palette;
 /// `device_model` string at each call site.
 ///
 /// `Generic` covers every supported Lenovo tablet that doesn't need a
-/// special branch — Y700 2nd / 3rd / 4th gen, the Yoga / Xiaoxin
-/// rebrands, etc. They share the standard `xbl_s_devprg_ns.melf`
-/// loader and full ROW + OtherRegion flash flow.
+/// special branch — TB321FU (Legion Y700 2025), TB520FU (Yoga Pad Pro
+/// AI), TB710FU (XiaoxinPad Pro GT). They share the standard
+/// `xbl_s_devprg_ns.melf` loader and full ROW + OtherRegion flash flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceClass {
-    /// TB320FC — Lenovo Yoga Pad Pro AI / Yoga Tab Plus AI. Root flow
-    /// limited to KernelSU GKI + APatch family.
+    /// TB320FC — Legion Y700 2023. Root flow limited to KernelSU GKI +
+    /// APatch family.
     TB320FC,
-    /// TB322FC — Lenovo Xiaoxin Pad Pro GT (PRC-only SKU). Flash
-    /// wizard hides ROW + OtherRegion + non-CN country picks.
+    /// TB322FC — Legion Y700 Gen 4. Flash wizard hides ROW +
+    /// OtherRegion + non-CN country picks.
     TB322FC,
-    /// TB323FU — Lenovo Legion Tab Y700 5th Gen (Kaanapali). Requires
-    /// the multi-image `qsahara_device_programmer.xml` Sahara manifest
-    /// rather than a single `.melf` loader.
+    /// TB323FU — Legion Y700 Gen 5. Requires the multi-image
+    /// `qsahara_device_programmer.xml` Sahara manifest rather than a
+    /// single `.melf` loader.
     TB323FU,
     /// Any other supported model. No special-case gates apply.
     Generic,
