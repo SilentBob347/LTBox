@@ -919,28 +919,11 @@ impl ThemeChoice {
     }
 }
 
-/// Match a SKU token (e.g. `"TB323FU"`) inside an arbitrary string with
-/// alphanumeric word boundaries so a future variant like `TB323FUX` does
-/// not collide with the bare match. Used by the flash worker to gate
-/// SKU-specific behaviour off either a vendor_boot fingerprint or the
-/// probe-reported device model string.
+/// Match a SKU token inside an arbitrary string using the shared model-identity
+/// rules. Alphanumeric word boundaries prevent a future suffixed model from
+/// colliding with the bare match.
 pub(crate) fn fingerprint_token_match(haystack: &str, model: &str) -> bool {
-    if model.is_empty() {
-        return false;
-    }
-    let bytes = haystack.as_bytes();
-    let mut start = 0usize;
-    while let Some(pos) = haystack[start..].find(model) {
-        let abs = start + pos;
-        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
-        let end = abs + model.len();
-        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-        start = abs + 1;
-    }
-    false
+    ltbox_core::model::fingerprint_model_match(haystack, model)
 }
 
 /// Parse `N/M` out of a log line. Returns `N` (1-indexed).
@@ -2912,8 +2895,8 @@ impl App {
         DeviceClass::from_model(&self.device_model)
     }
 
-    /// Whether the polled device is a TB320FC. Drives the Root wizard
-    /// gating (Magisk family disabled, KernelSU LKM mode disabled —
+    /// Whether the polled device follows the TB320FC hardware path. Drives the
+    /// Root wizard gating (Magisk family disabled, KernelSU LKM mode disabled —
     /// only KernelSU GKI + APatch family work cleanly on this kernel).
     fn is_tb320fc(&self) -> bool {
         self.device_class() == DeviceClass::TB320FC

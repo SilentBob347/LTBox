@@ -1,0 +1,96 @@
+//! Device-model identity shared across LTBox crates.
+
+/// Model token reported by TB320FC firmware.
+pub const TB320FC_MODEL: &str = "TB320FC";
+
+/// Model token reported by LAVIE Tab 9QHD1 firmware.
+pub const LAVIE_TAB_9QHD1_MODEL: &str = "LAVIETab9QHD1";
+
+/// Whether `model` follows the TB320FC hardware-specific paths.
+///
+/// LAVIE Tab 9QHD1 reports its domestic model token despite using the same
+/// hardware behavior, so it must inherit every TB320FC-only gate.
+pub fn is_tb320fc_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case(TB320FC_MODEL) || model.eq_ignore_ascii_case(LAVIE_TAB_9QHD1_MODEL)
+}
+
+/// Match a model token inside a fingerprint or probe string.
+///
+/// Matches keep alphanumeric word boundaries so a future suffixed model cannot
+/// collide. TB320FC and the token reported by LAVIE Tab 9QHD1 are the sole
+/// bidirectional equivalence handled here.
+pub fn fingerprint_model_match(haystack: &str, model: &str) -> bool {
+    if token_match(haystack, model) {
+        return true;
+    }
+
+    if model == TB320FC_MODEL {
+        token_match(haystack, LAVIE_TAB_9QHD1_MODEL)
+    } else if model == LAVIE_TAB_9QHD1_MODEL {
+        token_match(haystack, TB320FC_MODEL)
+    } else {
+        false
+    }
+}
+
+fn token_match(haystack: &str, model: &str) -> bool {
+    if model.is_empty() {
+        return false;
+    }
+
+    let bytes = haystack.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = haystack[start..].find(model) {
+        let absolute = start + pos;
+        let before_ok = absolute == 0 || !bytes[absolute - 1].is_ascii_alphanumeric();
+        let end = absolute + model.len();
+        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = absolute + 1;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TB320FC_FINGERPRINT: &str =
+        "qti/TB320FC/TB320FC:15/AQ3A.240812.002/ZUI_17.0.313_250808_ROW:user/release-keys";
+    const LAVIE_TAB_9QHD1_FINGERPRINT: &str = "qti/LAVIETab9QHD1/LAVIETab9QHD1:15/\
+         AQ3A.240812.002/S104127_260624_NEC:user/release-keys";
+
+    #[test]
+    fn lavie_tab_9qhd1_device_accepts_tb320fc_firmware() {
+        assert!(fingerprint_model_match(
+            TB320FC_FINGERPRINT,
+            LAVIE_TAB_9QHD1_MODEL
+        ));
+    }
+
+    #[test]
+    fn tb320fc_device_accepts_lavie_tab_9qhd1_firmware() {
+        assert!(fingerprint_model_match(
+            LAVIE_TAB_9QHD1_FINGERPRINT,
+            TB320FC_MODEL
+        ));
+    }
+
+    #[test]
+    fn fingerprint_model_match_rejects_unrelated_and_suffixed_models() {
+        assert!(!fingerprint_model_match(
+            "qti/TB323FU/TB323FU:15/build",
+            TB320FC_MODEL
+        ));
+        assert!(!fingerprint_model_match(
+            "qti/TB320FCX/build",
+            TB320FC_MODEL
+        ));
+        assert!(!fingerprint_model_match(
+            "qti/LAVIETab9QHD1X/build",
+            TB320FC_MODEL
+        ));
+    }
+}

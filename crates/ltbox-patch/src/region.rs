@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::avb::AvbImageInfo;
 use crate::{avb, key_map};
-use ltbox_core::{LtboxError, Result, tr_args};
+use ltbox_core::{LtboxError, Result, model::fingerprint_model_match, tr_args};
 use tracing::info;
 
 /// Outcome of validating an image against a device model.
@@ -15,9 +15,9 @@ use tracing::info;
 /// may match, mismatch, or be absent entirely (older firmware).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelValidation {
-    /// Fingerprint present and contains `device_model`. Safe to proceed.
+    /// Fingerprint present and matches `device_model`. Safe to proceed.
     Match { fingerprint: String },
-    /// Fingerprint present but does NOT contain `device_model`. The
+    /// Fingerprint present but does NOT match `device_model`. The
     /// firmware is for a different model — caller should abort.
     Mismatch {
         fingerprint: String,
@@ -31,10 +31,11 @@ pub enum ModelValidation {
 /// Check an AVB-extracted image against the ADB-reported device model. Reads the
 /// build fingerprint via [`avb::build_fingerprint`] (preferring
 /// `com.android.build.system.fingerprint`, so a vbmeta_system image works
-/// directly) and looks for the device model as a substring.
+/// directly) and matches the device model as a bounded token.
 ///
 /// Spaces in `device_model` are stripped to tolerate
-/// `"TB 320FC"`-style reads from `ro.product.model`.
+/// `"TB 320FC"`-style reads from `ro.product.model`. The shared matcher also
+/// accepts the model token reported by LAVIE Tab 9QHD1 as TB320FC-equivalent.
 pub fn validate_device_model(info: &AvbImageInfo, device_model: &str) -> ModelValidation {
     let normalized = device_model.replace(' ', "");
     let fingerprint = avb::build_fingerprint(info);
@@ -42,7 +43,9 @@ pub fn validate_device_model(info: &AvbImageInfo, device_model: &str) -> ModelVa
     match fingerprint {
         None => ModelValidation::Missing,
         Some(fp) if normalized.is_empty() => ModelValidation::Match { fingerprint: fp },
-        Some(fp) if fp.contains(&normalized) => ModelValidation::Match { fingerprint: fp },
+        Some(fp) if fingerprint_model_match(&fp, &normalized) => {
+            ModelValidation::Match { fingerprint: fp }
+        }
         Some(fp) => ModelValidation::Mismatch {
             fingerprint: fp,
             device_model: normalized,

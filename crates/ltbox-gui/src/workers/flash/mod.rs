@@ -76,6 +76,8 @@ fn fixed_firmware_device_policy(
 
 /// Supported Lenovo SKUs, matched as fingerprint tokens to recover the device
 /// model from an EDL-dumped vendor_boot when fastboot/ADB never ran.
+/// LAVIE Tab 9QHD1 is represented by TB320FC because the shared matcher treats
+/// its reported token as equivalent and the recovered value is internal only.
 const SUPPORTED_MODELS: [&str; 6] = [
     "TB320FC", "TB321FU", "TB322FC", "TB323FU", "TB520FU", "TB710FU",
 ];
@@ -631,10 +633,11 @@ fn decompress_zst_file(
     result
 }
 
-/// Country-code partitions to dump/patch/flash for a model. TB320FC / TB323FU
-/// keep the code ONLY in `oemowninfo` (LUN 0); every other model keeps it in
-/// `devinfo` + `persist`. The model is matched against the vendor_boot AVB
-/// fingerprint (works on an EDL-start flash) or the probe-reported model name.
+/// Country-code partitions to dump/patch/flash for a model. The TB320FC hardware
+/// path and TB323FU keep the code ONLY in `oemowninfo` (LUN 0); every other model
+/// keeps it in `devinfo` + `persist`. The model is matched against the
+/// vendor_boot AVB fingerprint (works on an EDL-start flash) or the
+/// probe-reported model name.
 fn country_partitions_for(
     device_model: &str,
     firmware_fingerprint: Option<&str>,
@@ -653,10 +656,10 @@ fn country_partitions_for(
 }
 
 /// Rewrite the device's country code in the model's country partitions over an
-/// open EDL session: TB320FC / TB323FU use `oemowninfo`; every other model uses
-/// `devinfo` + `persist`. Best-effort per partition (logs + continues on
-/// failure). Shared by `flash_worker`'s post-flash country phase and the
-/// standalone `change_country_worker`.
+/// open EDL session: the TB320FC hardware path and TB323FU use `oemowninfo`;
+/// every other model uses `devinfo` + `persist`. Best-effort per partition
+/// (logs + continues on failure). Shared by `flash_worker`'s post-flash country
+/// phase and the standalone `change_country_worker`.
 #[allow(clippy::too_many_arguments)]
 fn run_country_change(
     session: &mut ltbox_device::edl::EdlSession,
@@ -936,6 +939,10 @@ mod tests {
         use super::country_partitions_for;
         // TB320FC / TB323FU keep the country code only in oemowninfo.
         assert_eq!(country_partitions_for("TB320FC", None), &["oemowninfo"][..]);
+        assert_eq!(
+            country_partitions_for("LAVIETab9QHD1", None),
+            &["oemowninfo"][..]
+        );
         assert_eq!(country_partitions_for("TB323FU", None), &["oemowninfo"][..]);
         // Every other model uses devinfo + persist.
         assert_eq!(
@@ -945,6 +952,10 @@ mod tests {
         // The AVB fingerprint (EDL-start, no probed model) also selects it.
         assert_eq!(
             country_partitions_for("", Some("Lenovo/TB323FU/TB323FU:14/build")),
+            &["oemowninfo"][..]
+        );
+        assert_eq!(
+            country_partitions_for("", Some("qti/LAVIETab9QHD1/LAVIETab9QHD1:15/build_NEC")),
             &["oemowninfo"][..]
         );
     }

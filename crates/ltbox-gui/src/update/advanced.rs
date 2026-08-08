@@ -637,10 +637,11 @@ impl App {
             }
             AdvMsg::AdvWizOpen(a) => {
                 self.adv_wizard.open(a);
-                // DetectArb on TB320FC needs an EDL loader (Firehose) — apply the
-                // Settings default loader like every other loader-picker flow.
+                // DetectArb on the TB320FC hardware path needs an EDL loader
+                // (Firehose) — apply the Settings default loader like every
+                // other loader-picker flow.
                 if matches!(a, AdvAction::DetectArb)
-                    && self.device_model.eq_ignore_ascii_case("TB320FC")
+                    && self.is_tb320fc()
                     && let Some(path) = self.resolved_default_loader()
                     && let Ok(resolved) = self.resolve_loader_input(&path)
                 {

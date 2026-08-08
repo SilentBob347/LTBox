@@ -470,7 +470,7 @@ impl App {
         // Keep unsupported cards visible but disabled for now; KernelSU
         // remains pickable through GKI, and APatch stays available.
         let tb320fc = self.is_tb320fc();
-        let unsupported_tb320fc = tr_args!("model_unsupported", model = "TB320FC");
+        let unsupported_tb320fc = tr_args!("model_unsupported", model = self.device_model.as_str());
         let families = [
             Family::Magisk,
             Family::KernelSU,
@@ -728,7 +728,7 @@ impl App {
         // visible so users can see why LKM is unavailable.
         let tb320fc = self.is_tb320fc();
         let tb323fu = self.is_tb323fu();
-        let unsupported_tb320fc = tr_args!("model_unsupported", model = "TB320FC");
+        let unsupported_tb320fc = tr_args!("model_unsupported", model = self.device_model.as_str());
         let unsupported_tb323fu = tr_args!("model_unsupported", model = "TB323FU");
         let lkm_card: Element<'_, Message> = if tb320fc {
             icon_option_card_sub_square_disabled_sized(

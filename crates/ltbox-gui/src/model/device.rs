@@ -2,6 +2,7 @@
 //! and the live connection state, split out of `main.rs`.
 
 use crate::theme::Palette;
+use ltbox_core::model::{LAVIE_TAB_9QHD1_MODEL, TB320FC_MODEL, is_tb320fc_model};
 
 /// Classifies the device model into a known SKU so wizard gates ask
 /// "what device class are we on?" once instead of comparing the raw
@@ -29,7 +30,7 @@ pub(crate) enum DeviceClass {
 
 impl DeviceClass {
     pub(crate) fn from_model(model: &str) -> Self {
-        if model.eq_ignore_ascii_case("TB320FC") {
+        if is_tb320fc_model(model) {
             Self::TB320FC
         } else if model.eq_ignore_ascii_case("TB322FC") {
             Self::TB322FC
@@ -46,7 +47,13 @@ impl DeviceClass {
 /// charge-only on these SKUs, so LTBox advises the user to use the long-edge
 /// one. (TB321FU is included here even though it is not a `DeviceClass`
 /// special case — the advisory is about physical ports, not flash flow.)
-pub(crate) const DUAL_USBC_MODELS: [&str; 4] = ["TB320FC", "TB321FU", "TB322FC", "TB323FU"];
+pub(crate) const DUAL_USBC_MODELS: [&str; 5] = [
+    TB320FC_MODEL,
+    LAVIE_TAB_9QHD1_MODEL,
+    "TB321FU",
+    "TB322FC",
+    "TB323FU",
+];
 
 /// Whether `model` is one of the [`DUAL_USBC_MODELS`] (case-insensitive).
 pub(crate) fn is_dual_usbc_model(model: &str) -> bool {
@@ -63,6 +70,22 @@ pub(crate) fn is_dual_usbc_model(model: &str) -> bool {
 /// skip and risk a rollback-rejected downgrade.
 pub(crate) fn is_rollback_protected_model(model: &str) -> bool {
     !model.eq_ignore_ascii_case("TB322FC")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lavie_tab_9qhd1_inherits_tb320fc_device_behavior() {
+        assert_eq!(
+            DeviceClass::from_model(LAVIE_TAB_9QHD1_MODEL),
+            DeviceClass::TB320FC
+        );
+        assert!(is_dual_usbc_model(LAVIE_TAB_9QHD1_MODEL));
+        assert_eq!(DeviceClass::from_model("TB323FU"), DeviceClass::TB323FU);
+        assert!(!is_dual_usbc_model("TB330FU"));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

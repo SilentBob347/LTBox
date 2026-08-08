@@ -135,7 +135,7 @@ impl App {
                     .map(|p| self.loader_fits_model(std::path::Path::new(p)))
                     .unwrap_or(true);
             let can = (if detect_arb_step0 {
-                if self.device_model.eq_ignore_ascii_case("TB320FC") {
+                if self.is_tb320fc() {
                     self.adv_wizard.file_path.is_some()
                 } else {
                     true
@@ -575,13 +575,13 @@ impl App {
             .into()
     }
 
-    /// DetectArb step 0. TB320FC needs an EDL loader (the deeper
+    /// DetectArb step 0. The TB320FC hardware path needs an EDL loader (the deeper
     /// path falls back to dumping `boot_a` + `vbmeta_system_a` when
     /// stored_rollback_index is missing, so a Firehose loader is
     /// required); other models just see a Start prompt because the
     /// detection runs entirely over fastboot vars.
     pub(crate) fn adv_wiz_detect_arb_step(&self) -> Element<'_, Message> {
-        let needs_loader = self.device_model.eq_ignore_ascii_case("TB320FC");
+        let needs_loader = self.is_tb320fc();
         let mut col = column![]
             .spacing(14)
             .padding(28)
