@@ -21,6 +21,13 @@ pub struct AvbImageInfo {
     pub salt: Option<Vec<u8>>,
     pub public_key_sha1: Option<String>,
     pub props: Vec<(String, Vec<u8>)>,
+    // Keep the compatibility evidence gathered while the complete descriptor
+    // set is available. The footer API cannot recover it from the modeled
+    // fields later, after an image has already been copied or patched.
+    source_image_path: PathBuf,
+    hash_descriptor_algorithm: Option<String>,
+    hash_descriptor_count: usize,
+    unreproducible_descriptor_kinds: Vec<String>,
 }
 
 /// The Android build fingerprint embedded in an image's AVB property
@@ -70,29 +77,50 @@ pub fn extract_image_avb_info(image_path: &Path) -> Result<AvbImageInfo> {
     let mut partition_name = None;
     let mut salt = None;
     let mut props = Vec::new();
+    let mut hash_descriptor_algorithm = None;
+    let mut hash_descriptor_count = 0;
+    let mut unreproducible_descriptor_kinds = Vec::new();
 
     for desc in &info.descriptors {
         match desc {
             avbtool_rs::info::DescriptorInfo::Hash {
+                hash_algorithm,
                 partition_name: pn,
                 salt: s,
                 ..
-            } if partition_name.is_none() => {
-                partition_name = Some(pn.clone());
-                salt = Some(s.clone());
+            } => {
+                hash_descriptor_count += 1;
+                if hash_descriptor_algorithm.is_none() {
+                    hash_descriptor_algorithm = Some(hash_algorithm.clone());
+                }
+                if partition_name.is_none() {
+                    partition_name = Some(pn.clone());
+                    salt = Some(s.clone());
+                }
             }
             avbtool_rs::info::DescriptorInfo::Hashtree {
                 partition_name: pn,
                 salt: s,
                 ..
-            } if partition_name.is_none() => {
-                partition_name = Some(pn.clone());
-                salt = Some(s.clone());
+            } => {
+                if partition_name.is_none() {
+                    partition_name = Some(pn.clone());
+                    salt = Some(s.clone());
+                }
+                unreproducible_descriptor_kinds.push("Hashtree".to_string());
             }
             avbtool_rs::info::DescriptorInfo::Property { key, value } => {
                 props.push((key.clone(), value.clone()));
             }
-            _ => {}
+            avbtool_rs::info::DescriptorInfo::ChainPartition { .. } => {
+                unreproducible_descriptor_kinds.push("ChainPartition".to_string());
+            }
+            avbtool_rs::info::DescriptorInfo::KernelCmdline { .. } => {
+                unreproducible_descriptor_kinds.push("KernelCmdline".to_string());
+            }
+            avbtool_rs::info::DescriptorInfo::Unknown { tag, .. } => {
+                unreproducible_descriptor_kinds.push(format!("Unknown (tag {tag})"));
+            }
         }
     }
 
@@ -106,6 +134,10 @@ pub fn extract_image_avb_info(image_path: &Path) -> Result<AvbImageInfo> {
         salt,
         public_key_sha1: info.public_key_sha1.clone(),
         props,
+        source_image_path: image_path.to_path_buf(),
+        hash_descriptor_algorithm,
+        hash_descriptor_count,
+        unreproducible_descriptor_kinds,
     })
 }
 
@@ -331,6 +363,8 @@ pub fn add_hash_footer(
     key_spec: Option<&str>,
     new_rollback_index: Option<u64>,
 ) -> Result<()> {
+    const HASH_ALGORITHM: &str = "sha256";
+
     let rollback = new_rollback_index.unwrap_or(info.rollback_index);
     // Must bail loudly — the embedded Hash descriptor records partition_name,
     // and the bootloader refuses to mount if it doesn't match the recorded name.
@@ -340,6 +374,34 @@ pub fn add_hash_footer(
             image_path.display()
         ))
     })?;
+
+    // avbtool-rs cannot carry arbitrary source descriptors through this footer
+    // API. Refuse the rebuild while the destination is still untouched instead
+    // of quietly producing metadata that no longer matches the source image.
+    if let Some(kind) = info.unreproducible_descriptor_kinds.first() {
+        return Err(LtboxError::Avb(format!(
+            "Cannot add AVB hash footer to {}: source image {} contains a {kind} descriptor, which the hash-footer rebuild cannot reproduce",
+            image_path.display(),
+            info.source_image_path.display()
+        )));
+    }
+    if info.hash_descriptor_count > 1 {
+        return Err(LtboxError::Avb(format!(
+            "Cannot add AVB hash footer to {}: source image {} contains {} Hash descriptors, but the hash-footer rebuild can reproduce only one",
+            image_path.display(),
+            info.source_image_path.display(),
+            info.hash_descriptor_count
+        )));
+    }
+    if let Some(source_algorithm) = info.hash_descriptor_algorithm.as_deref()
+        && source_algorithm != HASH_ALGORITHM
+    {
+        return Err(LtboxError::Avb(format!(
+            "Cannot add AVB hash footer to {}: source image {} uses Hash descriptor algorithm {source_algorithm}, but the hash-footer rebuild writes {HASH_ALGORITHM}",
+            image_path.display(),
+            info.source_image_path.display()
+        )));
+    }
     info!("Adding AVB hash footer: partition={name}, rollback={rollback}");
 
     let salt_bytes = info.salt.clone();
@@ -357,7 +419,7 @@ pub fn add_hash_footer(
         partition_size: Some(info.partition_size),
         dynamic_partition_size: false,
         partition_name: name.to_string(),
-        hash_algorithm: "sha256".to_string(),
+        hash_algorithm: HASH_ALGORITHM.to_string(),
         salt: salt_bytes,
         chain_partitions: Vec::new(),
         algorithm_name: info.algorithm.clone(),
@@ -387,6 +449,44 @@ mod tests {
     use super::*;
     use crate::{key_map, region};
 
+    fn write_hash_footer_fixture(
+        image_path: &Path,
+        hash_algorithm: &str,
+        kernel_cmdlines: Vec<String>,
+    ) {
+        fs::write(image_path, vec![0x41; 4096]).unwrap();
+        avbtool_rs::footer::add_hash_footer(
+            image_path,
+            &avbtool_rs::footer::HashFooterArgs {
+                partition_size: Some(128 * 1024),
+                dynamic_partition_size: false,
+                partition_name: "vendor_boot".to_string(),
+                hash_algorithm: hash_algorithm.to_string(),
+                salt: Some(vec![0x11, 0x22]),
+                chain_partitions: Vec::new(),
+                algorithm_name: "NONE".to_string(),
+                key_spec: None,
+                public_key_metadata: None,
+                rollback_index: 7,
+                flags: 0,
+                rollback_index_location: 3,
+                properties: vec![avbtool_rs::builder::PropertySpec {
+                    key: "com.android.build.vendor_boot.os_version".to_string(),
+                    value: b"16".to_vec(),
+                }],
+                kernel_cmdlines,
+                include_descriptors_from_images: Vec::new(),
+                release_string: None,
+                append_to_release_string: None,
+                output_vbmeta_image: None,
+                do_not_append_vbmeta_image: false,
+                use_persistent_digest: false,
+                do_not_use_ab: false,
+            },
+        )
+        .unwrap();
+    }
+
     #[test]
     fn build_fingerprint_reads_property_descriptor() {
         let make = |props: Vec<(String, Vec<u8>)>| AvbImageInfo {
@@ -399,6 +499,10 @@ mod tests {
             salt: None,
             public_key_sha1: None,
             props,
+            source_image_path: PathBuf::from("init_boot.img"),
+            hash_descriptor_algorithm: Some("sha256".into()),
+            hash_descriptor_count: 1,
+            unreproducible_descriptor_kinds: Vec::new(),
         };
         let mut value = b"Lenovo/TB323FU/TB323FU:16/BQ2A/x:user/release-keys".to_vec();
         value.push(0); // trailing NUL like the on-disk descriptor
@@ -439,6 +543,72 @@ mod tests {
     fn image_info_report_requires_selection() {
         let err = image_info_report(&[]).unwrap_err().to_string();
         assert!(err.contains("No image files selected"));
+    }
+
+    #[test]
+    fn add_hash_footer_rejects_unreproducible_descriptor_before_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("vendor_boot.img");
+        write_hash_footer_fixture(&image, "sha256", vec!["console=ttyS0".to_string()]);
+        let info = extract_image_avb_info(&image).unwrap();
+        let original = fs::read(&image).unwrap();
+
+        let err = add_hash_footer(&image, &info, None, None).unwrap_err();
+
+        assert!(matches!(err, LtboxError::Avb(_)));
+        let message = err.to_string();
+        assert!(message.contains(image.to_string_lossy().as_ref()));
+        assert!(message.contains("KernelCmdline"));
+        assert_eq!(fs::read(&image).unwrap(), original);
+    }
+
+    #[test]
+    fn add_hash_footer_rejects_mismatched_hash_algorithm_before_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image = tmp.path().join("vendor_boot.img");
+        write_hash_footer_fixture(&image, "sha512", Vec::new());
+        let info = extract_image_avb_info(&image).unwrap();
+        let original = fs::read(&image).unwrap();
+
+        let err = add_hash_footer(&image, &info, None, None).unwrap_err();
+
+        assert!(matches!(err, LtboxError::Avb(_)));
+        let message = err.to_string();
+        assert!(message.contains(image.to_string_lossy().as_ref()));
+        assert!(message.contains("sha512"));
+        assert!(message.contains("sha256"));
+        assert_eq!(fs::read(&image).unwrap(), original);
+    }
+
+    #[test]
+    fn add_hash_footer_accepts_hash_and_property_descriptors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("vendor_boot.stock.img");
+        let output = tmp.path().join("vendor_boot.patched.img");
+        write_hash_footer_fixture(&source, "sha256", Vec::new());
+        let info = extract_image_avb_info(&source).unwrap();
+        fs::write(&output, vec![0x41; 4096]).unwrap();
+
+        add_hash_footer(&output, &info, None, None).unwrap();
+
+        let rebuilt = avbtool_rs::image::inspect_avb_image(&output).unwrap();
+        assert_eq!(rebuilt.descriptors.len(), 2);
+        assert!(matches!(
+            &rebuilt.descriptors[0],
+            avbtool_rs::info::DescriptorInfo::Hash {
+                hash_algorithm,
+                partition_name,
+                salt,
+                ..
+            } if hash_algorithm == "sha256"
+                && partition_name == "vendor_boot"
+                && salt == &[0x11, 0x22]
+        ));
+        assert!(matches!(
+            &rebuilt.descriptors[1],
+            avbtool_rs::info::DescriptorInfo::Property { key, value }
+                if key == "com.android.build.vendor_boot.os_version" && value == b"16"
+        ));
     }
 
     #[test]
