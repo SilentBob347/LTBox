@@ -1970,13 +1970,6 @@ pub fn collect_firmware_xmls_for_flash(
     Ok((raw_xmls, patch_xmls))
 }
 
-/// Back-compatible XML collection for read-only catalog lookups. Firmware
-/// flashing should call [`collect_firmware_xmls_for_flash`] so unsafe
-/// devinfo/persist references surface as errors.
-pub fn collect_firmware_xmls(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    collect_firmware_xmls_for_flash(dir, false).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

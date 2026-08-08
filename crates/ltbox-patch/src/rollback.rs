@@ -4,14 +4,11 @@
 //! non-recovery layout is classified per partition; other layouts retain the
 //! legacy `max(v > 1)` aggregate. Tri-state [`RollbackMode`]: `ON` always
 //! patches, `AUTO` patches only when behind, `OFF` skips.
-//! Generic AVB partition images go through `avb::resign_image` when signed,
-//! else `avb::add_hash_footer`.
 
-use fs_err as fs;
 use std::collections::HashMap;
 use std::path::Path;
 
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::Result;
 use tracing::info;
 
 use crate::avb::{self, AvbImageInfo};
@@ -97,22 +94,6 @@ pub struct RollbackAnalysis {
     pub image_info: AvbImageInfo,
 }
 
-/// Legacy: pure equality check against `device_rollback_index`.
-/// New callers should use [`analyze_rollback_with_mode`].
-pub fn analyze_rollback(image_path: &Path, device_rollback_index: u64) -> Result<RollbackAnalysis> {
-    let image_info = avb::extract_image_avb_info(image_path)?;
-    let image_index = image_info.rollback_index;
-    let needs_patch = image_index != device_rollback_index;
-    info!(
-        "Rollback analysis (legacy): device={device_rollback_index}, image={image_index}, needs_patch={needs_patch}"
-    );
-    Ok(RollbackAnalysis {
-        image_index,
-        needs_patch,
-        image_info,
-    })
-}
-
 /// Rollback analysis with mode. `device_index = None` → no non-stock
 /// value committed; never triggers a patch.
 pub fn analyze_rollback_with_mode(
@@ -131,91 +112,6 @@ pub fn analyze_rollback_with_mode(
         needs_patch,
         image_info,
     })
-}
-
-/// Patch an AVB image's rollback index to `target_rollback_index`.
-/// Signed → `resign_image`; NONE algorithm → `add_hash_footer`.
-/// This does not enforce or require chain partition membership.
-/// `target_rollback_index` must be the device-side value, never 0.
-pub fn patch_avb_image_rollback_index(
-    image_path: &Path,
-    output_path: &Path,
-    target_rollback_index: u64,
-    key_file: Option<&Path>,
-) -> Result<()> {
-    let info = avb::extract_image_avb_info(image_path)?;
-
-    if info.rollback_index == target_rollback_index {
-        info!("Rollback index already matches, copying as-is");
-        fs::copy(image_path, output_path)
-            .map_err(|e| LtboxError::Patch(format!("Copy failed: {e}")))?;
-        return Ok(());
-    }
-
-    info!(
-        "Patching AVB image rollback index: {} → {target_rollback_index}",
-        info.rollback_index
-    );
-
-    fs::copy(image_path, output_path)
-        .map_err(|e| LtboxError::Patch(format!("Copy failed: {e}")))?;
-
-    if let Some(key) = key_file
-        && info.algorithm != "NONE"
-    {
-        let key_spec = key.display().to_string();
-        avb::resign_image(
-            output_path,
-            &key_spec,
-            &info.algorithm,
-            Some(target_rollback_index),
-        )?;
-        return Ok(());
-    }
-
-    let key_spec_owned = key_file.map(|p| p.display().to_string());
-    avb::add_hash_footer(
-        output_path,
-        &info,
-        key_spec_owned.as_deref(),
-        Some(target_rollback_index),
-    )?;
-    Ok(())
-}
-
-/// Patch vbmeta rollback index. `key_file` is mandatory — vbmeta chains
-/// must carry a valid signature.
-pub fn patch_vbmeta_rollback(
-    vbmeta_path: &Path,
-    output_path: &Path,
-    target_rollback_index: u64,
-    key_file: &Path,
-) -> Result<()> {
-    let info = avb::extract_image_avb_info(vbmeta_path)?;
-
-    if info.rollback_index == target_rollback_index {
-        info!("vbmeta rollback index already matches");
-        fs::copy(vbmeta_path, output_path)
-            .map_err(|e| LtboxError::Patch(format!("Copy failed: {e}")))?;
-        return Ok(());
-    }
-
-    info!(
-        "Patching vbmeta rollback: {} → {target_rollback_index}",
-        info.rollback_index
-    );
-
-    fs::copy(vbmeta_path, output_path)
-        .map_err(|e| LtboxError::Patch(format!("Copy failed: {e}")))?;
-
-    let key_spec = key_file.display().to_string();
-    avb::resign_image(
-        output_path,
-        &key_spec,
-        &info.algorithm,
-        Some(target_rollback_index),
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -20,7 +20,6 @@ pub mod partition_lun;
 pub mod runtime;
 pub mod safe_path;
 pub mod sahara_xml;
-pub mod xml_catalog;
 
 pub use error::{LtboxError, Result};
 

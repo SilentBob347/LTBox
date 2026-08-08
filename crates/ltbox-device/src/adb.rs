@@ -99,8 +99,11 @@ pub enum AdbError {
 
 type Result<T> = std::result::Result<T, AdbError>;
 
-/// Upper bound on `wait_for_device` before surfacing `Timeout`. Matches v2's
-/// `DeviceController` ~120s expectation for post-reboot re-detection.
+/// Upper bound on `wait_for_device` before surfacing `Timeout`. 120 s is the
+/// v2 expectation for post-reboot re-detection: a device re-enumerating after
+/// `reboot bootloader` / `reboot edl` can take well over a minute on a cold
+/// boot, and a shorter bound turned a slow-but-working device into a spurious
+/// failure mid-flow.
 const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// libusb interface-claim retry budget. Two short-lived `AdbManager`
