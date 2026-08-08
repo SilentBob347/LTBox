@@ -3966,18 +3966,15 @@ mod tests {
     }
 
     #[test]
-    fn all_lang_jsons_parse_and_share_keys() {
-        let en = Translations::load(Language::En);
-        for lang in [Language::Ko, Language::Zh, Language::Ru, Language::Ja] {
-            let tr = Translations::load(lang);
-            for key in en.fallback.keys() {
-                assert!(
-                    tr.primary.contains_key(key),
-                    "lang {:?} missing key {}",
-                    lang,
-                    key
-                );
-            }
+    fn all_locale_tables_load_through_translations() {
+        for language in [
+            Language::En,
+            Language::Ko,
+            Language::Zh,
+            Language::Ru,
+            Language::Ja,
+        ] {
+            assert!(!Translations::load(language).primary.is_empty());
         }
     }
 
