@@ -970,33 +970,83 @@ impl NightlySource {
 }
 
 impl App {
-    /// Confirm-screen frame when the step title/description already live in
-    /// the wizard action bar.
-    pub(crate) fn confirm_rows_view<'a>(
-        &'a self,
-        rows: Vec<Element<'a, Message>>,
+    /// Shared confirm-screen frame when the step title/description already
+    /// live in the wizard action bar. Leading rows are full-width callouts or
+    /// lists, short values form a two-column grid, and trailing rows hold
+    /// full-width paths or supporting details.
+    pub(crate) fn confirm_step_frame<'a>(
+        &self,
+        leading: Vec<Element<'a, Message>>,
+        grid: Vec<Element<'a, Message>>,
+        trailing: Vec<Element<'a, Message>>,
     ) -> Element<'a, Message> {
-        let mut col = column![]
-            .spacing(10)
-            .padding(28)
+        let mut groups: Vec<Element<'a, Message>> = Vec::new();
+
+        if !leading.is_empty() {
+            groups.push(
+                column(leading)
+                    .spacing(8)
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center)
+                    .into(),
+            );
+        }
+
+        if !grid.is_empty() {
+            let mut grid_rows = column![].spacing(8).width(Length::Fill);
+            let mut cells = grid.into_iter();
+            while let Some(left) = cells.next() {
+                grid_rows = if let Some(right) = cells.next() {
+                    grid_rows.push(row![left, right].spacing(12).width(Length::Fill))
+                } else {
+                    // A final unpaired scalar uses the whole line instead of
+                    // leaving an empty half-cell beside it.
+                    grid_rows.push(container(left).width(Length::Fill))
+                };
+            }
+            groups.push(grid_rows.into());
+        }
+
+        if !trailing.is_empty() {
+            groups.push(
+                column(trailing)
+                    .spacing(8)
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center)
+                    .into(),
+            );
+        }
+
+        let mut content = column![]
+            .spacing(8)
+            .padding([18, 28])
             .width(Length::Fill)
             .align_x(iced::Alignment::Center);
-        for r in rows {
-            col = col.push(r);
+        for (index, group) in groups.into_iter().enumerate() {
+            if index > 0 {
+                content = content.push(widget::rule::horizontal(1));
+            }
+            content = content.push(group);
         }
-        let summary = container(
-            iced::widget::scrollable(col)
-                .style(m3_scrollable_style)
-                .height(Length::Fill)
-                .width(Length::Fill),
+
+        // The scroller itself shrinks when content is short, allowing the
+        // outer fill-height container to center it. Its child deliberately
+        // has no fill height: a scrollable measures content with an unbounded
+        // vertical limit, where Fill cannot resolve to the viewport.
+        let summary = iced::widget::scrollable(content)
+            .style(m3_scrollable_style)
+            .height(Length::Shrink)
+            .width(Length::Fill);
+
+        container(
+            container(summary)
+                .width(Length::Fill)
+                .max_width(WIZARD_CONFIRM_MAX_WIDTH),
         )
         .width(Length::Fill)
-        .height(Length::Fill);
-
-        container(summary.max_width(WIZARD_CONFIRM_MAX_WIDTH))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .into()
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
     }
 }

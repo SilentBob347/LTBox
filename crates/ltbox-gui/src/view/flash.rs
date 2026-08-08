@@ -1,7 +1,7 @@
 //! Flash wizard view + steps (region, target, data, folder, confirm, exec). Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, button, column, container, row, text};
+use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length, Theme};
 use ltbox_core::tr_args;
 
@@ -485,39 +485,18 @@ impl App {
             Message::Flash(FlashMsg::FlashSelectFolder),
         );
 
-        let mut details = column![
-            row![region_row, target_row].spacing(12).width(Length::Fill),
-            row![data_row, region_edit_row]
-                .spacing(12)
-                .width(Length::Fill),
-        ]
-        .spacing(8)
-        .width(Length::Fill);
-
-        details = details.push(
-            row![rollback_row, country_row]
-                .spacing(12)
-                .width(Length::Fill),
-        );
-
-        let content = column![
-            warning,
-            widget::rule::horizontal(1),
-            details,
-            widget::rule::horizontal(1),
-            folder_row,
-        ]
-        .spacing(8)
-        .padding([18, 28])
-        .width(Length::Fill)
-        .align_x(iced::Alignment::Center);
-
-        container(content.max_width(WIZARD_CONFIRM_MAX_WIDTH))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+        self.confirm_step_frame(
+            vec![warning.into()],
+            vec![
+                region_row,
+                target_row,
+                data_row,
+                region_edit_row,
+                rollback_row,
+                country_row,
+            ],
+            vec![folder_row],
+        )
     }
 
     pub(crate) fn flash_exec_step(&self) -> Element<'_, Message> {

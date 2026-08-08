@@ -380,7 +380,7 @@ impl App {
             .filter(|r| r.state == FlashRowState::Flash)
             .collect();
 
-        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        let mut leading: Vec<Element<'_, Message>> = Vec::new();
 
         // ERASE block first, error-toned and loud.
         if !erase_rows.is_empty() {
@@ -406,9 +406,10 @@ impl App {
                     }),
                 );
             }
-            rows.push(
+            leading.push(
                 container(erase_col)
                     .padding(14)
+                    .width(Length::Fill)
                     .style(move |t: &Theme| container::Style {
                         background: Some(iced::Background::Color(pal_of(t).error_container)),
                         border: iced::Border {
@@ -448,10 +449,10 @@ impl App {
                         .style(muted_style),
                 );
             }
-            rows.push(container(flash_col).padding(14).width(Length::Fill).into());
+            leading.push(container(flash_col).padding(14).width(Length::Fill).into());
         }
 
-        self.confirm_rows_view(rows)
+        self.confirm_step_frame(leading, vec![], vec![])
     }
 
     pub(crate) fn view_dump_parts_wizard(&self) -> Element<'_, Message> {
@@ -875,7 +876,7 @@ impl App {
     pub(crate) fn flash_phys_confirm_step(&self) -> Element<'_, Message> {
         let pairs = self.flash_phys.active_pairs();
 
-        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        let mut leading: Vec<Element<'_, Message>> = Vec::new();
 
         if !pairs.is_empty() {
             let mut list = column![
@@ -895,9 +896,9 @@ impl App {
                         .style(muted_style),
                 );
             }
-            rows.push(container(list).padding(14).width(Length::Fill).into());
+            leading.push(container(list).padding(14).width(Length::Fill).into());
         }
 
-        self.confirm_rows_view(rows)
+        self.confirm_step_frame(leading, vec![], vec![])
     }
 }

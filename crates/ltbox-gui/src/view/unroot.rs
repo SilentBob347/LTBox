@@ -260,11 +260,14 @@ impl App {
             .folder_path
             .clone()
             .unwrap_or_else(|| dash.clone());
-        self.confirm_rows_view(vec![
-            info_kv_center(self.t("unroot_step_method"), &method),
-            info_kv_center(self.t("unroot_loader_title"), &loader),
-            info_kv_center(self.t("unroot_folder_title"), &folder),
-        ])
+        self.confirm_step_frame(
+            vec![],
+            vec![info_kv_center(self.t("unroot_step_method"), &method)],
+            vec![
+                info_kv_center(self.t("unroot_loader_title"), &loader),
+                info_kv_center(self.t("unroot_folder_title"), &folder),
+            ],
+        )
     }
 
     pub(crate) fn unroot_exec_step(&self) -> Element<'_, Message> {

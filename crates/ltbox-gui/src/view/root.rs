@@ -912,7 +912,8 @@ impl App {
             .map(|f| self.t(f.label_key()).to_string())
             .unwrap_or_else(|| dash.clone());
 
-        let mut rows = vec![info_kv_center(self.t("root_step_type"), &fam)];
+        let mut grid_rows = vec![info_kv_center(self.t("root_step_type"), &fam)];
+        let mut trailing_rows = Vec::new();
 
         if self.root.is_skroot() {
             let flavor = self
@@ -920,26 +921,26 @@ impl App {
                 .skroot_flavor
                 .map(|f| self.t(f.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(self.t("root_step_skroot_flavor"), &flavor));
+            grid_rows.push(info_kv_center(self.t("root_step_skroot_flavor"), &flavor));
         } else {
             let mode = self
                 .root
                 .mode
                 .map(|m| self.t(m.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(self.t("root_step_mode"), &mode));
+            grid_rows.push(info_kv_center(self.t("root_step_mode"), &mode));
         }
 
         if self.root.is_gki() {
             let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(self.t("root_step_kernel"), &path));
+            trailing_rows.push(info_kv_center(self.t("root_step_kernel"), &path));
         } else if self.root.is_forks() {
             let path = self.root.file_path.clone().unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(
+            grid_rows.push(info_kv_center(
                 self.t("root_step_provider"),
                 self.t("provider_magisk_forks"),
             ));
-            rows.push(info_kv_center(self.t("root_step_apk"), &path));
+            trailing_rows.push(info_kv_center(self.t("root_step_apk"), &path));
         } else if !self.root.is_skroot() {
             let prov = self
                 .root
@@ -951,18 +952,18 @@ impl App {
                 .version
                 .map(|v| self.t(v.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(self.t("root_step_provider"), &prov));
-            rows.push(info_kv_center(self.t("root_step_version"), &ver));
+            grid_rows.push(info_kv_center(self.t("root_step_provider"), &prov));
+            grid_rows.push(info_kv_center(self.t("root_step_version"), &ver));
             if self.root.is_nightly() {
                 let src = self
                     .root
                     .nightly_source
                     .map(|s| self.t(s.label_key()).to_string())
                     .unwrap_or_else(|| dash.clone());
-                rows.push(info_kv_center(self.t("root_step_source"), &src));
+                grid_rows.push(info_kv_center(self.t("root_step_source"), &src));
                 if self.root.nightly_source == Some(NightlySource::ManualInput) {
                     let id = self.root.run_id.clone().unwrap_or_else(|| dash.clone());
-                    rows.push(info_kv_center(self.t("nightly_run_id_label"), &id));
+                    grid_rows.push(info_kv_center(self.t("nightly_run_id_label"), &id));
                 }
             }
         }
@@ -977,7 +978,7 @@ impl App {
                     n = self.root.kpm_paths.len().to_string()
                 )
             };
-            rows.push(info_kv_center(self.t("root_step_kpm"), &kpm_summary));
+            grid_rows.push(info_kv_center(self.t("root_step_kpm"), &kpm_summary));
         }
 
         let folder = self
@@ -985,9 +986,9 @@ impl App {
             .folder_path
             .clone()
             .unwrap_or_else(|| dash.clone());
-        rows.push(info_kv_center(self.t("root_step_folder"), &folder));
+        trailing_rows.push(info_kv_center(self.t("root_step_folder"), &folder));
 
-        self.confirm_rows_view(rows)
+        self.confirm_step_frame(vec![], grid_rows, trailing_rows)
     }
 
     pub(crate) fn root_flash_step(&self) -> Element<'_, Message> {

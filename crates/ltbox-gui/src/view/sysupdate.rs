@@ -202,7 +202,8 @@ impl App {
             .action
             .map(|a| self.t(a.label_key()).to_string())
             .unwrap_or_else(|| dash.clone());
-        let mut rows = vec![info_kv_center(self.t("sysupdate_step_action"), &action)];
+        let mut grid_rows = vec![info_kv_center(self.t("sysupdate_step_action"), &action)];
+        let mut trailing_rows = Vec::new();
         // Rescue: echo the chosen firmware folder + region so the user
         // confirms exactly what's about to flash.
         if self.sysupdate.is_rescue() {
@@ -216,10 +217,10 @@ impl App {
                 .rescue_region
                 .map(|r| self.t(r.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            rows.push(info_kv_center(self.t("rescue_folder_label"), &folder));
-            rows.push(info_kv_center(self.t("rescue_region_label"), &region));
+            trailing_rows.push(info_kv_center(self.t("rescue_folder_label"), &folder));
+            grid_rows.push(info_kv_center(self.t("rescue_region_label"), &region));
         }
-        self.confirm_rows_view(rows)
+        self.confirm_step_frame(vec![], grid_rows, trailing_rows)
     }
 
     pub(crate) fn sysupdate_rescue_folder_step(&self) -> Element<'_, Message> {

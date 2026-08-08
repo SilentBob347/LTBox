@@ -1,7 +1,7 @@
 //! Advanced menu + generic adv wizard views + steps + image-info exec. Extracted from `main.rs`.
 
 use crate::*;
-use iced::widget::{self, Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
 
 impl App {
@@ -679,14 +679,10 @@ impl App {
         } else {
             self.t("adv_confirm_source")
         };
-        let mut col = column![info_kv_center(source_label, &path),]
-            .spacing(10)
-            .padding(28)
-            .width(Length::Fill)
-            .align_x(iced::Alignment::Center);
+        let mut grid_rows = Vec::new();
         if self.adv_wizard.needs_country() {
             let code = self.adv_wizard.country.clone().unwrap_or(dash.clone());
-            col = col.push(info_kv_center(self.t("adv_confirm_country"), &code));
+            grid_rows.push(info_kv_center(self.t("adv_confirm_country"), &code));
         }
         if self.adv_wizard.needs_region_target() {
             let label = self
@@ -694,36 +690,28 @@ impl App {
                 .region_target
                 .map(|r| self.t(r.label_key()).to_string())
                 .unwrap_or(dash);
-            col = col.push(info_kv_center(self.t("adv_confirm_region_target"), &label));
+            grid_rows.push(info_kv_center(self.t("adv_confirm_region_target"), &label));
         }
         if matches!(self.adv_wizard.action, Some(AdvAction::PatchArb))
             && let Some(idx) = self.adv_wizard.arb_index_committed
         {
             let utc = format_unix_timestamp_utc(idx);
-            col = col.push(info_kv_center(
+            grid_rows.push(info_kv_center(
                 self.t("adv_confirm_arb_index"),
                 &format!("{idx}  ({utc})"),
             ));
             if let Some((boot_idx, vbmeta_idx)) = self.adv_wizard.arb_inspect {
-                col = col.push(info_kv_center(
+                grid_rows.push(info_kv_center(
                     self.t("adv_arb_inspect_boot"),
                     &format!("{boot_idx} → {idx}"),
                 ));
-                col = col.push(info_kv_center(
+                grid_rows.push(info_kv_center(
                     self.t("adv_arb_inspect_vbmeta"),
                     &format!("{vbmeta_idx} → {idx}"),
                 ));
             }
         }
-        container(
-            scrollable(col)
-                .style(m3_scrollable_style)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        self.confirm_step_frame(vec![], grid_rows, vec![info_kv_center(source_label, &path)])
     }
 
     pub(crate) fn adv_image_info_exec_step(&self) -> Element<'_, Message> {
@@ -922,20 +910,21 @@ impl App {
             .firmware_folder
             .clone()
             .unwrap_or_else(|| "—".to_string());
-        let rows = vec![
-            text(self.t("simple_flash_confirm_warning").to_string())
-                .size(13)
-                .style(warning_style)
-                .center()
-                .into(),
-            widget::rule::horizontal(1).into(),
-            info_kv_center(self.t("flash_confirm_region"), &unknown),
-            info_kv_center(self.t("flash_confirm_target"), &unknown),
-            info_kv_center(self.t("flash_confirm_data"), &unknown),
-            info_kv_center(self.t("flash_confirm_region_edit"), &off),
-            info_kv_center(self.t("flash_confirm_rollback"), &off),
-            info_kv_center(self.t("flash_confirm_folder"), &folder),
-        ];
-        self.confirm_rows_view(rows)
+        let warning = text(self.t("simple_flash_confirm_warning").to_string())
+            .size(13)
+            .style(warning_style)
+            .center()
+            .width(Length::Fill);
+        self.confirm_step_frame(
+            vec![warning.into()],
+            vec![
+                info_kv_center(self.t("flash_confirm_region"), &unknown),
+                info_kv_center(self.t("flash_confirm_target"), &unknown),
+                info_kv_center(self.t("flash_confirm_data"), &unknown),
+                info_kv_center(self.t("flash_confirm_region_edit"), &off),
+                info_kv_center(self.t("flash_confirm_rollback"), &off),
+            ],
+            vec![info_kv_center(self.t("flash_confirm_folder"), &folder)],
+        )
     }
 }
