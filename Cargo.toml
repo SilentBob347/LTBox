@@ -109,7 +109,13 @@ os_pipe = "1"
 
 # External tool crates (git dependencies)
 avbtool-rs = { git = "https://github.com/miner7222/avbtool-rs", tag = "v0.2.0" }
-magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", branch = "master" }
+# Pinned to a commit, not `branch = "master"`: magiskboot drives boot-image
+# unpack/repack for every root / unroot / SKRoot flow, so a floating branch let
+# `cargo update` move brick-critical code with no diff to review. `0705743` is
+# the commit already resolved in Cargo.lock (one commit past `v0.1.1`, adding
+# only the GPL-3.0-or-later declaration cargo-deny's licenses check needs), so
+# this pin is a no-op for the built code. Bump deliberately when upstream tags.
+magiskboot = { git = "https://github.com/miner7222/magiskboot-rs", rev = "0705743f3e0436ed2f8347e1b4033d71b4297ef4" }
 kptools = { git = "https://github.com/miner7222/kptools-rs", tag = "v0.1.2" }
 # Vendored under vendor/qdl — qualcomm/qdlrs + a local ZLP fix. See
 # vendor/qdl/VENDORING.md.

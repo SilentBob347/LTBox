@@ -643,7 +643,7 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.1.1"
-source = "git+https://github.com/miner7222/magiskboot-rs?branch=master#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
+source = "git+https://github.com/miner7222/magiskboot-rs?rev=0705743f3e0436ed2f8347e1b4033d71b4297ef4#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
 dependencies = [
  "bytemuck",
  "derive",
@@ -1510,7 +1510,7 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 [[package]]
 name = "derive"
 version = "0.1.1"
-source = "git+https://github.com/miner7222/magiskboot-rs?branch=master#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
+source = "git+https://github.com/miner7222/magiskboot-rs?rev=0705743f3e0436ed2f8347e1b4033d71b4297ef4#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3522,7 +3522,7 @@ dependencies = [
 [[package]]
 name = "magiskboot"
 version = "0.1.1"
-source = "git+https://github.com/miner7222/magiskboot-rs?branch=master#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
+source = "git+https://github.com/miner7222/magiskboot-rs?rev=0705743f3e0436ed2f8347e1b4033d71b4297ef4#0705743f3e0436ed2f8347e1b4033d71b4297ef4"
 dependencies = [
  "base",
  "bytemuck",
