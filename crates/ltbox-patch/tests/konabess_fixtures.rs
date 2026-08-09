@@ -13,9 +13,10 @@
 use std::env;
 use std::path::PathBuf;
 
+use ltbox_patch::avb;
 use ltbox_patch::konabess::{
-    GpuTable, KonaBessExport, classify_vendor_boot_dtbs, extract_vendor_boot_dtbs,
-    parse_fdt_gpu_info, read_export, replace_vendor_boot_dtb,
+    GpuTable, KonaBessExport, build_konabess_avb_images, classify_vendor_boot_dtbs,
+    extract_vendor_boot_dtbs, parse_fdt_gpu_info, read_export, replace_vendor_boot_dtb,
 };
 
 fn required_path(name: &str) -> PathBuf {
@@ -134,6 +135,44 @@ fn real_vendor_boot_images_match_known_shapes_and_apply_exactly() {
     );
     println!("TB322FC blob 2: export applied, changed_u32_cells={changed_cells}");
 
+    let sun_image_path = required_path("KONABESS_TB322_IMAGE");
+    let sun_firmware_dir = sun_image_path.parent().unwrap();
+    let avb_temp = tempfile::tempdir().unwrap();
+    let avb_output = build_konabess_avb_images(
+        sun_firmware_dir,
+        &avb_temp.path().join("konabess"),
+        &required_path("KONABESS_TB322_EXPORT"),
+        2,
+    )
+    .unwrap();
+    let produced_vendor = std::fs::read(&avb_output.vendor_boot).unwrap();
+    let produced_table =
+        parse_fdt_gpu_info(&extract_vendor_boot_dtbs(&produced_vendor).unwrap()[2])
+            .unwrap()
+            .table
+            .unwrap();
+    assert_eq!(produced_table, sun_export.table);
+    let produced_info = avb::extract_image_avb_info(&avb_output.vendor_boot).unwrap();
+    assert_eq!(produced_info.partition_name.as_deref(), Some("vendor_boot"));
+    assert!(produced_info.original_image_size.is_some());
+
+    let vendor_descriptor = vendor_boot_hash_descriptor(&avb_output.vendor_boot);
+    let vbmeta_descriptor = vendor_boot_hash_descriptor(&avb_output.vbmeta);
+    assert_eq!(vendor_descriptor, vbmeta_descriptor);
+    avbtool_rs::verify::verify_image(
+        &avb_output.vendor_boot,
+        &avbtool_rs::verify::VerifyImageOptions {
+            key_blob: None,
+            expected_chain_partitions: Vec::new(),
+            follow_chain_partitions: false,
+            accept_zeroed_hashtree: false,
+        },
+    )
+    .unwrap();
+    println!(
+        "TB322FC blob 2 AVB build: partition=vendor_boot footer=valid vbmeta_descriptor=matching"
+    );
+
     let pineapple_image = std::fs::read(required_path("KONABESS_TB321_IMAGE")).unwrap();
     let export_paths = env::split_paths(
         &env::var_os("KONABESS_TB321_EXPORTS").expect("KONABESS_TB321_EXPORTS must be set"),
@@ -153,4 +192,19 @@ fn real_vendor_boot_images_match_known_shapes_and_apply_exactly() {
             export_path.display()
         );
     }
+}
+
+fn vendor_boot_hash_descriptor(path: &std::path::Path) -> avbtool_rs::info::DescriptorInfo {
+    avbtool_rs::image::inspect_avb_image(path)
+        .unwrap()
+        .descriptors
+        .into_iter()
+        .find(|descriptor| {
+            matches!(
+                descriptor,
+                avbtool_rs::info::DescriptorInfo::Hash { partition_name, .. }
+                    if partition_name == "vendor_boot"
+            )
+        })
+        .expect("vendor_boot hash descriptor")
 }

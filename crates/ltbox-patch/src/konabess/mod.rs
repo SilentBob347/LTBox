@@ -8,10 +8,13 @@ mod export;
 mod fdt;
 mod vendor_boot;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fs_err as fs;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
+use tracing::info;
+
+use crate::{avb, key_map};
 
 pub use export::{GpuGroup, GpuLevel, GpuProperty, GpuTable, KonaBessExport, parse_export};
 pub use fdt::{FdtGpuInfo, parse_fdt_gpu_info, replace_fdt_gpu_table};
@@ -19,6 +22,22 @@ pub use vendor_boot::{
     ClassifiedDtb, GpuGroupShape, GpuTableShape, VendorBootDtbInfo, classify_vendor_boot_dtbs,
     extract_vendor_boot_dtbs, inspect_vendor_boot_dtbs, replace_vendor_boot_dtb,
 };
+
+/// Final AVB-valid KonaBess image pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KonaBessAvbOutput {
+    pub vendor_boot: PathBuf,
+    pub vbmeta: PathBuf,
+    pub target_index: usize,
+}
+
+/// Stable coarse stages for callers presenting KonaBess build progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KonaBessBuildStage {
+    Inspect,
+    PatchVendorBoot,
+    RebuildVbmeta,
+}
 
 /// Read and parse a KonaBess export file.
 pub fn read_export(path: &Path) -> Result<KonaBessExport> {
@@ -54,6 +73,200 @@ pub fn apply_export_to_vendor_boot_file(
             output.display()
         ))
     })
+}
+
+/// Build an AVB-valid `vendor_boot.img` + `vbmeta.img` pair from the stock
+/// images in `firmware_dir` and a KonaBess export file.
+pub fn build_konabess_avb_images(
+    firmware_dir: &Path,
+    output_dir: &Path,
+    export_path: &Path,
+    target_index: usize,
+) -> Result<KonaBessAvbOutput> {
+    build_konabess_avb_images_with_progress(
+        firmware_dir,
+        output_dir,
+        export_path,
+        target_index,
+        |_| {},
+    )
+}
+
+/// Build a KonaBess AVB image pair while reporting stable coarse stages.
+pub fn build_konabess_avb_images_with_progress(
+    firmware_dir: &Path,
+    output_dir: &Path,
+    export_path: &Path,
+    target_index: usize,
+    mut on_stage: impl FnMut(KonaBessBuildStage),
+) -> Result<KonaBessAvbOutput> {
+    let vendor_boot_src = firmware_dir.join("vendor_boot.img");
+    let vbmeta_src = firmware_dir.join("vbmeta.img");
+    require_source_image(&vendor_boot_src)?;
+    require_source_image(&vbmeta_src)?;
+
+    on_stage(KonaBessBuildStage::Inspect);
+    let export = read_export(export_path)?;
+    build_konabess_avb_images_from_export(
+        &vendor_boot_src,
+        &vbmeta_src,
+        output_dir,
+        target_index,
+        &export,
+        &mut on_stage,
+    )
+}
+
+fn build_konabess_avb_images_from_export(
+    vendor_boot_src: &Path,
+    vbmeta_src: &Path,
+    output_dir: &Path,
+    target_index: usize,
+    export: &KonaBessExport,
+    on_stage: &mut impl FnMut(KonaBessBuildStage),
+) -> Result<KonaBessAvbOutput> {
+    let vendor_boot_info = avb::extract_image_avb_info(vendor_boot_src)?;
+    if vendor_boot_info.partition_name.as_deref() != Some("vendor_boot") {
+        return Err(error(format!(
+            "{} AVB partition is {:?}, expected `vendor_boot`",
+            vendor_boot_src.display(),
+            vendor_boot_info.partition_name
+        )));
+    }
+    if vendor_boot_info.algorithm != "NONE" {
+        return Err(error(format!(
+            "{} AVB algorithm is {}, expected NONE",
+            vendor_boot_src.display(),
+            vendor_boot_info.algorithm
+        )));
+    }
+    let original_image_size = vendor_boot_info.original_image_size.ok_or_else(|| {
+        error(format!(
+            "{} has no appended AVB footer",
+            vendor_boot_src.display()
+        ))
+    })?;
+
+    let vbmeta_info = avb::extract_image_avb_info(vbmeta_src)?;
+    // Resolve the vbmeta key before patching or touching the output directory.
+    // A present-but-unknown key must never leave a tempting unsigned artifact.
+    let vbmeta_key = key_map::key_spec_for_signed_pubkey(vbmeta_info.public_key_sha1.as_deref())
+        .map_err(|key| {
+            LtboxError::Avb(tr_args!(
+                "err_avb_signing_key_unknown",
+                image = "vbmeta.img",
+                key = key
+            ))
+        })?;
+
+    let mut patchable = fs::read(vendor_boot_src).map_err(|e| {
+        error(format!(
+            "cannot read vendor_boot image {}: {e}",
+            vendor_boot_src.display()
+        ))
+    })?;
+    let partition_size = u64::try_from(patchable.len())
+        .map_err(|_| error("vendor_boot partition size does not fit u64"))?;
+    if partition_size != vendor_boot_info.partition_size {
+        return Err(error(
+            "vendor_boot AVB partition size changed during inspection",
+        ));
+    }
+    let original_size = usize::try_from(original_image_size)
+        .map_err(|_| error("vendor_boot AVB original image size does not fit usize"))?;
+    if original_size > patchable.len() {
+        return Err(error(format!(
+            "vendor_boot AVB payload size {original_size} exceeds partition size {}",
+            patchable.len()
+        )));
+    }
+    let source_payload_end = vendor_boot::vendor_boot_payload_end(&patchable)?;
+    if source_payload_end > original_size {
+        return Err(error(format!(
+            "vendor_boot sections end at {source_payload_end}, beyond authenticated AVB payload size {original_size}"
+        )));
+    }
+
+    // Only the authenticated AVB tail is disposable. Bytes before
+    // original_image_size remain intact, so the raw rebuilder's nonzero-tail
+    // guard still rejects growth into genuine vendor data.
+    patchable[original_size..].fill(0);
+
+    on_stage(KonaBessBuildStage::PatchVendorBoot);
+    let mut rebuilt = replace_vendor_boot_dtb(&patchable, target_index, export)?;
+    let payload_end = vendor_boot::vendor_boot_payload_end(&rebuilt)?;
+    let rebuilt_image_size = original_size.max(payload_end);
+    let max_image_size = usize::try_from(avb::max_hash_footer_image_size(partition_size)?)
+        .map_err(|_| error("maximum vendor_boot payload size does not fit usize"))?;
+    if rebuilt_image_size > max_image_size {
+        return Err(error(format!(
+            "rebuilt vendor_boot needs {rebuilt_image_size} payload bytes but AVB leaves {max_image_size} bytes in partition capacity {partition_size}"
+        )));
+    }
+    rebuilt.truncate(rebuilt_image_size);
+
+    // All required validation, including key lookup and capacity, has now
+    // succeeded. Only from here onward may output paths be changed.
+    if output_dir.exists() {
+        fs::remove_dir_all(output_dir).map_err(|e| {
+            error(format!(
+                "cannot clear KonaBess output {}: {e}",
+                output_dir.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(output_dir).map_err(|e| {
+        error(format!(
+            "cannot create KonaBess output {}: {e}",
+            output_dir.display()
+        ))
+    })?;
+
+    let vendor_boot_out = output_dir.join("vendor_boot.img");
+    fs::write(&vendor_boot_out, rebuilt).map_err(|e| {
+        error(format!(
+            "cannot write vendor_boot image {}: {e}",
+            vendor_boot_out.display()
+        ))
+    })?;
+    avb::add_hash_footer(&vendor_boot_out, &vendor_boot_info, None, None)?;
+    info!(
+        "Applied KonaBess export to DTB {target_index} and rebuilt {}",
+        vendor_boot_out.display()
+    );
+
+    on_stage(KonaBessBuildStage::RebuildVbmeta);
+    let vbmeta_out = output_dir.join("vbmeta.img");
+    match vbmeta_key {
+        Some(key_spec) => {
+            avb::rebuild_vbmeta_with_partition_descriptors(
+                &vbmeta_out,
+                vbmeta_src,
+                &[vendor_boot_out.as_path()],
+                key_spec,
+                Some(&vbmeta_info.algorithm),
+            )?;
+            info!("Refreshed vbmeta descriptors: {}", vbmeta_out.display());
+        }
+        None => {
+            fs::copy(vbmeta_src, &vbmeta_out)?;
+            info!("vbmeta is unsigned; copied stock blob");
+        }
+    }
+
+    Ok(KonaBessAvbOutput {
+        vendor_boot: vendor_boot_out,
+        vbmeta: vbmeta_out,
+        target_index,
+    })
+}
+
+fn require_source_image(path: &Path) -> Result<()> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(LtboxError::FileNotFound(path.display().to_string()))
+    }
 }
 
 fn error(message: impl Into<String>) -> LtboxError {

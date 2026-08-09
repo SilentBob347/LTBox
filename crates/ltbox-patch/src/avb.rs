@@ -10,6 +10,9 @@ use tracing::info;
 #[derive(Debug, Clone)]
 pub struct AvbImageInfo {
     pub partition_size: u64,
+    /// Size of the authenticated image payload before an appended AVB footer.
+    /// `None` for standalone vbmeta images without a footer.
+    pub original_image_size: Option<u64>,
     pub algorithm: String,
     pub rollback_index: u64,
     /// AVB rollback-index *slot* this image's index is checked against.
@@ -126,6 +129,10 @@ pub fn extract_image_avb_info(image_path: &Path) -> Result<AvbImageInfo> {
 
     Ok(AvbImageInfo {
         partition_size,
+        original_image_size: info
+            .footer
+            .as_ref()
+            .map(|footer| footer.original_image_size),
         algorithm: info.algorithm_name.clone(),
         rollback_index: info.header.rollback_index,
         rollback_index_location: info.header.rollback_index_location,
@@ -211,6 +218,13 @@ pub fn erase_footer(image_path: &Path) -> Result<()> {
     avbtool_rs::footer::erase_footer(image_path, false)
         .map_err(|e| LtboxError::Avb(format!("erase_footer failed: {e}")))?;
     Ok(())
+}
+
+/// Maximum authenticated payload size that still leaves room for a hash
+/// footer in `partition_size`.
+pub fn max_hash_footer_image_size(partition_size: u64) -> Result<u64> {
+    avbtool_rs::footer::calc_max_hash_footer_image_size(partition_size)
+        .map_err(|e| LtboxError::Avb(format!("calculate maximum hash-footer image size: {e}")))
 }
 
 /// Rebuild `vbmeta.img` using the original as a template, refreshing matching
@@ -491,6 +505,7 @@ mod tests {
     fn build_fingerprint_reads_property_descriptor() {
         let make = |props: Vec<(String, Vec<u8>)>| AvbImageInfo {
             partition_size: 0,
+            original_image_size: None,
             algorithm: "SHA256_RSA4096".into(),
             rollback_index: 0,
             rollback_index_location: 0,

@@ -253,6 +253,12 @@ fn parse_vendor_boot_layout(image: &[u8]) -> Result<VendorBootLayout> {
     })
 }
 
+/// Return the page-aligned end of the vendor-boot v4 payload, excluding any
+/// appended AVB metadata.
+pub(super) fn vendor_boot_payload_end(image: &[u8]) -> Result<usize> {
+    Ok(parse_vendor_boot_layout(image)?.used_end)
+}
+
 fn rebuild_vendor_boot(image: &[u8], old: VendorBootLayout, new_dtb: &[u8]) -> Result<Vec<u8>> {
     let new_table_start = checked_add(
         old.dtb.start,
@@ -385,6 +391,173 @@ mod tests {
     use super::*;
     use crate::konabess::fdt::test_support::{synthetic_fdt, table};
 
+    const KNOWN_VBMETA_KEY: &str = "testkey_rsa2048";
+
+    fn write_avb_firmware(
+        firmware_dir: &std::path::Path,
+        source_table: &GpuTable,
+        partition_size: u64,
+        vbmeta_key: &str,
+    ) {
+        use avbtool_rs::builder::VbmetaImageArgs;
+        use avbtool_rs::footer::HashFooterArgs;
+
+        std::fs::create_dir_all(firmware_dir).unwrap();
+        let vendor_boot = firmware_dir.join("vendor_boot.img");
+        let vbmeta = firmware_dir.join("vbmeta.img");
+        let raw = synthetic_vendor_boot(&[synthetic_fdt("sun", "Target", source_table)], 0);
+        std::fs::write(&vendor_boot, raw).unwrap();
+        avbtool_rs::footer::add_hash_footer(
+            &vendor_boot,
+            &HashFooterArgs {
+                partition_size: Some(partition_size),
+                dynamic_partition_size: false,
+                partition_name: "vendor_boot".to_string(),
+                hash_algorithm: "sha256".to_string(),
+                salt: Some(vec![0x11, 0x22, 0x33, 0x44]),
+                chain_partitions: Vec::new(),
+                algorithm_name: "NONE".to_string(),
+                key_spec: None,
+                public_key_metadata: None,
+                rollback_index: 7,
+                flags: 0,
+                rollback_index_location: 3,
+                properties: Vec::new(),
+                kernel_cmdlines: Vec::new(),
+                include_descriptors_from_images: Vec::new(),
+                release_string: None,
+                append_to_release_string: None,
+                output_vbmeta_image: None,
+                do_not_append_vbmeta_image: false,
+                use_persistent_digest: false,
+                do_not_use_ab: false,
+            },
+        )
+        .unwrap();
+        avbtool_rs::builder::make_vbmeta_image(
+            &vbmeta,
+            &VbmetaImageArgs {
+                algorithm_name: "SHA256_RSA2048".to_string(),
+                key_spec: Some(vbmeta_key.to_string()),
+                public_key_metadata: None,
+                rollback_index: 11,
+                flags: 0,
+                rollback_index_location: 0,
+                properties: Vec::new(),
+                kernel_cmdlines: Vec::new(),
+                extra_descriptors: Vec::new(),
+                include_descriptors_from_images: vec![vendor_boot],
+                chain_partitions: Vec::new(),
+                release_string: None,
+                append_to_release_string: None,
+                padding_size: 4096,
+            },
+        )
+        .unwrap();
+    }
+
+    fn build_avb_from_export(
+        firmware_dir: &std::path::Path,
+        output_dir: &std::path::Path,
+        export: &KonaBessExport,
+    ) -> (
+        crate::konabess::KonaBessAvbOutput,
+        Vec<crate::konabess::KonaBessBuildStage>,
+    ) {
+        let mut stages = Vec::new();
+        stages.push(crate::konabess::KonaBessBuildStage::Inspect);
+        let output = crate::konabess::build_konabess_avb_images_from_export(
+            &firmware_dir.join("vendor_boot.img"),
+            &firmware_dir.join("vbmeta.img"),
+            output_dir,
+            0,
+            export,
+            &mut |stage| stages.push(stage),
+        )
+        .unwrap();
+        (output, stages)
+    }
+
+    fn hash_descriptor(path: &std::path::Path) -> avbtool_rs::info::DescriptorInfo {
+        let info = avbtool_rs::image::inspect_avb_image(path).unwrap();
+        info.descriptors
+            .into_iter()
+            .find(|descriptor| {
+                matches!(
+                    descriptor,
+                    avbtool_rs::info::DescriptorInfo::Hash { partition_name, .. }
+                        if partition_name == "vendor_boot"
+                )
+            })
+            .expect("vendor_boot hash descriptor")
+    }
+
+    fn assert_valid_avb_output(
+        output: &crate::konabess::KonaBessAvbOutput,
+        export: &KonaBessExport,
+    ) {
+        use avbtool_rs::verify::{VerifyImageOptions, verify_image};
+
+        let vendor_info = avbtool_rs::image::inspect_avb_image(&output.vendor_boot).unwrap();
+        assert!(vendor_info.footer.is_some());
+        assert_eq!(
+            hash_descriptor(&output.vendor_boot),
+            hash_descriptor(&output.vbmeta)
+        );
+        verify_image(
+            &output.vendor_boot,
+            &VerifyImageOptions {
+                key_blob: None,
+                expected_chain_partitions: Vec::new(),
+                follow_chain_partitions: false,
+                accept_zeroed_hashtree: false,
+            },
+        )
+        .unwrap();
+        verify_image(
+            &output.vbmeta,
+            &VerifyImageOptions {
+                key_blob: Some(avbtool_rs::crypto::extract_public_key(KNOWN_VBMETA_KEY).unwrap()),
+                expected_chain_partitions: Vec::new(),
+                follow_chain_partitions: false,
+                accept_zeroed_hashtree: false,
+            },
+        )
+        .unwrap();
+
+        let rebuilt = std::fs::read(&output.vendor_boot).unwrap();
+        let blobs = extract_vendor_boot_dtbs(&rebuilt).unwrap();
+        assert_eq!(
+            parse_fdt_gpu_info(&blobs[0]).unwrap().table,
+            Some(export.table.clone())
+        );
+    }
+
+    fn assert_failure_preserves_output(
+        firmware_dir: &std::path::Path,
+        output_dir: &std::path::Path,
+        target_index: usize,
+        export: &KonaBessExport,
+        expected: &str,
+    ) {
+        std::fs::create_dir_all(output_dir).unwrap();
+        let sentinel = output_dir.join("sentinel");
+        std::fs::write(&sentinel, b"untouched").unwrap();
+        let error = crate::konabess::build_konabess_avb_images_from_export(
+            &firmware_dir.join("vendor_boot.img"),
+            &firmware_dir.join("vbmeta.img"),
+            output_dir,
+            target_index,
+            export,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "unexpected: {error}");
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"untouched");
+        assert!(!output_dir.join("vendor_boot.img").exists());
+        assert!(!output_dir.join("vbmeta.img").exists());
+    }
+
     fn synthetic_vendor_boot(blobs: &[Vec<u8>], slack_pages: usize) -> Vec<u8> {
         let page = 4096usize;
         let header_size = V4_HEADER_MIN_SIZE;
@@ -505,5 +678,128 @@ mod tests {
 
         assert!(error.to_string().contains("chip mismatch"));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn avb_builder_reclaims_footer_space_for_growth_and_refreshes_vbmeta() {
+        let temp = tempfile::tempdir().unwrap();
+        let firmware = temp.path().join("firmware");
+        let output_dir = temp.path().join("output");
+        write_avb_firmware(
+            &firmware,
+            &table(&[(0, 1)], 100),
+            256 * 1024,
+            KNOWN_VBMETA_KEY,
+        );
+        let export = KonaBessExport {
+            chip: "sun".into(),
+            description: "forced growth".into(),
+            table: table(&[(0, 300)], 900),
+        };
+
+        let source = std::fs::read(firmware.join("vendor_boot.img")).unwrap();
+        let raw_error = replace_vendor_boot_dtb(&source, 0, &export).unwrap_err();
+        assert!(raw_error.to_string().contains("nonzero trailing content"));
+
+        let (output, stages) = build_avb_from_export(&firmware, &output_dir, &export);
+
+        assert_eq!(
+            stages,
+            [
+                crate::konabess::KonaBessBuildStage::Inspect,
+                crate::konabess::KonaBessBuildStage::PatchVendorBoot,
+                crate::konabess::KonaBessBuildStage::RebuildVbmeta,
+            ]
+        );
+        assert_valid_avb_output(&output, &export);
+    }
+
+    #[test]
+    fn avb_builder_handles_dtb_section_shrink() {
+        let temp = tempfile::tempdir().unwrap();
+        let firmware = temp.path().join("firmware");
+        let output_dir = temp.path().join("output");
+        write_avb_firmware(
+            &firmware,
+            &table(&[(0, 300)], 100),
+            256 * 1024,
+            KNOWN_VBMETA_KEY,
+        );
+        let export = KonaBessExport {
+            chip: "sun".into(),
+            description: "forced shrink".into(),
+            table: table(&[(0, 1)], 900),
+        };
+
+        let (output, _) = build_avb_from_export(&firmware, &output_dir, &export);
+
+        assert_valid_avb_output(&output, &export);
+        let source_layout =
+            parse_vendor_boot_layout(&std::fs::read(firmware.join("vendor_boot.img")).unwrap())
+                .unwrap();
+        let output_layout =
+            parse_vendor_boot_layout(&std::fs::read(&output.vendor_boot).unwrap()).unwrap();
+        assert!(output_layout.dtb.len() < source_layout.dtb.len());
+    }
+
+    #[test]
+    fn avb_builder_rejects_all_prewrite_guards_and_true_over_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let firmware = temp.path().join("firmware");
+        write_avb_firmware(
+            &firmware,
+            &table(&[(0, 1)], 100),
+            256 * 1024,
+            KNOWN_VBMETA_KEY,
+        );
+        let valid = KonaBessExport {
+            chip: "sun".into(),
+            description: String::new(),
+            table: table(&[(0, 1)], 900),
+        };
+
+        assert_failure_preserves_output(
+            &firmware,
+            &temp.path().join("out-of-range"),
+            1,
+            &valid,
+            "out of range",
+        );
+        let mismatch = KonaBessExport {
+            chip: "pineapple".into(),
+            ..valid.clone()
+        };
+        assert_failure_preserves_output(
+            &firmware,
+            &temp.path().join("chip-mismatch"),
+            0,
+            &mismatch,
+            "chip mismatch",
+        );
+        let oversized = KonaBessExport {
+            table: table(&[(0, 5_000)], 900),
+            ..valid.clone()
+        };
+        assert_failure_preserves_output(
+            &firmware,
+            &temp.path().join("over-capacity"),
+            0,
+            &oversized,
+            "image capacity",
+        );
+
+        write_avb_firmware(
+            &firmware,
+            &table(&[(0, 1)], 100),
+            256 * 1024,
+            "testkey_rsa2048_2",
+        );
+        assert_failure_preserves_output(
+            &firmware,
+            &temp.path().join("unknown-key"),
+            0,
+            &valid,
+            "err_avb_signing_key_unknown",
+        );
     }
 }
