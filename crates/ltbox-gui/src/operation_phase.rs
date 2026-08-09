@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::AdvAction;
 use ltbox_core::tr_args;
+use ltbox_patch::konabess::KonaBessBuildStage;
 
 pub(crate) fn phase_marker(phase: usize, total: usize, label: impl AsRef<str>) -> String {
     tr_args!(
@@ -36,6 +37,7 @@ pub(crate) enum OperationPhaseKind {
     RegionConversion,
     PatchArb,
     RebuildVbmeta,
+    KonaBess,
 }
 
 impl OperationPhaseKind {
@@ -58,6 +60,7 @@ impl OperationPhaseKind {
             Self::RegionConversion,
             Self::PatchArb,
             Self::RebuildVbmeta,
+            Self::KonaBess,
         ]
     }
 
@@ -197,7 +200,27 @@ impl OperationPhaseKind {
                 "op_vbmeta_phase_rebuild",
                 "op_offline_phase_finalize",
             ],
+            Self::KonaBess => &[
+                "op_konabess_phase_prepare",
+                "op_konabess_phase_dump",
+                "op_konabess_phase_inspect",
+                "op_konabess_phase_patch",
+                "op_konabess_phase_rebuild",
+                "op_konabess_phase_flash",
+                "op_phase_reboot_system",
+            ],
         }
+    }
+}
+
+/// Future Stage-D callbacks map into the stable inspect/patch/rebuild portion
+/// of the full EDL operation plan, matching the region worker's stage mapping.
+#[allow(dead_code)]
+pub(crate) const fn konabess_build_phase(stage: KonaBessBuildStage) -> usize {
+    match stage {
+        KonaBessBuildStage::Inspect => 3,
+        KonaBessBuildStage::PatchVendorBoot => 4,
+        KonaBessBuildStage::RebuildVbmeta => 5,
     }
 }
 
@@ -234,5 +257,17 @@ impl PhaseReporter {
             .get(index)
             .expect("worker marker must exist in its phase plan");
         phase_marker(one_based, self.labels.len(), label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn konabess_build_stages_map_to_inspect_patch_rebuild_phases() {
+        assert_eq!(konabess_build_phase(KonaBessBuildStage::Inspect), 3);
+        assert_eq!(konabess_build_phase(KonaBessBuildStage::PatchVendorBoot), 4);
+        assert_eq!(konabess_build_phase(KonaBessBuildStage::RebuildVbmeta), 5);
     }
 }

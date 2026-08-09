@@ -22,6 +22,9 @@ impl App {
         if self.advanced_wizard_open.is_simple_flash() {
             return self.view_simple_flash_wizard();
         }
+        if self.advanced_wizard_open.is_konabess() {
+            return self.view_konabess_wizard();
+        }
         if self.adv_wizard.action.is_some() {
             return self.view_adv_wizard();
         }

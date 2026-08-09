@@ -475,6 +475,7 @@ impl RebootTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdvAction {
     RegionConvert,
+    KonaBess,
     ImageInfo,
     PatchDevinfo,
     DetectArb,
@@ -495,13 +496,14 @@ impl AdvAction {
     fn is_destructive(&self) -> bool {
         matches!(
             self,
-            Self::FlashPartitions | Self::FlashPhysical | Self::SimpleFlash
+            Self::KonaBess | Self::FlashPartitions | Self::FlashPhysical | Self::SimpleFlash
         )
     }
 
     fn label_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_region_convert",
+            Self::KonaBess => "adv_konabess",
             Self::ImageInfo => "adv_image_info",
             Self::PatchDevinfo => "adv_patch_devinfo",
             Self::DetectArb => "adv_detect_arb",
@@ -518,6 +520,7 @@ impl AdvAction {
     fn desc_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_region_convert_desc",
+            Self::KonaBess => "adv_konabess_desc",
             Self::ImageInfo => "adv_image_info_desc",
             Self::PatchDevinfo => "adv_patch_devinfo_desc",
             Self::DetectArb => "adv_detect_arb_desc",
@@ -536,6 +539,7 @@ impl AdvAction {
     fn source_desc_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_src_region_convert",
+            Self::KonaBess => "adv_src_konabess",
             Self::ImageInfo => "adv_src_image_info",
             Self::PatchDevinfo => "adv_src_patch_devinfo",
             Self::DetectArb => "adv_src_detect_arb",
@@ -556,6 +560,7 @@ impl AdvAction {
     fn output_slug(&self) -> &'static str {
         match self {
             Self::RegionConvert => "region_convert",
+            Self::KonaBess => "konabess",
             Self::ImageInfo => "image_info",
             Self::PatchDevinfo => "patch_devinfo",
             Self::DetectArb => "detect_arb",
@@ -664,6 +669,7 @@ const ADV_SECTIONS: &[AdvSection] = &[
     AdvSection {
         title_key: "adv_section_rollback",
         items: &[
+            AdvAction::KonaBess,
             AdvAction::ImageInfo,
             AdvAction::DetectArb,
             AdvAction::PatchArb,
@@ -1460,8 +1466,8 @@ fn resolve_qfil(serial: &str, cached: Option<(String, String)>) -> Result<QfilOu
 // =========================================================================
 
 /// Which Advanced sub-wizard (if any) currently owns the screen. Sum
-/// type so the four sub-wizards stay mutually exclusive at the type
-/// level — adding a fifth wizard turns existing read sites into
+/// type so the dedicated sub-wizards stay mutually exclusive at the type
+/// level — adding another wizard turns existing read sites into
 /// non-exhaustive `match` errors instead of silent precedence bugs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum AdvancedWizardOpen {
@@ -1472,6 +1478,7 @@ enum AdvancedWizardOpen {
     DumpPhys,
     FlashPhys,
     SimpleFlash,
+    KonaBess,
 }
 
 impl AdvancedWizardOpen {
@@ -1492,6 +1499,9 @@ impl AdvancedWizardOpen {
     }
     fn is_simple_flash(self) -> bool {
         matches!(self, Self::SimpleFlash)
+    }
+    fn is_konabess(self) -> bool {
+        matches!(self, Self::KonaBess)
     }
 }
 
@@ -1546,6 +1556,8 @@ struct App {
     /// Advanced wizard state. Mirrors into `adv_confirm*` on exec so
     /// the legacy handlers stay oblivious.
     adv_wizard: AdvWizard,
+    /// Dedicated EDL-based KonaBess flow; target-popup state is owned here.
+    konabess: KonaBessWizard,
     wf_config: WorkflowConfig,
     /// Flash-confirm "hidden dropdown" editor: which row's option picker is
     /// open (`None` = closed). `Country` reuses `country_popup_open` instead.
@@ -1711,7 +1723,7 @@ struct App {
     dump_phys: DumpPhysWizard,
     flash_phys: FlashPhysWizard,
     simple_flash: SimpleFlashWizard,
-    /// Single sum-typed flag for the four mutually-exclusive Advanced
+    /// Single sum-typed flag for the mutually-exclusive Advanced
     /// sub-wizards. Replaces 4 parallel booleans whose `if/else if`
     /// read sites would silently pick a precedence if two ever got
     /// set. `match`-driven dispatch makes that bug class unreachable.
@@ -1819,6 +1831,7 @@ impl Default for App {
             adv_confirm: None,
             adv_confirm_path: None,
             adv_wizard: AdvWizard::default(),
+            konabess: KonaBessWizard::default(),
             wf_config: WorkflowConfig::default(),
             confirm_edit_field: None,
             confirm_baseline: None,
@@ -2315,6 +2328,9 @@ impl App {
         if self.advanced_wizard_open.is_simple_flash() {
             return self.simple_flash.step >= 2;
         }
+        if self.advanced_wizard_open.is_konabess() {
+            return self.konabess.step >= 3;
+        }
         self.adv_wizard.action.is_some() && self.adv_wizard.step == self.adv_wizard.exec_step()
     }
 
@@ -2342,6 +2358,7 @@ impl App {
 
     fn blocking_popup_open(&self) -> bool {
         self.country_popup_open
+            || self.konabess.target_popup_open
             || self.reboot_confirm_target.is_some()
             || self.sysupdate.rescue_region_popup_open
             || self.root.superkey_popup_open
@@ -2384,6 +2401,7 @@ impl App {
             // Simple Flash: preserve the confirm screen (folder already
             // picked) so a sidebar bounce returns the user to it.
             W::SimpleFlash => self.simple_flash.step == 1,
+            W::KonaBess => self.konabess.step >= 2,
         }
     }
 
@@ -2413,6 +2431,9 @@ impl App {
         }
         if self.advanced_wizard_open.is_simple_flash() {
             return Some(self.t(AdvAction::SimpleFlash.label_key()).to_string());
+        }
+        if self.advanced_wizard_open.is_konabess() {
+            return Some(self.t(AdvAction::KonaBess.label_key()).to_string());
         }
         self.adv_wizard
             .action
@@ -2646,6 +2667,8 @@ impl App {
                     self.dump_phys.loader_error = Some(notice);
                 } else if self.advanced_wizard_open.is_flash_phys() {
                     self.flash_phys.loader_error = Some(notice);
+                } else if self.advanced_wizard_open.is_konabess() {
+                    self.konabess.loader_error = Some(notice);
                 }
             }
             return Task::none();
@@ -2666,6 +2689,19 @@ impl App {
         } else if self.advanced_wizard_open.is_flash_phys() {
             self.flash_phys.loader_path = Some(path);
             self.flash_phys.step = 1;
+        } else if self.advanced_wizard_open.is_konabess() {
+            match self.resolve_loader_input(&path) {
+                Ok(loader) if self.loader_fits_model(std::path::Path::new(&loader)) => {
+                    self.konabess.loader_path = Some(loader);
+                    self.konabess.loader_error = None;
+                    self.konabess.step = 1;
+                }
+                Ok(_) => {
+                    self.konabess.loader_error =
+                        Some(self.t("loader_model_mismatch_tooltip").to_string());
+                }
+                Err(message) => self.konabess.loader_error = Some(message),
+            }
         }
         Task::none()
     }
@@ -3238,6 +3274,7 @@ mod tests {
         assert_eq!(OperationPhaseKind::DumpPartitions.keys().len(), 4);
         assert_eq!(OperationPhaseKind::FlashPhysical.keys().len(), 4);
         assert_eq!(OperationPhaseKind::DumpPhysical.keys().len(), 5);
+        assert_eq!(OperationPhaseKind::KonaBess.keys().len(), 7);
     }
 
     #[test]
@@ -3264,6 +3301,10 @@ mod tests {
         );
         assert_eq!(
             OperationPhaseKind::for_advanced_file(AdvAction::ImageInfo),
+            None
+        );
+        assert_eq!(
+            OperationPhaseKind::for_advanced_file(AdvAction::KonaBess),
             None
         );
     }
@@ -3877,6 +3918,7 @@ mod tests {
         assert_eq!(
             section("adv_section_rollback"),
             &[
+                AdvAction::KonaBess,
                 AdvAction::ImageInfo,
                 AdvAction::DetectArb,
                 AdvAction::PatchArb,

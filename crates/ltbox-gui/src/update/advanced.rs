@@ -630,6 +630,10 @@ impl App {
                     self.simple_flash.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::SimpleFlash;
                     return Task::none();
+                } else if matches!(a, AdvAction::KonaBess) {
+                    self.konabess.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::KonaBess;
+                    return self.apply_default_loader_to_advanced_wizard();
                 } else {
                     return self.update(Message::Adv(AdvMsg::AdvWizOpen(a)));
                 }

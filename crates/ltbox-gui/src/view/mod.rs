@@ -6,6 +6,7 @@ mod chrome;
 pub(crate) mod components;
 mod dashboard;
 mod flash;
+mod konabess;
 mod parts;
 mod popups;
 mod reboot;

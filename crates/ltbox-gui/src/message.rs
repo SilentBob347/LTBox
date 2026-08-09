@@ -142,6 +142,7 @@ pub(crate) enum Message {
     Unroot(UnrootMsg),
     Sys(SysMsg),
     Adv(AdvMsg),
+    KonaBess(KonaBessMsg),
     FlashParts(FlashPartsMsg),
     DumpParts(DumpPartsMsg),
     DumpPhys(DumpPhysMsg),
@@ -309,6 +310,24 @@ pub(crate) enum AdvMsg {
     /// PatchArb timestamp popup: cancel — closes the popup, clears the
     /// buffer, leaves the wizard on the source step.
     AdvWizArbIndexCancel,
+}
+
+#[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum KonaBessMsg {
+    KonaBessSelectLoader,
+    KonaBessLoaderChosen(Option<String>),
+    KonaBessSelectExport,
+    KonaBessExportChosen(Option<String>),
+    KonaBessNext,
+    KonaBessBack,
+    /// Stage-D seam: feed the device-independent inspection result into the
+    /// pure target-selection transition without coupling the model to EDL I/O.
+    #[allow(dead_code)]
+    KonaBessInspectionReady(Vec<ltbox_patch::konabess::ClassifiedDtb>),
+    KonaBessTargetSelected(usize),
+    KonaBessTargetConfirm,
+    KonaBessTargetDismiss,
 }
 
 #[derive(Debug, Clone)]

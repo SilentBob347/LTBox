@@ -9,6 +9,7 @@ use ltbox_core::tr_args;
 
 mod advanced;
 mod flash;
+mod konabess;
 mod reboot;
 mod root;
 mod settings;
@@ -102,6 +103,7 @@ impl App {
                     self.flash_phys = FlashPhysWizard::default();
                     self.dump_phys = DumpPhysWizard::default();
                     self.simple_flash = SimpleFlashWizard::default();
+                    self.konabess = KonaBessWizard::default();
                 }
                 // Settings entry: rescan removable temp files so the cleanup
                 // button reflects current on-disk state (enabled only when
@@ -199,6 +201,7 @@ impl App {
             Message::Unroot(m) => return self.update_unroot(m),
             // Advanced
             Message::Adv(m) => return self.update_adv(m),
+            Message::KonaBess(m) => return self.update_konabess(m),
             // Async results
             Message::FileSelected(path) => {
                 if let Some(p) = path {
@@ -300,6 +303,7 @@ impl App {
                         self.dump_phys.reset();
                         self.flash_phys.reset();
                         self.simple_flash.reset();
+                        self.konabess.reset();
                         self.adv_wizard.reset();
                         self.adv_confirm = None;
                         self.adv_confirm_path = None;

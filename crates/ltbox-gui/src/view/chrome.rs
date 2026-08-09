@@ -64,6 +64,9 @@ impl App {
         if self.region_target_popup_open {
             layers.push(self.region_target_popup_view());
         }
+        if self.konabess.target_popup_open {
+            layers.push(self.konabess_target_popup_view());
+        }
         if let Some(field) = self.confirm_edit_field {
             layers.push(self.flash_confirm_edit_popup(field));
         }

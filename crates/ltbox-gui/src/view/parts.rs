@@ -124,7 +124,7 @@ impl App {
     /// and the two Message variants differ between callers, so they are
     /// threaded in as params; the title / placeholder / accepted
     /// extensions / colors are identical across all four wizards.
-    fn loader_picker_card<'a>(
+    pub(crate) fn loader_picker_card<'a>(
         &'a self,
         loader_path: &'a Option<String>,
         loader_error: &'a Option<String>,

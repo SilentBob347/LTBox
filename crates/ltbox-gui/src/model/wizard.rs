@@ -6,6 +6,7 @@ use crate::{
     AdvAction, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode, SkrootFlavor,
     VerChoice, is_loader_file,
 };
+use ltbox_patch::konabess::{ClassifiedDtb, KonaBessExport};
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
@@ -1203,6 +1204,111 @@ impl Wizard for SimpleFlashWizard {
     }
 }
 
+// =========================================================================
+// KonaBess GPU-table wizard state (Advanced → AVB Image)
+// =========================================================================
+
+pub(crate) const KONABESS_STEPS: &[&str] = &[
+    "konabess_step_loader",
+    "konabess_step_export",
+    "konabess_step_confirm",
+    "konabess_step_apply",
+];
+
+/// Stage-C state for the EDL-based KonaBess flow. Device images deliberately
+/// do not appear here: Stage D will dump them only after confirmation.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct KonaBessWizard {
+    pub(crate) step: usize,
+    pub(crate) loader_path: Option<String>,
+    pub(crate) loader_error: Option<String>,
+    pub(crate) export_path: Option<String>,
+    pub(crate) export_error: Option<String>,
+    pub(crate) export: Option<KonaBessExport>,
+    /// Chip-compatible DTBs from the dumped vendor_boot inspection.
+    pub(crate) candidates: Vec<ClassifiedDtb>,
+    /// The one DTB index passed to the existing single-target patch API.
+    pub(crate) selected_target_index: Option<usize>,
+    /// Modal ownership stays with the wizard rather than parallel App flags.
+    pub(crate) target_popup_open: bool,
+}
+
+impl KonaBessWizard {
+    /// Accept an inspection result and open normal single-target selection.
+    /// Selection requires a loaded export and a known, matching candidate chip.
+    /// Structural matches remain informational, including the normal all-false case.
+    pub(crate) fn apply_inspection_result(&mut self, inspected: Vec<ClassifiedDtb>) {
+        let export_chip = self.export.as_ref().map(|export| export.chip.as_str());
+        self.candidates = inspected
+            .into_iter()
+            .filter(|candidate| {
+                export_chip
+                    .zip(candidate.info.chip.as_deref())
+                    .is_some_and(|(export_chip, candidate_chip)| export_chip == candidate_chip)
+            })
+            .collect();
+        self.selected_target_index = None;
+        self.target_popup_open = true;
+    }
+
+    /// Select one candidate by its stable vendor_boot DTB index.
+    pub(crate) fn select_target(&mut self, target_index: usize) -> bool {
+        if self
+            .candidates
+            .iter()
+            .any(|candidate| candidate.info.index == target_index)
+        {
+            self.selected_target_index = Some(target_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Confirm target selection. The popup remains open until one DTB is set.
+    pub(crate) fn confirm_target(&mut self) -> Option<usize> {
+        let selected = self.selected_target_index?;
+        self.target_popup_open = false;
+        Some(selected)
+    }
+
+    /// Dismissal is a non-error state; a later Apply inspection can reopen it.
+    pub(crate) fn dismiss_target_popup(&mut self) {
+        self.target_popup_open = false;
+    }
+
+    pub(crate) fn structural_match_count(&self) -> usize {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.structurally_matches)
+            .count()
+    }
+}
+
+impl Wizard for KonaBessWizard {
+    fn step(&self) -> usize {
+        self.step
+    }
+
+    fn step_mut(&mut self) -> &mut usize {
+        &mut self.step
+    }
+
+    fn step_count(&self) -> usize {
+        KONABESS_STEPS.len()
+    }
+
+    fn can_next(&self) -> bool {
+        match self.step {
+            0 => self.loader_path.is_some() && self.loader_error.is_none(),
+            1 => self.export_path.is_some() && self.export.is_some() && self.export_error.is_none(),
+            // Stage D owns Start/Apply and is intentionally unavailable.
+            2 | 3 => false,
+            _ => false,
+        }
+    }
+}
+
 /// Wizard for every non-FlashPartitions Advanced action. Steps are
 /// [source, confirm, exec], plus country step between for `PatchDevinfo`.
 #[derive(Default, Debug, Clone)]
@@ -1389,5 +1495,146 @@ impl AdvWizard {
             Some(AdvAction::RebuildVbmeta) => "picker_target_vbmeta_img",
             _ => "picker_target_file",
         }
+    }
+}
+
+#[cfg(test)]
+mod konabess_tests {
+    use super::*;
+    use ltbox_patch::konabess::{GpuGroupShape, GpuTable, GpuTableShape, VendorBootDtbInfo};
+
+    fn wizard() -> KonaBessWizard {
+        KonaBessWizard {
+            export: Some(KonaBessExport {
+                chip: "waipio".to_string(),
+                description: "test".to_string(),
+                table: GpuTable { groups: vec![] },
+            }),
+            ..KonaBessWizard::default()
+        }
+    }
+
+    fn candidate(index: usize, chip: &str, structurally_matches: bool) -> ClassifiedDtb {
+        ClassifiedDtb {
+            info: VendorBootDtbInfo {
+                index,
+                model: Some(format!("model-{index}")),
+                chip: Some(chip.to_string()),
+                gpu_shape: Some(GpuTableShape {
+                    groups: vec![GpuGroupShape {
+                        id: 0,
+                        level_count: index + 1,
+                    }],
+                }),
+            },
+            structurally_matches,
+        }
+    }
+
+    fn candidate_with_unknown_chip(index: usize, structurally_matches: bool) -> ClassifiedDtb {
+        let mut candidate = candidate(index, "", structurally_matches);
+        candidate.info.chip = None;
+        candidate
+    }
+
+    #[test]
+    fn inspection_without_export_offers_no_unknown_chip_candidate() {
+        let mut wizard = KonaBessWizard::default();
+
+        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)]);
+
+        assert!(wizard.candidates.is_empty());
+    }
+
+    #[test]
+    fn inspection_with_export_does_not_offer_unknown_chip_candidate() {
+        let mut wizard = wizard();
+
+        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)]);
+
+        assert!(wizard.candidates.is_empty());
+    }
+
+    #[test]
+    fn inspection_with_export_offers_matching_chip_candidate() {
+        let mut wizard = wizard();
+
+        wizard.apply_inspection_result(vec![candidate(2, "waipio", true)]);
+
+        assert_eq!(wizard.candidates.len(), 1);
+        assert_eq!(wizard.candidates[0].info.index, 2);
+    }
+
+    #[test]
+    fn inspection_yields_only_chip_compatible_selectable_candidates() {
+        let mut wizard = wizard();
+        wizard.apply_inspection_result(vec![
+            candidate(2, "waipio", true),
+            candidate(5, "taro", true),
+            candidate(7, "waipio", false),
+        ]);
+
+        assert!(wizard.target_popup_open);
+        assert_eq!(
+            wizard
+                .candidates
+                .iter()
+                .map(|candidate| candidate.info.index)
+                .collect::<Vec<_>>(),
+            vec![2, 7]
+        );
+    }
+
+    #[test]
+    fn selecting_a_target_records_exactly_one_index() {
+        let mut wizard = wizard();
+        wizard.apply_inspection_result(vec![
+            candidate(2, "waipio", true),
+            candidate(7, "waipio", false),
+        ]);
+
+        assert!(wizard.select_target(2));
+        assert_eq!(wizard.selected_target_index, Some(2));
+        assert!(wizard.select_target(7));
+        assert_eq!(wizard.selected_target_index, Some(7));
+        assert!(!wizard.select_target(99));
+        assert_eq!(wizard.selected_target_index, Some(7));
+    }
+
+    #[test]
+    fn confirming_requires_a_selected_target() {
+        let mut wizard = wizard();
+        wizard.apply_inspection_result(vec![candidate(3, "waipio", true)]);
+
+        assert_eq!(wizard.confirm_target(), None);
+        assert!(wizard.target_popup_open);
+        assert!(wizard.select_target(3));
+        assert_eq!(wizard.confirm_target(), Some(3));
+        assert!(!wizard.target_popup_open);
+    }
+
+    #[test]
+    fn dismissing_target_selection_is_not_an_error() {
+        let mut wizard = wizard();
+        wizard.apply_inspection_result(vec![candidate(1, "waipio", false)]);
+
+        wizard.dismiss_target_popup();
+
+        assert!(!wizard.target_popup_open);
+        assert_eq!(wizard.selected_target_index, None);
+        assert_eq!(wizard.candidates.len(), 1);
+    }
+
+    #[test]
+    fn zero_structural_matches_is_a_normal_inspection_result() {
+        let mut wizard = wizard();
+        wizard.apply_inspection_result(vec![
+            candidate(1, "waipio", false),
+            candidate(4, "waipio", false),
+        ]);
+
+        assert_eq!(wizard.structural_match_count(), 0);
+        assert_eq!(wizard.candidates.len(), 2);
+        assert!(wizard.target_popup_open);
     }
 }
