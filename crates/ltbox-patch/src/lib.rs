@@ -7,6 +7,7 @@ pub mod avb;
 pub mod boot;
 pub mod gki;
 pub mod key_map;
+pub mod konabess;
 pub mod ksu;
 pub mod magisk;
 pub mod region;
