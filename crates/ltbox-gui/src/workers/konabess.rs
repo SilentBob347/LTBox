@@ -1,12 +1,12 @@
-//! KonaBess stage-D inspection worker: resolve slot, dump stock images, run
-//! the existing exploit gate, classify DTBs, then pause for UI selection.
+//! KonaBess stage-D workers: inspect stock images, pause for UI target
+//! selection, then rebuild and flash the AVB-matched image pair.
 
 use crate::{
     ConnectionStatus, KonaBessPrepared, LiveLabels, PhaseReporter, open_edl_session,
     prepare_tb323fu_efisp, provision_tb323fu_efisp, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
-use ltbox_patch::konabess::{ClassifiedDtb, KonaBessExport};
+use ltbox_patch::konabess::{ClassifiedDtb, KonaBessAvbOutput, KonaBessBuildStage, KonaBessExport};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -302,6 +302,232 @@ pub(crate) fn konabess_inspection_worker(
     }
 }
 
+trait KonaBessFlashBackend {
+    fn build_pair(
+        &mut self,
+        firmware_dir: &Path,
+        output_dir: &Path,
+        export_path: &Path,
+        target_index: usize,
+        on_stage: &mut dyn FnMut(KonaBessBuildStage),
+    ) -> Result<KonaBessAvbOutput, String>;
+    fn open_session(&mut self, log: &mut Vec<String>) -> Result<(), String>;
+    fn flash_partition(
+        &mut self,
+        partition: &str,
+        image: &Path,
+        lun: u8,
+        log: &mut Vec<String>,
+    ) -> Result<(), String>;
+    fn reboot(&mut self, log: &mut Vec<String>);
+    fn writes_started(&self) -> bool;
+    fn recover_before_write(&mut self, log: &mut Vec<String>);
+}
+
+struct FlashDeviceBackend<'a> {
+    loader: &'a Path,
+    session: Option<ltbox_device::edl::EdlSession>,
+    writes_started: bool,
+}
+
+impl FlashDeviceBackend<'_> {
+    fn session(&mut self) -> Result<&mut ltbox_device::edl::EdlSession, String> {
+        self.session.as_mut().ok_or_else(|| {
+            tr_args!(
+                "err_edl_session_open_failed",
+                error = ltbox_core::i18n::tr("err_task_failed")
+            )
+        })
+    }
+}
+
+impl KonaBessFlashBackend for FlashDeviceBackend<'_> {
+    fn build_pair(
+        &mut self,
+        firmware_dir: &Path,
+        output_dir: &Path,
+        export_path: &Path,
+        target_index: usize,
+        on_stage: &mut dyn FnMut(KonaBessBuildStage),
+    ) -> Result<KonaBessAvbOutput, String> {
+        ltbox_patch::konabess::build_konabess_avb_images_with_progress(
+            firmware_dir,
+            output_dir,
+            export_path,
+            target_index,
+            on_stage,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn open_session(&mut self, log: &mut Vec<String>) -> Result<(), String> {
+        self.session = Some(open_edl_session(self.loader, true, log)?);
+        Ok(())
+    }
+
+    fn flash_partition(
+        &mut self,
+        partition: &str,
+        image: &Path,
+        lun: u8,
+        log: &mut Vec<String>,
+    ) -> Result<(), String> {
+        // Set this before entering Firehose's write path. A transport drop or
+        // ambiguous write error must be treated as a partial flash.
+        self.writes_started = true;
+        self.session()?
+            .flash_partition(partition, image, 0, lun, log)
+            .map_err(|error| {
+                tr_args!(
+                    "err_root_flash_partition_failed",
+                    partition = partition,
+                    error = error
+                )
+            })
+    }
+
+    fn reboot(&mut self, log: &mut Vec<String>) {
+        if let Some(session) = self.session.as_mut() {
+            session.reset_tolerant(log);
+        }
+        self.session = None;
+    }
+
+    fn writes_started(&self) -> bool {
+        self.writes_started
+    }
+
+    fn recover_before_write(&mut self, log: &mut Vec<String>) {
+        if let Some(session) = self.session.as_mut() {
+            session.reset_tolerant(log);
+            self.session = None;
+            return;
+        }
+        if let Ok(mut session) = ltbox_device::edl::EdlSession::open(self.loader, false, log) {
+            session.reset_tolerant(log);
+        }
+    }
+}
+
+fn execute_flash<B: KonaBessFlashBackend>(
+    backend: &mut B,
+    prepared: &KonaBessPrepared,
+    export_path: &Path,
+    target_index: usize,
+    phases: &PhaseReporter,
+    ll: &LiveLabels,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    let output_dir = prepared.work_dir.join("rebuilt");
+    let output = backend.build_pair(
+        &prepared.work_dir,
+        &output_dir,
+        export_path,
+        target_index,
+        &mut |stage| {
+            live!(
+                log,
+                "[KonaBess] {}",
+                phases.marker(crate::konabess_build_phase(stage))
+            );
+        },
+    )?;
+
+    let vendor_boot_partition = format!("vendor_boot{}", prepared.slot_suffix);
+    let vbmeta_partition = format!("vbmeta{}", prepared.slot_suffix);
+    let vendor_boot_lun = ltbox_core::partition_lun::lun_for_partition(&vendor_boot_partition)
+        .ok_or_else(|| {
+            tr_args!(
+                "err_no_hardcoded_lun",
+                partition = vendor_boot_partition.as_str()
+            )
+        })?;
+    let vbmeta_lun =
+        ltbox_core::partition_lun::lun_for_partition(&vbmeta_partition).ok_or_else(|| {
+            tr_args!(
+                "err_no_hardcoded_lun",
+                partition = vbmeta_partition.as_str()
+            )
+        })?;
+
+    live!(log, "[KonaBess] {}", phases.marker(6));
+    backend.open_session(log)?;
+    backend.flash_partition(
+        &vendor_boot_partition,
+        &output.vendor_boot,
+        vendor_boot_lun,
+        log,
+    )?;
+    backend.flash_partition(&vbmeta_partition, &output.vbmeta, vbmeta_lun, log)?;
+
+    // The reset is deliberately unreachable until both members of the
+    // AVB-matched pair have completed in this same backend session.
+    live!(log, "[KonaBess] {}", phases.marker(7));
+    backend.reboot(log);
+    live!(log, "[KonaBess] {}", ll.flash_completed);
+    Ok(())
+}
+
+fn run_flash<B: KonaBessFlashBackend>(
+    backend: &mut B,
+    prepared: &KonaBessPrepared,
+    export_path: &Path,
+    target_index: usize,
+    phases: &PhaseReporter,
+    ll: &LiveLabels,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    match execute_flash(
+        backend,
+        prepared,
+        export_path,
+        target_index,
+        phases,
+        ll,
+        log,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if backend.writes_started() => {
+            // Never reset a device that may contain only one member of the
+            // rebuilt AVB pair. The retained backup is the recovery source.
+            Err(tr_args!(
+                "err_konabess_partial_write_recovery",
+                error = error
+            ))
+        }
+        Err(error) => {
+            backend.recover_before_write(log);
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn konabess_flash_worker(
+    loader: PathBuf,
+    export_path: PathBuf,
+    prepared: KonaBessPrepared,
+    target_index: usize,
+    ll: LiveLabels,
+    phases: PhaseReporter,
+) -> Result<Vec<String>, String> {
+    let mut log = Vec::new();
+    let mut backend = FlashDeviceBackend {
+        loader: &loader,
+        session: None,
+        writes_started: false,
+    };
+    run_flash(
+        &mut backend,
+        &prepared,
+        &export_path,
+        target_index,
+        &phases,
+        &ll,
+        &mut log,
+    )?;
+    Ok(log)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +596,80 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeFlashBackend {
+        events: Vec<String>,
+        build_error: Option<String>,
+        fail_second_write: bool,
+        session_open: bool,
+        writes_started: bool,
+    }
+
+    impl KonaBessFlashBackend for FakeFlashBackend {
+        fn build_pair(
+            &mut self,
+            firmware_dir: &Path,
+            output_dir: &Path,
+            _export_path: &Path,
+            target_index: usize,
+            on_stage: &mut dyn FnMut(KonaBessBuildStage),
+        ) -> Result<KonaBessAvbOutput, String> {
+            self.events.push(format!("build:{target_index}"));
+            if let Some(error) = self.build_error.take() {
+                return Err(error);
+            }
+            assert_eq!(output_dir, firmware_dir.join("rebuilt"));
+            on_stage(KonaBessBuildStage::Inspect);
+            on_stage(KonaBessBuildStage::PatchVendorBoot);
+            on_stage(KonaBessBuildStage::RebuildVbmeta);
+            Ok(KonaBessAvbOutput {
+                vendor_boot: output_dir.join("vendor_boot.img"),
+                vbmeta: output_dir.join("vbmeta.img"),
+                target_index,
+            })
+        }
+
+        fn open_session(&mut self, _log: &mut Vec<String>) -> Result<(), String> {
+            assert!(!self.session_open);
+            self.session_open = true;
+            self.events.push("open".into());
+            Ok(())
+        }
+
+        fn flash_partition(
+            &mut self,
+            partition: &str,
+            _image: &Path,
+            lun: u8,
+            _log: &mut Vec<String>,
+        ) -> Result<(), String> {
+            assert!(self.session_open);
+            self.writes_started = true;
+            self.events.push(format!("flash:{partition}:{lun}"));
+            if self.fail_second_write && partition.starts_with("vbmeta") {
+                Err("second write failed".into())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn reboot(&mut self, _log: &mut Vec<String>) {
+            assert!(self.session_open);
+            self.events.push("reboot".into());
+            self.session_open = false;
+        }
+
+        fn writes_started(&self) -> bool {
+            self.writes_started
+        }
+
+        fn recover_before_write(&mut self, _log: &mut Vec<String>) {
+            assert!(!self.writes_started);
+            self.events.push("recover".into());
+            self.session_open = false;
+        }
+    }
+
     fn export() -> KonaBessExport {
         KonaBessExport {
             chip: "waipio".into(),
@@ -401,6 +701,41 @@ mod tests {
 
     fn phases() -> PhaseReporter {
         PhaseReporter::from_labels(vec!["prepare".into(), "dump".into(), "inspect".into()])
+    }
+
+    fn flash_phases() -> PhaseReporter {
+        PhaseReporter::from_labels(
+            [
+                "prepare", "dump", "inspect", "patch", "rebuild", "flash", "reboot",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+    }
+
+    fn live_labels() -> LiveLabels {
+        LiveLabels {
+            closing_dump: "closing".into(),
+            flash_completed: "completed".into(),
+            root_completed: "root completed".into(),
+            unroot_completed: "unroot completed".into(),
+            adb_no_kver: "no kernel version".into(),
+            backup_saved_prefix: "backup".into(),
+            root_resolved_prefix: "resolved".into(),
+            root_backup_copy_prefix: "backup copy".into(),
+        }
+    }
+
+    fn prepared(root: &Path) -> KonaBessPrepared {
+        let work_dir = root.join("work");
+        KonaBessPrepared {
+            vendor_boot: work_dir.join("vendor_boot.img"),
+            vbmeta: work_dir.join("vbmeta.img"),
+            backup_dir: root.join("backup_critical_123_konabess"),
+            slot_suffix: "_b".into(),
+            work_dir,
+        }
     }
 
     #[test]
@@ -465,5 +800,102 @@ mod tests {
         assert_eq!(result.unwrap_err(), "blocked");
         assert!(!paths.backup_dir.exists());
         assert!(!backend.events.iter().any(|event| event == "classify"));
+    }
+
+    #[test]
+    fn flash_writes_both_images_on_retained_slot_in_one_session() {
+        let root = tempfile::tempdir().unwrap();
+        let mut backend = FakeFlashBackend::default();
+
+        run_flash(
+            &mut backend,
+            &prepared(root.path()),
+            Path::new("export.txt"),
+            9,
+            &flash_phases(),
+            &live_labels(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            backend.events,
+            [
+                "build:9",
+                "open",
+                "flash:vendor_boot_b:4",
+                "flash:vbmeta_b:4",
+                "reboot"
+            ]
+        );
+        assert_eq!(
+            backend
+                .events
+                .iter()
+                .filter(|event| *event == "open")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn build_failure_never_opens_a_flash_session_or_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut backend = FakeFlashBackend {
+            build_error: Some("signing gate failed".into()),
+            ..FakeFlashBackend::default()
+        };
+
+        let error = run_flash(
+            &mut backend,
+            &prepared(root.path()),
+            Path::new("export.txt"),
+            3,
+            &flash_phases(),
+            &live_labels(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "signing gate failed");
+        assert_eq!(backend.events, ["build:3", "recover"]);
+        assert!(!backend.writes_started);
+    }
+
+    #[test]
+    fn second_write_failure_is_error_and_never_reboots() {
+        let root = tempfile::tempdir().unwrap();
+        let mut backend = FakeFlashBackend {
+            fail_second_write: true,
+            ..FakeFlashBackend::default()
+        };
+
+        let error = run_flash(
+            &mut backend,
+            &prepared(root.path()),
+            Path::new("export.txt"),
+            5,
+            &flash_phases(),
+            &live_labels(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("second write failed")
+                || error.contains("err_konabess_partial_write_recovery")
+        );
+        assert_eq!(
+            backend.events,
+            [
+                "build:5",
+                "open",
+                "flash:vendor_boot_b:4",
+                "flash:vbmeta_b:4"
+            ]
+        );
+        assert!(backend.writes_started);
+        assert!(backend.session_open);
+        assert!(!backend.events.iter().any(|event| event == "reboot"));
     }
 }

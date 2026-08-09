@@ -1,5 +1,5 @@
-//! KonaBess wizard handlers. Stage D part 1 ends after stock-image inspection
-//! and target selection; patch/rebuild/flash continuation remains unwired.
+//! KonaBess wizard handlers for stock-image inspection, target selection, and
+//! the irreversible rebuild/flash continuation.
 
 use crate::*;
 use iced::Task;
@@ -159,11 +159,56 @@ impl App {
                 Task::none()
             }
             KonaBessMsg::KonaBessTargetConfirm => {
-                self.konabess.confirm_target();
-                Task::none()
+                if self.busy {
+                    return Task::none();
+                }
+                let Some(target_index) = self.konabess.confirm_target() else {
+                    return Task::none();
+                };
+                let Some(prepared) = self.konabess.prepared.clone() else {
+                    return Task::none();
+                };
+                let Some(loader) = self.konabess.loader_path.clone() else {
+                    return Task::none();
+                };
+                let Some(export_path) = self.konabess.export_path.clone() else {
+                    return Task::none();
+                };
+
+                let phases = self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
+                let ll = self.live_labels();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || {
+                                konabess_flash_worker(
+                                    std::path::PathBuf::from(loader),
+                                    std::path::PathBuf::from(export_path),
+                                    prepared,
+                                    target_index,
+                                    ll,
+                                    phases,
+                                )
+                            })
+                            .and_then(|result| result)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err(ltbox_core::i18n::tr("err_task_failed")))
+                    },
+                    |result| match result {
+                        Ok(log) => Message::KonaBess(KonaBessMsg::KonaBessFlashDone(log)),
+                        Err(error) => Message::OperationError(error),
+                    },
+                )
             }
             KonaBessMsg::KonaBessTargetDismiss => {
                 self.konabess.dismiss_target_popup();
+                Task::none()
+            }
+            KonaBessMsg::KonaBessFlashDone(log) => {
+                self.flush_exec_done_log(log);
+                self.end_op();
+                self.konabess.cleanup_prepared();
                 Task::none()
             }
         }

@@ -240,6 +240,7 @@
   "err_flash_xml_selection_failed": "ファームウェア XML の選択に失敗しました: {error}",
   "err_flash_zst_decompress_failed": "{path} の展開に失敗しました: {error}",
   "err_keyclass_work_dir_failed": "keyclass 作業フォルダーの作成に失敗しました: {error}",
+  "err_konabess_partial_write_recovery": "パーティションへの書き込み開始後に KonaBess 処理が失敗しました: {error}。デバイスは EDL モードのままです。片方だけが書き込まれた AVB イメージペアで強制再起動しないでください。同じローダーを使って EDL に再接続し、バックアップを復元するか、AVB で保護された両方のパーティションを再フラッシュしてからデバイスをリセットしてください。",
   "err_ksu_lkm_kernel_version_required": "KernelSU LKM は EDL の前にカーネルバージョンが必要です。手動で入力して再試行してください。",
   "err_loader_missing": "{path} にローダーファイルが見つかりません",
   "err_loader_not_found_in_path": "{path} に xbl_s_devprg_ns.melf が見つかりません",

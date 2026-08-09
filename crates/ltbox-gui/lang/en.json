@@ -240,6 +240,7 @@
   "err_flash_xml_selection_failed": "Firmware XML selection failed: {error}",
   "err_flash_zst_decompress_failed": "Failed to decompress {path}: {error}",
   "err_keyclass_work_dir_failed": "keyclass work directory creation failed: {error}",
+  "err_konabess_partial_write_recovery": "KonaBess failed after a partition write began: {error}. The device was left in EDL. Do not force-reboot into a partially written AVB image pair. Reconnect in EDL using the same loader, restore the backup or re-flash both AVB-protected partitions, then reset the device.",
   "err_ksu_lkm_kernel_version_required": "KernelSU LKM requires kernel version before EDL; enter it manually and retry.",
   "err_loader_missing": "Loader file not found at {path}",
   "err_loader_not_found_in_path": "xbl_s_devprg_ns.melf not found in {path}",

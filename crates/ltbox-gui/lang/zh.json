@@ -240,6 +240,7 @@
   "err_flash_xml_selection_failed": "固件 XML 选择失败：{error}",
   "err_flash_zst_decompress_failed": "解压 {path} 失败：{error}",
   "err_keyclass_work_dir_failed": "创建 keyclass 工作目录失败：{error}",
+  "err_konabess_partial_write_recovery": "分区写入开始后，KonaBess 操作失败：{error}。设备已留在 EDL 模式。请勿强制重启进入仅写入一部分的 AVB 镜像对。请使用同一加载程序重新连接 EDL，恢复备份或重新刷写两个 AVB 受保护分区，然后再重置设备。",
   "err_ksu_lkm_kernel_version_required": "KernelSU LKM 需要在进入 EDL 前获得内核版本；请手动输入后重试。",
   "err_loader_missing": "未找到加载器文件：{path}",
   "err_loader_not_found_in_path": "在 {path} 中未找到 xbl_s_devprg_ns.melf",

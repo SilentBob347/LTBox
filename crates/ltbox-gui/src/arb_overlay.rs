@@ -45,8 +45,9 @@ pub(crate) fn prepare_tb323fu_efisp(
         ltbox_core::i18n::tr("log_root_efisp_check")
     );
     let dumped_efisp = work_dir.join("efisp.img");
+    let efisp_lun = ltbox_core::partition_lun::lun_for_partition("efisp").unwrap_or(4);
     session
-        .dump_partition("efisp", &dumped_efisp, 0, 4, log)
+        .dump_partition("efisp", &dumped_efisp, 0, efisp_lun, log)
         .map_err(|e| {
             tr_args!(
                 "err_root_dump_partition_failed",

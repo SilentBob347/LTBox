@@ -240,6 +240,7 @@
   "err_flash_xml_selection_failed": "Не удалось выбрать XML прошивки: {error}",
   "err_flash_zst_decompress_failed": "Не удалось распаковать {path}: {error}",
   "err_keyclass_work_dir_failed": "Не удалось создать рабочую папку keyclass: {error}",
+  "err_konabess_partial_write_recovery": "Операция KonaBess завершилась ошибкой после начала записи раздела: {error}. Устройство оставлено в режиме EDL. Не перезагружайте его принудительно с частично записанной парой AVB-образов. Повторно подключитесь в EDL с тем же загрузчиком, восстановите резервную копию или заново прошейте оба AVB-защищённых раздела, затем перезагрузите устройство.",
   "err_ksu_lkm_kernel_version_required": "KernelSU LKM требует версию ядра до входа в EDL; введите её вручную и повторите попытку.",
   "err_loader_missing": "Файл загрузчика не найден: {path}",
   "err_loader_not_found_in_path": "В {path} не найден xbl_s_devprg_ns.melf",
