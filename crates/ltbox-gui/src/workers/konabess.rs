@@ -37,6 +37,7 @@ const fn exploit_gate_kind(is_tb323fu: bool) -> ExploitGateKind {
 
 trait KonaBessInspectionBackend {
     fn resolve_active_slot(&mut self, log: &mut Vec<String>) -> Result<String, String>;
+    fn resolve_probable_dtb_index(&mut self, log: &mut Vec<String>) -> Option<usize>;
     fn enter_edl(&mut self, log: &mut Vec<String>) -> Result<(), String>;
     fn dump_partition(
         &mut self,
@@ -85,6 +86,15 @@ impl KonaBessInspectionBackend for DeviceBackend<'_> {
     fn resolve_active_slot(&mut self, log: &mut Vec<String>) -> Result<String, String> {
         ltbox_device::controller::poll_active_slot(std::time::Duration::from_secs(30), log)
             .map_err(|error| error.to_string())
+    }
+
+    fn resolve_probable_dtb_index(&mut self, _log: &mut Vec<String>) -> Option<usize> {
+        let mut adb = ltbox_device::adb::AdbManager::new_if_connected()?;
+        adb.shell("getprop ro.boot.dtb_idx")
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
     }
 
     fn enter_edl(&mut self, log: &mut Vec<String>) -> Result<(), String> {
@@ -209,6 +219,9 @@ fn execute_inspection<B: KonaBessInspectionBackend>(
     // This probe is intentionally the first device operation. EDL cannot
     // report an active Android slot, and failure must not fall back to `_a`.
     let slot_suffix = backend.resolve_active_slot(log)?;
+    // Upstream KonaBess uses this Android-only property as a selection hint.
+    // Missing or malformed values are normal and must not block inspection.
+    let probable_dtb_index = backend.resolve_probable_dtb_index(log);
     backend.enter_edl(log)?;
 
     live!(log, "[KonaBess] {}", phases.marker(2));
@@ -239,6 +252,7 @@ fn execute_inspection<B: KonaBessInspectionBackend>(
             vbmeta,
             backup_dir: paths.backup_dir.clone(),
             slot_suffix,
+            probable_dtb_index,
         },
         candidates,
     ))
@@ -528,6 +542,35 @@ pub(crate) fn konabess_flash_worker(
     Ok(log)
 }
 
+trait KonaBessCancelBackend {
+    fn reboot_to_system(&mut self, log: &mut Vec<String>);
+}
+
+struct CancelDeviceBackend<'a> {
+    loader: &'a Path,
+}
+
+impl KonaBessCancelBackend for CancelDeviceBackend<'_> {
+    fn reboot_to_system(&mut self, log: &mut Vec<String>) {
+        // Inspection returned Firehose to Sahara, so cancellation opens a
+        // fresh session exactly like the pre-write recovery path.
+        if let Ok(mut session) = ltbox_device::edl::EdlSession::open(self.loader, false, log) {
+            session.reset_tolerant(log);
+        }
+    }
+}
+
+fn execute_cancel<B: KonaBessCancelBackend>(backend: &mut B, log: &mut Vec<String>) {
+    backend.reboot_to_system(log);
+}
+
+pub(crate) fn konabess_cancel_worker(loader: PathBuf) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut backend = CancelDeviceBackend { loader: &loader };
+    execute_cancel(&mut backend, &mut log);
+    log
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,12 +581,18 @@ mod tests {
         events: Vec<String>,
         gate_error: Option<String>,
         candidate: Option<ClassifiedDtb>,
+        probable_dtb_index: Option<usize>,
     }
 
     impl KonaBessInspectionBackend for FakeBackend {
         fn resolve_active_slot(&mut self, _log: &mut Vec<String>) -> Result<String, String> {
             self.events.push("slot".into());
             Ok("_b".into())
+        }
+
+        fn resolve_probable_dtb_index(&mut self, _log: &mut Vec<String>) -> Option<usize> {
+            self.events.push("dtb-index".into());
+            self.probable_dtb_index
         }
 
         fn enter_edl(&mut self, _log: &mut Vec<String>) -> Result<(), String> {
@@ -734,6 +783,7 @@ mod tests {
             vbmeta: work_dir.join("vbmeta.img"),
             backup_dir: root.join("backup_critical_123_konabess"),
             slot_suffix: "_b".into(),
+            probable_dtb_index: Some(2),
             work_dir,
         }
     }
@@ -764,15 +814,17 @@ mod tests {
             candidate: Some(candidate()),
             ..FakeBackend::default()
         };
-        let (_, candidates) =
+        let (prepared, candidates) =
             execute_inspection(&mut backend, &export(), &paths, &phases(), &mut Vec::new())
                 .unwrap();
 
         assert_eq!(candidates, vec![candidate()]);
+        assert_eq!(prepared.probable_dtb_index, None);
         assert_eq!(
             backend.events,
             [
                 "slot",
+                "dtb-index",
                 "edl",
                 "dump:vendor_boot_b",
                 "dump:vbmeta_b",
@@ -897,5 +949,45 @@ mod tests {
         assert!(backend.writes_started);
         assert!(backend.session_open);
         assert!(!backend.events.iter().any(|event| event == "reboot"));
+    }
+
+    #[test]
+    fn inspection_carries_probable_dtb_index_from_pre_edl_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let mut backend = FakeBackend {
+            candidate: Some(candidate()),
+            probable_dtb_index: Some(2),
+            ..FakeBackend::default()
+        };
+
+        let (prepared, _) =
+            execute_inspection(&mut backend, &export(), &paths, &phases(), &mut Vec::new())
+                .unwrap();
+
+        assert_eq!(prepared.probable_dtb_index, Some(2));
+        assert!(
+            backend.events.iter().position(|event| event == "dtb-index")
+                < backend.events.iter().position(|event| event == "edl")
+        );
+    }
+
+    #[test]
+    fn cancelling_target_selection_triggers_system_reboot() {
+        #[derive(Default)]
+        struct FakeCancelBackend {
+            rebooted: bool,
+        }
+
+        impl KonaBessCancelBackend for FakeCancelBackend {
+            fn reboot_to_system(&mut self, _log: &mut Vec<String>) {
+                self.rebooted = true;
+            }
+        }
+
+        let mut backend = FakeCancelBackend::default();
+        execute_cancel(&mut backend, &mut Vec::new());
+
+        assert!(backend.rebooted);
     }
 }

@@ -328,6 +328,7 @@ pub(crate) enum KonaBessMsg {
     KonaBessTargetSelected(usize),
     KonaBessTargetConfirm,
     KonaBessTargetDismiss,
+    KonaBessCancelDone(Vec<String>),
     KonaBessFlashDone(Vec<String>),
 }
 

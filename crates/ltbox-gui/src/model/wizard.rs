@@ -1224,6 +1224,8 @@ pub(crate) struct KonaBessPrepared {
     pub(crate) vbmeta: std::path::PathBuf,
     pub(crate) backup_dir: std::path::PathBuf,
     pub(crate) slot_suffix: String,
+    /// Android's best-effort `ro.boot.dtb_idx` hint, captured before EDL.
+    pub(crate) probable_dtb_index: Option<usize>,
 }
 
 /// KonaBess wizard state. The prepared workspace is populated only after the
@@ -1240,6 +1242,8 @@ pub(crate) struct KonaBessWizard {
     pub(crate) candidates: Vec<ClassifiedDtb>,
     /// The one DTB index passed to the existing single-target patch API.
     pub(crate) selected_target_index: Option<usize>,
+    /// Upstream KonaBess's probable target, when it is one of the candidates.
+    pub(crate) probable_target_index: Option<usize>,
     /// Modal ownership stays with the wizard rather than parallel App flags.
     pub(crate) target_popup_open: bool,
     pub(crate) prepared: Option<KonaBessPrepared>,
@@ -1249,7 +1253,12 @@ impl KonaBessWizard {
     /// Accept an inspection result and open normal single-target selection.
     /// Selection requires a loaded export and a known, matching candidate chip.
     /// Structural matches remain informational, including the normal all-false case.
-    pub(crate) fn apply_inspection_result(&mut self, inspected: Vec<ClassifiedDtb>) {
+    /// Returns whether the device hint identifies exactly one compatible candidate.
+    pub(crate) fn apply_inspection_result(
+        &mut self,
+        inspected: Vec<ClassifiedDtb>,
+        probable_dtb_index: Option<usize>,
+    ) -> bool {
         let export_chip = self.export.as_ref().map(|export| export.chip.as_str());
         self.candidates = inspected
             .into_iter()
@@ -1259,8 +1268,24 @@ impl KonaBessWizard {
                     .is_some_and(|(export_chip, candidate_chip)| export_chip == candidate_chip)
             })
             .collect();
-        self.selected_target_index = None;
+        let probable_match_count = probable_dtb_index.map_or(0, |index| {
+            self.candidates
+                .iter()
+                .filter(|candidate| candidate.info.index == index)
+                .count()
+        });
+        self.probable_target_index = probable_dtb_index.filter(|index| {
+            self.candidates
+                .iter()
+                .any(|candidate| candidate.info.index == *index)
+        });
+        self.selected_target_index = self.probable_target_index;
         self.target_popup_open = true;
+        probable_match_count == 1
+    }
+
+    pub(crate) fn is_probable_target(&self, target_index: usize) -> bool {
+        self.probable_target_index == Some(target_index)
     }
 
     /// Select one candidate by its stable vendor_boot DTB index.
@@ -1304,6 +1329,7 @@ impl KonaBessWizard {
         }
         self.candidates.clear();
         self.selected_target_index = None;
+        self.probable_target_index = None;
         self.target_popup_open = false;
     }
 }
@@ -1569,7 +1595,7 @@ mod konabess_tests {
     fn inspection_without_export_offers_no_unknown_chip_candidate() {
         let mut wizard = KonaBessWizard::default();
 
-        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)]);
+        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)], None);
 
         assert!(wizard.candidates.is_empty());
     }
@@ -1578,7 +1604,7 @@ mod konabess_tests {
     fn inspection_with_export_does_not_offer_unknown_chip_candidate() {
         let mut wizard = wizard();
 
-        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)]);
+        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)], None);
 
         assert!(wizard.candidates.is_empty());
     }
@@ -1587,7 +1613,7 @@ mod konabess_tests {
     fn inspection_with_export_offers_matching_chip_candidate() {
         let mut wizard = wizard();
 
-        wizard.apply_inspection_result(vec![candidate(2, "waipio", true)]);
+        wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], None);
 
         assert_eq!(wizard.candidates.len(), 1);
         assert_eq!(wizard.candidates[0].info.index, 2);
@@ -1596,11 +1622,14 @@ mod konabess_tests {
     #[test]
     fn inspection_yields_only_chip_compatible_selectable_candidates() {
         let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![
-            candidate(2, "waipio", true),
-            candidate(5, "taro", true),
-            candidate(7, "waipio", false),
-        ]);
+        wizard.apply_inspection_result(
+            vec![
+                candidate(2, "waipio", true),
+                candidate(5, "taro", true),
+                candidate(7, "waipio", false),
+            ],
+            None,
+        );
 
         assert!(wizard.target_popup_open);
         assert_eq!(
@@ -1616,10 +1645,10 @@ mod konabess_tests {
     #[test]
     fn selecting_a_target_records_exactly_one_index() {
         let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![
-            candidate(2, "waipio", true),
-            candidate(7, "waipio", false),
-        ]);
+        wizard.apply_inspection_result(
+            vec![candidate(2, "waipio", true), candidate(7, "waipio", false)],
+            None,
+        );
 
         assert!(wizard.select_target(2));
         assert_eq!(wizard.selected_target_index, Some(2));
@@ -1632,7 +1661,7 @@ mod konabess_tests {
     #[test]
     fn confirming_requires_a_selected_target() {
         let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![candidate(3, "waipio", true)]);
+        wizard.apply_inspection_result(vec![candidate(3, "waipio", true)], None);
 
         assert_eq!(wizard.confirm_target(), None);
         assert!(wizard.target_popup_open);
@@ -1644,7 +1673,7 @@ mod konabess_tests {
     #[test]
     fn dismissing_target_selection_is_not_an_error() {
         let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![candidate(1, "waipio", false)]);
+        wizard.apply_inspection_result(vec![candidate(1, "waipio", false)], None);
 
         wizard.dismiss_target_popup();
 
@@ -1656,13 +1685,63 @@ mod konabess_tests {
     #[test]
     fn zero_structural_matches_is_a_normal_inspection_result() {
         let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![
-            candidate(1, "waipio", false),
-            candidate(4, "waipio", false),
-        ]);
+        wizard.apply_inspection_result(
+            vec![candidate(1, "waipio", false), candidate(4, "waipio", false)],
+            None,
+        );
 
         assert_eq!(wizard.structural_match_count(), 0);
         assert_eq!(wizard.candidates.len(), 2);
         assert!(wizard.target_popup_open);
+    }
+
+    #[test]
+    fn probable_dtb_match_is_marked_and_preselected() {
+        let mut wizard = wizard();
+        let auto_confirm = wizard.apply_inspection_result(
+            vec![candidate(2, "waipio", false), candidate(7, "waipio", true)],
+            Some(7),
+        );
+
+        assert!(auto_confirm);
+        assert!(wizard.is_probable_target(7));
+        assert_eq!(wizard.selected_target_index, Some(7));
+    }
+
+    #[test]
+    fn ambiguous_probable_dtb_match_stays_in_manual_selection() {
+        let mut wizard = wizard();
+        let auto_confirm = wizard.apply_inspection_result(
+            vec![candidate(7, "waipio", false), candidate(7, "waipio", true)],
+            Some(7),
+        );
+
+        assert!(!auto_confirm);
+        assert!(wizard.target_popup_open);
+        assert!(wizard.is_probable_target(7));
+        assert_eq!(wizard.selected_target_index, Some(7));
+    }
+
+    #[test]
+    fn probable_dtb_no_match_marks_and_selects_nothing() {
+        let mut wizard = wizard();
+        let auto_confirm =
+            wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], Some(99));
+
+        assert!(!auto_confirm);
+        assert!(wizard.target_popup_open);
+        assert_eq!(wizard.probable_target_index, None);
+        assert_eq!(wizard.selected_target_index, None);
+    }
+
+    #[test]
+    fn unknown_probable_dtb_marks_and_selects_nothing() {
+        let mut wizard = wizard();
+        let auto_confirm = wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], None);
+
+        assert!(!auto_confirm);
+        assert!(wizard.target_popup_open);
+        assert_eq!(wizard.probable_target_index, None);
+        assert_eq!(wizard.selected_target_index, None);
     }
 }

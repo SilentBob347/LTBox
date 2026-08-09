@@ -2468,6 +2468,14 @@ impl App {
         if self.busy_view != Some(View::Advanced) {
             return None;
         }
+        if self.advanced_wizard_open.is_konabess() {
+            let key = if self.konabess.prepared.is_some() {
+                "busy_konabess_cancel"
+            } else {
+                "busy_konabess_inspection"
+            };
+            return Some(self.t(key).to_string());
+        }
         // Simple Flash is a full firmware flash, not a partition scan/write —
         // let it fall through to the default "{operation} in progress" template
         // (operation = its own label) instead of the partition-scan body.
@@ -4155,6 +4163,29 @@ mod tests {
         app.advanced_wizard_open = AdvancedWizardOpen::None;
         app.current_view = View::Flash;
         app.flash.step = FLASH_STEPS.len() - 1;
+        assert!(!app.should_show_busy_progress_dialog());
+    }
+
+    #[test]
+    fn konabess_inspection_uses_busy_dialog_and_flash_uses_inline_exec_surface() {
+        let mut app = App {
+            busy: true,
+            busy_view: Some(View::Advanced),
+            current_view: View::Advanced,
+            advanced_wizard_open: AdvancedWizardOpen::KonaBess,
+            ..App::default()
+        };
+
+        app.konabess.step = 2;
+        assert!(!app.advanced_inline_exec_surface_active());
+        assert!(app.should_show_busy_progress_dialog());
+        assert_eq!(
+            app.busy_body_override().as_deref(),
+            Some(app.t("busy_konabess_inspection"))
+        );
+
+        app.konabess.step = 3;
+        assert!(app.advanced_inline_exec_surface_active());
         assert!(!app.should_show_busy_progress_dialog());
     }
 

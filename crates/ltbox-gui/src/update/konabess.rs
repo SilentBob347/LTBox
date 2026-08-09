@@ -32,7 +32,10 @@ impl App {
                 Task::none()
             }
             KonaBessMsg::KonaBessSelectExport => pickers::pick_file_for(
-                pickers::FilePickSpec::single("picker_target_konabess_export"),
+                pickers::FilePickSpec::single("picker_target_konabess_export").with_filter(
+                    self.t("picker_target_konabess_export").to_string(),
+                    &["txt"],
+                ),
                 &self.recent_paths,
                 |path| Message::KonaBess(KonaBessMsg::KonaBessExportChosen(path)),
             ),
@@ -94,7 +97,6 @@ impl App {
                         };
 
                         self.konabess.cleanup_prepared();
-                        self.konabess.next();
                         let phases =
                             self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
                         let conn = self.connection;
@@ -145,9 +147,16 @@ impl App {
                 self.flush_exec_done_log(result.log);
                 self.end_op();
                 self.current_op_step = 2;
+                let probable_dtb_index = result.prepared.probable_dtb_index;
                 self.konabess.prepared = Some(result.prepared);
-                self.konabess.apply_inspection_result(result.candidates);
-                Task::none()
+                let auto_confirm = self
+                    .konabess
+                    .apply_inspection_result(result.candidates, probable_dtb_index);
+                if auto_confirm {
+                    self.update_konabess(KonaBessMsg::KonaBessTargetConfirm)
+                } else {
+                    Task::none()
+                }
             }
             KonaBessMsg::KonaBessInspectionFailed(error) => {
                 self.konabess.cleanup_prepared();
@@ -175,6 +184,7 @@ impl App {
                     return Task::none();
                 };
 
+                self.konabess.next();
                 let phases = self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
                 let ll = self.live_labels();
                 Task::perform(
@@ -203,6 +213,30 @@ impl App {
             }
             KonaBessMsg::KonaBessTargetDismiss => {
                 self.konabess.dismiss_target_popup();
+                let Some(loader) = self.konabess.loader_path.clone() else {
+                    self.konabess.cleanup_prepared();
+                    return Task::none();
+                };
+                self.begin_silent_op(View::Advanced);
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            ltbox_core::runtime::run_heavy(move || {
+                                konabess_cancel_worker(std::path::PathBuf::from(loader))
+                            })
+                        })
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default()
+                    },
+                    |log| Message::KonaBess(KonaBessMsg::KonaBessCancelDone(log)),
+                )
+            }
+            KonaBessMsg::KonaBessCancelDone(log) => {
+                self.flush_exec_done_log(log);
+                self.end_silent_op();
+                self.konabess.cleanup_prepared();
                 Task::none()
             }
             KonaBessMsg::KonaBessFlashDone(log) => {
@@ -220,23 +254,24 @@ mod tests {
     use super::*;
     use ltbox_patch::konabess::{ClassifiedDtb, GpuTable, KonaBessExport, VendorBootDtbInfo};
 
-    #[test]
-    fn inspection_result_reaches_existing_target_popup_seam() {
-        let root = tempfile::tempdir().unwrap();
-        let work_dir = root.path().join("work");
-        std::fs::create_dir_all(&work_dir).unwrap();
-        let candidate = ClassifiedDtb {
+    fn candidate(index: usize) -> ClassifiedDtb {
+        ClassifiedDtb {
             info: VendorBootDtbInfo {
-                index: 4,
+                index,
                 model: Some("test".into()),
                 chip: Some("waipio".into()),
                 gpu_shape: None,
             },
             structurally_matches: true,
-        };
-        let mut app = App {
+        }
+    }
+
+    fn app_ready_for_inspection_result() -> App {
+        App {
             konabess: KonaBessWizard {
-                step: 3,
+                step: 2,
+                loader_path: Some("loader.elf".into()),
+                export_path: Some("export.txt".into()),
                 export: Some(KonaBessExport {
                     chip: "waipio".into(),
                     description: "test".into(),
@@ -245,25 +280,69 @@ mod tests {
                 ..KonaBessWizard::default()
             },
             ..App::default()
-        };
-        let prepared = KonaBessPrepared {
+        }
+    }
+
+    fn prepared(root: &std::path::Path, probable_dtb_index: Option<usize>) -> KonaBessPrepared {
+        let work_dir = root.join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        KonaBessPrepared {
             vendor_boot: work_dir.join("vendor_boot.img"),
             vbmeta: work_dir.join("vbmeta.img"),
-            backup_dir: root.path().join("backup_critical_1_konabess"),
+            backup_dir: root.join("backup_critical_1_konabess"),
             slot_suffix: "_b".into(),
+            probable_dtb_index,
             work_dir,
-        };
+        }
+    }
 
-        let _task = app.update_konabess(KonaBessMsg::KonaBessInspectionReady(
+    #[test]
+    fn unique_probable_dtb_skips_popup_and_starts_existing_flash_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = app_ready_for_inspection_result();
+        let prepared = prepared(root.path(), Some(4));
+
+        let task = app.update_konabess(KonaBessMsg::KonaBessInspectionReady(
             KonaBessInspectionResult {
                 prepared: prepared.clone(),
-                candidates: vec![candidate],
+                candidates: vec![candidate(4)],
                 log: vec![],
             },
         ));
 
-        assert!(app.konabess.target_popup_open);
+        assert!(!app.konabess.target_popup_open);
         assert_eq!(app.konabess.candidates.len(), 1);
+        assert_eq!(app.konabess.selected_target_index, Some(4));
         assert_eq!(app.konabess.prepared, Some(prepared));
+        assert_eq!(app.konabess.step, 3);
+        assert!(app.busy);
+        assert_eq!(task.units(), 1);
+    }
+
+    #[test]
+    fn non_unique_probable_dtb_cases_open_existing_target_popup() {
+        let cases = [
+            (None, vec![candidate(4)], None),
+            (Some(99), vec![candidate(4)], None),
+            (Some(4), vec![candidate(4), candidate(4)], Some(4)),
+        ];
+
+        for (probable_dtb_index, candidates, expected_selection) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let mut app = app_ready_for_inspection_result();
+            let task = app.update_konabess(KonaBessMsg::KonaBessInspectionReady(
+                KonaBessInspectionResult {
+                    prepared: prepared(root.path(), probable_dtb_index),
+                    candidates,
+                    log: vec![],
+                },
+            ));
+
+            assert!(app.konabess.target_popup_open);
+            assert_eq!(app.konabess.selected_target_index, expected_selection);
+            assert_eq!(app.konabess.step, 2);
+            assert!(!app.busy);
+            assert_eq!(task.units(), 0);
+        }
     }
 }

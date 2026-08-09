@@ -7,6 +7,9 @@ use ltbox_core::tr_args;
 
 impl App {
     pub(crate) fn view_konabess_wizard(&self) -> Element<'_, Message> {
+        if self.log_popup_open && (self.konabess.step >= 3 || self.konabess.target_popup_open) {
+            return self.log_popup_view();
+        }
         let step_labels = KONABESS_STEPS
             .iter()
             .map(|key| self.t(key))
@@ -25,21 +28,25 @@ impl App {
             _ => self.konabess_apply_step(),
         };
 
-        let is_confirm = self.konabess.step == 2;
-        let label = if is_confirm {
-            self.t("btn_start")
+        let nav: Element<'_, Message> = if konabess_nav_visible(self.konabess.step) {
+            let is_confirm = self.konabess.step == 2;
+            let label = if is_confirm {
+                self.t("btn_start")
+            } else {
+                self.t("btn_next")
+            };
+            wizard_nav_generic_with_disabled_next_tooltip(
+                true,
+                label,
+                self.konabess.can_next() && !self.busy,
+                None,
+                self.t("btn_back"),
+                Message::KonaBess(KonaBessMsg::KonaBessBack),
+                Message::KonaBess(KonaBessMsg::KonaBessNext),
+            )
         } else {
-            self.t("btn_next")
+            empty_wizard_nav()
         };
-        let nav = wizard_nav_generic_with_disabled_next_tooltip(
-            true,
-            label,
-            self.konabess.can_next() && !self.busy,
-            None,
-            self.t("btn_back"),
-            Message::KonaBess(KonaBessMsg::KonaBessBack),
-            Message::KonaBess(KonaBessMsg::KonaBessNext),
-        );
 
         column![
             wizard_action_bar(
@@ -78,7 +85,7 @@ impl App {
                     text(self.t("konabess_export_browse").to_string())
                         .size(14)
                         .center(),
-                    text(self.t("konabess_export_no_filter").to_string())
+                    text(self.t("konabess_export_txt_filter").to_string())
                         .size(11)
                         .style(muted_style)
                         .center(),
@@ -137,26 +144,6 @@ impl App {
     fn konabess_confirm_step(&self) -> Element<'_, Message> {
         let dash = "—";
         let export = self.konabess.export.as_ref();
-        let callout = container(
-            text(self.t("konabess_confirm_pair_notice").to_string())
-                .size(13)
-                .center()
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        )
-        .padding([12, 16])
-        .width(Length::Fill)
-        .style(|theme: &Theme| {
-            let palette = pal_of(theme);
-            container::Style {
-                background: Some(theme::with_alpha(palette.primary, 0.12).into()),
-                border: iced::Border {
-                    color: palette.primary,
-                    width: 1.0,
-                    radius: theme::shape::MD.into(),
-                },
-                ..Default::default()
-            }
-        });
         let chip = export.map(|value| value.chip.as_str()).unwrap_or(dash);
         let description = export
             .map(|value| value.description.as_str())
@@ -178,7 +165,7 @@ impl App {
         let export_path = self.konabess.export_path.as_deref().unwrap_or(dash);
 
         self.confirm_step_frame(
-            vec![callout.into()],
+            vec![],
             vec![
                 info_kv_center(self.t("konabess_confirm_chip"), chip),
                 info_kv_center(self.t("konabess_confirm_table_shape"), &table_shape),
@@ -212,20 +199,41 @@ impl App {
                 .as_deref()
                 .unwrap_or_else(|| self.t("common_unknown"));
             let shape = compact_gpu_shape(candidate.info.gpu_shape.as_ref(), self);
+            let likely_note = self
+                .konabess
+                .is_probable_target(index)
+                .then(|| self.t("konabess_target_likely").to_string());
             let match_note = candidate
                 .structurally_matches
                 .then(|| self.t("konabess_target_structural_match").to_string());
-            let mut details = row![
+            let details = row![
                 text(format!("#{index} · {model} · {chip}"))
                     .size(13)
                     .width(Length::Fill),
             ]
             .align_y(iced::Alignment::Center);
-            if let Some(note) = match_note {
-                details = details.push(text(note).size(11).style(label_style));
+            let mut candidate_body = column![details].spacing(3);
+            if let Some(note) = likely_note {
+                candidate_body = candidate_body.push(
+                    text(note)
+                        .size(11)
+                        .style(move |theme| target_note_style(theme, is_selected)),
+                );
             }
+            if let Some(note) = match_note {
+                candidate_body = candidate_body.push(
+                    text(note)
+                        .size(11)
+                        .style(move |theme| target_note_style(theme, is_selected)),
+                );
+            }
+            candidate_body = candidate_body.push(
+                text(shape)
+                    .size(11)
+                    .style(move |theme| target_shape_style(theme, is_selected)),
+            );
             candidates = candidates.push(
-                button(column![details, text(shape).size(11).style(muted_style)].spacing(3))
+                button(candidate_body)
                     .on_press(Message::KonaBess(KonaBessMsg::KonaBessTargetSelected(
                         index,
                     )))
@@ -306,6 +314,30 @@ impl App {
     }
 }
 
+const fn konabess_nav_visible(step: usize) -> bool {
+    step < 3
+}
+
+fn target_note_style(theme: &Theme, is_selected: bool) -> iced::widget::text::Style {
+    if is_selected {
+        iced::widget::text::Style {
+            color: Some(pal_of(theme).on_primary),
+        }
+    } else {
+        label_style(theme)
+    }
+}
+
+fn target_shape_style(theme: &Theme, is_selected: bool) -> iced::widget::text::Style {
+    if is_selected {
+        iced::widget::text::Style {
+            color: Some(theme::with_alpha(pal_of(theme).on_primary, 0.72)),
+        }
+    } else {
+        muted_style(theme)
+    }
+}
+
 fn compact_gpu_shape(shape: Option<&ltbox_patch::konabess::GpuTableShape>, app: &App) -> String {
     let Some(shape) = shape else {
         return app.t("konabess_target_no_table").to_string();
@@ -319,4 +351,42 @@ fn compact_gpu_shape(shape: Option<&ltbox_patch::konabess::GpuTableShape>, app: 
         .map(|group| format!("G{}×{}", group.id, group.level_count))
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wizard_nav_is_present_before_exec_and_hidden_during_exec() {
+        for step in 0..3 {
+            assert!(konabess_nav_visible(step));
+        }
+        for step in [3, 4, usize::MAX] {
+            assert!(!konabess_nav_visible(step));
+        }
+    }
+
+    #[test]
+    fn selected_target_sub_lines_use_on_primary_colors() {
+        let theme = Theme::Light;
+        let palette = pal_of(&theme);
+
+        assert_eq!(
+            target_note_style(&theme, true).color,
+            Some(palette.on_primary)
+        );
+        assert_eq!(
+            target_shape_style(&theme, true).color,
+            Some(theme::with_alpha(palette.on_primary, 0.72))
+        );
+        assert_eq!(
+            target_note_style(&theme, false).color,
+            label_style(&theme).color
+        );
+        assert_eq!(
+            target_shape_style(&theme, false).color,
+            muted_style(&theme).color
+        );
+    }
 }
