@@ -21,8 +21,8 @@ pub(crate) fn efisp_asset_suffix(is_prc: bool, arb: bool) -> &'static str {
 
 /// A dumped `efisp` partition counts as empty (un-provisioned) when every byte
 /// is zero — the stock/erased state. A GBL-provisioned `efisp` carries the EFI
-/// payload, so it has non-zero bytes. The TB323FU root gate refuses to proceed
-/// on an empty `efisp`.
+/// payload, so it has non-zero bytes. The TB323FU root flow uses an empty result
+/// to provision the appropriate region GBL before continuing.
 pub(crate) fn efisp_is_empty(data: &[u8]) -> bool {
     data.iter().all(|&b| b == 0)
 }
