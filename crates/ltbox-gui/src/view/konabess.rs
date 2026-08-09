@@ -31,12 +31,11 @@ impl App {
         } else {
             self.t("btn_next")
         };
-        let disabled_hint = is_confirm.then(|| self.t("konabess_stage_d_pending").to_string());
         let nav = wizard_nav_generic_with_disabled_next_tooltip(
             true,
             label,
             self.konabess.can_next() && !self.busy,
-            disabled_hint,
+            None,
             self.t("btn_back"),
             Message::KonaBess(KonaBessMsg::KonaBessBack),
             Message::KonaBess(KonaBessMsg::KonaBessNext),
@@ -158,12 +157,6 @@ impl App {
                 ..Default::default()
             }
         });
-        let pending = text(self.t("konabess_stage_d_pending").to_string())
-            .size(12)
-            .style(warning_style)
-            .center()
-            .width(Length::Fill)
-            .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
         let chip = export.map(|value| value.chip.as_str()).unwrap_or(dash);
         let description = export
             .map(|value| value.description.as_str())
@@ -185,7 +178,7 @@ impl App {
         let export_path = self.konabess.export_path.as_deref().unwrap_or(dash);
 
         self.confirm_step_frame(
-            vec![callout.into(), pending.into()],
+            vec![callout.into()],
             vec![
                 info_kv_center(self.t("konabess_confirm_chip"), chip),
                 info_kv_center(self.t("konabess_confirm_table_shape"), &table_shape),
@@ -199,17 +192,7 @@ impl App {
     }
 
     fn konabess_apply_step(&self) -> Element<'_, Message> {
-        container(
-            text(self.t("konabess_stage_d_pending").to_string())
-                .size(13)
-                .style(warning_style)
-                .center(),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .into()
+        self.exec_step_view()
     }
 
     pub(crate) fn konabess_target_popup_view(&self) -> Element<'_, Message> {

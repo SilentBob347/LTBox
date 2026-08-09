@@ -1,5 +1,5 @@
-//! Stage-C KonaBess wizard handlers. Device dump/patch/flash execution belongs
-//! to Stage D and is intentionally absent.
+//! KonaBess wizard handlers. Stage D part 1 ends after stock-image inspection
+//! and target selection; patch/rebuild/flash continuation remains unwired.
 
 use crate::*;
 use iced::Task;
@@ -79,7 +79,51 @@ impl App {
                         }
                     }
                     1 if self.konabess.can_next() => self.konabess.next(),
-                    // Confirm → Apply is disabled until Stage D exists.
+                    2 if self.konabess.can_next() => {
+                        if self.busy {
+                            return Task::none();
+                        }
+                        let Some(loader) = self.konabess.loader_path.clone() else {
+                            return Task::none();
+                        };
+                        if self.validate_loader_path(&Some(loader.clone())).is_err() {
+                            return Task::none();
+                        }
+                        let Some(export) = self.konabess.export.clone() else {
+                            return Task::none();
+                        };
+
+                        self.konabess.cleanup_prepared();
+                        self.konabess.next();
+                        let phases =
+                            self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
+                        let conn = self.connection;
+                        let is_tb323fu = self.is_tb323fu();
+                        let ll = self.live_labels();
+                        let loader = std::path::PathBuf::from(loader);
+                        return Task::perform(
+                            async move {
+                                tokio::task::spawn_blocking(move || {
+                                    ltbox_core::runtime::run_heavy(move || {
+                                        konabess_inspection_worker(
+                                            conn, loader, export, is_tb323fu, ll, phases,
+                                        )
+                                    })
+                                    .and_then(|result| result)
+                                })
+                                .await
+                                .unwrap_or_else(|_| Err(ltbox_core::i18n::tr("err_task_failed")))
+                            },
+                            |result| match result {
+                                Ok(result) => {
+                                    Message::KonaBess(KonaBessMsg::KonaBessInspectionReady(result))
+                                }
+                                Err(error) => {
+                                    Message::KonaBess(KonaBessMsg::KonaBessInspectionFailed(error))
+                                }
+                            },
+                        );
+                    }
                     2 | 3 => {}
                     _ => {}
                 }
@@ -90,13 +134,25 @@ impl App {
                     self.konabess.reset();
                     self.advanced_wizard_open = AdvancedWizardOpen::None;
                 } else {
+                    if self.konabess.prepared.is_some() {
+                        self.konabess.cleanup_prepared();
+                    }
                     self.konabess.back();
                 }
                 Task::none()
             }
-            KonaBessMsg::KonaBessInspectionReady(inspected) => {
-                self.konabess.apply_inspection_result(inspected);
+            KonaBessMsg::KonaBessInspectionReady(result) => {
+                self.flush_exec_done_log(result.log);
+                self.end_op();
+                self.current_op_step = 2;
+                self.konabess.prepared = Some(result.prepared);
+                self.konabess.apply_inspection_result(result.candidates);
                 Task::none()
+            }
+            KonaBessMsg::KonaBessInspectionFailed(error) => {
+                self.konabess.cleanup_prepared();
+                self.konabess.step = 2;
+                self.update(Message::OperationError(error))
             }
             KonaBessMsg::KonaBessTargetSelected(index) => {
                 self.konabess.select_target(index);
@@ -111,5 +167,58 @@ impl App {
                 Task::none()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ltbox_patch::konabess::{ClassifiedDtb, GpuTable, KonaBessExport, VendorBootDtbInfo};
+
+    #[test]
+    fn inspection_result_reaches_existing_target_popup_seam() {
+        let root = tempfile::tempdir().unwrap();
+        let work_dir = root.path().join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let candidate = ClassifiedDtb {
+            info: VendorBootDtbInfo {
+                index: 4,
+                model: Some("test".into()),
+                chip: Some("waipio".into()),
+                gpu_shape: None,
+            },
+            structurally_matches: true,
+        };
+        let mut app = App {
+            konabess: KonaBessWizard {
+                step: 3,
+                export: Some(KonaBessExport {
+                    chip: "waipio".into(),
+                    description: "test".into(),
+                    table: GpuTable { groups: vec![] },
+                }),
+                ..KonaBessWizard::default()
+            },
+            ..App::default()
+        };
+        let prepared = KonaBessPrepared {
+            vendor_boot: work_dir.join("vendor_boot.img"),
+            vbmeta: work_dir.join("vbmeta.img"),
+            backup_dir: root.path().join("backup_critical_1_konabess"),
+            slot_suffix: "_b".into(),
+            work_dir,
+        };
+
+        let _task = app.update_konabess(KonaBessMsg::KonaBessInspectionReady(
+            KonaBessInspectionResult {
+                prepared: prepared.clone(),
+                candidates: vec![candidate],
+                log: vec![],
+            },
+        ));
+
+        assert!(app.konabess.target_popup_open);
+        assert_eq!(app.konabess.candidates.len(), 1);
+        assert_eq!(app.konabess.prepared, Some(prepared));
     }
 }

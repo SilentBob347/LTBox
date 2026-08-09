@@ -423,7 +423,6 @@
   "konabess_export_title": "选择 KonaBess 导出文件",
   "konabess_loader_subtitle": "选择用于转储设备镜像以及稍后刷写镜像的 EDL 编程器。",
   "konabess_loader_title": "选择 EDL 加载程序",
-  "konabess_stage_d_pending": "设备执行功能尚不可用。转储、修补和刷写将在 Stage D 中添加。",
   "konabess_step_apply": "应用",
   "konabess_step_confirm": "确认",
   "konabess_step_export": "导出文件",

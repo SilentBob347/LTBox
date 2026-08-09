@@ -38,6 +38,14 @@ impl App {
                 }
             }
             Message::Navigate(v) => {
+                if self.current_view == View::Advanced
+                    && v != View::Advanced
+                    && self.advanced_wizard_open.is_konabess()
+                    && !self.busy
+                {
+                    self.konabess.reset();
+                    self.advanced_wizard_open = AdvancedWizardOpen::None;
+                }
                 self.current_view = v;
                 // Keep wizard state during a running op or on the
                 // exec/Done screen — sidebar bounce mid-flash must
@@ -103,7 +111,7 @@ impl App {
                     self.flash_phys = FlashPhysWizard::default();
                     self.dump_phys = DumpPhysWizard::default();
                     self.simple_flash = SimpleFlashWizard::default();
-                    self.konabess = KonaBessWizard::default();
+                    self.konabess.reset();
                 }
                 // Settings entry: rescan removable temp files so the cleanup
                 // button reflects current on-disk state (enabled only when

@@ -423,7 +423,6 @@
   "konabess_export_title": "Select KonaBess Export",
   "konabess_loader_subtitle": "Choose the EDL programmer used to dump and later flash the device images.",
   "konabess_loader_title": "Select EDL Loader",
-  "konabess_stage_d_pending": "Device execution is not available yet. Dumping, patching, and flashing will be added in Stage D.",
   "konabess_step_apply": "Apply",
   "konabess_step_confirm": "Confirm",
   "konabess_step_export": "Export",

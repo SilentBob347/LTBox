@@ -423,7 +423,6 @@
   "konabess_export_title": "KonaBess 내보내기 선택",
   "konabess_loader_subtitle": "기기 이미지를 덤프하고 나중에 플래싱할 때 사용할 EDL 프로그래머를 선택하세요.",
   "konabess_loader_title": "EDL 로더 선택",
-  "konabess_stage_d_pending": "기기 작업은 아직 사용할 수 없습니다. 덤프, 패치 및 플래싱은 Stage D에서 추가됩니다.",
   "konabess_step_apply": "적용",
   "konabess_step_confirm": "확인",
   "konabess_step_export": "내보내기",

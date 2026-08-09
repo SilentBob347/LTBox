@@ -27,6 +27,119 @@ pub(crate) fn efisp_is_empty(data: &[u8]) -> bool {
     data.iter().all(|&b| b == 0)
 }
 
+/// Inspect TB323FU `efisp` and, when it is still all-zero, stage the matching
+/// region GBL used by the Root and KonaBess device workers. The caller performs
+/// the actual efisp write with [`provision_tb323fu_efisp`] at the safest point
+/// in its own operation.
+pub(crate) fn prepare_tb323fu_efisp(
+    session: &mut ltbox_device::edl::EdlSession,
+    slot_suffix: &str,
+    dumped_vendor_boot: Option<&std::path::Path>,
+    work_dir: &std::path::Path,
+    efi_dir: &std::path::Path,
+    log: &mut Vec<String>,
+) -> std::result::Result<Option<std::path::PathBuf>, String> {
+    live!(
+        log,
+        "[Root] {}",
+        ltbox_core::i18n::tr("log_root_efisp_check")
+    );
+    let dumped_efisp = work_dir.join("efisp.img");
+    session
+        .dump_partition("efisp", &dumped_efisp, 0, 4, log)
+        .map_err(|e| {
+            tr_args!(
+                "err_root_dump_partition_failed",
+                partition = "efisp",
+                error = e
+            )
+        })?;
+    let efisp_empty = std::fs::read(&dumped_efisp)
+        .map(|data| efisp_is_empty(&data))
+        .unwrap_or(true);
+    if !efisp_empty {
+        live!(log, "[Root] {}", ltbox_core::i18n::tr("log_root_efisp_ok"));
+        return Ok(None);
+    }
+
+    // Empty efisp is the stock, GBL-unprovisioned state. Region comes from
+    // vendor_boot's product_region marker because the AVB fingerprint carries
+    // no PRC/ROW token on TB323FU.
+    let is_prc = if let Some(path) = dumped_vendor_boot {
+        ltbox_patch::region::detect_product_region(path)
+            == Some(ltbox_patch::region::RegionTarget::Prc)
+    } else {
+        let partition = format!("vendor_boot{slot_suffix}");
+        let path = work_dir.join("vendor_boot.img");
+        match ltbox_core::partition_lun::lun_for_partition(&partition) {
+            Some(lun)
+                if session
+                    .dump_partition(&partition, &path, 0, lun, log)
+                    .is_ok() =>
+            {
+                ltbox_patch::region::detect_product_region(&path)
+                    == Some(ltbox_patch::region::RegionTarget::Prc)
+            }
+            _ => false,
+        }
+    };
+    let suffix = efisp_asset_suffix(is_prc, false);
+    live!(
+        log,
+        "[Root] {}",
+        tr_args!("live_flash_efisp_fetch", variant = suffix)
+    );
+    let gh = ltbox_core::github::GitHubClient::from_url("github.com/miner7222/gbl_root_baldur")
+        .map_err(|e| tr_args!("err_root_efisp_github_failed", error = e))?;
+    let (asset_name, asset_url) = gh
+        .latest_release_asset_where(|name| name.to_ascii_lowercase().ends_with(suffix))
+        .map_err(|e| tr_args!("err_root_efisp_asset_missing", suffix = suffix, error = e))?;
+    let _ = std::fs::remove_dir_all(efi_dir);
+    std::fs::create_dir_all(efi_dir)
+        .map_err(|e| tr_args!("err_root_efisp_work_dir_failed", error = e))?;
+    let efi_path = efi_dir.join(&asset_name);
+    if let Err(e) = ltbox_core::downloader::download_to_file(&asset_url, &efi_path, log) {
+        return Err(tr_args!(
+            "err_root_efisp_download_failed",
+            asset = asset_name,
+            error = e
+        ));
+    }
+    live!(
+        log,
+        "[Root] {}",
+        tr_args!("live_flash_efisp_fetched", name = asset_name)
+    );
+    Ok(Some(efi_path))
+}
+
+/// Provision a staged TB323FU region GBL. `None` is the already-provisioned
+/// path and deliberately performs no device write.
+pub(crate) fn provision_tb323fu_efisp(
+    session: &mut ltbox_device::edl::EdlSession,
+    efi: Option<&std::path::Path>,
+    log: &mut Vec<String>,
+) -> std::result::Result<bool, String> {
+    let Some(efi) = efi else {
+        return Ok(false);
+    };
+    let efisp_lun = ltbox_core::partition_lun::lun_for_partition("efisp").unwrap_or(4);
+    live!(
+        log,
+        "[Root] {}",
+        ltbox_core::i18n::tr("live_flash_efisp_flash")
+    );
+    session
+        .flash_partition("efisp", efi, 0, efisp_lun, log)
+        .map_err(|e| tr_args!("err_root_efisp_provision_failed", error = e))?;
+    live!(
+        log,
+        "[Root] {}",
+        ltbox_core::i18n::tr("live_flash_efisp_flashed")
+    );
+    Ok(true)
+}
+
 /// One staged ARB overlay: (GPT label, UFS LUN, patched image path).
 pub(crate) type ArbOverlay = (String, u8, std::path::PathBuf);
 

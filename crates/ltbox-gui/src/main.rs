@@ -58,6 +58,7 @@ pub(crate) use widgets::*;
 pub(crate) use workers::advanced::*;
 pub(crate) use workers::edl_transition::*;
 pub(crate) use workers::flash::*;
+pub(crate) use workers::konabess::*;
 pub(crate) use workers::reboot::*;
 pub(crate) use workers::root::*;
 pub(crate) use workers::sysupdate::*;

@@ -46,6 +46,7 @@ impl App {
                     ));
                     return Task::none();
                 }
+                self.konabess.cleanup_prepared();
                 self.window_id
                     .map(iced::window::close)
                     .unwrap_or_else(Task::none)

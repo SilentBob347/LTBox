@@ -423,7 +423,6 @@
   "konabess_export_title": "KonaBessエクスポートを選択",
   "konabess_loader_subtitle": "端末イメージのダンプと後の書き込みに使うEDLプログラマーを選択してください。",
   "konabess_loader_title": "EDLローダーを選択",
-  "konabess_stage_d_pending": "端末での実行はまだ利用できません。ダンプ、パッチ、書き込みはStage Dで追加されます。",
   "konabess_step_apply": "適用",
   "konabess_step_confirm": "確認",
   "konabess_step_export": "エクスポート",

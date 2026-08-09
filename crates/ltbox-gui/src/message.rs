@@ -321,10 +321,10 @@ pub(crate) enum KonaBessMsg {
     KonaBessExportChosen(Option<String>),
     KonaBessNext,
     KonaBessBack,
-    /// Stage-D seam: feed the device-independent inspection result into the
-    /// pure target-selection transition without coupling the model to EDL I/O.
-    #[allow(dead_code)]
-    KonaBessInspectionReady(Vec<ltbox_patch::konabess::ClassifiedDtb>),
+    /// Stage-D seam: feed the retained workspace plus device-independent
+    /// classification into the pure target-selection transition.
+    KonaBessInspectionReady(crate::KonaBessInspectionResult),
+    KonaBessInspectionFailed(String),
     KonaBessTargetSelected(usize),
     KonaBessTargetConfirm,
     KonaBessTargetDismiss,

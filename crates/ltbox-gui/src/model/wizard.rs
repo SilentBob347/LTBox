@@ -1215,8 +1215,19 @@ pub(crate) const KONABESS_STEPS: &[&str] = &[
     "konabess_step_apply",
 ];
 
-/// Stage-C state for the EDL-based KonaBess flow. Device images deliberately
-/// do not appear here: Stage D will dump them only after confirmation.
+/// Device state retained across the inspection worker's UI selection pause.
+/// Part 2 can consume these exact stock images and the already-resolved slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KonaBessPrepared {
+    pub(crate) work_dir: std::path::PathBuf,
+    pub(crate) vendor_boot: std::path::PathBuf,
+    pub(crate) vbmeta: std::path::PathBuf,
+    pub(crate) backup_dir: std::path::PathBuf,
+    pub(crate) slot_suffix: String,
+}
+
+/// KonaBess wizard state. The prepared workspace is populated only after the
+/// non-destructive device inspection and remains live through target selection.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct KonaBessWizard {
     pub(crate) step: usize,
@@ -1231,6 +1242,7 @@ pub(crate) struct KonaBessWizard {
     pub(crate) selected_target_index: Option<usize>,
     /// Modal ownership stays with the wizard rather than parallel App flags.
     pub(crate) target_popup_open: bool,
+    pub(crate) prepared: Option<KonaBessPrepared>,
 }
 
 impl KonaBessWizard {
@@ -1283,9 +1295,25 @@ impl KonaBessWizard {
             .filter(|candidate| candidate.structurally_matches)
             .count()
     }
+
+    /// Remove inspection scratch when the flow is closed or abandoned. Stock
+    /// backups are intentionally retained; only the part-2 working copies go.
+    pub(crate) fn cleanup_prepared(&mut self) {
+        if let Some(prepared) = self.prepared.take() {
+            let _ = std::fs::remove_dir_all(prepared.work_dir);
+        }
+        self.candidates.clear();
+        self.selected_target_index = None;
+        self.target_popup_open = false;
+    }
 }
 
 impl Wizard for KonaBessWizard {
+    fn reset(&mut self) {
+        self.cleanup_prepared();
+        *self = Self::default();
+    }
+
     fn step(&self) -> usize {
         self.step
     }
@@ -1302,8 +1330,8 @@ impl Wizard for KonaBessWizard {
         match self.step {
             0 => self.loader_path.is_some() && self.loader_error.is_none(),
             1 => self.export_path.is_some() && self.export.is_some() && self.export_error.is_none(),
-            // Stage D owns Start/Apply and is intentionally unavailable.
-            2 | 3 => false,
+            2 => self.loader_path.is_some() && self.export.is_some(),
+            3 => false,
             _ => false,
         }
     }

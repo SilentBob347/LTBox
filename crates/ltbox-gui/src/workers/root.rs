@@ -4,8 +4,8 @@
 
 use crate::{
     ConnectionStatus, Family, LiveLabels, PhaseReporter, Provider, RootMode, VerChoice,
-    efisp_asset_suffix, efisp_is_empty, fingerprint_token_match, install_root_manager_apk,
-    open_edl_session, stage_manager_apk_for_manual_install, transition_to_edl,
+    fingerprint_token_match, install_root_manager_apk, open_edl_session, prepare_tb323fu_efisp,
+    provision_tb323fu_efisp, stage_manager_apk_for_manual_install, transition_to_edl,
     wait_and_install_root_manager_apk,
 };
 use ltbox_core::{i18n::tr, live, tr_args};
@@ -334,87 +334,15 @@ pub(crate) fn root_worker(
                     .map(|fp| fingerprint_token_match(fp, "TB323FU"))
                     .unwrap_or(false);
                 if is_tb323fu {
-                    live!(
-                        log,
-                        "[Root] {}",
-                        ltbox_core::i18n::tr("log_root_efisp_check")
-                    );
-                    let dumped_efisp = work_dir.join("efisp.img");
-                    session
-                        .dump_partition("efisp", &dumped_efisp, 0, ROOT_PARTITIONS_LUN, &mut log)
-                        .map_err(|e| {
-                            tr_args!(
-                                "err_root_dump_partition_failed",
-                                partition = "efisp",
-                                error = e
-                            )
-                        })?;
-                    let efisp_empty = std::fs::read(&dumped_efisp)
-                        .map(|d| efisp_is_empty(&d))
-                        .unwrap_or(true);
-                    if efisp_empty {
-                        // Empty efisp = stock, GBL-unprovisioned, so the
-                        // firmware was never rollback-patched — fetch the
-                        // non-`_arb` region GBL and flash it with the patched
-                        // root target image at Phase 6. efisp flashing no
-                        // longer wipes data,
-                        // so provisioning it here is safe in any data mode. The
-                        // region comes from the device vendor_boot's
-                        // `product_region` DTB marker — the AVB fingerprint
-                        // carries no `_PRC`/`_ROW` token.
-                        let vb_part = format!("vendor_boot{slot_suffix}");
-                        let dumped_vb = work_dir.join("vendor_boot.img");
-                        let is_prc = match ltbox_core::partition_lun::lun_for_partition(&vb_part) {
-                            Some(lun)
-                                if session
-                                    .dump_partition(&vb_part, &dumped_vb, 0, lun, &mut log)
-                                    .is_ok() =>
-                            {
-                                ltbox_patch::region::detect_product_region(&dumped_vb)
-                                    == Some(ltbox_patch::region::RegionTarget::Prc)
-                            }
-                            _ => false,
-                        };
-                        let suffix = efisp_asset_suffix(is_prc, false);
-                        live!(
-                            log,
-                            "[Root] {}",
-                            tr_args!("live_flash_efisp_fetch", variant = suffix)
-                        );
-                        let gh = ltbox_core::github::GitHubClient::from_url(
-                            "github.com/miner7222/gbl_root_baldur",
-                        )
-                        .map_err(|e| tr_args!("err_root_efisp_github_failed", error = e))?;
-                        let (asset_name, asset_url) = gh
-                            .latest_release_asset_where(|n| {
-                                n.to_ascii_lowercase().ends_with(suffix)
-                            })
-                            .map_err(|e| {
-                                tr_args!("err_root_efisp_asset_missing", suffix = suffix, error = e)
-                            })?;
-                        let efi_dir = ltbox_core::app_paths::work_dir_for("root_efisp");
-                        let _ = std::fs::remove_dir_all(&efi_dir);
-                        std::fs::create_dir_all(&efi_dir)
-                            .map_err(|e| tr_args!("err_root_efisp_work_dir_failed", error = e))?;
-                        let efi_path = efi_dir.join(&asset_name);
-                        if let Err(e) = ltbox_core::downloader::download_to_file(
-                            &asset_url, &efi_path, &mut log,
-                        ) {
-                            return Err(tr_args!(
-                                "err_root_efisp_download_failed",
-                                asset = asset_name,
-                                error = e
-                            ));
-                        }
-                        live!(
-                            log,
-                            "[Root] {}",
-                            tr_args!("live_flash_efisp_fetched", name = asset_name)
-                        );
-                        root_efisp_efi = Some(efi_path);
-                    } else {
-                        live!(log, "[Root] {}", ltbox_core::i18n::tr("log_root_efisp_ok"));
-                    }
+                    let efi_dir = ltbox_core::app_paths::work_dir_for("root_efisp");
+                    root_efisp_efi = prepare_tb323fu_efisp(
+                        &mut session,
+                        &slot_suffix,
+                        None,
+                        &work_dir,
+                        &efi_dir,
+                        &mut log,
+                    )?;
                 }
 
                 // vbmeta stays untouched on TB323FU (GBL handles
@@ -531,21 +459,8 @@ pub(crate) fn root_worker(
             // begins, the error path leaves the device in EDL rather than
             // rebooting a partial chain.
             if let Some(efi) = &root_efisp_efi {
-                let efisp_lun = ltbox_core::partition_lun::lun_for_partition("efisp").unwrap_or(4);
-                live!(
-                    log,
-                    "[Root] {}",
-                    ltbox_core::i18n::tr("live_flash_efisp_flash")
-                );
                 writes_started = true;
-                session
-                    .flash_partition("efisp", efi, 0, efisp_lun, &mut log)
-                    .map_err(|e| tr_args!("err_root_efisp_provision_failed", error = e))?;
-                live!(
-                    log,
-                    "[Root] {}",
-                    ltbox_core::i18n::tr("live_flash_efisp_flashed")
-                );
+                provision_tb323fu_efisp(&mut session, Some(efi), &mut log)?;
             }
             writes_started = true;
             session

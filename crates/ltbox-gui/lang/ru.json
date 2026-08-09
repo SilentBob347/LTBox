@@ -423,7 +423,6 @@
   "konabess_export_title": "Выбор экспорта KonaBess",
   "konabess_loader_subtitle": "Выберите программатор EDL для чтения и последующей прошивки образов устройства.",
   "konabess_loader_title": "Выбор загрузчика EDL",
-  "konabess_stage_d_pending": "Работа с устройством пока недоступна. Чтение, исправление и прошивка будут добавлены на этапе D.",
   "konabess_step_apply": "Применение",
   "konabess_step_confirm": "Подтверждение",
   "konabess_step_export": "Экспорт",
