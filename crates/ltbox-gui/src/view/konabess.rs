@@ -16,7 +16,7 @@ impl App {
             .collect::<Vec<_>>();
         let step_bar = wizard_step_bar(&step_labels, self.konabess.step);
         let (title_key, subtitle_key) = match self.konabess.step {
-            0 => ("konabess_loader_title", "konabess_loader_subtitle"),
+            0 => ("edl_loader_title", "edl_loader_subtitle"),
             1 => ("konabess_export_title", "konabess_export_subtitle"),
             2 => ("konabess_confirm_title", "konabess_confirm_subtitle"),
             _ => ("konabess_apply_title", "konabess_apply_subtitle"),
@@ -172,7 +172,7 @@ impl App {
                 info_kv_center(self.t("konabess_confirm_description"), description),
             ],
             vec![
-                info_kv_center(self.t("konabess_confirm_loader"), loader),
+                info_kv_center(self.t("edl_loader_label"), loader),
                 info_kv_center(self.t("konabess_confirm_export"), export_path),
             ],
         )

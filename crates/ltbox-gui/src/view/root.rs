@@ -125,8 +125,8 @@ impl App {
                 self.t("root_source_subtitle").to_string(),
             ),
             5 => (
-                self.t("root_folder_title").to_string(),
-                self.t("root_folder_subtitle").to_string(),
+                self.t("edl_loader_title").to_string(),
+                self.t("edl_loader_subtitle").to_string(),
             ),
             6 => (
                 self.t("root_confirm_title").to_string(),
@@ -643,7 +643,7 @@ impl App {
         let status = if let Some(p) = &self.root.folder_path {
             p.clone()
         } else {
-            self.t("flash_folder_placeholder").to_string()
+            self.t("edl_loader_placeholder").to_string()
         };
         let btn = button(
             container(
@@ -946,7 +946,7 @@ impl App {
             .folder_path
             .clone()
             .unwrap_or_else(|| dash.clone());
-        trailing_rows.push(info_kv_center(self.t("root_step_folder"), &folder));
+        trailing_rows.push(info_kv_center(self.t("edl_loader_label"), &folder));
 
         self.confirm_step_frame(vec![], grid_rows, trailing_rows)
     }

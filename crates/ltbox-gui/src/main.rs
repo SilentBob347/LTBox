@@ -2976,7 +2976,7 @@ impl App {
         } else if self.device_model.is_empty() {
             self.t("loader_desc_unknown").to_string()
         } else {
-            self.t("dump_parts_loader_desc").to_string()
+            self.t("loader_desc_standard").to_string()
         }
     }
 

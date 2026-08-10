@@ -78,7 +78,7 @@ impl App {
                 self.t("sysupdate_action_subtitle").to_string(),
             ),
             (true, 1) => (
-                self.t("rescue_folder_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             (true, 2) | (false, 1) => {
@@ -217,7 +217,7 @@ impl App {
                 .rescue_region
                 .map(|r| self.t(r.label_key()).to_string())
                 .unwrap_or_else(|| dash.clone());
-            trailing_rows.push(info_kv_center(self.t("rescue_folder_label"), &folder));
+            trailing_rows.push(info_kv_center(self.t("edl_loader_label"), &folder));
             grid_rows.push(info_kv_center(self.t("rescue_region_label"), &region));
         }
         self.confirm_step_frame(vec![], grid_rows, trailing_rows)
@@ -233,7 +233,7 @@ impl App {
         let status = if let Some(p) = &self.sysupdate.rescue_folder {
             p.clone()
         } else {
-            self.t("flash_folder_placeholder").to_string()
+            self.t("edl_loader_placeholder").to_string()
         };
         let btn = button(
             container(

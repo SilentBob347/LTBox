@@ -197,8 +197,8 @@ impl App {
             )
         } else if self.adv_wizard.needs_country() && self.adv_wizard.step == 1 {
             (
-                self.t("adv_loader_title").to_string(),
-                self.t("adv_loader_subtitle").to_string(),
+                self.t("edl_loader_title").to_string(),
+                self.t("edl_loader_subtitle").to_string(),
             )
         } else if self.adv_wizard.needs_region_target() && self.adv_wizard.step == 1 {
             (
@@ -403,7 +403,7 @@ impl App {
             .adv_wizard
             .file_path
             .clone()
-            .unwrap_or_else(|| self.t("adv_source_placeholder").to_string());
+            .unwrap_or_else(|| self.t("edl_loader_placeholder").to_string());
         let btn = button(
             container(
                 column![
@@ -593,7 +593,7 @@ impl App {
                 .adv_wizard
                 .file_path
                 .clone()
-                .unwrap_or_else(|| self.t("adv_source_placeholder").to_string());
+                .unwrap_or_else(|| self.t("edl_loader_placeholder").to_string());
             let btn = button(
                 container(
                     column![
@@ -675,7 +675,7 @@ impl App {
         // Change Country Code shows the EDL loader (its `file_path`); other ops
         // show the picked source file/folder.
         let source_label = if self.adv_wizard.needs_country() {
-            self.t("adv_confirm_loader")
+            self.t("edl_loader_label")
         } else {
             self.t("adv_confirm_source")
         };

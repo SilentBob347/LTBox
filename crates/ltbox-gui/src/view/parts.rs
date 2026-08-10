@@ -102,7 +102,7 @@ impl App {
     fn flash_parts_action_bar(&self) -> Option<Element<'_, Message>> {
         let (title, subtitle) = match self.flash_parts.step {
             0 => (
-                self.t("dump_parts_loader_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             1 => (
@@ -135,7 +135,7 @@ impl App {
         let status = match (loader_path, loader_error) {
             (_, Some(e)) => format!("⚠ {e}"),
             (Some(p), None) => p.clone(),
-            _ => self.t("dump_parts_loader_placeholder").to_string(),
+            _ => self.t("edl_loader_placeholder").to_string(),
         };
         let btn = button(
             container(
@@ -512,7 +512,7 @@ impl App {
     fn dump_parts_action_bar(&self) -> Option<Element<'_, Message>> {
         let (title, subtitle) = match self.dump_parts.step {
             0 => (
-                self.t("dump_parts_loader_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             1 => (
@@ -683,7 +683,7 @@ impl App {
     fn dump_phys_action_bar(&self) -> Option<Element<'_, Message>> {
         let (title, subtitle) = match self.dump_phys.step {
             0 => (
-                self.t("dump_parts_loader_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             1 => (
@@ -796,7 +796,7 @@ impl App {
     fn flash_phys_action_bar(&self) -> Option<Element<'_, Message>> {
         let (title, subtitle) = match self.flash_phys.step {
             0 => (
-                self.t("dump_parts_loader_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             1 => (

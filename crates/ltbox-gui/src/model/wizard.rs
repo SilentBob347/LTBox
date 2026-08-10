@@ -53,7 +53,7 @@ pub(crate) const ROOT_STEPS: &[&str] = &[
     "root_step_mode",
     "root_step_provider",
     "root_step_version",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -63,7 +63,7 @@ pub(crate) const ROOT_STEPS_NIGHTLY: &[&str] = &[
     "root_step_provider",
     "root_step_version",
     "root_step_source",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -71,7 +71,7 @@ pub(crate) const ROOT_STEPS_GKI: &[&str] = &[
     "root_step_type",
     "root_step_mode",
     "root_step_kernel",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -79,7 +79,7 @@ pub(crate) const ROOT_STEPS_NOMODE: &[&str] = &[
     "root_step_type",
     "root_step_provider",
     "root_step_version",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -88,7 +88,7 @@ pub(crate) const ROOT_STEPS_NOMODE_NIGHTLY: &[&str] = &[
     "root_step_provider",
     "root_step_version",
     "root_step_source",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -96,7 +96,7 @@ pub(crate) const ROOT_STEPS_FORKS: &[&str] = &[
     "root_step_type",
     "root_step_provider",
     "root_step_apk",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -105,7 +105,7 @@ pub(crate) const ROOT_STEPS_APATCH: &[&str] = &[
     "root_step_provider",
     "root_step_version",
     "root_step_kpm",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -115,14 +115,14 @@ pub(crate) const ROOT_STEPS_APATCH_NIGHTLY: &[&str] = &[
     "root_step_version",
     "root_step_source",
     "root_step_kpm",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
 pub(crate) const ROOT_STEPS_SKROOT: &[&str] = &[
     "root_step_type",
     "root_step_skroot_flavor",
-    "root_step_folder",
+    "edl_loader_label",
     "root_step_confirm",
     "root_step_flash",
 ];
@@ -522,7 +522,7 @@ pub(crate) struct UnrootWizard {
 
 pub(crate) const UNROOT_STEPS: &[&str] = &[
     "unroot_step_method",
-    "unroot_step_loader",
+    "edl_loader_label",
     "unroot_step_folder",
     "unroot_step_confirm",
     "unroot_step_restore",
@@ -752,7 +752,7 @@ pub(crate) const SYSUPDATE_STEPS_COMPACT: &[&str] = &[
 
 pub(crate) const SYSUPDATE_STEPS_RESCUE: &[&str] = &[
     "sysupdate_step_action",
-    "sysupdate_step_folder",
+    "edl_loader_label",
     "sysupdate_step_confirm",
     "sysupdate_step_execute",
 ];
@@ -871,7 +871,7 @@ pub(crate) struct FlashPartsWizard {
 }
 
 pub(crate) const FLASH_PARTS_STEPS: &[&str] = &[
-    "flash_parts_step_loader",
+    "edl_loader_label",
     "flash_parts_step_select",
     "flash_step_confirm",
     "flash_step_flash",
@@ -998,7 +998,7 @@ pub(crate) struct DumpPartsWizard {
 }
 
 pub(crate) const DUMP_PARTS_STEPS: &[&str] = &[
-    "dump_parts_step_loader",
+    "edl_loader_label",
     "dump_parts_step_select",
     "dump_parts_step_dump",
 ];
@@ -1076,7 +1076,7 @@ pub(crate) struct DumpPhysWizard {
 }
 
 pub(crate) const DUMP_PHYS_STEPS: &[&str] = &[
-    "dump_parts_step_loader",
+    "edl_loader_label",
     "phys_step_select",
     "dump_parts_step_dump",
 ];
@@ -1116,7 +1116,7 @@ pub(crate) struct FlashPhysWizard {
 }
 
 pub(crate) const FLASH_PHYS_STEPS: &[&str] = &[
-    "flash_parts_step_loader",
+    "edl_loader_label",
     "phys_step_select",
     "flash_step_confirm",
     "flash_step_flash",
@@ -1209,7 +1209,7 @@ impl Wizard for SimpleFlashWizard {
 // =========================================================================
 
 pub(crate) const KONABESS_STEPS: &[&str] = &[
-    "konabess_step_loader",
+    "edl_loader_label",
     "konabess_step_export",
     "konabess_step_confirm",
     "konabess_step_apply",
@@ -1407,7 +1407,7 @@ impl AdvWizard {
             // Change Country Code: country pick, then EDL loader, confirm, exec.
             &[
                 "adv_step_country",
-                "adv_step_loader",
+                "edl_loader_label",
                 "flash_step_confirm",
                 "flash_step_flash",
             ]

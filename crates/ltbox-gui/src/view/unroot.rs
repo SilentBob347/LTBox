@@ -59,7 +59,7 @@ impl App {
                 self.t("unroot_method_subtitle").to_string(),
             ),
             1 => (
-                self.t("unroot_loader_title").to_string(),
+                self.t("edl_loader_title").to_string(),
                 self.t("edl_loader_subtitle").to_string(),
             ),
             2 => {
@@ -119,7 +119,7 @@ impl App {
         let status = if let Some(p) = &self.unroot.loader_path {
             p.clone()
         } else {
-            self.t("dump_parts_loader_placeholder").to_string()
+            self.t("edl_loader_placeholder").to_string()
         };
         let btn = button(
             container(
@@ -264,7 +264,7 @@ impl App {
             vec![],
             vec![info_kv_center(self.t("unroot_step_method"), &method)],
             vec![
-                info_kv_center(self.t("unroot_loader_title"), &loader),
+                info_kv_center(self.t("edl_loader_label"), &loader),
                 info_kv_center(self.t("unroot_folder_title"), &folder),
             ],
         )
