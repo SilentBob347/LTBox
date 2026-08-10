@@ -288,7 +288,7 @@ mod tests {
         KonaBessPrepared {
             vendor_boot: work_dir.join("vendor_boot.img"),
             vbmeta: work_dir.join("vbmeta.img"),
-            backup_dir: root.join("backup_critical_1_konabess"),
+            backup_dir: root.join("backup_konabess"),
             slot_suffix: "_b".into(),
             probable_dtb_index,
             work_dir,

@@ -270,12 +270,11 @@ pub(crate) fn konabess_inspection_worker(
     let work_dir = ltbox_core::app_paths::work_dir_for("konabess");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(&work_dir).map_err(|error| error.to_string())?;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let backup_dir =
-        ltbox_core::app_paths::backup_dir_for(&format!("backup_critical_{timestamp}_konabess"));
+    // Stable name rather than the timestamped `backup_critical_<ts>` the
+    // firmware flashes use: this flow backs up the same two images every
+    // run, so a fresh folder per attempt only accumulates near-identical
+    // copies of stock vendor_boot and vbmeta.
+    let backup_dir = ltbox_core::app_paths::backup_dir_for("backup_konabess");
     let paths = InspectionPaths {
         work_dir: work_dir.clone(),
         backup_dir,
@@ -744,7 +743,7 @@ mod tests {
         std::fs::create_dir_all(&work_dir).unwrap();
         InspectionPaths {
             work_dir,
-            backup_dir: root.join("backup_critical_123_konabess"),
+            backup_dir: root.join("backup_konabess"),
         }
     }
 
@@ -781,7 +780,7 @@ mod tests {
         KonaBessPrepared {
             vendor_boot: work_dir.join("vendor_boot.img"),
             vbmeta: work_dir.join("vbmeta.img"),
-            backup_dir: root.join("backup_critical_123_konabess"),
+            backup_dir: root.join("backup_konabess"),
             slot_suffix: "_b".into(),
             probable_dtb_index: Some(2),
             work_dir,
