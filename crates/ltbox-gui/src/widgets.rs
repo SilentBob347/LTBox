@@ -342,15 +342,18 @@ fn fab_style(t: &Theme, status: button::Status, bg: iced::Color, fg: iced::Color
         return button::Style {
             background: Some(with_alpha(p.on_surface, 0.12).into()),
             text_color: with_alpha(p.on_surface, 0.38),
-            // A flat `on_surface @ 12%` disc is the same neutral grey as an
-            // enabled *surface* FAB (Back), so a disabled Next and an
-            // enabled Back were indistinguishable. The dashed-weight
-            // outline gives "unavailable" its own silhouette instead of
-            // relying on fill alone.
+            // M3 defines no disabled FAB at all — the token set carries
+            // neither `disabled-*` nor any `outline-*` entry, and Material
+            // Web draws no disabled state. So the container/content pair
+            // borrows M3's generic disabled *button* treatment
+            // (`on_surface @ 12%` / `@ 38%`), and no outline is drawn:
+            // there is no token to justify one. A disabled Next still reads
+            // apart from an enabled *surface* FAB (Back) because elevation
+            // drops to 0 while Back rests at level 3, and the icon sits at
+            // 38% rather than `on_surface_variant`.
             border: iced::Border {
-                color: with_alpha(p.on_surface, 0.24),
-                width: 1.0,
                 radius: theme::shape::FULL.into(),
+                ..Default::default()
             },
             shadow: theme::elevation(0, theme::is_dark(t)),
             ..Default::default()
@@ -1228,6 +1231,32 @@ mod tests {
                 circular_shadow
             );
             assert_eq!(fab_surface_style(&theme, status).shadow, circular_shadow);
+        }
+    }
+
+    #[test]
+    fn no_fab_shape_draws_an_outline_in_any_state() {
+        // M3 gives the FAB no `outline-*` token and no disabled state at
+        // all, so an outline has nothing to derive its width or colour
+        // from. Disabled is separated by elevation 0 and the 38% content
+        // alpha instead.
+        let theme = iced::Theme::custom(
+            "test",
+            crate::theme::iced_palette(crate::theme::ThemeSeed::Indigo, false),
+        );
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+            button::Status::Disabled,
+        ] {
+            for style in [
+                fab_primary_style(&theme, status),
+                fab_surface_style(&theme, status),
+                extended_fab_primary_style(&theme, status),
+            ] {
+                assert_eq!(style.border.width, 0.0);
+            }
         }
     }
 
