@@ -68,9 +68,9 @@ fn resolve_signing_key(
 /// Provider families carried through the GUI wizard state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootFamily {
-    /// Magisk / forks — init_boot ramdisk injection.
+    /// Magisk / forks — root ramdisk injection.
     Magisk,
-    /// KernelSU-style LKM — init_boot with ksuinit + kernelsu.ko.
+    /// KernelSU-style LKM — root ramdisk with ksuinit + kernelsu.ko.
     KernelSU,
     /// APatch — boot image via kptools + kpimg.
     APatch,
@@ -99,16 +99,59 @@ pub enum RootVersion {
     Nightly,
 }
 
+/// Root image selected for the entire dump → patch → AVB → flash pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootImageTarget {
+    Boot,
+    InitBoot,
+}
+
+impl RootImageTarget {
+    /// GPT partition label without an A/B slot suffix.
+    pub const fn partition_base(self) -> &'static str {
+        match self {
+            Self::Boot => "boot",
+            Self::InitBoot => "init_boot",
+        }
+    }
+
+    /// Stock and output image filename used by the patch workspace.
+    pub const fn filename(self) -> &'static str {
+        match self {
+            Self::Boot => "boot.img",
+            Self::InitBoot => "init_boot.img",
+        }
+    }
+}
+
+/// Resolve the root target once from the route and connected device model.
+pub fn resolve_root_image_target(
+    family: RootFamily,
+    gki_mode: bool,
+    device_model: &str,
+) -> RootImageTarget {
+    if gki_mode
+        || matches!(family, RootFamily::APatch | RootFamily::Skroot)
+        || ltbox_core::model::is_tb320fc_model(device_model)
+    {
+        RootImageTarget::Boot
+    } else {
+        RootImageTarget::InitBoot
+    }
+}
+
 /// Root pipeline input from the GUI wizard.
 #[derive(Clone)]
 pub struct RootPipelineConfig {
     pub family: RootFamily,
     pub provider: RootProvider,
     pub version: RootVersion,
+    /// Resolved once by the caller; all image and partition routing uses this.
+    pub root_image_target: RootImageTarget,
 
     /// APK extraction + root image patching workspace. Cleaned on entry.
     pub work_dir: PathBuf,
-    /// Where the patched root image (boot/init_boot) + vbmeta land.
+    /// Where the patched root image + vbmeta land.
     pub output_dir: PathBuf,
     /// EDL loader path (`xbl_s_devprg_ns.melf`).
     pub loader: PathBuf,
@@ -239,17 +282,6 @@ pub(super) fn nightly_artifact_url(repo: &str, run_id: u64, artifact_name: &str)
         ".zip"
     };
     format!("https://nightly.link/{repo}/actions/runs/{run_id}/{artifact_name}{suffix}")
-}
-
-/// Which base root image partition this pipeline targets.
-/// `"boot"` for GKI + APatch/FolkPatch (kernel-blob patching),
-/// `"init_boot"` for Magisk / KSU (ramdisk injection).
-pub fn root_image_partition_base(family: RootFamily, gki_mode: bool) -> &'static str {
-    if gki_mode || matches!(family, RootFamily::APatch | RootFamily::Skroot) {
-        "boot"
-    } else {
-        "init_boot"
-    }
 }
 
 /// Resolve the GitHub repo slug for a given provider.
@@ -393,13 +425,7 @@ pub fn build_patched_artifacts(
     fs::create_dir_all(&cfg.work_dir)?;
     fs::create_dir_all(&cfg.output_dir)?;
 
-    // GKI → boot.img; LKM → init_boot.img. GUI dump step picks the right one.
-    let base_part = root_image_partition_base(cfg.family, cfg.gki_mode);
-    let stock_filename = if base_part == "boot" {
-        "boot.img"
-    } else {
-        "init_boot.img"
-    };
+    let stock_filename = cfg.root_image_target.filename();
     let stock_root_image_src = cfg.work_dir.join(stock_filename);
     let vbmeta_src = cfg.work_dir.join("vbmeta.img");
     if !stock_root_image_src.exists() {
@@ -440,12 +466,25 @@ pub fn build_patched_artifacts(
     } else {
         match cfg.family {
             RootFamily::Magisk => {
-                ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_patching_init_boot"));
-                crate::magisk::patch_init_boot(&cfg.work_dir, &cfg.preinit_device, log)?
+                ltbox_core::live!(
+                    log,
+                    "[Magisk] {}",
+                    tr_args!("log_magisk_patching_image", image = stock_filename)
+                );
+                crate::magisk::patch_root_image(
+                    &cfg.work_dir,
+                    cfg.root_image_target,
+                    &cfg.preinit_device,
+                    log,
+                )?
             }
             RootFamily::KernelSU => {
-                ltbox_core::live!(log, "[KSU] {}", tr("log_ksu_patching_init_boot"));
-                crate::ksu::patch_init_boot(&cfg.work_dir, log)?
+                ltbox_core::live!(
+                    log,
+                    "[KSU] {}",
+                    tr_args!("log_ksu_patching_image", image = stock_filename)
+                );
+                crate::ksu::patch_root_image(&cfg.work_dir, cfg.root_image_target, log)?
             }
             RootFamily::APatch => {
                 ltbox_core::live!(
@@ -505,6 +544,14 @@ pub fn build_patched_artifacts(
         // to preserve device's rollback state. Signing key via `KEY_MAP` on stock
         // pubkey.
         let stock_info = avb::extract_image_avb_info(&stock_root_image_src)?;
+        if stock_info.partition_name.as_deref() != Some(cfg.root_image_target.partition_base()) {
+            return Err(LtboxError::Avb(format!(
+                "stock {} AVB descriptor targets {:?}, expected {}",
+                stock_filename,
+                stock_info.partition_name,
+                cfg.root_image_target.partition_base(),
+            )));
+        }
         let root_image_key =
             resolve_signing_key(stock_info.public_key_sha1.as_deref(), stock_filename, log)?;
         // Erase any stale AVB footer before re-adding ours. A missing footer
@@ -553,6 +600,18 @@ pub fn build_patched_artifacts(
                     key,
                     None,
                 )?;
+                let footer_descriptor = root_hash_descriptor(
+                    &final_root_image,
+                    cfg.root_image_target.partition_base(),
+                )?;
+                let vbmeta_descriptor =
+                    root_hash_descriptor(&final_vbmeta, cfg.root_image_target.partition_base())?;
+                if footer_descriptor != vbmeta_descriptor {
+                    return Err(LtboxError::Avb(format!(
+                        "rebuilt vbmeta descriptor for {} does not match the root image footer",
+                        cfg.root_image_target.partition_base()
+                    )));
+                }
                 ltbox_core::live!(
                     log,
                     "[AVB] {} {} at {} (key={key})",
@@ -581,7 +640,93 @@ pub fn build_patched_artifacts(
         patched_root_image: final_root_image,
         patched_vbmeta,
         manager_apk: staged_manager_apk.exists().then_some(staged_manager_apk),
-        root_partition: format!("{base_part}{suffix}"),
+        root_partition: format!("{}{suffix}", cfg.root_image_target.partition_base()),
         vbmeta_partition,
     })
+}
+
+fn root_hash_descriptor(
+    image: &std::path::Path,
+    partition_name: &str,
+) -> Result<avbtool_rs::info::DescriptorInfo> {
+    avbtool_rs::image::inspect_avb_image(image)
+        .map_err(|e| LtboxError::Avb(format!("inspect {}: {e}", image.display())))?
+        .descriptors
+        .into_iter()
+        .find(|descriptor| {
+            matches!(
+                descriptor,
+                avbtool_rs::info::DescriptorInfo::Hash {
+                    partition_name: name,
+                    ..
+                } if name == partition_name
+            )
+        })
+        .ok_or_else(|| {
+            LtboxError::Avb(format!(
+                "{} has no Hash descriptor for {partition_name}",
+                image.display()
+            ))
+        })
+}
+
+#[cfg(test)]
+mod root_target_tests {
+    use super::*;
+
+    #[test]
+    fn root_target_matrix_routes_tb320fc_families_to_boot() {
+        for model in ["TB320FC", "LAVIETab9QHD1"] {
+            assert_eq!(
+                resolve_root_image_target(RootFamily::Magisk, false, model),
+                RootImageTarget::Boot
+            );
+            assert_eq!(
+                resolve_root_image_target(RootFamily::KernelSU, false, model),
+                RootImageTarget::Boot
+            );
+            assert_eq!(
+                resolve_root_image_target(RootFamily::KernelSU, true, model),
+                RootImageTarget::Boot
+            );
+            assert_eq!(
+                resolve_root_image_target(RootFamily::APatch, false, model),
+                RootImageTarget::Boot
+            );
+            assert_eq!(
+                resolve_root_image_target(RootFamily::Skroot, false, model),
+                RootImageTarget::Boot
+            );
+        }
+    }
+
+    #[test]
+    fn root_target_matrix_keeps_other_model_rules() {
+        for family in [RootFamily::Magisk, RootFamily::KernelSU] {
+            assert_eq!(
+                resolve_root_image_target(family, false, "TB321FU"),
+                RootImageTarget::InitBoot
+            );
+        }
+        assert_eq!(
+            resolve_root_image_target(RootFamily::KernelSU, true, "TB321FU"),
+            RootImageTarget::Boot
+        );
+        assert_eq!(
+            resolve_root_image_target(RootFamily::APatch, false, "TB321FU"),
+            RootImageTarget::Boot
+        );
+        assert_eq!(
+            resolve_root_image_target(RootFamily::Skroot, false, "TB321FU"),
+            RootImageTarget::Boot
+        );
+    }
+
+    #[test]
+    fn root_target_names_are_consistent() {
+        assert_eq!(RootImageTarget::Boot.partition_base(), "boot");
+        assert_eq!(RootImageTarget::Boot.filename(), "boot.img");
+        assert_eq!(RootImageTarget::InitBoot.partition_base(), "init_boot");
+        assert_eq!(RootImageTarget::InitBoot.filename(), "init_boot.img");
+    }
 }

@@ -464,13 +464,6 @@ impl App {
     }
 
     pub(crate) fn root_family_step(&self) -> Element<'_, Message> {
-        // TODO(root): TB320FC has no init_boot for the current Magisk /
-        // KernelSU LKM ramdisk-injection path. Replace it with a
-        // vendor_boot patch once real-device verification is available.
-        // Keep unsupported cards visible but disabled for now; KernelSU
-        // remains pickable through GKI, and APatch stays available.
-        let tb320fc = self.is_tb320fc();
-        let unsupported_tb320fc = tr_args!("model_unsupported", model = self.device_model.as_str());
         let families = [
             Family::Magisk,
             Family::KernelSU,
@@ -479,16 +472,6 @@ impl App {
         ];
         let icon_size = 44.0;
         let mk = |f: Family| -> Element<'_, Message> {
-            let disabled = tb320fc && f == Family::Magisk;
-            if disabled {
-                return Self::root_list_option_card(
-                    f.icon_disabled_sized(icon_size),
-                    self.t(f.label_key()),
-                    &unsupported_tb320fc,
-                    false,
-                    None,
-                );
-            }
             let card = Self::root_list_option_card(
                 f.icon_sized(icon_size),
                 self.t(f.label_key()),
@@ -496,9 +479,7 @@ impl App {
                 self.root.family == Some(f),
                 Some(Message::Root(RootMsg::RootFamily(f))),
             );
-            // KernelSU (LKM) is the recommended path on every supported
-            // device; TB320FC can't run it, so the badge is withheld there.
-            if !tb320fc && f == Family::KernelSU {
+            if f == Family::KernelSU {
                 recommended_overlay(card, self.t("root_recommended_tip").to_string())
             } else {
                 card
@@ -533,9 +514,7 @@ impl App {
                     self.root.provider == Some(p),
                     Some(Message::Root(RootMsg::RootProvider(p))),
                 );
-                // Official KernelSU is the recommended provider; withheld on
-                // TB320FC, where the recommended LKM path is unavailable.
-                let card = if !self.is_tb320fc() && p == Provider::KernelSU {
+                let card = if p == Provider::KernelSU {
                     recommended_overlay(card, self.t("root_recommended_tip").to_string())
                 } else {
                     card
@@ -722,34 +701,17 @@ impl App {
 
     pub(crate) fn root_mode_step(&self) -> Element<'_, Message> {
         let side = self.wizard_square_side();
-        // TODO(root): TB320FC has no init_boot for the current KernelSU
-        // LKM path; replace it with a vendor_boot patch once real-device
-        // verification is available. Keep the card disabled for now, but
-        // visible so users can see why LKM is unavailable.
-        let tb320fc = self.is_tb320fc();
         let tb323fu = self.is_tb323fu();
-        let unsupported_tb320fc = tr_args!("model_unsupported", model = self.device_model.as_str());
         let unsupported_tb323fu = tr_args!("model_unsupported", model = "TB323FU");
-        let lkm_card: Element<'_, Message> = if tb320fc {
-            icon_option_card_sub_square_disabled_sized(
-                RootMode::Lkm.icon_disabled(),
-                self.t(RootMode::Lkm.label_key()),
-                &unsupported_tb320fc,
-                side,
-            )
-        } else {
-            // Reached only on supported devices (TB320FC takes the disabled
-            // branch above), so LKM always carries the recommended badge here.
-            let card = icon_option_card_sub_square_sized(
-                RootMode::Lkm.icon(),
-                self.t(RootMode::Lkm.label_key()),
-                self.t(RootMode::Lkm.desc_key()),
-                self.root.mode == Some(RootMode::Lkm),
-                Message::Root(RootMsg::RootMode(RootMode::Lkm)),
-                side,
-            );
-            recommended_overlay(card, self.t("root_recommended_tip").to_string())
-        };
+        let lkm_card = icon_option_card_sub_square_sized(
+            RootMode::Lkm.icon(),
+            self.t(RootMode::Lkm.label_key()),
+            self.t(RootMode::Lkm.desc_key()),
+            self.root.mode == Some(RootMode::Lkm),
+            Message::Root(RootMsg::RootMode(RootMode::Lkm)),
+            side,
+        );
+        let lkm_card = recommended_overlay(lkm_card, self.t("root_recommended_tip").to_string());
         // TODO(root): LTBox currently only swaps the boot.img Image for
         // GKI, which corrupts boot on TB323FU. Keep GKI disabled until
         // vbmeta handling is added.
@@ -814,9 +776,7 @@ impl App {
                 Message::Root(RootMsg::RootVersion(choice)),
                 side,
             );
-            // Stable is the recommended channel; withheld on TB320FC, where
-            // the recommended LKM path is unavailable.
-            if !self.is_tb320fc() && choice == VerChoice::Stable {
+            if choice == VerChoice::Stable {
                 recommended_overlay(card, self.t("root_recommended_tip").to_string())
             } else {
                 card

@@ -1,4 +1,4 @@
-//! Root worker: build patched boot/init_boot artifacts (Magisk / KernelSU
+//! Root worker: build patched root artifacts (Magisk / KernelSU
 //! / APatch / GKI), flash them over EDL, and stage the manager APK.
 //! Extracted from the update_root handler.
 
@@ -10,7 +10,13 @@ use crate::{
 };
 use ltbox_core::{i18n::tr, live, tr_args};
 
-// The 14 params are the closure's captured locals, threaded through verbatim
+use super::root_backup::{ROOT_BACKUP_MANIFEST_NAME, write_root_backup_manifest};
+
+fn fingerprint_matches_detected_model(fingerprint: &str, device_model: &str) -> bool {
+    fingerprint_token_match(fingerprint, device_model)
+}
+
+// The params are the closure's captured locals, threaded through verbatim
 // from the update_root handler; bundling them into a struct would only move the
 // noise. Extraction is mechanical, so keep the 1:1 capture->param mapping.
 #[allow(clippy::too_many_arguments)]
@@ -21,6 +27,7 @@ pub(crate) fn root_worker(
     version: Option<VerChoice>,
     file_path: Option<String>,
     gui_kernel_version: Option<String>,
+    device_model: String,
     conn: ConnectionStatus,
     fw_folder: Option<String>,
     kpm_paths: Vec<std::path::PathBuf>,
@@ -54,7 +61,8 @@ pub(crate) fn root_worker(
 
     use ltbox_patch::root_pipeline::{
         RootFamily, RootPipelineConfig, RootProvider, RootVersion, build_patched_artifacts,
-        ensure_nightly_run_id, stage_root_manager_apk, stage_root_payload,
+        ensure_nightly_run_id, resolve_root_image_target, stage_root_manager_apk,
+        stage_root_payload,
     };
 
     let pipe_family = match family {
@@ -83,6 +91,7 @@ pub(crate) fn root_worker(
     };
     let file_path_buf: Option<std::path::PathBuf> =
         file_path.as_ref().map(std::path::PathBuf::from);
+    let root_image_target = resolve_root_image_target(pipe_family, is_gki_route, &device_model);
 
     let loader_path = fw_folder.ok_or_else(|| tr("err_root_loader_not_selected"))?;
     let loader = std::path::PathBuf::from(&loader_path);
@@ -130,7 +139,7 @@ pub(crate) fn root_worker(
     // before the long manager-APK / payload download.
     live!(log, "[Root] {}", phases.marker(1));
     // Slot detection MUST succeed — root flashes
-    // boot_<slot> + vbmeta_<slot> + init_boot_<slot>,
+    // the resolved root target + vbmeta_<slot>,
     // and silently defaulting to `_a` previously
     // landed flashes on the wrong slot when the
     // device was actually running on `_b`. Poll
@@ -178,6 +187,7 @@ pub(crate) fn root_worker(
         family: pipe_family,
         provider: pipe_provider,
         version: pipe_version,
+        root_image_target,
         work_dir: work_dir.clone(),
         output_dir: output_dir.clone(),
         loader: loader.clone(),
@@ -256,11 +266,9 @@ pub(crate) fn root_worker(
             live!(log, "[Root] {}", phases.marker(3));
             transition_to_edl(conn, &ll, &mut log)?;
 
-            // GKI/APatch use boot_<slot>; Magisk/KSU use
-            // init_boot_<slot>. Geometry resolves from GPT.
-            let is_gki_mode = is_gki_route;
-            let base_name =
-                ltbox_patch::root_pipeline::root_image_partition_base(pipe_family, is_gki_mode);
+            // The target was resolved once before payload staging. Geometry
+            // resolves from GPT by its partition label.
+            let base_name = manager_cfg.root_image_target.partition_base();
             // `slot_suffix` was poll-resolved at Phase 1
             // and propagated through `RootPipelineConfig`;
             // it is guaranteed to be `_a` or `_b` here.
@@ -286,8 +294,8 @@ pub(crate) fn root_worker(
             // so AppImage / distro Linux installs don't
             // try to write next to the executable.
             let backup_dir = ltbox_core::app_paths::backup_dir_for(&format!("backup_{base_name}"));
-            // Set inside the dump block from the dumped boot/init_boot
-            // fingerprint; carried to Phase 5 to skip AVB + vbmeta.
+            // Set inside the dump block from the dumped vbmeta fingerprint;
+            // carried to Phase 5 to skip AVB + vbmeta.
             let is_tb323fu;
             // TB323FU only: when the dumped efisp is empty (stock,
             // GBL-unprovisioned) we download the region GBL here and
@@ -295,18 +303,47 @@ pub(crate) fn root_worker(
             let mut root_efisp_efi: Option<std::path::PathBuf> = None;
             {
                 let mut session = open_edl_session(&loader, false, &mut log)?;
-                // Patch pipeline hardcodes `init_boot.img` /
-                // `vbmeta.img` regardless of device label.
-                let root_image_name = if base_name == "boot" {
-                    "boot.img"
-                } else {
-                    "init_boot.img"
-                };
+                let root_image_name = manager_cfg.root_image_target.filename();
                 let dumped_root_image = work_dir.join(root_image_name);
                 let dumped_vbmeta = work_dir.join("vbmeta.img");
                 // `dump_partition` scans the LUN's GPT for the
                 // named partition — matches the shell-level
                 // `qdl-rs --phys-part-idx 4 dump-part <name>`.
+                session
+                    .dump_partition(
+                        &vbmeta_primary,
+                        &dumped_vbmeta,
+                        0,
+                        ROOT_PARTITIONS_LUN,
+                        &mut log,
+                    )
+                    .map_err(|e| {
+                        tr_args!(
+                            "err_root_dump_partition_failed",
+                            partition = vbmeta_primary,
+                            error = e
+                        )
+                    })?;
+
+                // The model was detected over ADB/Fastboot before EDL. Verify
+                // the first dumped AVB image agrees before reading, patching,
+                // or flashing the selected root target. The shared matcher
+                // treats TB320FC and LAVIETab9QHD1 as equivalent.
+                let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(&dumped_vbmeta)
+                    .map_err(|error| {
+                        tr_args!("err_vbmeta_inspect_failed", error = error.to_string())
+                    })?;
+                let vbmeta_fingerprint = ltbox_patch::avb::build_fingerprint(&vbmeta_info)
+                    .ok_or_else(|| tr("err_root_vbmeta_fingerprint_missing"))?;
+                if !fingerprint_matches_detected_model(&vbmeta_fingerprint, &device_model) {
+                    return Err(tr_args!(
+                        "live_rescue_model_mismatch_abort",
+                        device = device_model.as_str(),
+                        fingerprint = vbmeta_fingerprint
+                    ));
+                }
+                is_tb323fu = fingerprint_token_match(&vbmeta_fingerprint, "TB323FU");
+
                 session
                     .dump_partition(
                         &root_primary,
@@ -323,16 +360,9 @@ pub(crate) fn root_worker(
                         )
                     })?;
 
-                // TB323FU root needs provisioned efisp; once present,
-                // skip AVB footer and vbmeta work. Keep the fingerprint
-                // so an empty efisp can fetch the matching region GBL.
-                let root_image_fp = ltbox_patch::avb::extract_image_avb_info(&dumped_root_image)
-                    .ok()
-                    .and_then(|info| ltbox_patch::avb::build_fingerprint(&info));
-                is_tb323fu = root_image_fp
-                    .as_deref()
-                    .map(|fp| fingerprint_token_match(fp, "TB323FU"))
-                    .unwrap_or(false);
+                // TB323FU root needs provisioned efisp; once present, skip AVB
+                // footer and vbmeta writes. Keep the verified fingerprint so
+                // an empty efisp can fetch the matching region GBL.
                 if is_tb323fu {
                     let efi_dir = ltbox_core::app_paths::work_dir_for("root_efisp");
                     root_efisp_efi = prepare_tb323fu_efisp(
@@ -343,26 +373,6 @@ pub(crate) fn root_worker(
                         &efi_dir,
                         &mut log,
                     )?;
-                }
-
-                // vbmeta stays untouched on TB323FU (GBL handles
-                // verification) — skip its dump + backup.
-                if !is_tb323fu {
-                    session
-                        .dump_partition(
-                            &vbmeta_primary,
-                            &dumped_vbmeta,
-                            0,
-                            ROOT_PARTITIONS_LUN,
-                            &mut log,
-                        )
-                        .map_err(|e| {
-                            tr_args!(
-                                "err_root_dump_partition_failed",
-                                partition = vbmeta_primary,
-                                error = e
-                            )
-                        })?;
                 }
                 // Stock-image safety net for Unroot, captured
                 // before the irreversible patch + flash. A copy
@@ -392,6 +402,13 @@ pub(crate) fn root_worker(
                         )
                     })?;
                 }
+                write_root_backup_manifest(&backup_dir, base_name).map_err(|e| {
+                    tr_args!(
+                        "err_root_backup_copy_failed",
+                        image = ROOT_BACKUP_MANIFEST_NAME,
+                        error = e
+                    )
+                })?;
                 if is_tb323fu {
                     live!(
                         log,
@@ -465,7 +482,7 @@ pub(crate) fn root_worker(
             writes_started = true;
             session
                 .flash_partition(
-                    &root_primary,
+                    &artifacts.root_partition,
                     &artifacts.patched_root_image,
                     0,
                     ROOT_PARTITIONS_LUN,
@@ -474,7 +491,7 @@ pub(crate) fn root_worker(
                 .map_err(|e| {
                     tr_args!(
                         "err_root_flash_partition_failed",
-                        partition = root_primary,
+                        partition = artifacts.root_partition,
                         error = e
                     )
                 })?;
@@ -616,5 +633,15 @@ mod tests {
     #[test]
     fn post_write_failures_leave_device_in_edl() {
         assert!(!should_reset_after_root_device_error(true));
+    }
+
+    #[test]
+    fn vbmeta_fingerprint_must_match_detected_model() {
+        let tb320fc = "qti/TB320FC/TB320FC:15/build:user/release-keys";
+        let tb323fu = "qti/TB323FU/TB323FU:15/build:user/release-keys";
+
+        assert!(fingerprint_matches_detected_model(tb320fc, "TB320FC"));
+        assert!(fingerprint_matches_detected_model(tb320fc, "LAVIETab9QHD1"));
+        assert!(!fingerprint_matches_detected_model(tb323fu, "TB320FC"));
     }
 }

@@ -722,16 +722,6 @@ impl Family {
             Self::Skroot => "family_skroot_desc",
         }
     }
-    fn icon_disabled_sized(self, size: f32) -> Element<'static, Message> {
-        match self {
-            Self::Magisk => svg_icon_disabled(include_bytes!("../assets/icons/magisk.svg"), size),
-            Self::KernelSU => {
-                svg_icon_disabled(include_bytes!("../assets/icons/kernelsu.svg"), size)
-            }
-            Self::APatch => svg_icon_disabled(include_bytes!("../assets/icons/apatch.svg"), size),
-            Self::Skroot => skroot_icon(size),
-        }
-    }
     fn has_modes(&self) -> bool {
         matches!(self, Self::KernelSU | Self::Skroot)
     }
@@ -2940,9 +2930,9 @@ impl App {
         DeviceClass::from_model(&self.device_model)
     }
 
-    /// Whether the polled device follows the TB320FC hardware path. Drives the
-    /// Root wizard gating (Magisk family disabled, KernelSU LKM mode disabled —
-    /// only KernelSU GKI + APatch family work cleanly on this kernel).
+    /// Whether the polled device follows the TB320FC hardware path. These model
+    /// identities also target `boot` for Magisk and KernelSU LKM;
+    /// LAVIE Tab 9QHD1 shares the same path.
     fn is_tb320fc(&self) -> bool {
         self.device_class() == DeviceClass::TB320FC
     }

@@ -9,13 +9,6 @@ impl App {
     pub(crate) fn update_root(&mut self, msg: RootMsg) -> Task<Message> {
         match msg {
             RootMsg::RootFamily(f) => {
-                // Defense in depth: the family card UI grays out the
-                // Magisk option on TB320FC, but a stale message from a
-                // pre-poll click could still land here. Drop it so the
-                // wizard never enters a configuration we know boot-loops.
-                if self.is_tb320fc() && f == Family::Magisk {
-                    return Task::none();
-                }
                 self.root.family = Some(f);
                 self.root.provider = None;
                 self.root.mode = None;
@@ -44,13 +37,6 @@ impl App {
                 Task::none()
             }
             RootMsg::RootMode(m) => {
-                // TODO(root): TB320FC has no init_boot for the current
-                // KernelSU LKM path; replace it with a vendor_boot patch
-                // once real-device verification is available. Block stale
-                // messages while the visible card stays disabled.
-                if self.is_tb320fc() && m == RootMode::Lkm {
-                    return Task::none();
-                }
                 // TODO(root): LTBox currently only swaps the boot.img Image
                 // for GKI, which corrupts boot on TB323FU. Keep it disabled
                 // until vbmeta handling is added.
@@ -396,6 +382,7 @@ impl App {
                 let version = self.root.version;
                 let file_path = self.root.file_path.clone();
                 let gui_kernel_version = self.root.kernel_version.clone();
+                let device_model = self.device_model.clone();
                 let conn = self.connection;
                 // Folder must contain `xbl_s_devprg_ns.melf`; optional
                 // `keys/testkey_rsa{2048,4096}.pem` as KEY_MAP fallback.
@@ -492,6 +479,7 @@ impl App {
                                     version,
                                     file_path,
                                     gui_kernel_version,
+                                    device_model,
                                     conn,
                                     fw_folder,
                                     kpm_paths,

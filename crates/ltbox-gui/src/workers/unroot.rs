@@ -1,4 +1,4 @@
-//! Unroot worker: restore stock boot/init_boot + vbmeta from a backup
+//! Unroot worker: restore a stock root image + vbmeta from a backup
 //! folder over EDL. Extracted from the update_unroot handler.
 
 use crate::{
@@ -6,6 +6,8 @@ use crate::{
     transition_to_edl,
 };
 use ltbox_core::{i18n::tr, live, tr_args};
+
+use super::root_backup::{ROOT_BACKUP_MANIFEST_NAME, resolve_backup_root_target};
 
 pub(crate) fn unroot_worker(
     folder: String,
@@ -20,10 +22,15 @@ pub(crate) fn unroot_worker(
 
     live!(log, "[Unroot] {}", phases.marker(1));
 
-    let (root_image_name, base_part) = match unroot_type {
-        UnrootType::MagiskLkm => ("init_boot.img", "init_boot"),
-        UnrootType::APatchGki => ("boot.img", "boot"),
-    };
+    let root_target = resolve_backup_root_target(dir, unroot_type).map_err(|error| {
+        tr_args!(
+            "err_unroot_backup_manifest_invalid",
+            manifest = ROOT_BACKUP_MANIFEST_NAME,
+            error = error
+        )
+    })?;
+    let root_image_name = root_target.filename();
+    let base_part = root_target.partition_base();
     let root_image_path = dir.join(root_image_name);
     let vbmeta_path = dir.join("vbmeta.img");
     if !root_image_path.exists() {
@@ -42,7 +49,7 @@ pub(crate) fn unroot_worker(
     );
 
     // Slot resolution must succeed —
-    // unroot writes init_boot_<slot> +
+    // unroot writes the manifest-resolved root target +
     // vbmeta_<slot> from the user's
     // backup folder. Defaulting to `_a`
     // when the device was on `_b`

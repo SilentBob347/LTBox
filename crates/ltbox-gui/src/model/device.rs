@@ -14,8 +14,9 @@ use ltbox_core::model::{LAVIE_TAB_9QHD1_MODEL, TB320FC_MODEL, is_tb320fc_model};
 /// `xbl_s_devprg_ns.melf` loader and full ROW + OtherRegion flash flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceClass {
-    /// TB320FC — Legion Y700 2023. Root flow limited to KernelSU GKI +
-    /// APatch family.
+    /// TB320FC — Legion Y700 2023 and the hardware-equivalent LAVIE Tab
+    /// 9QHD1. Ramdisk root targets `boot`; other special behavior is
+    /// selected through this shared device class.
     TB320FC,
     /// TB322FC — Legion Y700 Gen 4. Flash wizard hides ROW +
     /// OtherRegion + non-CN country picks.

@@ -1,5 +1,5 @@
-//! Magisk root patching — extracts payload from the Magisk APK and
-//! patches `init_boot.img` via the magiskboot library (no shell-out).
+//! Magisk root patching — extracts payload from the Magisk APK and patches the
+//! selected root ramdisk via the magiskboot library (no shell-out).
 //! APK layout: `lib/arm64-v8a/libmagisk{,64}.so` → `magisk`,
 //! `libmagiskinit.so` → `magiskinit`, `libinit-ld.so` → `init-ld`,
 //! `assets/stub.apk` → `stub.apk`.
@@ -8,9 +8,10 @@ use fs_err as fs;
 use std::path::{Path, PathBuf};
 
 use ltbox_core::i18n::tr;
-use ltbox_core::{LtboxError, Result};
+use ltbox_core::{LtboxError, Result, tr_args};
 
 use crate::boot;
+use crate::root_pipeline::RootImageTarget;
 
 /// Files extracted from the APK and staged for the magiskboot cpio pass.
 pub const PAYLOAD_FILES: &[&str] = &["magisk", "magiskinit", "init-ld", "stub.apk"];
@@ -198,45 +199,46 @@ pub fn extract_apk_payload(apk_path: &Path, staging_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Patch `init_boot.img` with Magisk. `work_dir` must contain the image
+/// Patch the selected root image with Magisk. `work_dir` must contain the image
 /// plus the four payload files from [`extract_apk_payload`]. Writes
 /// `work_dir/new-boot.img`; caller handles resign + flash.
 ///
 /// `preinit_device` → Magisk `PREINITDEVICE` config. Empty string omits
 /// the entry and lets Magisk resolve at boot (can fail on some devices).
-pub fn patch_init_boot(
+pub fn patch_root_image(
     work_dir: &Path,
+    target: RootImageTarget,
     preinit_device: &str,
     log: &mut Vec<String>,
 ) -> Result<PathBuf> {
-    let img_name = "init_boot.img";
+    let img_name = target.filename();
     let img_path = work_dir.join(img_name);
     if !img_path.exists() {
         return Err(LtboxError::Patch(format!(
-            "init_boot.img not found in {}",
+            "{img_name} not found in {}",
             work_dir.display()
         )));
     }
 
-    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_unpack_initboot"));
+    ltbox_core::live!(
+        log,
+        "[Magisk] {}",
+        tr_args!("log_root_unpack_image", image = img_name)
+    );
     boot::unpack(&img_path, work_dir)?;
 
-    let ramdisk = work_dir.join("ramdisk.cpio");
-    if !ramdisk.exists() {
-        return Err(LtboxError::Patch(
-            "ramdisk.cpio missing after unpack — boot image has no ramdisk".into(),
-        ));
-    }
+    let ramdisk_name = boot::root_ramdisk_name(work_dir)?;
+    let ramdisk = work_dir.join(ramdisk_name);
 
     // magiskboot cpio test: 0=stock, 1=already-patched, 2=unsupported.
     ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_cpio_test"));
-    let status = boot::cpio(work_dir, "ramdisk.cpio", &["test"])?;
+    let status = boot::cpio(work_dir, ramdisk_name, &["test"])?;
     match status {
         0 => {}
         1 => {
-            return Err(LtboxError::Patch(
-                "init_boot.img is already Magisk-patched — flash stock first".into(),
-            ));
+            return Err(LtboxError::Patch(format!(
+                "{img_name} is already Magisk-patched — flash stock first"
+            )));
         }
         other => {
             return Err(LtboxError::Patch(format!(
@@ -289,9 +291,13 @@ pub fn patch_init_boot(
     ];
     boot::cpio_with_env(
         work_dir,
-        "ramdisk.cpio",
+        ramdisk_name,
         cpio_cmds,
-        &[("KEEPVERITY", "true"), ("KEEPFORCEENCRYPT", "true")],
+        &[
+            ("KEEPVERITY", "true"),
+            ("KEEPFORCEENCRYPT", "true"),
+            ("PATCHVBMETAFLAG", "false"),
+        ],
     )?;
 
     // Clean up staging — don't leave plaintext payload next to the repacked image.
@@ -305,7 +311,11 @@ pub fn patch_init_boot(
         let _ = fs::remove_file(work_dir.join(name));
     }
 
-    ltbox_core::live!(log, "[Magisk] {}", tr("log_magisk_repack_initboot"));
+    ltbox_core::live!(
+        log,
+        "[Magisk] {}",
+        tr_args!("log_root_repack_image", image = img_name)
+    );
     boot::repack(img_name, work_dir)?;
 
     let new_boot = work_dir.join("new-boot.img");

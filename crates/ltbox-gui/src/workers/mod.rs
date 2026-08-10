@@ -6,6 +6,7 @@ pub(crate) mod flash;
 pub(crate) mod konabess;
 pub(crate) mod reboot;
 pub(crate) mod root;
+mod root_backup;
 pub(crate) mod sysupdate;
 pub(crate) mod transfer;
 pub(crate) mod unroot;

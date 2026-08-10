@@ -5,6 +5,18 @@ use std::path::Path;
 
 use ltbox_core::{LtboxError, Result};
 
+/// Return the top-level ramdisk produced by unpacking boot or init_boot.
+pub(crate) fn root_ramdisk_name(work_dir: &Path) -> Result<&'static str> {
+    const RAMDISK: &str = "ramdisk.cpio";
+    if work_dir.join(RAMDISK).is_file() {
+        Ok(RAMDISK)
+    } else {
+        Err(LtboxError::Patch(
+            "ramdisk.cpio not found after unpack".into(),
+        ))
+    }
+}
+
 /// Unpack a boot image into components. Non-zero magiskboot exit becomes `Err`.
 pub fn unpack(image: &Path, work_dir: &Path) -> Result<()> {
     let name = image
@@ -15,7 +27,12 @@ pub fn unpack(image: &Path, work_dir: &Path) -> Result<()> {
     if image != dst {
         fs::copy(image, &dst).map_err(|e| LtboxError::BootImage(e.to_string()))?;
     }
-    check_magiskboot("unpack", run_magiskboot(work_dir, &["unpack", name])?)
+    let code = run_magiskboot(work_dir, &["unpack", name])?;
+    if code == 0 {
+        Ok(())
+    } else {
+        check_magiskboot("unpack", code)
+    }
 }
 
 /// Repack boot image from components. Non-zero magiskboot exit becomes `Err`.
@@ -89,6 +106,14 @@ pub fn compress(work_dir: &Path, format: &str, input: &str, output: &str) -> Res
     check_magiskboot(
         "compress",
         run_magiskboot(work_dir, &[&format!("compress={format}"), input, output])?,
+    )
+}
+
+/// Detect and decompress a file. Non-zero magiskboot exit becomes `Err`.
+pub fn decompress(work_dir: &Path, input: &str, output: &str) -> Result<()> {
+    check_magiskboot(
+        "decompress",
+        run_magiskboot(work_dir, &["decompress", input, output])?,
     )
 }
 
@@ -185,4 +210,22 @@ fn sha1_hash(data: &[u8]) -> String {
     let mut h = sha1::Sha1::new();
     h.update(data);
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_ramdisk_name_uses_top_level_cpio() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("ramdisk.cpio"), b"top-level").unwrap();
+        assert_eq!(root_ramdisk_name(temp.path()).unwrap(), "ramdisk.cpio");
+    }
+
+    #[test]
+    fn root_ramdisk_name_rejects_missing_ramdisk() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(root_ramdisk_name(temp.path()).is_err());
+    }
 }

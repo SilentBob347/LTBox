@@ -658,19 +658,6 @@ pub(crate) fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Mess
         .into()
 }
 
-/// Disabled-state SVG icon — recolours the bitmap to `on_surface` at
-/// 0.38 alpha. Brand colour is intentionally lost so the disabled card
-/// reads as inert. Pair with [`icon_option_card_sub_disabled`].
-pub(crate) fn svg_icon_disabled(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
-    iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
-        .width(size)
-        .height(size)
-        .style(|t: &Theme, _| iced::widget::svg::Style {
-            color: Some(with_alpha(pal_of(t).on_surface, 0.38)),
-        })
-        .into()
-}
-
 static SKROOT_ICON_HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
     std::sync::LazyLock::new(|| {
         iced::widget::image::Handle::from_bytes(
