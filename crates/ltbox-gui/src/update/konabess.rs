@@ -98,7 +98,7 @@ impl App {
 
                         self.konabess.cleanup_prepared();
                         let phases =
-                            self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
+                            self.begin_phased_op(View::KonaBess, OperationPhaseKind::KonaBess);
                         let conn = self.connection;
                         let is_tb323fu = self.is_tb323fu();
                         let ll = self.live_labels();
@@ -134,7 +134,6 @@ impl App {
             KonaBessMsg::KonaBessBack => {
                 if self.konabess.step == 0 {
                     self.konabess.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::None;
                 } else {
                     if self.konabess.prepared.is_some() {
                         self.konabess.cleanup_prepared();
@@ -185,7 +184,7 @@ impl App {
                 };
 
                 self.konabess.next();
-                let phases = self.begin_phased_op(View::Advanced, OperationPhaseKind::KonaBess);
+                let phases = self.begin_phased_op(View::KonaBess, OperationPhaseKind::KonaBess);
                 let ll = self.live_labels();
                 Task::perform(
                     async move {
@@ -217,7 +216,7 @@ impl App {
                     self.konabess.cleanup_prepared();
                     return Task::none();
                 };
-                self.begin_silent_op(View::Advanced);
+                self.begin_silent_op(View::KonaBess);
                 Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {

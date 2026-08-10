@@ -364,6 +364,7 @@ enum View {
     SystemUpdate,
     Root,
     Unroot,
+    KonaBess,
     Reboot,
     Advanced,
     Settings,
@@ -378,6 +379,7 @@ impl View {
             Self::SystemUpdate => "nav_sysupdate",
             Self::Root => "nav_root",
             Self::Unroot => "nav_unroot",
+            Self::KonaBess => "nav_konabess",
             Self::Reboot => "nav_reboot",
             Self::Advanced => "nav_advanced",
             Self::Settings => "nav_settings",
@@ -388,6 +390,7 @@ impl View {
     fn sidebar_label_key(&self) -> &'static str {
         match self {
             Self::Flash => "nav_flash_sidebar",
+            Self::KonaBess => "nav_konabess_sidebar",
             _ => self.label_key(),
         }
     }
@@ -399,6 +402,7 @@ impl View {
             Self::SystemUpdate => icon::nav_system_update(),
             Self::Root => icon::nav_root(),
             Self::Unroot => icon::nav_unroot(),
+            Self::KonaBess => icon::nav_konabess(),
             Self::Reboot => icon::nav_reboot(),
             Self::Advanced => icon::nav_advanced(),
             Self::Settings => icon::nav_settings(),
@@ -413,6 +417,7 @@ const NAV_MAIN: &[View] = &[
     View::SystemUpdate,
     View::Root,
     View::Unroot,
+    View::KonaBess,
     View::Reboot,
 ];
 const NAV_TOOLS: &[View] = &[View::Advanced, View::Settings];
@@ -476,7 +481,6 @@ impl RebootTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdvAction {
     RegionConvert,
-    KonaBess,
     ImageInfo,
     PatchDevinfo,
     DetectArb,
@@ -497,14 +501,13 @@ impl AdvAction {
     fn is_destructive(&self) -> bool {
         matches!(
             self,
-            Self::KonaBess | Self::FlashPartitions | Self::FlashPhysical | Self::SimpleFlash
+            Self::FlashPartitions | Self::FlashPhysical | Self::SimpleFlash
         )
     }
 
     fn label_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_region_convert",
-            Self::KonaBess => "adv_konabess",
             Self::ImageInfo => "adv_image_info",
             Self::PatchDevinfo => "adv_patch_devinfo",
             Self::DetectArb => "adv_detect_arb",
@@ -521,7 +524,6 @@ impl AdvAction {
     fn desc_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_region_convert_desc",
-            Self::KonaBess => "adv_konabess_desc",
             Self::ImageInfo => "adv_image_info_desc",
             Self::PatchDevinfo => "adv_patch_devinfo_desc",
             Self::DetectArb => "adv_detect_arb_desc",
@@ -540,7 +542,6 @@ impl AdvAction {
     fn source_desc_key(&self) -> &'static str {
         match self {
             Self::RegionConvert => "adv_src_region_convert",
-            Self::KonaBess => "adv_src_konabess",
             Self::ImageInfo => "adv_src_image_info",
             Self::PatchDevinfo => "adv_src_patch_devinfo",
             Self::DetectArb => "adv_src_detect_arb",
@@ -561,7 +562,6 @@ impl AdvAction {
     fn output_slug(&self) -> &'static str {
         match self {
             Self::RegionConvert => "region_convert",
-            Self::KonaBess => "konabess",
             Self::ImageInfo => "image_info",
             Self::PatchDevinfo => "patch_devinfo",
             Self::DetectArb => "detect_arb",
@@ -670,7 +670,6 @@ const ADV_SECTIONS: &[AdvSection] = &[
     AdvSection {
         title_key: "adv_section_rollback",
         items: &[
-            AdvAction::KonaBess,
             AdvAction::ImageInfo,
             AdvAction::DetectArb,
             AdvAction::PatchArb,
@@ -1469,7 +1468,6 @@ enum AdvancedWizardOpen {
     DumpPhys,
     FlashPhys,
     SimpleFlash,
-    KonaBess,
 }
 
 impl AdvancedWizardOpen {
@@ -1490,9 +1488,6 @@ impl AdvancedWizardOpen {
     }
     fn is_simple_flash(self) -> bool {
         matches!(self, Self::SimpleFlash)
-    }
-    fn is_konabess(self) -> bool {
-        matches!(self, Self::KonaBess)
     }
 }
 
@@ -2319,9 +2314,6 @@ impl App {
         if self.advanced_wizard_open.is_simple_flash() {
             return self.simple_flash.step >= 2;
         }
-        if self.advanced_wizard_open.is_konabess() {
-            return self.konabess.step >= 3;
-        }
         self.adv_wizard.action.is_some() && self.adv_wizard.step == self.adv_wizard.exec_step()
     }
 
@@ -2331,6 +2323,7 @@ impl App {
             View::SystemUpdate => self.sysupdate.is_in_exec(),
             View::Root => self.root.is_in_exec(),
             View::Unroot => self.unroot.is_in_exec(),
+            View::KonaBess => self.konabess.step >= 3,
             View::Advanced => self.advanced_inline_exec_surface_active(),
             View::Dashboard | View::Reboot | View::Settings | View::About => false,
         }
@@ -2392,7 +2385,6 @@ impl App {
             // Simple Flash: preserve the confirm screen (folder already
             // picked) so a sidebar bounce returns the user to it.
             W::SimpleFlash => self.simple_flash.step == 1,
-            W::KonaBess => self.konabess.step >= 2,
         }
     }
 
@@ -2423,9 +2415,6 @@ impl App {
         if self.advanced_wizard_open.is_simple_flash() {
             return Some(self.t(AdvAction::SimpleFlash.label_key()).to_string());
         }
-        if self.advanced_wizard_open.is_konabess() {
-            return Some(self.t(AdvAction::KonaBess.label_key()).to_string());
-        }
         self.adv_wizard
             .action
             .map(|action| self.t(action.label_key()).to_string())
@@ -2455,16 +2444,16 @@ impl App {
     /// `busy_advanced_generic` key carries a per-locale full sentence
     /// for this fallback.
     fn busy_body_override(&self) -> Option<String> {
-        if self.busy_view != Some(View::Advanced) {
-            return None;
-        }
-        if self.advanced_wizard_open.is_konabess() {
+        if self.busy_view == Some(View::KonaBess) {
             let key = if self.konabess.prepared.is_some() {
                 "busy_konabess_cancel"
             } else {
                 "busy_konabess_inspection"
             };
             return Some(self.t(key).to_string());
+        }
+        if self.busy_view != Some(View::Advanced) {
+            return None;
         }
         // Simple Flash is a full firmware flash, not a partition scan/write —
         // let it fall through to the default "{operation} in progress" template
@@ -2666,8 +2655,6 @@ impl App {
                     self.dump_phys.loader_error = Some(notice);
                 } else if self.advanced_wizard_open.is_flash_phys() {
                     self.flash_phys.loader_error = Some(notice);
-                } else if self.advanced_wizard_open.is_konabess() {
-                    self.konabess.loader_error = Some(notice);
                 }
             }
             return Task::none();
@@ -2688,21 +2675,32 @@ impl App {
         } else if self.advanced_wizard_open.is_flash_phys() {
             self.flash_phys.loader_path = Some(path);
             self.flash_phys.step = 1;
-        } else if self.advanced_wizard_open.is_konabess() {
-            match self.resolve_loader_input(&path) {
-                Ok(loader) if self.loader_fits_model(std::path::Path::new(&loader)) => {
-                    self.konabess.loader_path = Some(loader);
-                    self.konabess.loader_error = None;
-                    self.konabess.step = 1;
-                }
-                Ok(_) => {
-                    self.konabess.loader_error =
-                        Some(self.t("loader_model_mismatch_tooltip").to_string());
-                }
-                Err(message) => self.konabess.loader_error = Some(message),
-            }
         }
         Task::none()
+    }
+
+    /// Pre-fill the top-level KonaBess wizard from the configured default EDL
+    /// loader, preserving the former Advanced-tile entry behavior.
+    fn apply_default_loader_to_konabess(&mut self) {
+        let Some(path) = self.resolved_default_loader() else {
+            if self.default_loader_path.is_some() && !self.default_loader_fits_model() {
+                self.konabess.loader_error =
+                    Some(ltbox_core::i18n::tr("loader_default_ext_unsupported"));
+            }
+            return;
+        };
+        match self.resolve_loader_input(&path) {
+            Ok(loader) if self.loader_fits_model(std::path::Path::new(&loader)) => {
+                self.konabess.loader_path = Some(loader);
+                self.konabess.loader_error = None;
+                self.konabess.step = 1;
+            }
+            Ok(_) => {
+                self.konabess.loader_error =
+                    Some(self.t("loader_model_mismatch_tooltip").to_string());
+            }
+            Err(message) => self.konabess.loader_error = Some(message),
+        }
     }
 
     /// Validate a picked/default EDL loader before device work starts.
@@ -3302,10 +3300,6 @@ mod tests {
             OperationPhaseKind::for_advanced_file(AdvAction::ImageInfo),
             None
         );
-        assert_eq!(
-            OperationPhaseKind::for_advanced_file(AdvAction::KonaBess),
-            None
-        );
     }
 
     #[test]
@@ -3346,13 +3340,26 @@ mod tests {
     }
 
     #[test]
-    fn flash_sidebar_uses_sidebar_specific_label_key() {
+    fn sidebar_specific_label_keys_use_trimmed_variants() {
         assert_eq!(View::Flash.sidebar_label_key(), "nav_flash_sidebar");
         assert_eq!(View::Flash.label_key(), "nav_flash");
+        assert_eq!(View::KonaBess.sidebar_label_key(), "nav_konabess_sidebar");
+        assert_eq!(View::KonaBess.label_key(), "nav_konabess");
         assert_eq!(
             View::Dashboard.sidebar_label_key(),
             View::Dashboard.label_key()
         );
+    }
+
+    #[test]
+    fn konabess_is_in_main_navigation_directly_after_unroot() {
+        let unroot = NAV_MAIN
+            .iter()
+            .position(|view| *view == View::Unroot)
+            .expect("Unroot is in main navigation");
+        assert_eq!(NAV_MAIN.get(unroot + 1), Some(&View::KonaBess));
+        assert_eq!(NAV_MAIN.get(unroot + 2), Some(&View::Reboot));
+        assert!(!NAV_TOOLS.contains(&View::KonaBess));
     }
 
     #[test]
@@ -3917,7 +3924,6 @@ mod tests {
         assert_eq!(
             section("adv_section_rollback"),
             &[
-                AdvAction::KonaBess,
                 AdvAction::ImageInfo,
                 AdvAction::DetectArb,
                 AdvAction::PatchArb,
@@ -4160,14 +4166,13 @@ mod tests {
     fn konabess_inspection_uses_busy_dialog_and_flash_uses_inline_exec_surface() {
         let mut app = App {
             busy: true,
-            busy_view: Some(View::Advanced),
-            current_view: View::Advanced,
-            advanced_wizard_open: AdvancedWizardOpen::KonaBess,
+            busy_view: Some(View::KonaBess),
+            current_view: View::KonaBess,
             ..App::default()
         };
 
         app.konabess.step = 2;
-        assert!(!app.advanced_inline_exec_surface_active());
+        assert!(!app.current_view_has_inline_exec_surface());
         assert!(app.should_show_busy_progress_dialog());
         assert_eq!(
             app.busy_body_override().as_deref(),
@@ -4175,7 +4180,7 @@ mod tests {
         );
 
         app.konabess.step = 3;
-        assert!(app.advanced_inline_exec_surface_active());
+        assert!(app.current_view_has_inline_exec_surface());
         assert!(!app.should_show_busy_progress_dialog());
     }
 

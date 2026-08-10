@@ -38,13 +38,8 @@ impl App {
                 }
             }
             Message::Navigate(v) => {
-                if self.current_view == View::Advanced
-                    && v != View::Advanced
-                    && self.advanced_wizard_open.is_konabess()
-                    && !self.busy
-                {
+                if self.current_view == View::KonaBess && v != View::KonaBess && !self.busy {
                     self.konabess.reset();
-                    self.advanced_wizard_open = AdvancedWizardOpen::None;
                 }
                 self.current_view = v;
                 // Keep wizard state during a running op or on the
@@ -91,6 +86,10 @@ impl App {
                 {
                     self.unroot.reset();
                 }
+                if v == View::KonaBess && !busy && self.konabess.step < 2 {
+                    self.konabess.reset();
+                    self.apply_default_loader_to_konabess();
+                }
                 // Loader pre-fill happens on the Next-into-loader-step
                 // transition in `UnrootNext` (mirrors the Root wizard's
                 // step-5 fill + advance pattern), not on view entry — an
@@ -111,7 +110,6 @@ impl App {
                     self.flash_phys = FlashPhysWizard::default();
                     self.dump_phys = DumpPhysWizard::default();
                     self.simple_flash = SimpleFlashWizard::default();
-                    self.konabess.reset();
                 }
                 // Settings entry: rescan removable temp files so the cleanup
                 // button reflects current on-disk state (enabled only when
@@ -301,6 +299,10 @@ impl App {
                     View::Flash => self.flash.reset(),
                     View::SystemUpdate => self.sysupdate.reset(),
                     View::Unroot => self.unroot.reset(),
+                    View::KonaBess => {
+                        self.konabess.reset();
+                        self.apply_default_loader_to_konabess();
+                    }
                     View::Advanced => {
                         // "Start over" on any Advanced sub-wizard should
                         // return to the Advanced grid, not step 0 of the
@@ -311,7 +313,6 @@ impl App {
                         self.dump_phys.reset();
                         self.flash_phys.reset();
                         self.simple_flash.reset();
-                        self.konabess.reset();
                         self.adv_wizard.reset();
                         self.adv_confirm = None;
                         self.adv_confirm_path = None;

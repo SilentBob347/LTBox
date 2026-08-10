@@ -1205,7 +1205,7 @@ impl Wizard for SimpleFlashWizard {
 }
 
 // =========================================================================
-// KonaBess GPU-table wizard state (Advanced → AVB Image)
+// KonaBess GPU-table wizard state
 // =========================================================================
 
 pub(crate) const KONABESS_STEPS: &[&str] = &[

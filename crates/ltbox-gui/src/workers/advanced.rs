@@ -101,8 +101,7 @@ pub(crate) fn advanced_file_worker(
         | AdvAction::DumpPartitions
         | AdvAction::FlashPhysical
         | AdvAction::DumpPhysical
-        | AdvAction::SimpleFlash
-        | AdvAction::KonaBess => {
+        | AdvAction::SimpleFlash => {
             ltbox_core::live!(
                 log,
                 "[Advanced] {}",

@@ -421,6 +421,9 @@ impl App {
         if self.current_view == View::Unroot {
             return self.view_unroot_wizard();
         }
+        if self.current_view == View::KonaBess {
+            return self.view_konabess_wizard();
+        }
         // Advanced owns its scroll/padding so both the landing screen and
         // wizards can use a full-width top app bar without being pinched by
         // the generic content wrapper.

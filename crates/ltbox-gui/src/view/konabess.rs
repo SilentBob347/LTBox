@@ -36,7 +36,7 @@ impl App {
                 self.t("btn_next")
             };
             wizard_nav_generic_with_disabled_next_tooltip(
-                true,
+                self.konabess.step > 0,
                 label,
                 self.konabess.can_next() && !self.busy,
                 None,
