@@ -35,15 +35,26 @@ impl App {
             } else {
                 self.t("btn_next")
             };
-            wizard_nav_generic_with_disabled_next_tooltip(
-                self.konabess.step > 0,
-                label,
-                self.konabess.can_next() && !self.busy,
-                None,
-                self.t("btn_back"),
-                Message::KonaBess(KonaBessMsg::KonaBessBack),
-                Message::KonaBess(KonaBessMsg::KonaBessNext),
-            )
+            if self.konabess.step == 1 {
+                wizard_nav_cancel_generic_with_disabled_next_tooltip(
+                    label,
+                    self.konabess.can_next() && !self.busy,
+                    None,
+                    self.t("btn_cancel"),
+                    Message::KonaBess(KonaBessMsg::KonaBessBack),
+                    Message::KonaBess(KonaBessMsg::KonaBessNext),
+                )
+            } else {
+                wizard_nav_generic_with_disabled_next_tooltip(
+                    self.konabess.step > 0,
+                    label,
+                    self.konabess.can_next() && !self.busy,
+                    None,
+                    self.t("btn_back"),
+                    Message::KonaBess(KonaBessMsg::KonaBessBack),
+                    Message::KonaBess(KonaBessMsg::KonaBessNext),
+                )
+            }
         } else {
             empty_wizard_nav()
         };
@@ -87,38 +98,22 @@ impl App {
             revert_button =
                 revert_button.on_press(Message::KonaBess(KonaBessMsg::KonaBessRevertEdits));
         }
-        let dirty_key = if self.konabess.edited_dirty {
-            "konabess_table_modified"
-        } else {
-            "konabess_table_stock"
-        };
-        let dirty =
-            text(self.t(dirty_key).to_string())
-                .size(11)
-                .style(if self.konabess.edited_dirty {
-                    label_style
-                } else {
-                    muted_style
-                });
-        let toolbar = row![
-            target_button,
-            Space::new().width(Length::Fill),
-            dirty,
-            revert_button,
-            import_button,
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+        let mut toolbar = row![target_button, Space::new().width(Length::Fill)]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill);
+        if self.konabess.edited_dirty {
+            toolbar = toolbar.push(
+                text(self.t("konabess_table_modified").to_string())
+                    .size(11)
+                    .style(label_style),
+            );
+        }
+        toolbar = toolbar.push(revert_button).push(import_button);
 
         let mut content = column![
             toolbar,
-            text(self.t("konabess_attribution").to_string())
-                .size(11)
-                .style(muted_style),
             text(self.t("konabess_table_value_note").to_string())
-                .size(11)
-                .style(muted_style),
-            text(self.t("konabess_tool_managed_note").to_string())
                 .size(11)
                 .style(muted_style),
         ]
@@ -154,6 +149,12 @@ impl App {
                 .width(Length::Fill)
                 .into(),
         });
+        content = content.push(
+            text(self.t("konabess_attribution").to_string())
+                .size(10)
+                .wrapping(iced::widget::text::Wrapping::None)
+                .style(muted_style),
+        );
 
         container(content.padding(20))
             .width(Length::Fill)
@@ -194,7 +195,7 @@ impl App {
             vec![
                 info_kv_center(self.t("konabess_confirm_chip"), chip),
                 info_kv_center(self.t("konabess_table_target"), &target),
-                info_kv_center(self.t("konabess_confirm_stock_shape"), &stock_shape),
+                info_kv_center(self.t("konabess_confirm_device_shape"), &stock_shape),
                 info_kv_center(self.t("konabess_confirm_edited_shape"), &edited_shape),
                 info_kv_center(self.t("konabess_confirm_changes"), change_state),
             ],
@@ -225,10 +226,8 @@ impl App {
                 .as_deref()
                 .unwrap_or_else(|| self.t("common_unknown"));
             let shape = compact_gpu_shape(candidate.gpu_shape.as_ref(), self);
-            let likely_note = self
-                .konabess
-                .is_probable_target(index)
-                .then(|| self.t("konabess_target_likely").to_string());
+            let is_likely = self.konabess.is_probable_target(index);
+            let likely_note = is_likely.then(|| self.t("konabess_target_likely").to_string());
             let details = row![
                 text(format!("#{index} · {model} · {chip}"))
                     .size(13)
@@ -240,13 +239,13 @@ impl App {
                 candidate_body = candidate_body.push(
                     text(note)
                         .size(11)
-                        .style(move |theme| target_note_style(theme, is_selected)),
+                        .style(move |theme| target_note_style(theme, is_selected, is_likely)),
                 );
             }
             candidate_body = candidate_body.push(
                 text(shape)
                     .size(11)
-                    .style(move |theme| target_shape_style(theme, is_selected)),
+                    .style(move |theme| target_shape_style(theme, is_selected, is_likely)),
             );
             if !can_select {
                 candidate_body = candidate_body.push(
@@ -271,6 +270,13 @@ impl App {
                         button::Style {
                             background: Some(if is_selected {
                                 palette.primary.into()
+                            } else if is_likely {
+                                theme::mix_color(
+                                    palette.secondary_container,
+                                    palette.on_secondary_container,
+                                    theme::state_alpha(status),
+                                )
+                                .into()
                             } else if hovered {
                                 theme::with_alpha(palette.primary, theme::state::HOVER).into()
                             } else {
@@ -278,12 +284,16 @@ impl App {
                             }),
                             text_color: if is_selected {
                                 palette.on_primary
+                            } else if is_likely {
+                                palette.on_secondary_container
                             } else {
                                 palette.on_surface
                             },
                             border: iced::Border {
                                 color: if is_selected {
                                     palette.primary
+                                } else if is_likely {
+                                    palette.secondary
                                 } else {
                                     palette.outline_variant
                                 },
@@ -340,9 +350,7 @@ impl App {
 }
 
 fn target_label(target: &ltbox_patch::konabess::VendorBootDtbInfo) -> String {
-    let model = target.model.as_deref().unwrap_or("—");
-    let chip = target.chip.as_deref().unwrap_or("—");
-    format!("#{} · {model} · {chip}", target.index)
+    format!("#{}", target.index)
 }
 
 fn table_shape(table: &ltbox_patch::konabess::GpuTable) -> String {
@@ -374,6 +382,10 @@ fn gpu_table_view<'a>(
     let mut groups = column![].spacing(18).width(Length::Shrink);
     let has_hard_errors = validation.has_hard_errors();
     for (group_position, group) in table.groups.iter().enumerate() {
+        let has_warning = validation
+            .warnings
+            .iter()
+            .any(|issue| issue_belongs_to_group(issue, group.id));
         let property_names = ordered_property_names(group);
         let mut add_button = m3_text_button(app.t("konabess_add_level").to_string());
         if !has_hard_errors {
@@ -381,41 +393,49 @@ fn gpu_table_view<'a>(
                 group_position,
             )));
         }
-        let group_heading = row![
-            text(tr_args!("konabess_table_group", id = group.id.to_string()))
+        // `groups` must stay intrinsic-width so the two-axis scrollable can
+        // expose wide device tables. A Fill row (or Fill spacer) under that
+        // Shrink parent creates contradictory horizontal constraints.
+        let mut group_label = row![].spacing(5).align_y(iced::Alignment::Center);
+        if has_warning {
+            group_label = group_label.push(text("⚠").size(13).style(warning_container_text_style));
+        }
+        group_label = group_label.push(
+            text(format!("Bin {}", group.id))
                 .size(14)
-                .style(label_style),
-            Space::new().width(Length::Fill),
-            add_button,
-        ]
-        .align_y(iced::Alignment::Center)
-        .width(Length::Fill);
+                .style(move |theme| group_heading_text_style(theme, has_warning)),
+        );
+        let group_label = container(group_label)
+            .padding([4, 8])
+            .style(move |theme| group_heading_style(theme, has_warning));
+        let group_heading = row![group_label, add_button]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .width(Length::Shrink);
 
         let mut header_properties = column![].spacing(0).width(Length::Shrink);
-        for (property_position, property) in group.header_properties.iter().enumerate() {
+        for property in &group.header_properties {
             let property_width = property_cells_width(property.cells.len());
             let mut property_row =
-                row![table_cell(property_label(&property.name, app), true, 250.0,)].spacing(0);
-            property_row = property_row.push(editable_property_cell(
-                property,
-                |cell| GpuCellKey::group_header(group_position, property_position, cell),
-                property_width,
-                app,
-                validation,
-            ));
+                row![table_cell(property_label(&property.name), true, 250.0,)].spacing(0);
+            let value_cell =
+                match gpu_property_editability(GpuPropertyLocation::GroupHeader, &property.name) {
+                    GpuPropertyEditability::ReadOnly => {
+                        read_only_property_cell(property, property_width)
+                    }
+                    GpuPropertyEditability::Editable => {
+                        unreachable!("group header properties are always read-only")
+                    }
+                };
+            property_row = property_row.push(value_cell);
             header_properties = header_properties.push(property_row);
         }
 
         let mut table_rows = column![].spacing(0).width(Length::Shrink);
-        let mut header = row![table_cell(
-            app.t("konabess_table_level").to_string(),
-            true,
-            150.0,
-        )]
-        .spacing(0);
+        let mut header = row![table_cell("Level".to_string(), true, 150.0,)].spacing(0);
         for name in &property_names {
             header = header.push(table_cell(
-                property_label(name, app),
+                property_label(name),
                 true,
                 property_column_width(group, name),
             ));
@@ -429,18 +449,9 @@ fn gpu_table_view<'a>(
                 ));
             }
             let level_control = container(
-                row![
-                    column![
-                        text(level.id.to_string()).size(12),
-                        text(app.t("konabess_tool_managed").to_string())
-                            .size(9)
-                            .style(muted_style),
-                    ]
-                    .spacing(1),
-                    remove_button
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
+                row![text(level.id.to_string()).size(12), remove_button]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
             )
             .padding([4, 7])
             .width(Length::Fixed(150.0))
@@ -529,8 +540,10 @@ fn editable_property_cell<'a>(
     for (cell_position, committed) in property.cells.iter().copied().enumerate() {
         let key = key_for_cell(cell_position);
         let value = app.konabess.cell_text(key, committed, &property.name);
-        if is_normalization_owned_cell(key, &property.name) {
-            inputs = inputs.push(derived_value_cell(value, app));
+        if gpu_property_editability(GpuPropertyLocation::Level, &property.name)
+            == GpuPropertyEditability::ReadOnly
+        {
+            inputs = inputs.push(derived_value_cell(value));
             continue;
         }
         let parser_error = app.konabess.cell_has_input_error(key);
@@ -544,6 +557,35 @@ fn editable_property_cell<'a>(
                 .warnings
                 .iter()
                 .any(|issue| app.konabess.issue_matches_cell(issue, key));
+        if matches!(property.name.as_str(), "qcom,level" | "qcom,cx-level")
+            && let Some(chip) = app.konabess.selected_chip()
+            && let Some(options) = regulator_vote_choices(chip, committed)
+        {
+            let selected = RegulatorVoteChoice::new(chip, committed);
+            let picker = widget::pick_list(options, Some(selected), move |choice| {
+                Message::KonaBess(KonaBessMsg::KonaBessCellChanged(
+                    key,
+                    choice.vote.to_string(),
+                ))
+            })
+            .text_size(12)
+            .padding([7, 8])
+            .style(move |theme: &Theme, status| {
+                let mut style = m3_pick_list_style(theme, status);
+                if hard_error {
+                    style.border.color = pal_of(theme).error;
+                    style.border.width = 2.0;
+                } else if warning {
+                    style.border.color = pal_of(theme).warning;
+                    style.border.width = 2.0;
+                }
+                style
+            })
+            .menu_style(m3_pick_list_menu_style)
+            .width(Length::Fixed((width - 16.0).max(104.0)));
+            inputs = inputs.push(picker);
+            continue;
+        }
         let input = widget::text_input("", &value)
             .on_input(move |text| Message::KonaBess(KonaBessMsg::KonaBessCellChanged(key, text)))
             .padding([7, 8])
@@ -555,7 +597,12 @@ fn editable_property_cell<'a>(
                     style.border.color = pal_of(theme).error;
                     style.border.width = 2.0;
                 } else if warning {
-                    style.border.color = pal_of(theme).warning;
+                    let palette = pal_of(theme);
+                    style.background = palette.warning_container.into();
+                    style.value = palette.on_warning_container;
+                    style.placeholder = theme::with_alpha(palette.on_warning_container, 0.62);
+                    style.selection = theme::with_alpha(palette.warning, 0.30);
+                    style.border.color = palette.warning;
                     style.border.width = 2.0;
                 }
                 style
@@ -571,20 +618,34 @@ fn editable_property_cell<'a>(
         .into()
 }
 
-fn derived_value_cell<'a>(value: String, app: &'a App) -> Element<'a, Message> {
-    container(
-        column![
-            text(value).size(12),
-            text(app.t("konabess_tool_managed").to_string())
-                .size(9)
-                .style(muted_style),
-        ]
-        .spacing(1),
-    )
-    .padding([5, 8])
-    .width(Length::Fixed(104.0))
-    .style(derived_value_style)
-    .into()
+fn read_only_property_cell(
+    property: &ltbox_patch::konabess::GpuProperty,
+    width: f32,
+) -> Element<'static, Message> {
+    let mut values = row![].spacing(6);
+    for cell in &property.cells {
+        values = values.push(
+            container(text(cell.to_string()).size(12))
+                .padding([7, 8])
+                .width(Length::Fixed(104.0))
+                .style(derived_value_style),
+        );
+    }
+    container(values)
+        .padding([7, 8])
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(58.0))
+        .align_y(iced::alignment::Vertical::Center)
+        .style(table_border_style(false))
+        .into()
+}
+
+fn derived_value_cell(value: String) -> Element<'static, Message> {
+    container(text(value).size(12))
+        .padding([7, 8])
+        .width(Length::Fixed(104.0))
+        .style(derived_value_style)
+        .into()
 }
 
 fn derived_value_style(theme: &Theme) -> container::Style {
@@ -615,6 +676,31 @@ fn derived_table_cell_style(theme: &Theme) -> container::Style {
     }
 }
 
+fn group_heading_text_style(theme: &Theme, warning: bool) -> iced::widget::text::Style {
+    if warning {
+        warning_container_text_style(theme)
+    } else {
+        label_style(theme)
+    }
+}
+
+fn group_heading_style(theme: &Theme, warning: bool) -> container::Style {
+    if !warning {
+        return container::Style::default();
+    }
+    let palette = pal_of(theme);
+    container::Style {
+        background: Some(palette.warning_container.into()),
+        text_color: Some(palette.on_warning_container),
+        border: iced::Border {
+            color: palette.warning,
+            width: 1.0,
+            radius: theme::shape::SM.into(),
+        },
+        ..Default::default()
+    }
+}
+
 fn property_cells_width(cell_count: usize) -> f32 {
     ((cell_count.max(1) as f32) * 110.0 + 16.0).max(190.0)
 }
@@ -630,28 +716,55 @@ fn property_column_width(group: &ltbox_patch::konabess::GpuGroup, name: &str) ->
                 .find(|property| property.name == name)
         })
         .map(|property| property_cells_width(property.cells.len()))
-        .fold(190.0, f32::max)
+        .fold(
+            if matches!(name, "qcom,level" | "qcom,cx-level") {
+                260.0
+            } else {
+                190.0
+            },
+            f32::max,
+        )
 }
 
-fn property_label(name: &str, app: &App) -> String {
-    let friendly_key = match name {
-        "#address-cells" => Some("konabess_property_address_cells"),
-        "#size-cells" => Some("konabess_property_size_cells"),
-        "reg" => Some("konabess_property_row_index"),
-        "qcom,acd-level" => Some("konabess_property_acd_level"),
-        "qcom,cx-level" => Some("konabess_property_cx_level"),
-        "qcom,gpu-freq" => Some("konabess_property_frequency_mhz"),
-        "qcom,initial-min-pwrlevel" => Some("konabess_property_initial_min_level"),
-        "qcom,initial-pwrlevel" => Some("konabess_property_initial_level"),
-        "qcom,level" => Some("konabess_property_regulator_vote"),
-        "qcom,sku-codes" => Some("konabess_property_sku_codes"),
-        "qcom,speed-bin" => Some("konabess_property_speed_bin"),
-        name if name.starts_with("qcom,bus-freq") => Some("konabess_property_bus_frequency"),
-        name if name.starts_with("qcom,bus-min") => Some("konabess_property_bus_minimum"),
-        name if name.starts_with("qcom,bus-max") => Some("konabess_property_bus_maximum"),
-        _ => None,
-    };
-    friendly_key.map_or_else(|| name.to_string(), |key| format!("{}\n{name}", app.t(key)))
+fn property_label(name: &str) -> String {
+    name.strip_prefix("qcom,").unwrap_or(name).to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegulatorVoteChoice {
+    vote: u32,
+    name: Option<&'static str>,
+}
+
+impl RegulatorVoteChoice {
+    fn new(chip: &str, vote: u32) -> Self {
+        Self {
+            vote,
+            name: ltbox_patch::konabess::regulator_level_name(chip, vote),
+        }
+    }
+}
+
+impl std::fmt::Display for RegulatorVoteChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.name {
+            Some(name) => write!(formatter, "{name} ({})", self.vote),
+            None => self.vote.fmt(formatter),
+        }
+    }
+}
+
+fn regulator_vote_choices(chip: &str, current: u32) -> Option<Vec<RegulatorVoteChoice>> {
+    let votes = ltbox_patch::konabess::regulator_level_votes(chip)?;
+    let mut choices = votes
+        .iter()
+        .copied()
+        .map(|vote| RegulatorVoteChoice::new(chip, vote))
+        .collect::<Vec<_>>();
+    if !votes.contains(&current) {
+        choices.push(RegulatorVoteChoice::new(chip, current));
+    }
+    Some(choices)
 }
 
 fn finding_panel(
@@ -659,15 +772,30 @@ fn finding_panel(
     warning: bool,
     app: &App,
 ) -> Element<'static, Message> {
-    let title_key = if warning {
-        "konabess_warning_summary"
+    let count = finding_count(issues);
+    let mut content = if warning {
+        column![
+            text(tr_args!(
+                "konabess_warning_summary",
+                count = count.to_string()
+            ))
+            .size(11)
+            .wrapping(iced::widget::text::Wrapping::None)
+        ]
     } else {
-        "konabess_error_summary"
-    };
-    let mut content =
-        column![text(tr_args!(title_key, count = issues.len().to_string())).size(12)].spacing(3);
-    for issue in issues {
-        content = content.push(text(localized_issue(issue, warning, app)).size(11));
+        column![
+            text(tr_args!(
+                "konabess_error_summary",
+                count = count.to_string()
+            ))
+            .size(12)
+        ]
+    }
+    .spacing(3);
+    if !warning {
+        for issue in issues {
+            content = content.push(text(localized_issue(issue, false, app)).size(11));
+        }
     }
     container(content)
         .padding([9, 12])
@@ -701,6 +829,19 @@ fn finding_panel(
         .into()
 }
 
+const fn finding_count(issues: &[ltbox_patch::konabess::GpuTableIssue]) -> usize {
+    issues.len()
+}
+
+fn issue_belongs_to_group(issue: &ltbox_patch::konabess::GpuTableIssue, group_id: u32) -> bool {
+    let group_path = format!("group {group_id}");
+    issue.path == group_path
+        || issue
+            .path
+            .strip_prefix(&group_path)
+            .is_some_and(|suffix| suffix.starts_with(" / "))
+}
+
 fn localized_issue(
     issue: &ltbox_patch::konabess::GpuTableIssue,
     warning: bool,
@@ -726,20 +867,39 @@ const fn konabess_nav_visible(step: usize) -> bool {
     step < 3
 }
 
-fn target_note_style(theme: &Theme, is_selected: bool) -> iced::widget::text::Style {
+fn target_note_style(
+    theme: &Theme,
+    is_selected: bool,
+    is_likely: bool,
+) -> iced::widget::text::Style {
     if is_selected {
         iced::widget::text::Style {
             color: Some(pal_of(theme).on_primary),
+        }
+    } else if is_likely {
+        iced::widget::text::Style {
+            color: Some(pal_of(theme).on_secondary_container),
         }
     } else {
         label_style(theme)
     }
 }
 
-fn target_shape_style(theme: &Theme, is_selected: bool) -> iced::widget::text::Style {
+fn target_shape_style(
+    theme: &Theme,
+    is_selected: bool,
+    is_likely: bool,
+) -> iced::widget::text::Style {
     if is_selected {
         iced::widget::text::Style {
             color: Some(theme::with_alpha(pal_of(theme).on_primary, 0.72)),
+        }
+    } else if is_likely {
+        iced::widget::text::Style {
+            color: Some(theme::with_alpha(
+                pal_of(theme).on_secondary_container,
+                0.78,
+            )),
         }
     } else {
         muted_style(theme)
@@ -764,7 +924,9 @@ fn compact_gpu_shape(shape: Option<&ltbox_patch::konabess::GpuTableShape>, app: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ltbox_patch::konabess::{GpuGroup, GpuLevel, GpuProperty};
+    use ltbox_patch::konabess::{
+        GpuGroup, GpuLevel, GpuProperty, GpuTableIssue, VendorBootDtbInfo,
+    };
 
     #[test]
     fn wizard_nav_is_present_before_exec_and_hidden_during_exec() {
@@ -782,21 +944,87 @@ mod tests {
         let palette = pal_of(&theme);
 
         assert_eq!(
-            target_note_style(&theme, true).color,
+            target_note_style(&theme, true, false).color,
             Some(palette.on_primary)
         );
         assert_eq!(
-            target_shape_style(&theme, true).color,
+            target_shape_style(&theme, true, false).color,
             Some(theme::with_alpha(palette.on_primary, 0.72))
         );
         assert_eq!(
-            target_note_style(&theme, false).color,
+            target_note_style(&theme, false, false).color,
             label_style(&theme).color
         );
         assert_eq!(
-            target_shape_style(&theme, false).color,
+            target_shape_style(&theme, false, false).color,
             muted_style(&theme).color
         );
+        assert_eq!(
+            target_note_style(&theme, false, true).color,
+            Some(palette.on_secondary_container)
+        );
+        assert_eq!(
+            target_shape_style(&theme, false, true).color,
+            Some(theme::with_alpha(palette.on_secondary_container, 0.78))
+        );
+    }
+
+    #[test]
+    fn advisory_count_includes_cell_and_group_only_findings() {
+        let findings = vec![
+            GpuTableIssue {
+                path: "group 0 / level 0 / qcom,gpu-freq".into(),
+                message: "outside the observed stock range".into(),
+            },
+            GpuTableIssue {
+                path: "group 0".into(),
+                message: "frequencies are not strictly descending".into(),
+            },
+            GpuTableIssue {
+                path: "group 0 / qcom,initial-pwrlevel".into(),
+                message: "target frequency was deleted".into(),
+            },
+        ];
+
+        assert_eq!(finding_count(&findings), 3);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| issue_belongs_to_group(finding, 0))
+        );
+        assert!(!issue_belongs_to_group(&findings[0], 1));
+    }
+
+    #[test]
+    fn target_label_contains_only_the_dtb_index() {
+        let target = VendorBootDtbInfo {
+            index: 6,
+            model: Some("Qualcomm Technologies, Inc. SunP v2 Alt. Thermal Profile SoC".into()),
+            chip: Some("sun".into()),
+            gpu_shape: None,
+            table: None,
+        };
+
+        assert_eq!(target_label(&target), "#6");
+    }
+
+    #[test]
+    fn structural_labels_strip_only_the_qcom_prefix() {
+        assert_eq!(property_label("qcom,speed-bin"), "speed-bin");
+        assert_eq!(property_label("qcom,initial-pwrlevel"), "initial-pwrlevel");
+        assert_eq!(property_label("reg"), "reg");
+        assert_eq!(property_label("#size-cells"), "#size-cells");
+    }
+
+    #[test]
+    fn regulator_picker_labels_keep_exact_votes_and_unknown_values() {
+        let choices = regulator_vote_choices("sun", 51).expect("sun has an upstream mapping");
+        assert!(
+            choices
+                .iter()
+                .any(|choice| choice.to_string() == "NOM (256)")
+        );
+        assert!(choices.iter().any(|choice| choice.to_string() == "51"));
     }
 
     #[test]

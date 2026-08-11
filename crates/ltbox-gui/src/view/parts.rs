@@ -70,11 +70,21 @@ impl App {
             let can = self.flash_parts.can_next()
                 && !(self.busy && is_start)
                 && (!is_start || self.device_reachable());
-            wizard_nav_generic(
-                true,
+            let leading_action = if self.flash_parts.step == 1 {
+                partition_table_leading_action(self.flash_parts.entry_connection)
+            } else {
+                WizardLeadingAction::Back
+            };
+            let leading_label = if leading_action == WizardLeadingAction::Cancel {
+                self.t("btn_cancel")
+            } else {
+                self.t("btn_back")
+            };
+            wizard_nav_generic_with_leading_action(
+                leading_action,
                 &label,
                 can,
-                self.t("btn_back"),
+                leading_label,
                 if self.flash_parts.step == 0 {
                     Message::FlashParts(FlashPartsMsg::FlashPartsClose)
                 } else {
@@ -480,11 +490,21 @@ impl App {
             // (step 1) — both spawn workers that talk to the device.
             // Gate both buttons on reachability.
             let can = self.dump_parts.can_next() && !self.busy && self.device_reachable();
-            wizard_nav_generic(
-                true,
+            let leading_action = if self.dump_parts.step == 1 {
+                partition_table_leading_action(self.dump_parts.entry_connection)
+            } else {
+                WizardLeadingAction::Back
+            };
+            let leading_label = if leading_action == WizardLeadingAction::Cancel {
+                self.t("btn_cancel")
+            } else {
+                self.t("btn_back")
+            };
+            wizard_nav_generic_with_leading_action(
+                leading_action,
                 &label,
                 can,
-                self.t("btn_back"),
+                leading_label,
                 if self.dump_parts.step == 0 {
                     Message::DumpParts(DumpPartsMsg::DumpPartsClose)
                 } else {

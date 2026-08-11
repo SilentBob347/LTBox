@@ -93,31 +93,7 @@ impl App {
                     self.error_msg = Some(tr_args!("err_loader_missing", path = loader.display()));
                     return Task::none();
                 }
-                self.begin_op(View::Reboot);
-                self.error_msg = None;
-                self.log_push(format!(
-                    "[Reboot] {}",
-                    tr_args!(
-                        "log_reboot_target_from_edl",
-                        target = self.t(target.label_key()),
-                        loader = loader.display().to_string()
-                    ),
-                ));
-                let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            reboot_edl_with_loader_worker(loader, target, reboot_cmd_sent)
-                        })
-                        .await
-                        .unwrap_or_else(|_| Err(ltbox_core::i18n::tr("err_task_failed")))
-                    },
-                    |r| match r {
-                        Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
-                        Err(e) => Message::OperationError(e),
-                    },
-                );
-                Task::none()
+                self.start_edl_reboot_with_loader(target, loader)
             }
             RebootMsg::RebootDone(lines) => {
                 self.end_op();
@@ -125,5 +101,40 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    pub(crate) fn start_edl_reboot_with_loader(
+        &mut self,
+        target: RebootTarget,
+        loader: std::path::PathBuf,
+    ) -> Task<Message> {
+        if !loader.exists() {
+            self.error_msg = Some(tr_args!("err_loader_missing", path = loader.display()));
+            return Task::none();
+        }
+        self.begin_op(View::Reboot);
+        self.error_msg = None;
+        self.log_push(format!(
+            "[Reboot] {}",
+            tr_args!(
+                "log_reboot_target_from_edl",
+                target = self.t(target.label_key()),
+                loader = loader.display().to_string()
+            ),
+        ));
+        let reboot_cmd_sent = self.t("log_reboot_command_sent").to_string();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    reboot_edl_with_loader_worker(loader, target, reboot_cmd_sent)
+                })
+                .await
+                .unwrap_or_else(|_| Err(ltbox_core::i18n::tr("err_task_failed")))
+            },
+            |r| match r {
+                Ok(lines) => Message::Reboot(RebootMsg::RebootDone(lines)),
+                Err(e) => Message::OperationError(e),
+            },
+        )
     }
 }

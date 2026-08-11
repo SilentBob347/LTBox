@@ -236,6 +236,22 @@ impl App {
                 Task::none()
             }
             DumpPartsMsg::DumpPartsBack => {
+                if self.dump_parts.step == 1
+                    && partition_table_leading_action(self.dump_parts.entry_connection)
+                        == WizardLeadingAction::Cancel
+                {
+                    let loader =
+                        match self.validate_loader_path(&self.dump_parts.loader_path.clone()) {
+                            Ok(loader) => loader,
+                            Err(()) => return Task::none(),
+                        };
+                    self.advanced_wizard_open = AdvancedWizardOpen::None;
+                    self.dump_parts.reset();
+                    return self.start_edl_reboot_with_loader(
+                        RebootTarget::System,
+                        std::path::PathBuf::from(loader),
+                    );
+                }
                 self.dump_parts.back();
                 Task::none()
             }
@@ -249,6 +265,7 @@ impl App {
                     Ok(p) => p,
                     Err(()) => return Task::none(),
                 };
+                self.dump_parts.entry_connection = Some(self.connection);
                 self.dump_parts.scanning = true;
                 self.dump_parts.scan_error = None;
                 self.dump_parts.rows.clear();
@@ -418,6 +435,22 @@ impl App {
                 Task::none()
             }
             FlashPartsMsg::FlashPartsBack => {
+                if self.flash_parts.step == 1
+                    && partition_table_leading_action(self.flash_parts.entry_connection)
+                        == WizardLeadingAction::Cancel
+                {
+                    let loader =
+                        match self.validate_loader_path(&self.flash_parts.loader_path.clone()) {
+                            Ok(loader) => loader,
+                            Err(()) => return Task::none(),
+                        };
+                    self.advanced_wizard_open = AdvancedWizardOpen::None;
+                    self.flash_parts.reset();
+                    return self.start_edl_reboot_with_loader(
+                        RebootTarget::System,
+                        std::path::PathBuf::from(loader),
+                    );
+                }
                 self.flash_parts.back();
                 Task::none()
             }
@@ -432,6 +465,7 @@ impl App {
                     Ok(p) => p,
                     Err(()) => return Task::none(),
                 };
+                self.flash_parts.entry_connection = Some(self.connection);
                 // Loader-upload + GPT read to enumerate partitions — a
                 // *read*, not a flash. Use the Advanced busy view so the
                 // dialog shows `busy_partition_scan` ("Reading partition

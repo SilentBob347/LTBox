@@ -3,13 +3,13 @@
 
 use crate::pickers;
 use crate::{
-    AdvAction, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode, SkrootFlavor,
-    VerChoice, is_loader_file,
+    AdvAction, ConnectionStatus, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode,
+    SkrootFlavor, VerChoice, is_loader_file,
 };
 use std::collections::BTreeMap;
 
 use ltbox_patch::konabess::{
-    GpuTable, GpuTableIssue, GpuTableValidation, KonaBessExport, VendorBootDtbInfo,
+    GpuGroup, GpuTable, GpuTableIssue, GpuTableValidation, KonaBessExport, VendorBootDtbInfo,
     build_gpu_level_from_template, normalize_edited_gpu_table, parse_gpu_cell, validate_gpu_table,
 };
 
@@ -868,6 +868,9 @@ pub(crate) struct FlashPartsWizard {
     pub(crate) rows: Vec<FlashPartRow>,
     pub(crate) scanning: bool,
     pub(crate) scan_error: Option<String>,
+    /// Connection state captured when the GPT scan started. The table-step
+    /// leading action must not infer this from the live post-scan EDL state.
+    pub(crate) entry_connection: Option<ConnectionStatus>,
     pub(crate) sort_col: PartsSortColumn,
     /// `true` → descending. Default `false` (ascending) on first scan
     /// so initial layout matches the device's GPT order well enough
@@ -998,6 +1001,9 @@ pub(crate) struct DumpPartsWizard {
     pub(crate) output_dir: Option<String>,
     pub(crate) scanning: bool,
     pub(crate) scan_error: Option<String>,
+    /// Connection state captured when the GPT scan started. The table-step
+    /// leading action must not infer this from the live post-scan EDL state.
+    pub(crate) entry_connection: Option<ConnectionStatus>,
     pub(crate) sort_col: PartsSortColumn,
     pub(crate) sort_desc: bool,
 }
@@ -1266,8 +1272,30 @@ pub(crate) struct KonaBessWizard {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum GpuCellLocation {
-    GroupHeader { property: usize },
     Level { level: usize, property: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuPropertyLocation {
+    GroupHeader,
+    Level,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GpuPropertyEditability {
+    ReadOnly,
+    Editable,
+}
+
+pub(crate) fn gpu_property_editability(
+    location: GpuPropertyLocation,
+    property_name: &str,
+) -> GpuPropertyEditability {
+    match location {
+        GpuPropertyLocation::GroupHeader => GpuPropertyEditability::ReadOnly,
+        GpuPropertyLocation::Level if property_name == "reg" => GpuPropertyEditability::ReadOnly,
+        GpuPropertyLocation::Level => GpuPropertyEditability::Editable,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1278,14 +1306,6 @@ pub(crate) struct GpuCellKey {
 }
 
 impl GpuCellKey {
-    pub(crate) const fn group_header(group: usize, property: usize, cell: usize) -> Self {
-        Self {
-            group,
-            location: GpuCellLocation::GroupHeader { property },
-            cell,
-        }
-    }
-
     pub(crate) const fn level(group: usize, level: usize, property: usize, cell: usize) -> Self {
         Self {
             group,
@@ -1299,16 +1319,6 @@ impl GpuCellKey {
 pub(crate) struct GpuCellEdit {
     pub(crate) text: String,
     pub(crate) has_error: bool,
-}
-
-pub(crate) fn is_normalization_owned_cell(key: GpuCellKey, property_name: &str) -> bool {
-    match key.location {
-        GpuCellLocation::GroupHeader { .. } => matches!(
-            property_name,
-            "qcom,initial-pwrlevel" | "qcom,initial-min-pwrlevel"
-        ),
-        GpuCellLocation::Level { .. } => property_name == "reg",
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1415,6 +1425,29 @@ impl KonaBessWizard {
             });
         }
         let mut table = export.table;
+        if let Some(stock) = self.stock_table.as_ref() {
+            // KonaBess profiles provide editable level data. The selected
+            // device remains authoritative for group identity and every bin
+            // header property, including FDT cell metadata and SKU bindings.
+            table.groups = stock
+                .groups
+                .iter()
+                .map(|stock_group| {
+                    table
+                        .groups
+                        .iter()
+                        .find(|imported_group| imported_group.id == stock_group.id)
+                        .map_or_else(
+                            || stock_group.clone(),
+                            |imported_group| GpuGroup {
+                                id: stock_group.id,
+                                header_properties: stock_group.header_properties.clone(),
+                                levels: imported_group.levels.clone(),
+                            },
+                        )
+                })
+                .collect();
+        }
         if let Some(stock) = self.stock_table.as_ref()
             && let Ok(normalized) = normalize_edited_gpu_table(stock, &table)
         {
@@ -1435,7 +1468,9 @@ impl KonaBessWizard {
         else {
             return false;
         };
-        if is_normalization_owned_cell(key, &property_name) {
+        if gpu_property_editability(GpuPropertyLocation::Level, &property_name)
+            == GpuPropertyEditability::ReadOnly
+        {
             return false;
         }
         let parsed = if property_name == "qcom,gpu-freq" {
@@ -1659,24 +1694,14 @@ impl Wizard for KonaBessWizard {
 impl KonaBessWizard {
     fn cell_property(&self, key: GpuCellKey) -> Option<&ltbox_patch::konabess::GpuProperty> {
         let group = self.edited_table.as_ref()?.groups.get(key.group)?;
-        match key.location {
-            GpuCellLocation::GroupHeader { property } => group.header_properties.get(property),
-            GpuCellLocation::Level { level, property } => {
-                group.levels.get(level)?.properties.get(property)
-            }
-        }
+        let GpuCellLocation::Level { level, property } = key.location;
+        group.levels.get(level)?.properties.get(property)
     }
 
     fn cell_mut(table: &mut GpuTable, key: GpuCellKey) -> Option<&mut u32> {
         let group = table.groups.get_mut(key.group)?;
-        let property = match key.location {
-            GpuCellLocation::GroupHeader { property } => {
-                group.header_properties.get_mut(property)?
-            }
-            GpuCellLocation::Level { level, property } => {
-                group.levels.get_mut(level)?.properties.get_mut(property)?
-            }
-        };
+        let GpuCellLocation::Level { level, property } = key.location;
+        let property = group.levels.get_mut(level)?.properties.get_mut(property)?;
         property.cells.get_mut(key.cell)
     }
 
@@ -1684,17 +1709,13 @@ impl KonaBessWizard {
         let table = self.edited_table.as_ref()?;
         let group = table.groups.get(key.group)?;
         let property = self.cell_property(key)?;
-        Some(match key.location {
-            GpuCellLocation::GroupHeader { .. } => {
-                format!("group {} / {}", group.id, property.name)
-            }
-            GpuCellLocation::Level { level, .. } => format!(
-                "group {} / level {} / {}",
-                group.id,
-                group.levels.get(level)?.id,
-                property.name
-            ),
-        })
+        let GpuCellLocation::Level { level, .. } = key.location;
+        Some(format!(
+            "group {} / level {} / {}",
+            group.id,
+            group.levels.get(level)?.id,
+            property.name
+        ))
     }
 }
 
@@ -2170,33 +2191,33 @@ mod konabess_tests {
     }
 
     #[test]
-    fn ui_cell_edit_path_rejects_normalization_owned_cells() {
+    fn every_group_header_property_is_read_only_and_level_reg_stays_read_only() {
+        for property_name in [
+            "qcom,speed-bin",
+            "qcom,sku-codes",
+            "#address-cells",
+            "#size-cells",
+            "qcom,initial-pwrlevel",
+            "qcom,initial-min-pwrlevel",
+            "vendor,unknown-header",
+        ] {
+            assert_eq!(
+                gpu_property_editability(GpuPropertyLocation::GroupHeader, property_name),
+                GpuPropertyEditability::ReadOnly
+            );
+        }
+        assert_eq!(
+            gpu_property_editability(GpuPropertyLocation::Level, "reg"),
+            GpuPropertyEditability::ReadOnly
+        );
+        assert_eq!(
+            gpu_property_editability(GpuPropertyLocation::Level, "qcom,gpu-freq"),
+            GpuPropertyEditability::Editable
+        );
+
         let mut wizard = ready_wizard(700_000_000);
-        for table in [
-            wizard.stock_table.as_mut().unwrap(),
-            wizard.edited_table.as_mut().unwrap(),
-        ] {
-            table.groups[0].header_properties.extend([
-                GpuProperty {
-                    name: "qcom,initial-pwrlevel".into(),
-                    cells: vec![0],
-                },
-                GpuProperty {
-                    name: "qcom,initial-min-pwrlevel".into(),
-                    cells: vec![0],
-                },
-            ]);
-        }
         let before = wizard.edited_table.clone();
-
-        for key in [
-            GpuCellKey::level(0, 0, 0, 0),
-            GpuCellKey::group_header(0, 0, 0),
-            GpuCellKey::group_header(0, 1, 0),
-        ] {
-            assert!(!wizard.edit_cell(key, "99".into()));
-        }
-
+        assert!(!wizard.edit_cell(GpuCellKey::level(0, 0, 0, 0), "99".into()));
         assert_eq!(wizard.edited_table, before);
         assert!(wizard.cell_edits.is_empty());
     }
@@ -2283,7 +2304,7 @@ mod konabess_tests {
     }
 
     #[test]
-    fn vector_header_cells_are_committed_independently() {
+    fn import_preserves_device_group_headers_and_ignores_foreign_groups() {
         let mut wizard = ready_wizard(700_000_000);
         let sku_codes = GpuProperty {
             name: "qcom,sku-codes".into(),
@@ -2295,18 +2316,30 @@ mod konabess_tests {
         wizard.edited_table.as_mut().unwrap().groups[0]
             .header_properties
             .push(sku_codes);
-        let second_sku = GpuCellKey::group_header(0, 0, 1);
+        let mut imported = wizard.edited_table.clone().unwrap();
+        imported.groups[0].header_properties[0].cells = vec![9, 8, 7];
+        imported.groups[0].levels[0].properties[1].cells[0] = 800_000_000;
+        let mut foreign_group = imported.groups[0].clone();
+        foreign_group.id = 99;
+        imported.groups.push(foreign_group);
 
-        assert!(wizard.edit_cell(second_sku, "0x20".into()));
+        wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "sun".into(),
+                description: "unsafe header replacement".into(),
+                table: imported,
+            })
+            .unwrap();
 
         assert_eq!(
             wizard.edited_table.as_ref().unwrap().groups[0].header_properties[0].cells,
-            [1, 32, 3]
-        );
-        assert_eq!(
-            wizard.stock_table.as_ref().unwrap().groups[0].header_properties[0].cells,
             [1, 2, 3]
         );
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].levels[0].properties[1].cells,
+            [800_000_000]
+        );
+        assert_eq!(wizard.edited_table.as_ref().unwrap().groups.len(), 1);
     }
 
     #[test]

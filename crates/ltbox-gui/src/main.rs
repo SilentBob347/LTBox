@@ -1491,6 +1491,15 @@ impl AdvancedWizardOpen {
     }
 }
 
+fn partition_table_leading_action(
+    entry_connection: Option<ConnectionStatus>,
+) -> WizardLeadingAction {
+    match entry_connection {
+        Some(ConnectionStatus::Edl) | None => WizardLeadingAction::Back,
+        Some(_) => WizardLeadingAction::Cancel,
+    }
+}
+
 fn edl_entry_action(conn: ConnectionStatus) -> EdlEntryAction {
     match conn {
         ConnectionStatus::Edl => EdlEntryAction::AlreadyEdl,
@@ -4123,6 +4132,109 @@ mod tests {
         w.rows[0].state = FlashRowState::Erase;
         w.rows[0].file_path = None;
         assert!(w.can_next());
+    }
+
+    #[test]
+    fn advanced_partition_tables_started_in_edl_keep_back_without_rebooting() {
+        assert_eq!(
+            partition_table_leading_action(Some(ConnectionStatus::Edl)),
+            WizardLeadingAction::Back
+        );
+
+        let mut flash_app = App {
+            advanced_wizard_open: AdvancedWizardOpen::FlashParts,
+            connection: ConnectionStatus::Edl,
+            flash_parts: FlashPartsWizard {
+                step: 1,
+                entry_connection: Some(ConnectionStatus::Edl),
+                ..FlashPartsWizard::default()
+            },
+            ..App::default()
+        };
+        let _task = flash_app.update_flash_parts(FlashPartsMsg::FlashPartsBack);
+        assert_eq!(flash_app.flash_parts.step, 0);
+        assert!(!flash_app.busy);
+        assert_eq!(
+            flash_app.advanced_wizard_open,
+            AdvancedWizardOpen::FlashParts
+        );
+
+        let mut dump_app = App {
+            advanced_wizard_open: AdvancedWizardOpen::DumpParts,
+            connection: ConnectionStatus::Edl,
+            dump_parts: DumpPartsWizard {
+                step: 1,
+                entry_connection: Some(ConnectionStatus::Edl),
+                ..DumpPartsWizard::default()
+            },
+            ..App::default()
+        };
+        let _task = dump_app.update_dump_parts(DumpPartsMsg::DumpPartsBack);
+        assert_eq!(dump_app.dump_parts.step, 0);
+        assert!(!dump_app.busy);
+        assert_eq!(dump_app.advanced_wizard_open, AdvancedWizardOpen::DumpParts);
+    }
+
+    #[test]
+    fn advanced_partition_tables_started_elsewhere_cancel_and_schedule_system_reboot() {
+        assert_eq!(
+            partition_table_leading_action(Some(ConnectionStatus::Adb)),
+            WizardLeadingAction::Cancel
+        );
+        assert_eq!(
+            partition_table_leading_action(Some(ConnectionStatus::Fastboot)),
+            WizardLeadingAction::Cancel
+        );
+        assert_eq!(
+            partition_table_leading_action(Some(ConnectionStatus::None)),
+            WizardLeadingAction::Cancel
+        );
+        assert_eq!(
+            partition_table_leading_action(None),
+            WizardLeadingAction::Back
+        );
+
+        let loader = tempfile::Builder::new()
+            .suffix(".melf")
+            .tempfile()
+            .expect("temporary loader");
+        let loader_path = loader.path().to_string_lossy().to_string();
+
+        let mut flash_app = App {
+            advanced_wizard_open: AdvancedWizardOpen::FlashParts,
+            // The live state is EDL after the scan; only the captured entry
+            // state can prove that LTBox changed it.
+            connection: ConnectionStatus::Edl,
+            flash_parts: FlashPartsWizard {
+                step: 1,
+                loader_path: Some(loader_path.clone()),
+                entry_connection: Some(ConnectionStatus::Adb),
+                ..FlashPartsWizard::default()
+            },
+            ..App::default()
+        };
+        let _task = flash_app.update_flash_parts(FlashPartsMsg::FlashPartsBack);
+        assert!(flash_app.busy);
+        assert_eq!(flash_app.busy_view, Some(View::Reboot));
+        assert_eq!(flash_app.advanced_wizard_open, AdvancedWizardOpen::None);
+        assert_eq!(flash_app.flash_parts.entry_connection, None);
+
+        let mut dump_app = App {
+            advanced_wizard_open: AdvancedWizardOpen::DumpParts,
+            connection: ConnectionStatus::Edl,
+            dump_parts: DumpPartsWizard {
+                step: 1,
+                loader_path: Some(loader_path),
+                entry_connection: Some(ConnectionStatus::Fastboot),
+                ..DumpPartsWizard::default()
+            },
+            ..App::default()
+        };
+        let _task = dump_app.update_dump_parts(DumpPartsMsg::DumpPartsBack);
+        assert!(dump_app.busy);
+        assert_eq!(dump_app.busy_view, Some(View::Reboot));
+        assert_eq!(dump_app.advanced_wizard_open, AdvancedWizardOpen::None);
+        assert_eq!(dump_app.dump_parts.entry_connection, None);
     }
 
     #[test]

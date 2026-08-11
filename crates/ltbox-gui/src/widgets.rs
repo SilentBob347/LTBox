@@ -707,8 +707,15 @@ pub(crate) fn m3_text_button<'a>(label: String) -> button::Button<'a, Message> {
     m3_button(label, md_text_btn_style)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WizardLeadingAction {
+    None,
+    Back,
+    Cancel,
+}
+
 fn wizard_nav_fabs<'a>(
-    can_back: bool,
+    leading_action: WizardLeadingAction,
     next_label: &str,
     can_next: bool,
     disabled_next_hint: Option<String>,
@@ -724,27 +731,47 @@ fn wizard_nav_fabs<'a>(
 
     if layout.grouped_leading {
         let mut utility_actions = row![].spacing(0).align_y(iced::Alignment::Center);
-        if can_back {
-            utility_actions = utility_actions.push(wizard_utility_action(
+        if leading_action != WizardLeadingAction::None {
+            utility_actions = match leading_action {
+                WizardLeadingAction::None => utility_actions,
+                WizardLeadingAction::Cancel => utility_actions.push(wizard_error_utility_action(
+                    icon::fab_cancel(),
+                    back_label.to_string(),
+                    Some(back_msg),
+                )),
+                WizardLeadingAction::Back => utility_actions.push(wizard_utility_action(
+                    icon::fab_back(),
+                    back_label.to_string(),
+                    Some(back_msg),
+                )),
+            };
+        }
+        if leading_action == WizardLeadingAction::Back {
+            utility_actions = utility_actions.push(wizard_error_utility_action(
+                icon::fab_cancel(),
+                ltbox_core::i18n::tr("btn_cancel").to_string(),
+                Some(Message::StartOver),
+            ));
+        }
+        leading = leading.push(wizard_utility_toolbar(utility_actions));
+    } else if leading_action != WizardLeadingAction::None {
+        leading = match leading_action {
+            WizardLeadingAction::None => leading,
+            WizardLeadingAction::Cancel => {
+                leading.push(wizard_utility_toolbar(wizard_error_utility_action(
+                    icon::fab_cancel(),
+                    back_label.to_string(),
+                    Some(back_msg),
+                )))
+            }
+            WizardLeadingAction::Back => leading.push(wizard_fab(
                 icon::fab_back(),
                 back_label.to_string(),
                 Some(back_msg),
-            ));
-        }
-        utility_actions = utility_actions.push(wizard_error_utility_action(
-            icon::fab_cancel(),
-            ltbox_core::i18n::tr("btn_cancel").to_string(),
-            Some(Message::StartOver),
-        ));
-        leading = leading.push(wizard_utility_toolbar(utility_actions));
-    } else if can_back {
-        leading = leading.push(wizard_fab(
-            icon::fab_back(),
-            back_label.to_string(),
-            Some(back_msg),
-            fab_surface_style,
-            None,
-        ));
+                fab_surface_style,
+                None,
+            )),
+        };
     }
 
     let mut trailing = row![]
@@ -779,7 +806,11 @@ pub(crate) fn wizard_nav<'a>(
     back_label: &str,
 ) -> Element<'a, Message> {
     wizard_nav_fabs(
-        can_back,
+        if can_back {
+            WizardLeadingAction::Back
+        } else {
+            WizardLeadingAction::None
+        },
         next_label,
         can_next,
         None,
@@ -1143,6 +1174,25 @@ pub(crate) fn wizard_nav_generic<'a>(
     )
 }
 
+pub(crate) fn wizard_nav_generic_with_leading_action<'a>(
+    leading_action: WizardLeadingAction,
+    next_label: &str,
+    can_next: bool,
+    leading_label: &str,
+    leading_msg: Message,
+    next_msg: Message,
+) -> Element<'a, Message> {
+    wizard_nav_fabs(
+        leading_action,
+        next_label,
+        can_next,
+        None,
+        leading_label,
+        leading_msg,
+        next_msg,
+    )
+}
+
 pub(crate) fn wizard_nav_generic_with_disabled_next_tooltip<'a>(
     can_back: bool,
     next_label: &str,
@@ -1153,12 +1203,35 @@ pub(crate) fn wizard_nav_generic_with_disabled_next_tooltip<'a>(
     next_msg: Message,
 ) -> Element<'a, Message> {
     wizard_nav_fabs(
-        can_back,
+        if can_back {
+            WizardLeadingAction::Back
+        } else {
+            WizardLeadingAction::None
+        },
         next_label,
         can_next,
         disabled_next_hint,
         back_label,
         back_msg,
+        next_msg,
+    )
+}
+
+pub(crate) fn wizard_nav_cancel_generic_with_disabled_next_tooltip<'a>(
+    next_label: &str,
+    can_next: bool,
+    disabled_next_hint: Option<String>,
+    cancel_label: &str,
+    cancel_msg: Message,
+    next_msg: Message,
+) -> Element<'a, Message> {
+    wizard_nav_fabs(
+        WizardLeadingAction::Cancel,
+        next_label,
+        can_next,
+        disabled_next_hint,
+        cancel_label,
+        cancel_msg,
         next_msg,
     )
 }
