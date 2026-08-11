@@ -260,6 +260,7 @@ mod tests {
                 model: Some("test".into()),
                 chip: Some("waipio".into()),
                 gpu_shape: None,
+                table: None,
             },
             structurally_matches: true,
         }

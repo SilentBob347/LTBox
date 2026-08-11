@@ -10,13 +10,15 @@
 //! cargo test -p ltbox-patch --test konabess_fixtures -- --ignored --nocapture
 //! ```
 
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
 use ltbox_patch::avb;
 use ltbox_patch::konabess::{
     GpuTable, KonaBessExport, build_konabess_avb_images, classify_vendor_boot_dtbs,
-    extract_vendor_boot_dtbs, parse_fdt_gpu_info, read_export, replace_vendor_boot_dtb,
+    extract_vendor_boot_dtbs, inspect_vendor_boot_gpu_candidates, parse_fdt_gpu_info, read_export,
+    replace_fdt_gpu_table_from_table, replace_vendor_boot_dtb, replace_vendor_boot_gpu_table,
 };
 
 fn required_path(name: &str) -> PathBuf {
@@ -75,6 +77,145 @@ fn changed_cell_count(before: &GpuTable, after: &GpuTable) -> usize {
                 .sum::<usize>()
         })
         .sum()
+}
+
+fn heterogeneous_group_count(table: &GpuTable) -> usize {
+    table
+        .groups
+        .iter()
+        .filter(|group| {
+            let Some(first) = group.levels.first() else {
+                return false;
+            };
+            let expected = first
+                .properties
+                .iter()
+                .map(|property| property.name.as_str())
+                .collect::<BTreeSet<_>>();
+            group.levels.iter().skip(1).any(|level| {
+                level
+                    .properties
+                    .iter()
+                    .map(|property| property.name.as_str())
+                    .collect::<BTreeSet<_>>()
+                    != expected
+            })
+        })
+        .count()
+}
+
+#[test]
+#[ignore = "requires LTBOX_TEST_KONABESS_VENDOR_BOOT_DIR with local real images"]
+fn every_real_gpu_dtb_round_trips_and_in_memory_edits_preserve_other_dtbs() {
+    let fixture_dir = required_path("LTBOX_TEST_KONABESS_VENDOR_BOOT_DIR");
+    let cases = [
+        ("tb320fc.img", &[3usize, 4, 5, 6][..]),
+        ("tb321fu.img", &[4usize, 5, 6, 7, 8, 9, 10][..]),
+        (
+            "tb322fc.img",
+            &[2usize, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12][..],
+        ),
+        ("tb323fu.img", &[0usize, 2, 4, 5, 6, 7, 8, 9, 12, 13][..]),
+    ];
+
+    let mut heterogeneous_stock_groups = 0;
+    for (file_name, expected_indices) in cases {
+        let image = std::fs::read(fixture_dir.join(file_name)).unwrap();
+        let original_blobs = extract_vendor_boot_dtbs(&image).unwrap();
+        let candidates = inspect_vendor_boot_gpu_candidates(&image).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.index)
+                .collect::<Vec<_>>(),
+            expected_indices
+        );
+
+        for candidate in &candidates {
+            let chip = candidate
+                .chip
+                .as_deref()
+                .expect("candidate chip must be enabled");
+            let table = candidate.table.as_ref().expect("candidate table");
+            assert_eq!(candidate.gpu_shape, Some(table.into()));
+            let rebuilt =
+                replace_fdt_gpu_table_from_table(&original_blobs[candidate.index], chip, table)
+                    .unwrap();
+            assert_eq!(
+                rebuilt, original_blobs[candidate.index],
+                "{file_name} DTB {} ({chip}) was not byte-identical",
+                candidate.index
+            );
+            heterogeneous_stock_groups += heterogeneous_group_count(table);
+        }
+
+        let target = &candidates[0];
+        let chip = target.chip.as_deref().unwrap();
+        let mut edited = target.table.clone().unwrap();
+        let level = &mut edited.groups[0].levels[0];
+        let frequency = level
+            .properties
+            .iter_mut()
+            .find(|property| property.name == "qcom,gpu-freq")
+            .unwrap();
+        frequency.cells[0] = frequency.cells[0].checked_add(1).unwrap();
+        let expected_frequency = frequency.cells[0];
+        let level_vote = level
+            .properties
+            .iter_mut()
+            .find(|property| property.name == "qcom,level")
+            .unwrap();
+        level_vote.cells[0] = level_vote.cells[0].checked_add(1).unwrap();
+        let expected_level_vote = level_vote.cells[0];
+
+        let rebuilt_image =
+            replace_vendor_boot_gpu_table(&image, target.index, chip, &edited).unwrap();
+        let rebuilt_blobs = extract_vendor_boot_dtbs(&rebuilt_image).unwrap();
+        for (index, (before, after)) in original_blobs.iter().zip(&rebuilt_blobs).enumerate() {
+            if index != target.index {
+                assert_eq!(before, after, "{file_name} non-target DTB {index} changed");
+            }
+        }
+        let applied = parse_fdt_gpu_info(&rebuilt_blobs[target.index])
+            .unwrap()
+            .table
+            .unwrap();
+        let applied_level = &applied.groups[0].levels[0];
+        assert_eq!(
+            applied_level
+                .properties
+                .iter()
+                .find(|property| property.name == "qcom,gpu-freq")
+                .unwrap()
+                .cells,
+            [expected_frequency]
+        );
+        assert_eq!(
+            applied_level
+                .properties
+                .iter()
+                .find(|property| property.name == "qcom,level")
+                .unwrap()
+                .cells,
+            [expected_level_vote]
+        );
+
+        let chips = candidates
+            .iter()
+            .map(|candidate| candidate.chip.as_deref().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let image_heterogeneous_groups = candidates
+            .iter()
+            .map(|candidate| heterogeneous_group_count(candidate.table.as_ref().unwrap()))
+            .sum::<usize>();
+        println!(
+            "{file_name}: byte-identical all candidates; chips={chips:?}; heterogeneous_groups={image_heterogeneous_groups}"
+        );
+    }
+    assert!(
+        heterogeneous_stock_groups > 0,
+        "real stock tables unexpectedly became homogeneous"
+    );
 }
 
 #[test]

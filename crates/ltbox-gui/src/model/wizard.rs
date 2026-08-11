@@ -1580,6 +1580,7 @@ mod konabess_tests {
                         level_count: index + 1,
                     }],
                 }),
+                table: None,
             },
             structurally_matches,
         }

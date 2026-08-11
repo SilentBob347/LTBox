@@ -4,7 +4,10 @@ use std::ops::Range;
 
 use ltbox_core::Result;
 
-use super::{GpuGroup, GpuLevel, GpuProperty, GpuTable, KonaBessExport, error};
+use super::{
+    GpuGroup, GpuLevel, GpuProperty, GpuTable, GpuTableIssue, KonaBessExport, error,
+    validate_gpu_table,
+};
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
 const FDT_BEGIN_NODE: u32 = 1;
@@ -74,6 +77,25 @@ pub fn replace_fdt_gpu_table(fdt: &[u8], export: &KonaBessExport) -> Result<Vec<
     replace_fdt_gpu_table_with_chip(fdt, export, None)
 }
 
+/// Replace a GPU table directly from an in-memory editor model.
+///
+/// `chip` is checked against the target FDT exactly as it is for a file-backed
+/// [`KonaBessExport`].
+pub fn replace_fdt_gpu_table_from_table(
+    fdt: &[u8],
+    chip: &str,
+    table: &GpuTable,
+) -> Result<Vec<u8>> {
+    replace_fdt_gpu_table(
+        fdt,
+        &KonaBessExport {
+            chip: chip.to_string(),
+            description: String::new(),
+            table: table.clone(),
+        },
+    )
+}
+
 pub(super) fn replace_fdt_gpu_table_with_chip(
     fdt: &[u8],
     export: &KonaBessExport,
@@ -94,8 +116,148 @@ pub(super) fn replace_fdt_gpu_table_with_chip(
     }
     let table_range = parsed
         .table_range
+        .clone()
         .ok_or_else(|| error("target FDT has no GPU power-level table"))?;
-    rebuild_fdt(fdt, parsed.layout, table_range, &export.table)
+    let source_table = parsed
+        .info
+        .table
+        .as_ref()
+        .ok_or_else(|| error("target FDT has no GPU power-level table"))?;
+    let normalization = normalize_edited_gpu_table(source_table, &export.table)?;
+    rebuild_fdt(fdt, parsed.layout, table_range, &normalization.table)
+}
+
+/// A normalized editor table plus non-blocking findings suitable for GUI display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuTableNormalization {
+    /// Table with sequential row ids/`reg` cells and retargeted initial indices.
+    pub table: GpuTable,
+    /// Non-blocking validation and retargeting findings.
+    pub advisories: Vec<GpuTableIssue>,
+}
+
+/// Normalize editor-owned row order while preserving the source table's
+/// initial-frequency targets.
+///
+/// For each initial-power-level index, the original target frequency is looked
+/// up in the edited row order. If that frequency no longer exists, the old
+/// index is clamped to the edited group's last row. This makes deletion
+/// deterministic and guarantees an in-range index. Per-row properties are not
+/// reordered or synthesized; only the row id and its scalar `reg` cell are
+/// rewritten to the row's new zero-based position.
+///
+/// # Errors
+///
+/// Returns an error when `edited` has a blocking structural validation issue or
+/// contains more levels than can be represented by a `u32` id.
+pub fn normalize_edited_gpu_table(
+    source: &GpuTable,
+    edited: &GpuTable,
+) -> Result<GpuTableNormalization> {
+    let validation = validate_gpu_table(edited);
+    if let Some(first) = validation.hard_errors.first() {
+        return Err(error(format!(
+            "replacement GPU table has {} hard validation error(s); {}: {}",
+            validation.hard_errors.len(),
+            first.path,
+            first.message
+        )));
+    }
+
+    let mut advisories = validation.warnings;
+    let mut normalized = edited.clone();
+    for group in &mut normalized.groups {
+        let source_group = source
+            .groups
+            .iter()
+            .find(|candidate| candidate.id == group.id);
+        for property_name in ["qcom,initial-pwrlevel", "qcom,initial-min-pwrlevel"] {
+            let Some(property_position) = group
+                .header_properties
+                .iter()
+                .position(|property| property.name == property_name)
+            else {
+                continue;
+            };
+            let old_index = source_group
+                .and_then(|source_group| {
+                    scalar_property(&source_group.header_properties, property_name)
+                })
+                .unwrap_or(group.header_properties[property_position].cells[0]);
+            let old_frequency = source_group
+                .and_then(|source_group| source_group.levels.get(old_index as usize))
+                .and_then(level_frequency);
+            let matching_indices = old_frequency
+                .map(|frequency| {
+                    group
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, level)| {
+                            (level_frequency(level) == Some(frequency)).then_some(index)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let retargeted = matching_indices.first().copied().unwrap_or_else(|| {
+                usize::try_from(old_index)
+                    .unwrap_or(usize::MAX)
+                    .min(group.levels.len() - 1)
+            });
+            let new_frequency = level_frequency(&group.levels[retargeted])
+                .expect("hard validation requires scalar qcom,gpu-freq");
+            if let Some(old_frequency) = old_frequency {
+                let path = format!("group {} / {property_name}", group.id);
+                if matching_indices.is_empty() {
+                    advisories.push(GpuTableIssue {
+                        path,
+                        message: format!(
+                            "group {} target frequency {old_frequency} Hz was deleted; retargeted to {new_frequency} Hz at level {retargeted}",
+                            group.id
+                        ),
+                    });
+                } else if matching_indices.len() > 1 {
+                    advisories.push(GpuTableIssue {
+                        path,
+                        message: format!(
+                            "group {} target frequency {old_frequency} Hz matches {} levels; first match wins and retargets to {new_frequency} Hz at level {retargeted}",
+                            group.id,
+                            matching_indices.len()
+                        ),
+                    });
+                }
+            }
+            group.header_properties[property_position].cells[0] = retargeted as u32;
+        }
+
+        for (position, level) in group.levels.iter_mut().enumerate() {
+            let id = u32::try_from(position)
+                .map_err(|_| error("replacement GPU group has more than u32::MAX levels"))?;
+            level.id = id;
+            let reg = level
+                .properties
+                .iter_mut()
+                .find(|property| property.name == "reg")
+                .expect("hard validation requires scalar reg");
+            reg.cells[0] = id;
+        }
+    }
+    Ok(GpuTableNormalization {
+        table: normalized,
+        advisories,
+    })
+}
+
+fn scalar_property(properties: &[GpuProperty], name: &str) -> Option<u32> {
+    let cells = &properties
+        .iter()
+        .find(|property| property.name == name)?
+        .cells;
+    (cells.len() == 1).then(|| cells[0])
+}
+
+fn level_frequency(level: &GpuLevel) -> Option<u32> {
+    scalar_property(&level.properties, "qcom,gpu-freq")
 }
 
 fn parse_fdt(fdt: &[u8]) -> Result<ParsedFdt> {
@@ -491,15 +653,31 @@ fn parse_cell_property(name: &str, value: &[u8]) -> Result<GpuProperty> {
 }
 
 fn infer_chip(compatible: &[String]) -> Option<String> {
-    const SUPPORTED: [&str; 2] = ["pineapple", "sun"];
-    for chip in SUPPORTED {
-        let prefix = format!("qcom,{chip}");
-        if compatible.iter().any(|value| {
-            value == &prefix
-                || value
-                    .strip_prefix(&prefix)
-                    .is_some_and(|suffix| suffix.starts_with('-'))
-        }) {
+    for (chip, values) in [
+        (
+            "pineapple",
+            &[
+                "qcom,pineapple",
+                "qcom,pineapplep",
+                "qcom,volcano",
+                "qcom,volcanop",
+            ][..],
+        ),
+        (
+            "sun",
+            &["qcom,sun", "qcom,sunp", "qcom,tuna", "qcom,tunap"][..],
+        ),
+        (
+            "diwali",
+            &["qcom,diwali", "qcom,diwali-lte", "qcom,diwalip"][..],
+        ),
+        ("alor", &["qcom,alor", "qcom,alorp"][..]),
+        ("canoe", &["qcom,canoe", "qcom,canoep"][..]),
+    ] {
+        if compatible
+            .iter()
+            .any(|compatible| values.contains(&compatible.as_str()))
+        {
             return Some(chip.to_string());
         }
     }
@@ -638,7 +816,11 @@ pub(super) mod test_support {
                                 },
                                 GpuProperty {
                                     name: "qcom,gpu-freq".into(),
-                                    cells: vec![base_frequency + id as u32],
+                                    cells: vec![base_frequency.saturating_sub(id as u32)],
+                                },
+                                GpuProperty {
+                                    name: "qcom,level".into(),
+                                    cells: vec![100],
                                 },
                             ],
                         })
@@ -746,6 +928,7 @@ mod tests {
         let after = parse_fdt(&rebuilt).unwrap();
         let new_range = after.table_range.clone().unwrap();
 
+        assert_eq!(rebuilt, fdt);
         assert_eq!(after.info.table, Some(original_table));
         assert_eq!(after.info.model.as_deref(), Some("Synthetic Sun"));
         let old_structure = &fdt[before.layout.structure.range()];
@@ -808,5 +991,241 @@ mod tests {
         };
         let error = replace_fdt_gpu_table(&fdt, &export).unwrap_err();
         assert!(error.to_string().contains("chip mismatch"));
+    }
+
+    #[test]
+    fn value_edit_preserves_unknown_properties() {
+        let mut source = table(&[(0, 3)], 900_000_000);
+        source.groups[0].header_properties.push(GpuProperty {
+            name: "vendor,unknown-header".into(),
+            cells: vec![7, 8, 9],
+        });
+        source.groups[0].levels[1].properties.push(GpuProperty {
+            name: "vendor,unknown-level".into(),
+            cells: vec![0xfeed_beef],
+        });
+        let fdt = synthetic_fdt("sun", "Synthetic Sun", &source);
+        let mut edited = source.clone();
+        scalar_property_mut(&mut edited.groups[0].levels[0].properties, "qcom,gpu-freq").cells[0] =
+            950_000_000;
+
+        let no_op = replace_fdt_gpu_table_from_table(&fdt, "sun", &source).unwrap();
+        assert_eq!(no_op, fdt);
+        let rebuilt = replace_fdt_gpu_table_from_table(&fdt, "sun", &edited).unwrap();
+        let changed_bytes = fdt
+            .iter()
+            .zip(&rebuilt)
+            .filter(|(before, after)| before != after)
+            .count();
+        assert!((1..=4).contains(&changed_bytes));
+        let applied = parse_fdt_gpu_info(&rebuilt).unwrap().table.unwrap();
+
+        assert_eq!(
+            scalar_property(&applied.groups[0].levels[0].properties, "qcom,gpu-freq"),
+            Some(950_000_000)
+        );
+        assert_eq!(
+            applied.groups[0]
+                .header_properties
+                .iter()
+                .find(|property| property.name == "vendor,unknown-header"),
+            source.groups[0]
+                .header_properties
+                .iter()
+                .find(|property| property.name == "vendor,unknown-header")
+        );
+        assert_eq!(
+            applied.groups[0].levels[1]
+                .properties
+                .iter()
+                .find(|property| property.name == "vendor,unknown-level"),
+            source.groups[0].levels[1]
+                .properties
+                .iter()
+                .find(|property| property.name == "vendor,unknown-level")
+        );
+    }
+
+    #[test]
+    fn add_and_remove_renumber_rows_retarget_initial_indices_and_keep_bus_votes() {
+        let mut source = table(&[(0, 3)], 900_000_000);
+        source.groups[0]
+            .header_properties
+            .iter_mut()
+            .find(|property| property.name == "qcom,initial-pwrlevel")
+            .unwrap()
+            .cells[0] = 2;
+        source.groups[0].header_properties.push(GpuProperty {
+            name: "qcom,initial-min-pwrlevel".into(),
+            cells: vec![2],
+        });
+        for (level, bus_vote) in source.groups[0].levels.iter_mut().zip([9, 6, 3]) {
+            level.properties.push(GpuProperty {
+                name: "qcom,bus-freq-ddr7".into(),
+                cells: vec![bus_vote],
+            });
+        }
+        let fdt = synthetic_fdt("sun", "Synthetic Sun", &source);
+
+        let mut removed = source.clone();
+        removed.groups[0].levels.remove(0);
+        let removed_fdt = replace_fdt_gpu_table_from_table(&fdt, "sun", &removed).unwrap();
+        let removed_table = parse_fdt_gpu_info(&removed_fdt).unwrap().table.unwrap();
+        assert_sequential_levels(&removed_table.groups[0]);
+        assert_eq!(
+            header_scalar(&removed_table.groups[0], "qcom,initial-pwrlevel"),
+            1
+        );
+        assert_eq!(
+            header_scalar(&removed_table.groups[0], "qcom,initial-min-pwrlevel"),
+            1
+        );
+        assert_eq!(
+            level_scalar(&removed_table.groups[0].levels[1], "qcom,gpu-freq"),
+            level_scalar(&source.groups[0].levels[2], "qcom,gpu-freq")
+        );
+        assert_eq!(
+            level_scalar(&removed_table.groups[0].levels[0], "qcom,bus-freq-ddr7"),
+            6
+        );
+        assert_eq!(
+            level_scalar(&removed_table.groups[0].levels[1], "qcom,bus-freq-ddr7"),
+            3
+        );
+
+        let mut added = source.clone();
+        let mut new_level = added.groups[0].levels[0].clone();
+        new_level.id = 99;
+        scalar_property_mut(&mut new_level.properties, "reg").cells[0] = 99;
+        scalar_property_mut(&mut new_level.properties, "qcom,gpu-freq").cells[0] = 1_000_000_000;
+        scalar_property_mut(&mut new_level.properties, "qcom,bus-freq-ddr7").cells[0] = 10;
+        added.groups[0].levels.insert(0, new_level);
+        let added_fdt = replace_fdt_gpu_table_from_table(&fdt, "sun", &added).unwrap();
+        let added_table = parse_fdt_gpu_info(&added_fdt).unwrap().table.unwrap();
+        assert_sequential_levels(&added_table.groups[0]);
+        assert_eq!(
+            header_scalar(&added_table.groups[0], "qcom,initial-pwrlevel"),
+            3
+        );
+        assert_eq!(
+            header_scalar(&added_table.groups[0], "qcom,initial-min-pwrlevel"),
+            3
+        );
+        assert_eq!(
+            level_scalar(&added_table.groups[0].levels[3], "qcom,gpu-freq"),
+            level_scalar(&source.groups[0].levels[2], "qcom,gpu-freq")
+        );
+        assert_eq!(
+            level_scalar(&added_table.groups[0].levels[0], "qcom,bus-freq-ddr7"),
+            10
+        );
+        assert_eq!(
+            level_scalar(&added_table.groups[0].levels[3], "qcom,bus-freq-ddr7"),
+            3
+        );
+    }
+
+    #[test]
+    fn normalization_advises_when_an_initial_target_is_deleted_or_ambiguous() {
+        let mut source = table(&[(0, 3)], 900_000_000);
+        scalar_property_mut(
+            &mut source.groups[0].header_properties,
+            "qcom,initial-pwrlevel",
+        )
+        .cells[0] = 1;
+        let old_frequency = level_scalar(&source.groups[0].levels[1], "qcom,gpu-freq");
+
+        let mut deleted = source.clone();
+        deleted.groups[0].levels.remove(1);
+        let deleted_normalization = normalize_edited_gpu_table(&source, &deleted).unwrap();
+        let new_frequency = level_scalar(
+            &deleted_normalization.table.groups[0].levels[1],
+            "qcom,gpu-freq",
+        );
+        let deleted_advisory = deleted_normalization
+            .advisories
+            .iter()
+            .find(|advisory| advisory.message.contains("was deleted"))
+            .expect("deleted-target advisory");
+        assert_eq!(deleted_advisory.path, "group 0 / qcom,initial-pwrlevel");
+        assert!(
+            deleted_advisory
+                .message
+                .contains(&old_frequency.to_string())
+        );
+        assert!(
+            deleted_advisory
+                .message
+                .contains(&new_frequency.to_string())
+        );
+
+        let mut duplicated = source.clone();
+        scalar_property_mut(
+            &mut duplicated.groups[0].levels[0].properties,
+            "qcom,gpu-freq",
+        )
+        .cells[0] = old_frequency;
+        let duplicated_normalization = normalize_edited_gpu_table(&source, &duplicated).unwrap();
+        assert_eq!(
+            header_scalar(
+                &duplicated_normalization.table.groups[0],
+                "qcom,initial-pwrlevel"
+            ),
+            0
+        );
+        let duplicate_advisory = duplicated_normalization
+            .advisories
+            .iter()
+            .find(|advisory| advisory.message.contains("first match wins"))
+            .expect("duplicate-frequency advisory");
+        assert_eq!(duplicate_advisory.path, "group 0 / qcom,initial-pwrlevel");
+        assert!(
+            duplicate_advisory
+                .message
+                .contains(&old_frequency.to_string())
+        );
+        assert!(duplicate_advisory.message.contains("matches 2 levels"));
+    }
+
+    #[test]
+    fn missing_initial_power_levels_validate_and_round_trip_unchanged() {
+        let mut source = table(&[(0, 2)], 900_000_000);
+        source.groups[0].header_properties.retain(|property| {
+            !matches!(
+                property.name.as_str(),
+                "qcom,initial-pwrlevel" | "qcom,initial-min-pwrlevel"
+            )
+        });
+        assert!(!validate_gpu_table(&source).has_hard_errors());
+
+        let fdt = synthetic_fdt("sun", "Synthetic Sun", &source);
+        let rebuilt = replace_fdt_gpu_table_from_table(&fdt, "sun", &source).unwrap();
+        assert_eq!(rebuilt, fdt);
+        assert_eq!(parse_fdt_gpu_info(&rebuilt).unwrap().table, Some(source));
+    }
+
+    fn scalar_property_mut<'a>(
+        properties: &'a mut [GpuProperty],
+        name: &str,
+    ) -> &'a mut GpuProperty {
+        properties
+            .iter_mut()
+            .find(|property| property.name == name)
+            .unwrap()
+    }
+
+    fn header_scalar(group: &GpuGroup, name: &str) -> u32 {
+        scalar_property(&group.header_properties, name).unwrap()
+    }
+
+    fn level_scalar(level: &GpuLevel, name: &str) -> u32 {
+        scalar_property(&level.properties, name).unwrap()
+    }
+
+    fn assert_sequential_levels(group: &GpuGroup) {
+        for (position, level) in group.levels.iter().enumerate() {
+            assert_eq!(level.id, position as u32);
+            assert_eq!(level_scalar(level, "reg"), position as u32);
+        }
     }
 }

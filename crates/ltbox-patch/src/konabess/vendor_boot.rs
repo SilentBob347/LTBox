@@ -46,6 +46,8 @@ pub struct VendorBootDtbInfo {
     pub model: Option<String>,
     pub chip: Option<String>,
     pub gpu_shape: Option<GpuTableShape>,
+    /// Complete parsed table for rendering and in-memory editing.
+    pub table: Option<GpuTable>,
 }
 
 /// One DTB plus the shape-only classification result for an export.
@@ -80,7 +82,7 @@ impl RangeParts {
     }
 }
 
-/// Enumerate all concatenated FDT blobs and report identity and GPU shape.
+/// Enumerate all concatenated FDT blobs and report identity and GPU contents.
 pub fn inspect_vendor_boot_dtbs(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> {
     let layout = parse_vendor_boot_layout(image)?;
     let blobs = fdt_ranges(&image[layout.dtb.range()])?;
@@ -91,15 +93,17 @@ pub fn inspect_vendor_boot_dtbs(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> 
             let parsed = parse_fdt_gpu_info(
                 &image[layout.dtb.start + range.start..layout.dtb.start + range.end],
             )?;
+            let gpu_shape = parsed.table.as_ref().map(GpuTableShape::from);
             Ok(VendorBootDtbInfo {
                 index,
                 model: parsed.model,
                 chip: parsed.chip,
-                gpu_shape: parsed.table.as_ref().map(GpuTableShape::from),
+                gpu_shape,
+                table: parsed.table,
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    if let Some(chip) = consensus_chip(infos.iter().filter_map(|info| info.chip.as_deref()))? {
+    if let Some(chip) = unanimous_chip(infos.iter().filter_map(|info| info.chip.as_deref())) {
         for info in &mut infos {
             if info.chip.is_none() {
                 info.chip = Some(chip.clone());
@@ -107,6 +111,14 @@ pub fn inspect_vendor_boot_dtbs(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> 
         }
     }
     Ok(infos)
+}
+
+/// Return only DTBs whose GPU table parsed successfully, with no export needed.
+pub fn inspect_vendor_boot_gpu_candidates(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> {
+    Ok(inspect_vendor_boot_dtbs(image)?
+        .into_iter()
+        .filter(|info| info.table.is_some())
+        .collect())
 }
 
 /// Classify every blob by exact ordered group ids and per-group level counts.
@@ -161,11 +173,16 @@ pub fn replace_vendor_boot_dtb(
 
     // This call performs the chip check before any output buffer or file is
     // produced, then serializes the replacement only after it passes.
-    let chips = ranges
-        .iter()
-        .map(|range| parse_fdt_gpu_info(&old_dtb[range.clone()]).map(|info| info.chip))
-        .collect::<Result<Vec<_>>>()?;
-    let section_chip = consensus_chip(chips.iter().filter_map(|chip| chip.as_deref()))?;
+    let target_chip = parse_fdt_gpu_info(&old_dtb[target.clone()])?.chip;
+    let section_chip = if target_chip.is_none() {
+        let chips = ranges
+            .iter()
+            .map(|range| parse_fdt_gpu_info(&old_dtb[range.clone()]).map(|info| info.chip))
+            .collect::<Result<Vec<_>>>()?;
+        consensus_chip(chips.iter().filter_map(|chip| chip.as_deref()))?
+    } else {
+        None
+    };
     let replacement =
         replace_fdt_gpu_table_with_chip(&old_dtb[target.clone()], export, section_chip.as_deref())?;
     let new_dtb_size = old_dtb
@@ -178,6 +195,24 @@ pub fn replace_vendor_boot_dtb(
     new_dtb.extend_from_slice(&replacement);
     new_dtb.extend_from_slice(&old_dtb[target.end..]);
     rebuild_vendor_boot(image, layout, &new_dtb)
+}
+
+/// Apply an edited table to one DTB without constructing or reading an export file.
+pub fn replace_vendor_boot_gpu_table(
+    image: &[u8],
+    target_index: usize,
+    chip: &str,
+    table: &GpuTable,
+) -> Result<Vec<u8>> {
+    replace_vendor_boot_dtb(
+        image,
+        target_index,
+        &KonaBessExport {
+            chip: chip.to_string(),
+            description: String::new(),
+            table: table.clone(),
+        },
+    )
 }
 
 fn parse_vendor_boot_layout(image: &[u8]) -> Result<VendorBootLayout> {
@@ -353,6 +388,12 @@ fn consensus_chip<'a>(chips: impl IntoIterator<Item = &'a str>) -> Result<Option
         }
     }
     Ok(consensus)
+}
+
+fn unanimous_chip<'a>(chips: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut chips = chips.into_iter();
+    let first = chips.next()?;
+    chips.all(|chip| chip == first).then(|| first.to_string())
 }
 
 fn usize_le_field(bytes: &[u8], offset: usize, name: &str) -> Result<usize> {
@@ -610,6 +651,9 @@ mod tests {
             table: table(&[(0, 2), (3, 1)], 900),
         };
         let classified = classify_vendor_boot_dtbs(&image, &export).unwrap();
+        let candidates = inspect_vendor_boot_gpu_candidates(&image).unwrap();
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates.iter().all(|candidate| candidate.table.is_some()));
         assert_eq!(classified.len(), 3);
         assert_eq!(
             classified

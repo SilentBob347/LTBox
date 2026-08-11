@@ -16,11 +16,18 @@ use tracing::info;
 
 use crate::{avb, key_map};
 
-pub use export::{GpuGroup, GpuLevel, GpuProperty, GpuTable, KonaBessExport, parse_export};
-pub use fdt::{FdtGpuInfo, parse_fdt_gpu_info, replace_fdt_gpu_table};
+pub use export::{
+    GpuGroup, GpuLevel, GpuProperty, GpuTable, GpuTableIssue, GpuTableValidation, KonaBessExport,
+    build_gpu_level_from_template, parse_export, parse_gpu_cell, validate_gpu_table,
+};
+pub use fdt::{
+    FdtGpuInfo, GpuTableNormalization, normalize_edited_gpu_table, parse_fdt_gpu_info,
+    replace_fdt_gpu_table, replace_fdt_gpu_table_from_table,
+};
 pub use vendor_boot::{
     ClassifiedDtb, GpuGroupShape, GpuTableShape, VendorBootDtbInfo, classify_vendor_boot_dtbs,
-    extract_vendor_boot_dtbs, inspect_vendor_boot_dtbs, replace_vendor_boot_dtb,
+    extract_vendor_boot_dtbs, inspect_vendor_boot_dtbs, inspect_vendor_boot_gpu_candidates,
+    replace_vendor_boot_dtb, replace_vendor_boot_gpu_table,
 };
 
 /// Final AVB-valid KonaBess image pair.
@@ -75,6 +82,29 @@ pub fn apply_export_to_vendor_boot_file(
     })
 }
 
+/// Apply an in-memory edited table and write the rebuilt vendor-boot image.
+pub fn apply_gpu_table_to_vendor_boot_file(
+    input: &Path,
+    output: &Path,
+    target_index: usize,
+    chip: &str,
+    table: &GpuTable,
+) -> Result<()> {
+    let image = fs::read(input).map_err(|e| {
+        LtboxError::Patch(format!(
+            "cannot read vendor_boot image {}: {e}",
+            input.display()
+        ))
+    })?;
+    let rebuilt = replace_vendor_boot_gpu_table(&image, target_index, chip, table)?;
+    fs::write(output, rebuilt).map_err(|e| {
+        LtboxError::Patch(format!(
+            "cannot write vendor_boot image {}: {e}",
+            output.display()
+        ))
+    })
+}
+
 /// Build an AVB-valid `vendor_boot.img` + `vbmeta.img` pair from the stock
 /// images in `firmware_dir` and a KonaBess export file.
 pub fn build_konabess_avb_images(
@@ -107,6 +137,54 @@ pub fn build_konabess_avb_images_with_progress(
 
     on_stage(KonaBessBuildStage::Inspect);
     let export = read_export(export_path)?;
+    build_konabess_avb_images_from_export(
+        &vendor_boot_src,
+        &vbmeta_src,
+        output_dir,
+        target_index,
+        &export,
+        &mut on_stage,
+    )
+}
+
+/// Build AVB-valid images directly from an edited in-memory GPU table.
+pub fn build_konabess_avb_images_from_table(
+    firmware_dir: &Path,
+    output_dir: &Path,
+    target_index: usize,
+    chip: &str,
+    table: &GpuTable,
+) -> Result<KonaBessAvbOutput> {
+    build_konabess_avb_images_from_table_with_progress(
+        firmware_dir,
+        output_dir,
+        target_index,
+        chip,
+        table,
+        |_| {},
+    )
+}
+
+/// Build AVB-valid images from an edited table while reporting stable stages.
+pub fn build_konabess_avb_images_from_table_with_progress(
+    firmware_dir: &Path,
+    output_dir: &Path,
+    target_index: usize,
+    chip: &str,
+    table: &GpuTable,
+    mut on_stage: impl FnMut(KonaBessBuildStage),
+) -> Result<KonaBessAvbOutput> {
+    let vendor_boot_src = firmware_dir.join("vendor_boot.img");
+    let vbmeta_src = firmware_dir.join("vbmeta.img");
+    require_source_image(&vendor_boot_src)?;
+    require_source_image(&vbmeta_src)?;
+
+    on_stage(KonaBessBuildStage::Inspect);
+    let export = KonaBessExport {
+        chip: chip.to_string(),
+        description: String::new(),
+        table: table.clone(),
+    };
     build_konabess_avb_images_from_export(
         &vendor_boot_src,
         &vbmeta_src,

@@ -46,6 +46,275 @@ pub struct KonaBessExport {
     pub table: GpuTable,
 }
 
+/// One table-validation finding suitable for display next to an editor cell or row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuTableIssue {
+    /// Stable, human-readable location such as `group 0 / level 2 / qcom,gpu-freq`.
+    pub path: String,
+    /// Explanation intended for callers to present to the user.
+    pub message: String,
+}
+
+/// Blocking structural errors and non-blocking tuning advisories for a GPU table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GpuTableValidation {
+    /// Malformed data that cannot be serialized safely.
+    pub hard_errors: Vec<GpuTableIssue>,
+    /// Suspicious but serializable data that callers may allow after warning.
+    pub warnings: Vec<GpuTableIssue>,
+}
+
+impl GpuTableValidation {
+    /// Whether applying this table must be blocked.
+    pub fn has_hard_errors(&self) -> bool {
+        !self.hard_errors.is_empty()
+    }
+}
+
+/// Build a new level with exactly the property names and ordering of an
+/// existing level in `group` while letting the caller choose every cell value.
+///
+/// Using this constructor for editor row insertion prevents properties such as
+/// bus votes from being omitted accidentally. The callback receives each
+/// template property in source order and returns the cells for the new row.
+///
+/// # Errors
+///
+/// Returns an error when `template_level_id` does not identify a level in
+/// `group`.
+pub fn build_gpu_level_from_template(
+    group: &GpuGroup,
+    template_level_id: u32,
+    new_level_id: u32,
+    mut cells_for_property: impl FnMut(&GpuProperty) -> Vec<u32>,
+) -> Result<GpuLevel> {
+    let template = group
+        .levels
+        .iter()
+        .find(|level| level.id == template_level_id)
+        .ok_or_else(|| {
+            error(format!(
+                "GPU group {} has no template level {template_level_id}",
+                group.id
+            ))
+        })?;
+    Ok(GpuLevel {
+        id: new_level_id,
+        properties: template
+            .properties
+            .iter()
+            .map(|property| GpuProperty {
+                name: property.name.clone(),
+                cells: cells_for_property(property),
+            })
+            .collect(),
+    })
+}
+
+/// Validate an in-memory table without treating tuning policy as a hard error.
+///
+/// The observed stock envelope is 125 MHz through 1.3 GHz for `qcom,gpu-freq`
+/// and 50 through 452 for the encoded `qcom,level` regulator vote. Values
+/// outside those envelopes remain writable and are reported only as warnings.
+pub fn validate_gpu_table(table: &GpuTable) -> GpuTableValidation {
+    const STOCK_MIN_FREQUENCY: u32 = 125_000_000;
+    const STOCK_MAX_FREQUENCY: u32 = 1_300_000_000;
+    const STOCK_MIN_LEVEL_VOTE: u32 = 50;
+    const STOCK_MAX_LEVEL_VOTE: u32 = 452;
+
+    let mut validation = GpuTableValidation::default();
+    if table.groups.is_empty() {
+        validation
+            .hard_errors
+            .push(issue("table", "GPU table must contain at least one group"));
+        return validation;
+    }
+
+    for (group_position, group) in table.groups.iter().enumerate() {
+        let group_path = format!("group {}", group.id);
+        if table.groups[..group_position]
+            .iter()
+            .any(|prior| prior.id == group.id)
+        {
+            validation
+                .hard_errors
+                .push(issue(&group_path, "duplicate GPU group id"));
+        }
+        validate_properties(
+            &group.header_properties,
+            &group_path,
+            PropertyLocation::GroupHeader,
+            &mut validation,
+        );
+        if group.levels.is_empty() {
+            validation.hard_errors.push(issue(
+                &group_path,
+                "GPU group must contain at least one level",
+            ));
+            continue;
+        }
+
+        let mut frequencies = Vec::with_capacity(group.levels.len());
+        for (level_position, level) in group.levels.iter().enumerate() {
+            let level_path = format!("{group_path} / level {}", level.id);
+            if group.levels[..level_position]
+                .iter()
+                .any(|prior| prior.id == level.id)
+            {
+                validation
+                    .hard_errors
+                    .push(issue(&level_path, "duplicate GPU level id"));
+            }
+            validate_properties(
+                &level.properties,
+                &level_path,
+                PropertyLocation::Level,
+                &mut validation,
+            );
+
+            match scalar_property(&level.properties, "qcom,gpu-freq") {
+                Some(frequency) => {
+                    frequencies.push((level_path.clone(), frequency));
+                    if !(STOCK_MIN_FREQUENCY..=STOCK_MAX_FREQUENCY).contains(&frequency) {
+                        validation.warnings.push(issue(
+                            format!("{level_path} / qcom,gpu-freq"),
+                            format!(
+                                "frequency {frequency} Hz is outside the observed stock range {STOCK_MIN_FREQUENCY}..={STOCK_MAX_FREQUENCY} Hz"
+                            ),
+                        ));
+                    }
+                }
+                None => validation.hard_errors.push(issue(
+                    format!("{level_path} / qcom,gpu-freq"),
+                    "required property must contain exactly one u32 cell",
+                )),
+            }
+
+            match scalar_property(&level.properties, "qcom,level") {
+                Some(level_vote) => {
+                    if !(STOCK_MIN_LEVEL_VOTE..=STOCK_MAX_LEVEL_VOTE).contains(&level_vote) {
+                        validation.warnings.push(issue(
+                            format!("{level_path} / qcom,level"),
+                            format!(
+                                "encoded regulator vote {level_vote} is outside the observed stock range {STOCK_MIN_LEVEL_VOTE}..={STOCK_MAX_LEVEL_VOTE}"
+                            ),
+                        ));
+                    }
+                }
+                None => validation.hard_errors.push(issue(
+                    format!("{level_path} / qcom,level"),
+                    "required property must contain exactly one u32 cell",
+                )),
+            }
+        }
+
+        for pair in frequencies.windows(2) {
+            if pair[0].1 <= pair[1].1 {
+                validation.warnings.push(issue(
+                    &group_path,
+                    format!(
+                        "frequencies are not strictly descending at {} Hz then {} Hz",
+                        pair[0].1, pair[1].1
+                    ),
+                ));
+            }
+        }
+    }
+    validation
+}
+
+/// Parse one editor cell as a decimal or `0x`-prefixed unsigned 32-bit value.
+///
+/// Empty, signed, overflowing, and otherwise non-u32 input is a hard error.
+pub fn parse_gpu_cell(input: &str) -> Result<u32> {
+    let cell = input.trim();
+    if cell.is_empty() {
+        return Err(error("GPU table cell is empty"));
+    }
+    let parsed = if let Some(hex) = cell.strip_prefix("0x").or_else(|| cell.strip_prefix("0X")) {
+        if hex.is_empty() {
+            return Err(error("GPU table hexadecimal cell is empty"));
+        }
+        u32::from_str_radix(hex, 16)
+    } else {
+        cell.parse()
+    };
+    parsed.map_err(|_| error(format!("GPU table cell `{cell}` is not a u32")))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyLocation {
+    GroupHeader,
+    Level,
+}
+
+fn validate_properties(
+    properties: &[GpuProperty],
+    parent_path: &str,
+    location: PropertyLocation,
+    validation: &mut GpuTableValidation,
+) {
+    for (position, property) in properties.iter().enumerate() {
+        let property_path = format!("{parent_path} / {}", property.name);
+        if property.name.is_empty() || property.name.contains('\0') {
+            validation.hard_errors.push(issue(
+                &property_path,
+                "property name is empty or contains NUL",
+            ));
+        }
+        if property.cells.is_empty() {
+            validation.hard_errors.push(issue(
+                &property_path,
+                "property must contain at least one u32 cell",
+            ));
+        }
+        if properties[..position]
+            .iter()
+            .any(|prior| prior.name == property.name)
+        {
+            validation
+                .hard_errors
+                .push(issue(&property_path, "duplicate property name"));
+        }
+
+        let must_be_scalar = match location {
+            PropertyLocation::GroupHeader => matches!(
+                property.name.as_str(),
+                "qcom,initial-pwrlevel" | "qcom,initial-min-pwrlevel"
+            ),
+            PropertyLocation::Level => true,
+        };
+        if must_be_scalar && property.cells.len() != 1 {
+            validation.hard_errors.push(issue(
+                &property_path,
+                "property must contain exactly one u32 cell",
+            ));
+        }
+    }
+
+    if location == PropertyLocation::Level && scalar_property(properties, "reg").is_none() {
+        validation.hard_errors.push(issue(
+            format!("{parent_path} / reg"),
+            "required property must contain exactly one u32 cell",
+        ));
+    }
+}
+
+fn scalar_property(properties: &[GpuProperty], name: &str) -> Option<u32> {
+    let cells = &properties
+        .iter()
+        .find(|property| property.name == name)?
+        .cells;
+    (cells.len() == 1).then(|| cells[0])
+}
+
+fn issue(path: impl Into<String>, message: impl Into<String>) -> GpuTableIssue {
+    GpuTableIssue {
+        path: path.into(),
+        message: message.into(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportJson {
@@ -356,15 +625,7 @@ fn parse_property(line: &str, line_number: usize) -> Result<GpuProperty> {
 }
 
 fn parse_cell(cell: &str, line_number: usize) -> Result<u32> {
-    let parsed = if let Some(hex) = cell.strip_prefix("0x").or_else(|| cell.strip_prefix("0X")) {
-        if hex.is_empty() {
-            return Err(line_error(line_number, "empty hexadecimal cell"));
-        }
-        u32::from_str_radix(hex, 16)
-    } else {
-        cell.parse()
-    };
-    parsed.map_err(|_| line_error(line_number, format!("invalid u32 cell `{cell}`")))
+    parse_gpu_cell(cell).map_err(|_| line_error(line_number, format!("invalid u32 cell `{cell}`")))
 }
 
 fn validate_level(level: &GpuLevel, line_number: usize) -> Result<()> {
@@ -468,5 +729,181 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match reg"));
+    }
+
+    #[test]
+    fn rejects_non_u32_and_empty_cells() {
+        assert!(parse_gpu_cell("").is_err());
+        assert!(parse_gpu_cell("4294967296").is_err());
+        assert_eq!(parse_gpu_cell("0xffffffff").unwrap(), u32::MAX);
+        let non_u32 = parse_frequency_table(
+            "qcom,gpu-pwrlevels-0 {\nqcom,speed-bin = <0>;\nqcom,initial-pwrlevel = <0>;\nqcom,gpu-pwrlevel@0 {\nreg = <0>;\nqcom,gpu-freq = <fast>;\nqcom,level = <100>;\n};\n};",
+        )
+        .unwrap_err();
+        assert!(non_u32.to_string().contains("invalid u32 cell"));
+
+        let mut table = GpuTable {
+            groups: vec![GpuGroup {
+                id: 0,
+                header_properties: vec![GpuProperty {
+                    name: "qcom,initial-pwrlevel".into(),
+                    cells: vec![0],
+                }],
+                levels: vec![GpuLevel {
+                    id: 0,
+                    properties: vec![
+                        GpuProperty {
+                            name: "reg".into(),
+                            cells: vec![0],
+                        },
+                        GpuProperty {
+                            name: "qcom,gpu-freq".into(),
+                            cells: vec![500_000_000],
+                        },
+                        GpuProperty {
+                            name: "qcom,level".into(),
+                            cells: vec![100],
+                        },
+                    ],
+                }],
+            }],
+        };
+        table.groups[0].levels[0].properties[1].cells.clear();
+        assert!(validate_gpu_table(&table).has_hard_errors());
+    }
+
+    #[test]
+    fn advisory_values_do_not_become_hard_errors() {
+        let table = GpuTable {
+            groups: vec![GpuGroup {
+                id: 0,
+                header_properties: vec![GpuProperty {
+                    name: "qcom,initial-pwrlevel".into(),
+                    cells: vec![0],
+                }],
+                levels: [100_000_000, 200_000_000]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, frequency)| GpuLevel {
+                        id: id as u32,
+                        properties: vec![
+                            GpuProperty {
+                                name: "reg".into(),
+                                cells: vec![id as u32],
+                            },
+                            GpuProperty {
+                                name: "qcom,gpu-freq".into(),
+                                cells: vec![frequency],
+                            },
+                            GpuProperty {
+                                name: "qcom,level".into(),
+                                cells: vec![500],
+                            },
+                        ],
+                    })
+                    .collect(),
+            }],
+        };
+
+        let validation = validate_gpu_table(&table);
+        assert!(!validation.has_hard_errors());
+        assert!(!validation.warnings.is_empty());
+    }
+
+    #[test]
+    fn templated_level_preserves_the_complete_property_schema() {
+        let mut table = GpuTable {
+            groups: vec![GpuGroup {
+                id: 7,
+                header_properties: vec![],
+                levels: vec![GpuLevel {
+                    id: 0,
+                    properties: vec![
+                        GpuProperty {
+                            name: "reg".into(),
+                            cells: vec![0],
+                        },
+                        GpuProperty {
+                            name: "qcom,gpu-freq".into(),
+                            cells: vec![500_000_000],
+                        },
+                        GpuProperty {
+                            name: "qcom,level".into(),
+                            cells: vec![100],
+                        },
+                        GpuProperty {
+                            name: "qcom,bus-freq".into(),
+                            cells: vec![5],
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let new_level = build_gpu_level_from_template(&table.groups[0], 0, 1, |property| {
+            vec![match property.name.as_str() {
+                "reg" => 1,
+                "qcom,gpu-freq" => 400_000_000,
+                "qcom,level" => 80,
+                "qcom,bus-freq" => 4,
+                _ => property.cells[0],
+            }]
+        })
+        .unwrap();
+        assert_eq!(
+            new_level
+                .properties
+                .iter()
+                .map(|property| property.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reg", "qcom,gpu-freq", "qcom,level", "qcom,bus-freq"]
+        );
+        table.groups[0].levels.push(new_level);
+        assert!(!validate_gpu_table(&table).has_hard_errors());
+    }
+
+    #[test]
+    fn absent_initial_power_level_properties_are_valid_but_malformed_present_ones_are_not() {
+        let table = GpuTable {
+            groups: vec![GpuGroup {
+                id: 0,
+                header_properties: vec![],
+                levels: vec![GpuLevel {
+                    id: 0,
+                    properties: vec![
+                        GpuProperty {
+                            name: "reg".into(),
+                            cells: vec![0],
+                        },
+                        GpuProperty {
+                            name: "qcom,gpu-freq".into(),
+                            cells: vec![500_000_000],
+                        },
+                        GpuProperty {
+                            name: "qcom,level".into(),
+                            cells: vec![100],
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        assert!(!validate_gpu_table(&table).has_hard_errors());
+
+        for property_name in ["qcom,initial-pwrlevel", "qcom,initial-min-pwrlevel"] {
+            let mut malformed = table.clone();
+            malformed.groups[0].header_properties.push(GpuProperty {
+                name: property_name.into(),
+                cells: vec![0, 1],
+            });
+            let validation = validate_gpu_table(&malformed);
+            assert!(validation.has_hard_errors());
+            assert!(
+                validation
+                    .hard_errors
+                    .iter()
+                    .any(|issue| issue.path.ends_with(property_name))
+            );
+        }
     }
 }
