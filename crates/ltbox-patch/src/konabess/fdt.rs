@@ -671,7 +671,6 @@ fn infer_chip(compatible: &[String]) -> Option<String> {
             "diwali",
             &["qcom,diwali", "qcom,diwali-lte", "qcom,diwalip"][..],
         ),
-        ("alor", &["qcom,alor", "qcom,alorp"][..]),
         ("canoe", &["qcom,canoe", "qcom,canoep"][..]),
     ] {
         if compatible

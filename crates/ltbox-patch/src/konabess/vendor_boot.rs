@@ -84,9 +84,21 @@ impl RangeParts {
 
 /// Enumerate all concatenated FDT blobs and report identity and GPU contents.
 pub fn inspect_vendor_boot_dtbs(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> {
+    let mut infos = inspect_vendor_boot_dtbs_raw(image)?;
+    if let Some(chip) = unanimous_chip(infos.iter().filter_map(|info| info.chip.as_deref())) {
+        for info in &mut infos {
+            if info.chip.is_none() {
+                info.chip = Some(chip.clone());
+            }
+        }
+    }
+    Ok(infos)
+}
+
+fn inspect_vendor_boot_dtbs_raw(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> {
     let layout = parse_vendor_boot_layout(image)?;
     let blobs = fdt_ranges(&image[layout.dtb.range()])?;
-    let mut infos = blobs
+    blobs
         .iter()
         .enumerate()
         .map(|(index, range)| {
@@ -102,22 +114,14 @@ pub fn inspect_vendor_boot_dtbs(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> 
                 table: parsed.table,
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    if let Some(chip) = unanimous_chip(infos.iter().filter_map(|info| info.chip.as_deref())) {
-        for info in &mut infos {
-            if info.chip.is_none() {
-                info.chip = Some(chip.clone());
-            }
-        }
-    }
-    Ok(infos)
+        .collect()
 }
 
-/// Return only DTBs whose GPU table parsed successfully, with no export needed.
+/// Return only DTBs with a parsed GPU table and a directly recognized chip.
 pub fn inspect_vendor_boot_gpu_candidates(image: &[u8]) -> Result<Vec<VendorBootDtbInfo>> {
-    Ok(inspect_vendor_boot_dtbs(image)?
+    Ok(inspect_vendor_boot_dtbs_raw(image)?
         .into_iter()
-        .filter(|info| info.table.is_some())
+        .filter(|info| info.table.is_some() && info.chip.is_some())
         .collect())
 }
 
@@ -663,6 +667,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1]
         );
+    }
+
+    #[test]
+    fn gpu_candidates_exclude_tables_for_unrecognized_chips() {
+        let image = synthetic_vendor_boot(
+            &[
+                synthetic_fdt("unknown", "Unsupported", &table(&[(0, 1)], 100)),
+                synthetic_fdt("canoe", "Supported", &table(&[(0, 1)], 200)),
+            ],
+            2,
+        );
+
+        let candidates = inspect_vendor_boot_gpu_candidates(&image).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].index, 1);
+        assert_eq!(candidates[0].chip.as_deref(), Some("canoe"));
     }
 
     #[test]

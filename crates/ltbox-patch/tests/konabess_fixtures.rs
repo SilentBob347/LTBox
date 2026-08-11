@@ -115,7 +115,7 @@ fn every_real_gpu_dtb_round_trips_and_in_memory_edits_preserve_other_dtbs() {
             "tb322fc.img",
             &[2usize, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12][..],
         ),
-        ("tb323fu.img", &[0usize, 2, 4, 5, 6, 7, 8, 9, 12, 13][..]),
+        ("tb323fu.img", &[6usize, 7, 8, 9, 12, 13][..]),
     ];
 
     let mut heterogeneous_stock_groups = 0;
