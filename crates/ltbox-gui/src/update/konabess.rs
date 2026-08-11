@@ -84,6 +84,18 @@ impl App {
                 self.konabess.revert_edits();
                 Task::none()
             }
+            KonaBessMsg::KonaBessCellChanged(key, value) => {
+                self.konabess.edit_cell(key, value);
+                Task::none()
+            }
+            KonaBessMsg::KonaBessAddLevel(group) => {
+                self.konabess.add_level(group);
+                Task::none()
+            }
+            KonaBessMsg::KonaBessRemoveLevel(group, level) => {
+                self.konabess.remove_level(group, level);
+                Task::none()
+            }
             KonaBessMsg::KonaBessNext => {
                 match self.konabess.step {
                     0 => {
@@ -303,6 +315,10 @@ mod tests {
                         GpuProperty {
                             name: "qcom,gpu-freq".into(),
                             cells: vec![frequency],
+                        },
+                        GpuProperty {
+                            name: "qcom,level".into(),
+                            cells: vec![200],
                         },
                     ],
                 }],

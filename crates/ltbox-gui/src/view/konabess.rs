@@ -115,6 +115,9 @@ impl App {
             text(self.t("konabess_table_value_note").to_string())
                 .size(11)
                 .style(muted_style),
+            text(self.t("konabess_tool_managed_note").to_string())
+                .size(11)
+                .style(muted_style),
         ]
         .spacing(8)
         .width(Length::Fill);
@@ -131,9 +134,16 @@ impl App {
                     .style(muted_style),
             );
         }
+        let validation = self.konabess.editor_validation();
+        if !validation.hard_errors.is_empty() {
+            content = content.push(finding_panel(&validation.hard_errors, false, self));
+        }
+        if !validation.warnings.is_empty() {
+            content = content.push(finding_panel(&validation.warnings, true, self));
+        }
         content = content.push(widget::rule::horizontal(1));
         content = content.push(match self.konabess.edited_table.as_ref() {
-            Some(table) => gpu_table_view(table, self),
+            Some(table) => gpu_table_view(table, self, &validation),
             None => text(self.t("konabess_target_no_table").to_string())
                 .size(12)
                 .style(muted_style)
@@ -356,50 +366,113 @@ fn ordered_property_names(group: &ltbox_patch::konabess::GpuGroup) -> Vec<&str> 
 fn gpu_table_view<'a>(
     table: &'a ltbox_patch::konabess::GpuTable,
     app: &'a App,
+    validation: &ltbox_patch::konabess::GpuTableValidation,
 ) -> Element<'a, Message> {
     let mut groups = column![].spacing(18).width(Length::Shrink);
-    for group in &table.groups {
+    let has_hard_errors = validation.has_hard_errors();
+    for (group_position, group) in table.groups.iter().enumerate() {
         let property_names = ordered_property_names(group);
-        let selectors = group
-            .header_properties
-            .iter()
-            .map(|property| format!("{} = <{}>", property.name, format_cells(&property.cells)))
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let mut add_button = m3_text_button(app.t("konabess_add_level").to_string());
+        if !has_hard_errors {
+            add_button = add_button.on_press(Message::KonaBess(KonaBessMsg::KonaBessAddLevel(
+                group_position,
+            )));
+        }
+        let group_heading = row![
+            text(tr_args!("konabess_table_group", id = group.id.to_string()))
+                .size(14)
+                .style(label_style),
+            Space::new().width(Length::Fill),
+            add_button,
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+        let mut header_properties = column![].spacing(0).width(Length::Shrink);
+        for (property_position, property) in group.header_properties.iter().enumerate() {
+            let property_width = property_cells_width(property.cells.len());
+            let mut property_row =
+                row![table_cell(property_label(&property.name, app), true, 250.0,)].spacing(0);
+            property_row = property_row.push(editable_property_cell(
+                property,
+                |cell| GpuCellKey::group_header(group_position, property_position, cell),
+                property_width,
+                app,
+                validation,
+            ));
+            header_properties = header_properties.push(property_row);
+        }
+
         let mut table_rows = column![].spacing(0).width(Length::Shrink);
         let mut header = row![table_cell(
             app.t("konabess_table_level").to_string(),
             true,
-            72.0,
+            150.0,
         )]
         .spacing(0);
         for name in &property_names {
-            header = header.push(table_cell((*name).to_string(), true, 170.0));
+            header = header.push(table_cell(
+                property_label(name, app),
+                true,
+                property_column_width(group, name),
+            ));
         }
         table_rows = table_rows.push(header);
-        for level in &group.levels {
-            let mut cells = row![table_cell(level.id.to_string(), false, 72.0)].spacing(0);
+        for (level_position, level) in group.levels.iter().enumerate() {
+            let mut remove_button = m3_text_button(app.t("konabess_remove_level").to_string());
+            if group.levels.len() > 1 && !has_hard_errors {
+                remove_button = remove_button.on_press(Message::KonaBess(
+                    KonaBessMsg::KonaBessRemoveLevel(group_position, level_position),
+                ));
+            }
+            let level_control = container(
+                row![
+                    column![
+                        text(level.id.to_string()).size(12),
+                        text(app.t("konabess_tool_managed").to_string())
+                            .size(9)
+                            .style(muted_style),
+                    ]
+                    .spacing(1),
+                    remove_button
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding([4, 7])
+            .width(Length::Fixed(150.0))
+            .height(Length::Fixed(58.0))
+            .align_y(iced::alignment::Vertical::Center)
+            .style(derived_table_cell_style);
+            let mut cells = row![level_control].spacing(0);
             for name in &property_names {
-                let value = level
+                let property = level
                     .properties
                     .iter()
-                    .find(|property| property.name == *name)
-                    .map(|property| format_cells(&property.cells))
-                    .unwrap_or_else(|| "—".to_string());
-                cells = cells.push(table_cell(value, false, 170.0));
+                    .enumerate()
+                    .find(|(_, property)| property.name == *name);
+                let width = property_column_width(group, name);
+                cells = cells.push(match property {
+                    Some((property_position, property)) => editable_property_cell(
+                        property,
+                        |cell| {
+                            GpuCellKey::level(
+                                group_position,
+                                level_position,
+                                property_position,
+                                cell,
+                            )
+                        },
+                        width,
+                        app,
+                        validation,
+                    ),
+                    None => table_cell("—".to_string(), false, width),
+                });
             }
             table_rows = table_rows.push(cells);
         }
-        groups = groups.push(
-            column![
-                text(tr_args!("konabess_table_group", id = group.id.to_string()))
-                    .size(14)
-                    .style(label_style),
-                text(selectors).size(11).style(muted_style),
-                table_rows,
-            ]
-            .spacing(6),
-        );
+        groups = groups.push(column![group_heading, header_properties, table_rows,].spacing(6));
     }
 
     scrollable(groups)
@@ -421,9 +494,14 @@ fn table_cell(value: String, header: bool, width: f32) -> Element<'static, Messa
     )
     .padding([7, 9])
     .width(Length::Fixed(width))
-    .height(Length::Fixed(44.0))
+    .height(Length::Fixed(if header { 52.0 } else { 58.0 }))
     .align_y(iced::alignment::Vertical::Center)
-    .style(move |theme: &Theme| {
+    .style(table_border_style(header))
+    .into()
+}
+
+fn table_border_style(header: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme: &Theme| {
         let palette = pal_of(theme);
         container::Style {
             background: header.then(|| palette.surface_container_high.into()),
@@ -434,16 +512,211 @@ fn table_cell(value: String, header: bool, width: f32) -> Element<'static, Messa
             },
             ..Default::default()
         }
-    })
+    }
+}
+
+fn editable_property_cell<'a>(
+    property: &ltbox_patch::konabess::GpuProperty,
+    key_for_cell: impl Fn(usize) -> GpuCellKey,
+    width: f32,
+    app: &'a App,
+    validation: &ltbox_patch::konabess::GpuTableValidation,
+) -> Element<'a, Message> {
+    let mut inputs = row![].spacing(6);
+    for (cell_position, committed) in property.cells.iter().copied().enumerate() {
+        let key = key_for_cell(cell_position);
+        let value = app.konabess.cell_text(key, committed, &property.name);
+        if is_normalization_owned_cell(key, &property.name) {
+            inputs = inputs.push(derived_value_cell(value, app));
+            continue;
+        }
+        let parser_error = app.konabess.cell_has_input_error(key);
+        let hard_error = parser_error
+            || validation
+                .hard_errors
+                .iter()
+                .any(|issue| app.konabess.issue_matches_cell(issue, key));
+        let warning = !hard_error
+            && validation
+                .warnings
+                .iter()
+                .any(|issue| app.konabess.issue_matches_cell(issue, key));
+        let input = widget::text_input("", &value)
+            .on_input(move |text| Message::KonaBess(KonaBessMsg::KonaBessCellChanged(key, text)))
+            .padding([7, 8])
+            .size(12)
+            .width(Length::Fixed(104.0))
+            .style(move |theme: &Theme, status| {
+                let mut style = m3_text_input_style(theme, status);
+                if hard_error {
+                    style.border.color = pal_of(theme).error;
+                    style.border.width = 2.0;
+                } else if warning {
+                    style.border.color = pal_of(theme).warning;
+                    style.border.width = 2.0;
+                }
+                style
+            });
+        inputs = inputs.push(input);
+    }
+    container(inputs)
+        .padding([7, 8])
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(58.0))
+        .align_y(iced::alignment::Vertical::Center)
+        .style(table_border_style(false))
+        .into()
+}
+
+fn derived_value_cell<'a>(value: String, app: &'a App) -> Element<'a, Message> {
+    container(
+        column![
+            text(value).size(12),
+            text(app.t("konabess_tool_managed").to_string())
+                .size(9)
+                .style(muted_style),
+        ]
+        .spacing(1),
+    )
+    .padding([5, 8])
+    .width(Length::Fixed(104.0))
+    .style(derived_value_style)
     .into()
 }
 
-fn format_cells(cells: &[u32]) -> String {
-    cells
+fn derived_value_style(theme: &Theme) -> container::Style {
+    let palette = pal_of(theme);
+    container::Style {
+        background: Some(palette.surface_container_high.into()),
+        text_color: Some(palette.on_surface_variant),
+        border: iced::Border {
+            color: palette.outline_variant,
+            width: 1.0,
+            radius: theme::shape::XS.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn derived_table_cell_style(theme: &Theme) -> container::Style {
+    let palette = pal_of(theme);
+    container::Style {
+        background: Some(palette.surface_container_high.into()),
+        text_color: Some(palette.on_surface_variant),
+        border: iced::Border {
+            color: palette.outline_variant,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn property_cells_width(cell_count: usize) -> f32 {
+    ((cell_count.max(1) as f32) * 110.0 + 16.0).max(190.0)
+}
+
+fn property_column_width(group: &ltbox_patch::konabess::GpuGroup, name: &str) -> f32 {
+    group
+        .levels
         .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter_map(|level| {
+            level
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+        })
+        .map(|property| property_cells_width(property.cells.len()))
+        .fold(190.0, f32::max)
+}
+
+fn property_label(name: &str, app: &App) -> String {
+    let friendly_key = match name {
+        "#address-cells" => Some("konabess_property_address_cells"),
+        "#size-cells" => Some("konabess_property_size_cells"),
+        "reg" => Some("konabess_property_row_index"),
+        "qcom,acd-level" => Some("konabess_property_acd_level"),
+        "qcom,cx-level" => Some("konabess_property_cx_level"),
+        "qcom,gpu-freq" => Some("konabess_property_frequency_mhz"),
+        "qcom,initial-min-pwrlevel" => Some("konabess_property_initial_min_level"),
+        "qcom,initial-pwrlevel" => Some("konabess_property_initial_level"),
+        "qcom,level" => Some("konabess_property_regulator_vote"),
+        "qcom,sku-codes" => Some("konabess_property_sku_codes"),
+        "qcom,speed-bin" => Some("konabess_property_speed_bin"),
+        name if name.starts_with("qcom,bus-freq") => Some("konabess_property_bus_frequency"),
+        name if name.starts_with("qcom,bus-min") => Some("konabess_property_bus_minimum"),
+        name if name.starts_with("qcom,bus-max") => Some("konabess_property_bus_maximum"),
+        _ => None,
+    };
+    friendly_key.map_or_else(|| name.to_string(), |key| format!("{}\n{name}", app.t(key)))
+}
+
+fn finding_panel(
+    issues: &[ltbox_patch::konabess::GpuTableIssue],
+    warning: bool,
+    app: &App,
+) -> Element<'static, Message> {
+    let title_key = if warning {
+        "konabess_warning_summary"
+    } else {
+        "konabess_error_summary"
+    };
+    let mut content =
+        column![text(tr_args!(title_key, count = issues.len().to_string())).size(12)].spacing(3);
+    for issue in issues {
+        content = content.push(text(localized_issue(issue, warning, app)).size(11));
+    }
+    container(content)
+        .padding([9, 12])
+        .width(Length::Fill)
+        .style(move |theme: &Theme| {
+            let palette = pal_of(theme);
+            let (background, foreground, border) = if warning {
+                (
+                    palette.warning_container,
+                    palette.on_warning_container,
+                    palette.warning,
+                )
+            } else {
+                (
+                    palette.error_container,
+                    palette.on_error_container,
+                    palette.error,
+                )
+            };
+            container::Style {
+                background: Some(background.into()),
+                text_color: Some(foreground),
+                border: iced::Border {
+                    color: border,
+                    width: 1.0,
+                    radius: theme::shape::SM.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+fn localized_issue(
+    issue: &ltbox_patch::konabess::GpuTableIssue,
+    warning: bool,
+    app: &App,
+) -> String {
+    let detail_key = if !warning {
+        "konabess_error_invalid_cell"
+    } else if issue.message.contains("outside the observed stock range") {
+        "konabess_warning_outside_stock"
+    } else if issue.message.contains("not strictly descending") {
+        "konabess_warning_frequency_order"
+    } else if issue.message.contains("was deleted") {
+        "konabess_warning_retargeted"
+    } else if issue.message.contains("first match wins") {
+        "konabess_warning_duplicate_frequency"
+    } else {
+        "konabess_warning_other"
+    };
+    format!("{}: {}", issue.path, app.t(detail_key))
 }
 
 const fn konabess_nav_visible(step: usize) -> bool {

@@ -6,7 +6,12 @@ use crate::{
     AdvAction, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode, SkrootFlavor,
     VerChoice, is_loader_file,
 };
-use ltbox_patch::konabess::{GpuTable, KonaBessExport, VendorBootDtbInfo};
+use std::collections::BTreeMap;
+
+use ltbox_patch::konabess::{
+    GpuTable, GpuTableIssue, GpuTableValidation, KonaBessExport, VendorBootDtbInfo,
+    build_gpu_level_from_template, normalize_edited_gpu_table, parse_gpu_cell, validate_gpu_table,
+};
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
@@ -1242,6 +1247,9 @@ pub(crate) struct KonaBessWizard {
     /// In-memory table that will be passed directly to the AVB build path.
     pub(crate) edited_table: Option<GpuTable>,
     pub(crate) edited_dirty: bool,
+    /// User-entered text is retained independently from the last parseable
+    /// value committed to `edited_table`, so partial input never snaps back.
+    pub(crate) cell_edits: BTreeMap<GpuCellKey, GpuCellEdit>,
     /// DTBs whose GPU table parsed from the dumped vendor_boot image.
     pub(crate) candidates: Vec<VendorBootDtbInfo>,
     /// The one DTB index passed to the existing single-target patch API.
@@ -1254,6 +1262,53 @@ pub(crate) struct KonaBessWizard {
     /// the prepared device flow. Reopening the picker from the table does not.
     pub(crate) target_popup_abandons_on_dismiss: bool,
     pub(crate) prepared: Option<KonaBessPrepared>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum GpuCellLocation {
+    GroupHeader { property: usize },
+    Level { level: usize, property: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct GpuCellKey {
+    pub(crate) group: usize,
+    pub(crate) location: GpuCellLocation,
+    pub(crate) cell: usize,
+}
+
+impl GpuCellKey {
+    pub(crate) const fn group_header(group: usize, property: usize, cell: usize) -> Self {
+        Self {
+            group,
+            location: GpuCellLocation::GroupHeader { property },
+            cell,
+        }
+    }
+
+    pub(crate) const fn level(group: usize, level: usize, property: usize, cell: usize) -> Self {
+        Self {
+            group,
+            location: GpuCellLocation::Level { level, property },
+            cell,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GpuCellEdit {
+    pub(crate) text: String,
+    pub(crate) has_error: bool,
+}
+
+pub(crate) fn is_normalization_owned_cell(key: GpuCellKey, property_name: &str) -> bool {
+    match key.location {
+        GpuCellLocation::GroupHeader { .. } => matches!(
+            property_name,
+            "qcom,initial-pwrlevel" | "qcom,initial-min-pwrlevel"
+        ),
+        GpuCellLocation::Level { .. } => property_name == "reg",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1313,6 +1368,7 @@ impl KonaBessWizard {
         self.selected_target_index = Some(target_index);
         self.edited_table = Some(table.clone());
         self.stock_table = Some(table);
+        self.cell_edits.clear();
         self.edited_dirty = false;
         self.import_path = None;
         self.import_error = None;
@@ -1369,9 +1425,169 @@ impl KonaBessWizard {
                 actual: export.chip,
             });
         }
-        self.edited_table = Some(export.table);
+        let mut table = export.table;
+        if let Some(stock) = self.stock_table.as_ref()
+            && let Ok(normalized) = normalize_edited_gpu_table(stock, &table)
+        {
+            table = normalized.table;
+        }
+        self.edited_table = Some(table);
+        self.cell_edits.clear();
         self.edited_dirty = self.edited_table != self.stock_table;
         Ok(())
+    }
+
+    /// Retain the exact text being typed and commit only values that parse.
+    /// Frequencies are presented in MHz but stored as exact integer Hz.
+    pub(crate) fn edit_cell(&mut self, key: GpuCellKey, text: String) -> bool {
+        let Some(property_name) = self
+            .cell_property(key)
+            .map(|property| property.name.clone())
+        else {
+            return false;
+        };
+        if is_normalization_owned_cell(key, &property_name) {
+            return false;
+        }
+        let parsed = if property_name == "qcom,gpu-freq" {
+            parse_gpu_frequency_mhz(&text)
+        } else {
+            parse_gpu_cell(&text).map_err(|_| ())
+        };
+        let has_error = parsed.is_err();
+        self.cell_edits.insert(key, GpuCellEdit { text, has_error });
+        let Ok(value) = parsed else {
+            return false;
+        };
+        let Some(stock) = self.stock_table.as_ref() else {
+            return false;
+        };
+        let Some(mut edited) = self.edited_table.clone() else {
+            return false;
+        };
+        let Some(cell) = Self::cell_mut(&mut edited, key) else {
+            return false;
+        };
+        *cell = value;
+        let Ok(normalized) = normalize_edited_gpu_table(stock, &edited) else {
+            return false;
+        };
+        self.edited_table = Some(normalized.table);
+        self.edited_dirty = self.edited_table != self.stock_table;
+        true
+    }
+
+    pub(crate) fn cell_text(&self, key: GpuCellKey, committed: u32, property: &str) -> String {
+        self.cell_edits.get(&key).map_or_else(
+            || {
+                if property == "qcom,gpu-freq" {
+                    format_gpu_frequency_mhz(committed)
+                } else {
+                    committed.to_string()
+                }
+            },
+            |edit| edit.text.clone(),
+        )
+    }
+
+    pub(crate) fn cell_has_input_error(&self, key: GpuCellKey) -> bool {
+        self.cell_edits.get(&key).is_some_and(|edit| edit.has_error)
+    }
+
+    pub(crate) fn issue_matches_cell(&self, issue: &GpuTableIssue, key: GpuCellKey) -> bool {
+        self.cell_property_path(key)
+            .is_some_and(|path| issue.path == path)
+    }
+
+    /// Blocking parser/structural findings plus all non-blocking validation and
+    /// retargeting advisories currently implied by the working table.
+    pub(crate) fn editor_validation(&self) -> GpuTableValidation {
+        let Some(edited) = self.edited_table.as_ref() else {
+            return GpuTableValidation::default();
+        };
+        let mut validation = validate_gpu_table(edited);
+        for (key, edit) in &self.cell_edits {
+            if edit.has_error {
+                validation.hard_errors.push(GpuTableIssue {
+                    path: self.cell_property_path(*key).map_or_else(
+                        || "table".to_string(),
+                        |path| format!("{path}[{}]", key.cell),
+                    ),
+                    message: "cell input is not a parseable u32 value".to_string(),
+                });
+            }
+        }
+        if let Some(stock) = self.stock_table.as_ref()
+            && let Ok(normalized) = normalize_edited_gpu_table(stock, edited)
+        {
+            validation.warnings = normalized.advisories;
+        }
+        validation
+    }
+
+    /// Append a copy of the last sibling through the core's schema-preserving
+    /// constructor, then apply the core's index/initial-target normalization.
+    pub(crate) fn add_level(&mut self, group_position: usize) -> bool {
+        if self.editor_validation().has_hard_errors() {
+            return false;
+        }
+        let Some(stock) = self.stock_table.as_ref() else {
+            return false;
+        };
+        let Some(mut edited) = self.edited_table.clone() else {
+            return false;
+        };
+        let Some(group) = edited.groups.get(group_position) else {
+            return false;
+        };
+        let Some(template) = group.levels.last() else {
+            return false;
+        };
+        let Ok(new_level_id) = u32::try_from(group.levels.len()) else {
+            return false;
+        };
+        let Ok(new_level) =
+            build_gpu_level_from_template(group, template.id, new_level_id, |property| {
+                property.cells.clone()
+            })
+        else {
+            return false;
+        };
+        edited.groups[group_position].levels.push(new_level);
+        let Ok(normalized) = normalize_edited_gpu_table(stock, &edited) else {
+            return false;
+        };
+        self.edited_table = Some(normalized.table);
+        self.cell_edits.clear();
+        self.edited_dirty = self.edited_table != self.stock_table;
+        true
+    }
+
+    /// Remove one row while refusing to create an invalid empty group.
+    pub(crate) fn remove_level(&mut self, group_position: usize, level_position: usize) -> bool {
+        if self.editor_validation().has_hard_errors() {
+            return false;
+        }
+        let Some(stock) = self.stock_table.as_ref() else {
+            return false;
+        };
+        let Some(mut edited) = self.edited_table.clone() else {
+            return false;
+        };
+        let Some(group) = edited.groups.get_mut(group_position) else {
+            return false;
+        };
+        if group.levels.len() <= 1 || level_position >= group.levels.len() {
+            return false;
+        }
+        group.levels.remove(level_position);
+        let Ok(normalized) = normalize_edited_gpu_table(stock, &edited) else {
+            return false;
+        };
+        self.edited_table = Some(normalized.table);
+        self.cell_edits.clear();
+        self.edited_dirty = self.edited_table != self.stock_table;
+        true
     }
 
     pub(crate) fn revert_edits(&mut self) -> bool {
@@ -1379,6 +1595,7 @@ impl KonaBessWizard {
             return false;
         };
         self.edited_table = Some(stock);
+        self.cell_edits.clear();
         self.edited_dirty = false;
         self.import_path = None;
         self.import_error = None;
@@ -1389,6 +1606,7 @@ impl KonaBessWizard {
         self.selected_target_index = None;
         self.stock_table = None;
         self.edited_table = None;
+        self.cell_edits.clear();
         self.edited_dirty = false;
         self.import_path = None;
         self.import_error = None;
@@ -1434,16 +1652,110 @@ impl Wizard for KonaBessWizard {
                     && self.selected_chip().is_some()
                     && self.stock_table.is_some()
                     && self.edited_table.is_some()
+                    && !self.editor_validation().has_hard_errors()
             }
             2 => {
                 self.loader_path.is_some()
                     && self.prepared.is_some()
                     && self.selected_chip().is_some()
                     && self.edited_table.is_some()
+                    && !self.editor_validation().has_hard_errors()
             }
             3 => false,
             _ => false,
         }
+    }
+}
+
+impl KonaBessWizard {
+    fn cell_property(&self, key: GpuCellKey) -> Option<&ltbox_patch::konabess::GpuProperty> {
+        let group = self.edited_table.as_ref()?.groups.get(key.group)?;
+        match key.location {
+            GpuCellLocation::GroupHeader { property } => group.header_properties.get(property),
+            GpuCellLocation::Level { level, property } => {
+                group.levels.get(level)?.properties.get(property)
+            }
+        }
+    }
+
+    fn cell_mut(table: &mut GpuTable, key: GpuCellKey) -> Option<&mut u32> {
+        let group = table.groups.get_mut(key.group)?;
+        let property = match key.location {
+            GpuCellLocation::GroupHeader { property } => {
+                group.header_properties.get_mut(property)?
+            }
+            GpuCellLocation::Level { level, property } => {
+                group.levels.get_mut(level)?.properties.get_mut(property)?
+            }
+        };
+        property.cells.get_mut(key.cell)
+    }
+
+    fn cell_property_path(&self, key: GpuCellKey) -> Option<String> {
+        let table = self.edited_table.as_ref()?;
+        let group = table.groups.get(key.group)?;
+        let property = self.cell_property(key)?;
+        Some(match key.location {
+            GpuCellLocation::GroupHeader { .. } => {
+                format!("group {} / {}", group.id, property.name)
+            }
+            GpuCellLocation::Level { level, .. } => format!(
+                "group {} / level {} / {}",
+                group.id,
+                group.levels.get(level)?.id,
+                property.name
+            ),
+        })
+    }
+}
+
+fn parse_gpu_frequency_mhz(input: &str) -> Result<u32, ()> {
+    const HZ_PER_MHZ: u32 = 1_000_000;
+    let value = input.trim();
+    let Some((whole, fraction)) = value.split_once('.') else {
+        return parse_gpu_cell(value)
+            .map_err(|_| ())?
+            .checked_mul(HZ_PER_MHZ)
+            .ok_or(());
+    };
+    if value.matches('.').count() != 1
+        || fraction.is_empty()
+        || whole.starts_with("0x")
+        || whole.starts_with("0X")
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(());
+    }
+    let significant_fraction = fraction.trim_end_matches('0');
+    if significant_fraction.len() > 6 {
+        return Err(());
+    }
+    let whole_hz = parse_gpu_cell(whole)
+        .map_err(|_| ())?
+        .checked_mul(HZ_PER_MHZ)
+        .ok_or(())?;
+    let fraction_hz = if significant_fraction.is_empty() {
+        0
+    } else {
+        let parsed = parse_gpu_cell(significant_fraction).map_err(|_| ())?;
+        let scale = 10_u32
+            .checked_pow(u32::try_from(6 - significant_fraction.len()).map_err(|_| ())?)
+            .ok_or(())?;
+        parsed.checked_mul(scale).ok_or(())?
+    };
+    whole_hz.checked_add(fraction_hz).ok_or(())
+}
+
+fn format_gpu_frequency_mhz(frequency_hz: u32) -> String {
+    const HZ_PER_MHZ: u32 = 1_000_000;
+    let whole = frequency_hz / HZ_PER_MHZ;
+    let remainder = frequency_hz % HZ_PER_MHZ;
+    if remainder == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{remainder:06}")
+            .trim_end_matches('0')
+            .to_string()
     }
 }
 
@@ -1648,13 +1960,43 @@ mod konabess_tests {
                 header_properties: vec![],
                 levels: vec![GpuLevel {
                     id: 0,
-                    properties: vec![GpuProperty {
-                        name: "qcom,gpu-freq".into(),
-                        cells: vec![frequency],
-                    }],
+                    properties: vec![
+                        GpuProperty {
+                            name: "reg".into(),
+                            cells: vec![0],
+                        },
+                        GpuProperty {
+                            name: "qcom,gpu-freq".into(),
+                            cells: vec![frequency],
+                        },
+                        GpuProperty {
+                            name: "qcom,level".into(),
+                            cells: vec![200],
+                        },
+                    ],
                 }],
             }],
         }
+    }
+
+    fn prepared() -> KonaBessPrepared {
+        KonaBessPrepared {
+            work_dir: "work".into(),
+            vendor_boot: "vendor_boot.img".into(),
+            vbmeta: "vbmeta.img".into(),
+            backup_dir: "backup".into(),
+            slot_suffix: "_a".into(),
+            probable_dtb_index: None,
+        }
+    }
+
+    fn ready_wizard(frequency: u32) -> KonaBessWizard {
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(1, Some("sun"), Some(frequency))], None);
+        assert!(wizard.select_target(1));
+        wizard.prepared = Some(prepared());
+        wizard.step = 1;
+        wizard
     }
 
     fn candidate(index: usize, chip: Option<&str>, frequency: Option<u32>) -> VendorBootDtbInfo {
@@ -1716,6 +2058,8 @@ mod konabess_tests {
             .unwrap();
         wizard.import_path = Some("first-target.txt".into());
         wizard.import_error = Some("stale error".into());
+        assert!(wizard.edit_cell(GpuCellKey::level(0, 0, 1, 0), "801".to_string()));
+        assert!(!wizard.cell_edits.is_empty());
         assert!(wizard.edited_dirty);
 
         assert!(wizard.select_target(7));
@@ -1723,6 +2067,7 @@ mod konabess_tests {
         assert_eq!(wizard.stock_table, Some(table(900_000_000)));
         assert_eq!(wizard.edited_table, Some(table(900_000_000)));
         assert!(!wizard.edited_dirty);
+        assert!(wizard.cell_edits.is_empty());
         assert!(wizard.import_path.is_none());
         assert!(wizard.import_error.is_none());
         assert!(!wizard.select_target(99));
@@ -1773,6 +2118,289 @@ mod konabess_tests {
         assert!(wizard.revert_edits());
         assert_eq!(wizard.edited_table, stock);
         assert!(!wizard.edited_dirty);
+    }
+
+    #[test]
+    fn import_commits_the_core_normalized_table() {
+        let mut wizard = ready_wizard(900_000_000);
+        let group = &mut wizard.edited_table.as_mut().unwrap().groups[0];
+        group.header_properties.push(GpuProperty {
+            name: "qcom,initial-pwrlevel".into(),
+            cells: vec![0],
+        });
+        let mut second = group.levels[0].clone();
+        second.id = 1;
+        second.properties[0].cells[0] = 1;
+        second.properties[1].cells[0] = 700_000_000;
+        group.levels.push(second);
+        wizard.stock_table = wizard.edited_table.clone();
+        let mut imported = wizard.edited_table.clone().unwrap();
+        imported.groups[0].header_properties[0].cells[0] = 1;
+        let expected = normalize_edited_gpu_table(wizard.stock_table.as_ref().unwrap(), &imported)
+            .unwrap()
+            .table;
+
+        wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "sun".into(),
+                description: "normalization regression".into(),
+                table: imported,
+            })
+            .unwrap();
+
+        assert_eq!(wizard.edited_table, Some(expected));
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].header_properties[0].cells,
+            [0]
+        );
+    }
+
+    #[test]
+    fn cell_edit_updates_only_working_copy_and_retains_invalid_text() {
+        let mut wizard = ready_wizard(700_000_000);
+        let stock = wizard.stock_table.clone();
+        let frequency = GpuCellKey::level(0, 0, 1, 0);
+
+        assert!(wizard.edit_cell(frequency, "812.345678".into()));
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].levels[0].properties[1].cells,
+            [812_345_678]
+        );
+        assert_eq!(wizard.stock_table, stock);
+        assert!(wizard.edited_dirty);
+
+        assert!(!wizard.edit_cell(frequency, "812.".into()));
+        assert_eq!(wizard.cell_edits[&frequency].text, "812.");
+        assert!(wizard.cell_edits[&frequency].has_error);
+        assert!(wizard.editor_validation().has_hard_errors());
+        assert!(!wizard.can_next());
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].levels[0].properties[1].cells,
+            [812_345_678]
+        );
+    }
+
+    #[test]
+    fn ui_cell_edit_path_rejects_normalization_owned_cells() {
+        let mut wizard = ready_wizard(700_000_000);
+        for table in [
+            wizard.stock_table.as_mut().unwrap(),
+            wizard.edited_table.as_mut().unwrap(),
+        ] {
+            table.groups[0].header_properties.extend([
+                GpuProperty {
+                    name: "qcom,initial-pwrlevel".into(),
+                    cells: vec![0],
+                },
+                GpuProperty {
+                    name: "qcom,initial-min-pwrlevel".into(),
+                    cells: vec![0],
+                },
+            ]);
+        }
+        let before = wizard.edited_table.clone();
+
+        for key in [
+            GpuCellKey::level(0, 0, 0, 0),
+            GpuCellKey::group_header(0, 0, 0),
+            GpuCellKey::group_header(0, 1, 0),
+        ] {
+            assert!(!wizard.edit_cell(key, "99".into()));
+        }
+
+        assert_eq!(wizard.edited_table, before);
+        assert!(wizard.cell_edits.is_empty());
+    }
+
+    #[test]
+    fn accepted_cell_edit_commits_the_core_normalized_table() {
+        let mut wizard = ready_wizard(900_000_000);
+        let group = &mut wizard.edited_table.as_mut().unwrap().groups[0];
+        group.header_properties.push(GpuProperty {
+            name: "qcom,initial-pwrlevel".into(),
+            cells: vec![0],
+        });
+        let mut second = group.levels[0].clone();
+        second.id = 1;
+        second.properties[0].cells[0] = 1;
+        second.properties[1].cells[0] = 700_000_000;
+        group.levels.push(second);
+        wizard.stock_table = wizard.edited_table.clone();
+        wizard.edited_table.as_mut().unwrap().groups[0].header_properties[0].cells[0] = 1;
+
+        let mut candidate = wizard.edited_table.clone().unwrap();
+        candidate.groups[0].levels[0].properties[2].cells[0] = 300;
+        let expected = normalize_edited_gpu_table(wizard.stock_table.as_ref().unwrap(), &candidate)
+            .unwrap()
+            .table;
+
+        assert!(wizard.edit_cell(GpuCellKey::level(0, 0, 2, 0), "300".into()));
+        assert_eq!(wizard.edited_table, Some(expected));
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].header_properties[0].cells,
+            [0]
+        );
+    }
+
+    #[test]
+    fn advisory_is_visible_but_does_not_block_advancing() {
+        let mut wizard = ready_wizard(700_000_000);
+        let frequency = GpuCellKey::level(0, 0, 1, 0);
+
+        assert!(wizard.edit_cell(frequency, "2000".into()));
+        let validation = wizard.editor_validation();
+
+        assert!(!validation.has_hard_errors());
+        assert!(!validation.warnings.is_empty());
+        assert!(wizard.can_next());
+    }
+
+    #[test]
+    fn deleted_initial_target_advisory_does_not_block_advancing() {
+        let mut wizard = ready_wizard(900_000_000);
+        let group = &mut wizard.edited_table.as_mut().unwrap().groups[0];
+        group.header_properties.push(GpuProperty {
+            name: "qcom,initial-pwrlevel".into(),
+            cells: vec![0],
+        });
+        let mut second = group.levels[0].clone();
+        second.id = 1;
+        second.properties[0].cells[0] = 1;
+        second.properties[1].cells[0] = 700_000_000;
+        group.levels.push(second);
+        wizard.stock_table = wizard.edited_table.clone();
+        let mut removed = wizard.stock_table.clone().unwrap();
+        removed.groups[0].levels.remove(0);
+        let expected = normalize_edited_gpu_table(wizard.stock_table.as_ref().unwrap(), &removed)
+            .unwrap()
+            .table;
+
+        assert!(wizard.remove_level(0, 0));
+        let validation = wizard.editor_validation();
+
+        assert_eq!(wizard.edited_table, Some(expected));
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].header_properties[0].cells,
+            [0]
+        );
+        assert!(!validation.has_hard_errors());
+        assert!(
+            validation
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("was deleted"))
+        );
+        assert!(wizard.can_next());
+    }
+
+    #[test]
+    fn vector_header_cells_are_committed_independently() {
+        let mut wizard = ready_wizard(700_000_000);
+        let sku_codes = GpuProperty {
+            name: "qcom,sku-codes".into(),
+            cells: vec![1, 2, 3],
+        };
+        wizard.stock_table.as_mut().unwrap().groups[0]
+            .header_properties
+            .push(sku_codes.clone());
+        wizard.edited_table.as_mut().unwrap().groups[0]
+            .header_properties
+            .push(sku_codes);
+        let second_sku = GpuCellKey::group_header(0, 0, 1);
+
+        assert!(wizard.edit_cell(second_sku, "0x20".into()));
+
+        assert_eq!(
+            wizard.edited_table.as_ref().unwrap().groups[0].header_properties[0].cells,
+            [1, 32, 3]
+        );
+        assert_eq!(
+            wizard.stock_table.as_ref().unwrap().groups[0].header_properties[0].cells,
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn added_level_uses_exact_ordered_schema_of_heterogeneous_sibling() {
+        let mut wizard = ready_wizard(900_000_000);
+        let group = &mut wizard.edited_table.as_mut().unwrap().groups[0];
+        group.levels[0].properties.push(GpuProperty {
+            name: "qcom,acd-level".into(),
+            cells: vec![1],
+        });
+        group.levels.push(GpuLevel {
+            id: 1,
+            properties: vec![
+                GpuProperty {
+                    name: "reg".into(),
+                    cells: vec![1],
+                },
+                GpuProperty {
+                    name: "qcom,gpu-freq".into(),
+                    cells: vec![700_000_000],
+                },
+                GpuProperty {
+                    name: "qcom,level".into(),
+                    cells: vec![150],
+                },
+                GpuProperty {
+                    name: "qcom,bus-freq".into(),
+                    cells: vec![4],
+                },
+            ],
+        });
+        wizard.stock_table = wizard.edited_table.clone();
+        let first_names = wizard.edited_table.as_ref().unwrap().groups[0].levels[0]
+            .properties
+            .iter()
+            .map(|property| property.name.clone())
+            .collect::<Vec<_>>();
+        let template_names = wizard.edited_table.as_ref().unwrap().groups[0].levels[1]
+            .properties
+            .iter()
+            .map(|property| property.name.clone())
+            .collect::<Vec<_>>();
+
+        assert!(wizard.add_level(0));
+
+        let added_names = wizard.edited_table.as_ref().unwrap().groups[0].levels[2]
+            .properties
+            .iter()
+            .map(|property| property.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(added_names, template_names);
+        assert_ne!(added_names, first_names);
+    }
+
+    #[test]
+    fn final_level_cannot_be_removed_and_revert_restores_exact_stock() {
+        let mut wizard = ready_wizard(700_000_000);
+        let stock = wizard.stock_table.clone();
+        let vote = GpuCellKey::level(0, 0, 2, 0);
+
+        assert!(!wizard.remove_level(0, 0));
+        assert!(wizard.edit_cell(vote, "300".into()));
+        wizard.import_path = Some("import.txt".into());
+        assert!(wizard.revert_edits());
+
+        assert_eq!(wizard.edited_table, stock);
+        assert!(wizard.cell_edits.is_empty());
+        assert!(wizard.import_path.is_none());
+        assert!(!wizard.edited_dirty);
+    }
+
+    #[test]
+    fn mhz_display_and_parser_round_trip_exact_hz() {
+        for frequency in [750_000_000, 231_234_567, u32::MAX] {
+            let display = format_gpu_frequency_mhz(frequency);
+            assert_eq!(parse_gpu_frequency_mhz(&display), Ok(frequency));
+        }
+        assert_eq!(parse_gpu_frequency_mhz("231.2345670"), Ok(231_234_567));
+        assert_eq!(parse_gpu_frequency_mhz("750.5"), Ok(750_500_000));
+        assert_eq!(parse_gpu_frequency_mhz("0x2EE"), Ok(750_000_000));
+        assert!(parse_gpu_frequency_mhz("0x2EE.5").is_err());
+        assert!(parse_gpu_frequency_mhz("750.0x5").is_err());
+        assert!(parse_gpu_frequency_mhz("231.2345671").is_err());
     }
 
     #[test]

@@ -3,9 +3,9 @@
 
 use crate::{
     AdvAction, ConfirmField, DataMode, DevicePollResult, DeviceRegion, DumpPartsScanResult, Family,
-    FlashPartsScanResult, FlashTarget, Language, NightlySource, PartsSortColumn, PickerTarget,
-    Provider, RebootTarget, RescueRegion, RollbackSetting, RootMode, SkrootFlavor, SysUpdateAction,
-    ThemeChoice, ThemeSeed, UnrootType, VerChoice, View,
+    FlashPartsScanResult, FlashTarget, GpuCellKey, Language, NightlySource, PartsSortColumn,
+    PickerTarget, Provider, RebootTarget, RescueRegion, RollbackSetting, RootMode, SkrootFlavor,
+    SysUpdateAction, ThemeChoice, ThemeSeed, UnrootType, VerChoice, View,
 };
 
 #[derive(Debug, Clone)]
@@ -321,6 +321,9 @@ pub(crate) enum KonaBessMsg {
     KonaBessImportChosen(Option<String>),
     KonaBessOpenTarget,
     KonaBessRevertEdits,
+    KonaBessCellChanged(GpuCellKey, String),
+    KonaBessAddLevel(usize),
+    KonaBessRemoveLevel(usize, usize),
     KonaBessNext,
     KonaBessBack,
     /// Feed the retained workspace plus parsed device GPU tables into the
