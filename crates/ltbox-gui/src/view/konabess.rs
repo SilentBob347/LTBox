@@ -112,6 +112,9 @@ impl App {
 
         let mut content = column![
             toolbar,
+            text(self.t("konabess_attribution").to_string())
+                .size(11)
+                .style(muted_style),
             text(self.t("konabess_table_value_note").to_string())
                 .size(11)
                 .style(muted_style),

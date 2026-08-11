@@ -404,6 +404,7 @@
   "konabess_add_level": "添加级别",
   "konabess_apply_subtitle": "使用内存中的工作表重新构建有效的 AVB 镜像对，并一起刷写两个镜像。",
   "konabess_apply_title": "应用 GPU 表",
+  "konabess_attribution": "基于 libxzr 的 KonaBess — GPL-3",
   "konabess_confirm_changes": "表格更改",
   "konabess_confirm_chip": "芯片组",
   "konabess_confirm_edited_shape": "工作表",

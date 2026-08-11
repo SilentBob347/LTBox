@@ -404,6 +404,7 @@
   "konabess_add_level": "Добавить уровень",
   "konabess_apply_subtitle": "Пересобрать корректную пару образов AVB из рабочей таблицы в памяти и прошить оба образа вместе.",
   "konabess_apply_title": "Применение таблицы GPU",
+  "konabess_attribution": "На основе KonaBess от libxzr — GPL-3",
   "konabess_confirm_changes": "Изменения таблицы",
   "konabess_confirm_chip": "Чипсет",
   "konabess_confirm_edited_shape": "Рабочая таблица",

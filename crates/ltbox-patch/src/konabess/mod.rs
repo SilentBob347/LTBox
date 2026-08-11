@@ -1,4 +1,9 @@
-//! Offline KonaBess GPU-table import for Android vendor-boot v4 images.
+//! Independent pure-Rust implementation of KonaBess-style GPU-table editing
+//! directly on flattened-device-tree bytes.
+//!
+//! Upstream: [KonaBess](https://github.com/libxzr/KonaBess) by libxzr,
+//! licensed GPL-3. This module reads and writes KonaBess's settings export
+//! format for interoperability.
 //!
 //! KonaBess replaces the complete contiguous `qcom,gpu-pwrlevels-*` sibling
 //! set. This module mirrors that behavior directly in flattened-device-tree

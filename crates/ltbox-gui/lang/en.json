@@ -404,6 +404,7 @@
   "konabess_add_level": "Add Level",
   "konabess_apply_subtitle": "Build an AVB-valid image pair from the edited in-memory table and flash both images together.",
   "konabess_apply_title": "Apply GPU Table",
+  "konabess_attribution": "Based on KonaBess by libxzr — GPL-3",
   "konabess_confirm_changes": "Table Changes",
   "konabess_confirm_chip": "Chipset",
   "konabess_confirm_edited_shape": "Working Table",

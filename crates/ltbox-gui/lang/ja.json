@@ -404,6 +404,7 @@
   "konabess_add_level": "レベルを追加",
   "konabess_apply_subtitle": "メモリ上の作業用テーブルから有効なAVBイメージのペアを再構築し、両方をまとめて書き込みます。",
   "konabess_apply_title": "GPUテーブルを適用",
+  "konabess_attribution": "libxzrによるKonaBessをベースにしています — GPL-3",
   "konabess_confirm_changes": "テーブルの変更",
   "konabess_confirm_chip": "チップセット",
   "konabess_confirm_edited_shape": "作業用テーブル",
