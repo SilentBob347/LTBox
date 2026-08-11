@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_result_enters_table_step_with_probable_table_selected() {
+    fn inspection_result_enters_target_picker_without_preselection() {
         let root = tempfile::tempdir().unwrap();
         let mut app = app_ready_for_inspection_result();
         let prepared = prepared(root.path(), Some(4));
@@ -374,12 +374,13 @@ mod tests {
             },
         ));
 
-        assert!(!app.konabess.target_popup_open);
+        assert!(app.konabess.target_popup_open);
         assert_eq!(app.konabess.candidates.len(), 1);
-        assert_eq!(app.konabess.selected_target_index, Some(4));
+        assert!(app.konabess.is_probable_target(4));
+        assert_eq!(app.konabess.selected_target_index, None);
         assert_eq!(app.konabess.prepared, Some(prepared));
-        assert_eq!(app.konabess.stock_table, Some(table(700_000_000)));
-        assert_eq!(app.konabess.edited_table, app.konabess.stock_table);
+        assert_eq!(app.konabess.stock_table, None);
+        assert_eq!(app.konabess.edited_table, None);
         assert_eq!(app.konabess.step, 1);
         assert!(!app.busy);
         assert_eq!(task.units(), 0);
@@ -412,6 +413,8 @@ mod tests {
             ],
             Some(4),
         );
+        assert!(app.konabess.select_target(4));
+        assert_eq!(app.konabess.confirm_target(), Some(4));
         app.konabess
             .overwrite_edited_from_import(KonaBessExport {
                 chip: "sun".into(),
@@ -452,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn non_unique_probable_dtb_cases_open_existing_target_popup() {
+    fn every_inspection_result_opens_existing_target_popup_without_selection() {
         let cases = [
             (None, vec![candidate(4, "sun", 700_000_000)], None),
             (Some(99), vec![candidate(4, "sun", 700_000_000)], None),
@@ -462,7 +465,7 @@ mod tests {
                     candidate(4, "sun", 700_000_000),
                     candidate(4, "sun", 800_000_000),
                 ],
-                Some(4),
+                None,
             ),
         ];
 
@@ -493,6 +496,8 @@ mod tests {
         let mut app = app_ready_for_inspection_result();
         app.konabess
             .apply_inspection_result(vec![candidate(4, "pineapple", 700_000_000)], Some(4));
+        assert!(app.konabess.select_target(4));
+        assert_eq!(app.konabess.confirm_target(), Some(4));
         let before = app.konabess.edited_table.clone();
 
         let task = app.update_konabess(KonaBessMsg::KonaBessImportChosen(Some(
@@ -545,6 +550,8 @@ mod tests {
         };
         app.konabess
             .apply_inspection_result(vec![candidate(4, "sun", 700_000_000)], Some(4));
+        assert!(app.konabess.select_target(4));
+        assert_eq!(app.konabess.confirm_target(), Some(4));
         app.konabess.step = 2;
 
         let task = app.update_konabess(KonaBessMsg::KonaBessNext);
@@ -573,6 +580,21 @@ mod tests {
             .apply_inspection_result(vec![candidate(4, "sun", 700_000_000)], Some(4));
         app.konabess.step = 1;
 
+        assert_eq!(app.update_konabess(KonaBessMsg::KonaBessNext).units(), 0);
+        assert_eq!(app.konabess.step, 1);
+        assert!(app.konabess.target_popup_open);
+
+        assert_eq!(
+            app.update_konabess(KonaBessMsg::KonaBessTargetSelected(4))
+                .units(),
+            0
+        );
+        assert_eq!(
+            app.update_konabess(KonaBessMsg::KonaBessTargetConfirm)
+                .units(),
+            0
+        );
+        assert!(!app.konabess.target_popup_open);
         assert_eq!(app.update_konabess(KonaBessMsg::KonaBessNext).units(), 0);
         assert_eq!(app.konabess.step, 2);
         assert_eq!(app.update_konabess(KonaBessMsg::KonaBessBack).units(), 0);

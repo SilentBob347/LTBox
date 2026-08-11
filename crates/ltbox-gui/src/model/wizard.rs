@@ -1319,36 +1319,25 @@ pub(crate) enum KonaBessImportError {
 }
 
 impl KonaBessWizard {
-    /// Accept an inspection result and open normal single-target selection.
+    /// Accept an inspection result and require explicit single-target selection.
     /// Candidates are driven solely by GPU tables parsed from the device image.
-    /// Returns whether the device hint identifies exactly one candidate.
     pub(crate) fn apply_inspection_result(
         &mut self,
         inspected: Vec<VendorBootDtbInfo>,
         probable_dtb_index: Option<usize>,
-    ) -> bool {
+    ) {
         self.candidates = inspected
             .into_iter()
             .filter(|candidate| candidate.table.is_some())
             .collect();
-        let probable_match_count = probable_dtb_index.map_or(0, |index| {
-            self.candidates
-                .iter()
-                .filter(|candidate| candidate.index == index && candidate.chip.is_some())
-                .count()
-        });
         self.probable_target_index = probable_dtb_index.filter(|index| {
             self.candidates
                 .iter()
                 .any(|candidate| candidate.index == *index)
         });
         self.clear_table_selection();
-        if let Some(index) = self.probable_target_index {
-            self.select_target(index);
-        }
-        self.target_popup_open = probable_match_count != 1;
-        self.target_popup_abandons_on_dismiss = self.target_popup_open;
-        probable_match_count == 1
+        self.target_popup_open = true;
+        self.target_popup_abandons_on_dismiss = true;
     }
 
     pub(crate) fn is_probable_target(&self, target_index: usize) -> bool {
@@ -2447,9 +2436,9 @@ mod konabess_tests {
     }
 
     #[test]
-    fn probable_dtb_match_is_preselected_with_its_table() {
+    fn probable_dtb_match_is_only_a_hint_until_explicitly_selected() {
         let mut wizard = KonaBessWizard::default();
-        let auto_confirm = wizard.apply_inspection_result(
+        wizard.apply_inspection_result(
             vec![
                 candidate(2, Some("sun"), Some(700_000_000)),
                 candidate(7, Some("sun"), Some(900_000_000)),
@@ -2457,17 +2446,23 @@ mod konabess_tests {
             Some(7),
         );
 
-        assert!(auto_confirm);
-        assert!(!wizard.target_popup_open);
+        assert!(wizard.target_popup_open);
+        assert!(wizard.target_popup_abandons_on_dismiss);
         assert!(wizard.is_probable_target(7));
+        assert_eq!(wizard.selected_target_index, None);
+        assert_eq!(wizard.stock_table, None);
+        assert_eq!(wizard.edited_table, None);
+        assert_eq!(wizard.confirm_target(), None);
+        assert!(wizard.target_popup_open);
+
+        assert!(wizard.select_target(7));
         assert_eq!(wizard.selected_target_index, Some(7));
         assert_eq!(wizard.stock_table, Some(table(900_000_000)));
 
         let mut unknown_chip_wizard = KonaBessWizard::default();
-        let auto_confirm = unknown_chip_wizard
+        unknown_chip_wizard
             .apply_inspection_result(vec![candidate(7, None, Some(900_000_000))], Some(7));
 
-        assert!(!auto_confirm);
         assert!(unknown_chip_wizard.target_popup_open);
         assert!(unknown_chip_wizard.is_probable_target(7));
         assert_eq!(unknown_chip_wizard.selected_target_index, None);
@@ -2477,10 +2472,9 @@ mod konabess_tests {
     #[test]
     fn unknown_probable_dtb_requires_manual_selection() {
         let mut wizard = KonaBessWizard::default();
-        let auto_confirm = wizard
+        wizard
             .apply_inspection_result(vec![candidate(2, Some("sun"), Some(700_000_000))], Some(99));
 
-        assert!(!auto_confirm);
         assert!(wizard.target_popup_open);
         assert_eq!(wizard.probable_target_index, None);
         assert_eq!(wizard.selected_target_index, None);
