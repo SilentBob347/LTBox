@@ -38,7 +38,11 @@ impl App {
                 }
             }
             Message::Navigate(v) => {
-                if self.current_view == View::KonaBess && v != View::KonaBess && !self.busy {
+                if self.current_view == View::KonaBess
+                    && v != View::KonaBess
+                    && !self.busy
+                    && !self.konabess_in_progress()
+                {
                     self.konabess.reset();
                 }
                 self.current_view = v;
@@ -86,7 +90,11 @@ impl App {
                 {
                     self.unroot.reset();
                 }
-                if v == View::KonaBess && !busy && self.konabess.step < 2 {
+                if v == View::KonaBess
+                    && !busy
+                    && self.konabess.step < 2
+                    && !self.konabess_in_progress()
+                {
                     self.konabess.reset();
                     self.apply_default_loader_to_konabess();
                 }

@@ -2388,6 +2388,15 @@ impl App {
         }
     }
 
+    /// True while KonaBess owns a prepared EDL workspace whose table or
+    /// confirm screen must survive a sidebar bounce. This mirrors the
+    /// partition-table branch of `advanced_in_progress`.
+    fn konabess_in_progress(&self) -> bool {
+        self.connection == ConnectionStatus::Edl
+            && self.konabess.prepared.is_some()
+            && matches!(self.konabess.step, 1 | 2)
+    }
+
     fn should_show_busy_progress_dialog(&self) -> bool {
         self.busy
             // The temp-file cleanup borrows `busy` only to lock out racing
@@ -2693,7 +2702,7 @@ impl App {
             Ok(loader) if self.loader_fits_model(std::path::Path::new(&loader)) => {
                 self.konabess.loader_path = Some(loader);
                 self.konabess.loader_error = None;
-                self.konabess.step = 1;
+                self.konabess.step = 0;
             }
             Ok(_) => {
                 self.konabess.loader_error =
@@ -4171,7 +4180,7 @@ mod tests {
             ..App::default()
         };
 
-        app.konabess.step = 2;
+        app.konabess.step = 0;
         assert!(!app.current_view_has_inline_exec_surface());
         assert!(app.should_show_busy_progress_dialog());
         assert_eq!(

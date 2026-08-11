@@ -317,12 +317,14 @@ pub(crate) enum AdvMsg {
 pub(crate) enum KonaBessMsg {
     KonaBessSelectLoader,
     KonaBessLoaderChosen(Option<String>),
-    KonaBessSelectExport,
-    KonaBessExportChosen(Option<String>),
+    KonaBessSelectImport,
+    KonaBessImportChosen(Option<String>),
+    KonaBessOpenTarget,
+    KonaBessRevertEdits,
     KonaBessNext,
     KonaBessBack,
-    /// Stage-D seam: feed the retained workspace plus device-independent
-    /// classification into the pure target-selection transition.
+    /// Feed the retained workspace plus parsed device GPU tables into the
+    /// target-selection transition.
     KonaBessInspectionReady(crate::KonaBessInspectionResult),
     KonaBessInspectionFailed(String),
     KonaBessTargetSelected(usize),

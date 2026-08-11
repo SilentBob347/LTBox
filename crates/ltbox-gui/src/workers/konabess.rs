@@ -1,4 +1,4 @@
-//! KonaBess stage-D workers: inspect stock images, pause for UI target
+//! KonaBess workers: inspect stock images, pause for UI target/table review,
 //! selection, then rebuild and flash the AVB-matched image pair.
 
 use crate::{
@@ -6,13 +6,13 @@ use crate::{
     prepare_tb323fu_efisp, provision_tb323fu_efisp, transition_to_edl,
 };
 use ltbox_core::{live, tr_args};
-use ltbox_patch::konabess::{ClassifiedDtb, KonaBessAvbOutput, KonaBessBuildStage, KonaBessExport};
+use ltbox_patch::konabess::{GpuTable, KonaBessAvbOutput, KonaBessBuildStage, VendorBootDtbInfo};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub(crate) struct KonaBessInspectionResult {
     pub(crate) prepared: KonaBessPrepared,
-    pub(crate) candidates: Vec<ClassifiedDtb>,
+    pub(crate) candidates: Vec<VendorBootDtbInfo>,
     pub(crate) log: Vec<String>,
 }
 
@@ -53,11 +53,10 @@ trait KonaBessInspectionBackend {
         work_dir: &Path,
         log: &mut Vec<String>,
     ) -> Result<(), String>;
-    fn classify(
+    fn inspect_gpu_candidates(
         &mut self,
         vendor_boot: &Path,
-        export: &KonaBessExport,
-    ) -> Result<Vec<ClassifiedDtb>, String>;
+    ) -> Result<Vec<VendorBootDtbInfo>, String>;
     fn prepare_for_selection(&mut self, log: &mut Vec<String>) -> Result<(), String>;
     fn recover_after_error(&mut self, log: &mut Vec<String>);
 }
@@ -152,13 +151,12 @@ impl KonaBessInspectionBackend for DeviceBackend<'_> {
         }
     }
 
-    fn classify(
+    fn inspect_gpu_candidates(
         &mut self,
         vendor_boot: &Path,
-        export: &KonaBessExport,
-    ) -> Result<Vec<ClassifiedDtb>, String> {
+    ) -> Result<Vec<VendorBootDtbInfo>, String> {
         let image = std::fs::read(vendor_boot).map_err(|error| error.to_string())?;
-        ltbox_patch::konabess::classify_vendor_boot_dtbs(&image, export)
+        ltbox_patch::konabess::inspect_vendor_boot_gpu_candidates(&image)
             .map_err(|error| error.to_string())
     }
 
@@ -209,11 +207,10 @@ fn persist_backup(vendor_boot: &Path, vbmeta: &Path, backup_dir: &Path) -> Resul
 
 fn execute_inspection<B: KonaBessInspectionBackend>(
     backend: &mut B,
-    export: &KonaBessExport,
     paths: &InspectionPaths,
     phases: &PhaseReporter,
     log: &mut Vec<String>,
-) -> Result<(KonaBessPrepared, Vec<ClassifiedDtb>), String> {
+) -> Result<(KonaBessPrepared, Vec<VendorBootDtbInfo>), String> {
     live!(log, "[KonaBess] {}", phases.marker(1));
 
     // This probe is intentionally the first device operation. EDL cannot
@@ -238,7 +235,7 @@ fn execute_inspection<B: KonaBessInspectionBackend>(
     backend.run_exploit_gate(&slot_suffix, &vendor_boot, &vbmeta, &paths.work_dir, log)?;
 
     live!(log, "[KonaBess] {}", phases.marker(3));
-    let candidates = backend.classify(&vendor_boot, export)?;
+    let candidates = backend.inspect_gpu_candidates(&vendor_boot)?;
 
     // Return Firehose to Sahara so part 2 can open a fresh session after the
     // UI selection pause. Backup creation is last, making it success-only.
@@ -261,7 +258,6 @@ fn execute_inspection<B: KonaBessInspectionBackend>(
 pub(crate) fn konabess_inspection_worker(
     conn: ConnectionStatus,
     loader: PathBuf,
-    export: KonaBessExport,
     is_tb323fu: bool,
     ll: LiveLabels,
     phases: PhaseReporter,
@@ -288,7 +284,7 @@ pub(crate) fn konabess_inspection_worker(
         writes_started: false,
     };
 
-    match execute_inspection(&mut backend, &export, &paths, &phases, &mut log) {
+    match execute_inspection(&mut backend, &paths, &phases, &mut log) {
         Ok((prepared, candidates)) => {
             live!(
                 log,
@@ -320,8 +316,9 @@ trait KonaBessFlashBackend {
         &mut self,
         firmware_dir: &Path,
         output_dir: &Path,
-        export_path: &Path,
         target_index: usize,
+        chip: &str,
+        table: &GpuTable,
         on_stage: &mut dyn FnMut(KonaBessBuildStage),
     ) -> Result<KonaBessAvbOutput, String>;
     fn open_session(&mut self, log: &mut Vec<String>) -> Result<(), String>;
@@ -359,15 +356,17 @@ impl KonaBessFlashBackend for FlashDeviceBackend<'_> {
         &mut self,
         firmware_dir: &Path,
         output_dir: &Path,
-        export_path: &Path,
         target_index: usize,
+        chip: &str,
+        table: &GpuTable,
         on_stage: &mut dyn FnMut(KonaBessBuildStage),
     ) -> Result<KonaBessAvbOutput, String> {
-        ltbox_patch::konabess::build_konabess_avb_images_with_progress(
+        ltbox_patch::konabess::build_konabess_avb_images_from_table_with_progress(
             firmware_dir,
             output_dir,
-            export_path,
             target_index,
+            chip,
+            table,
             on_stage,
         )
         .map_err(|error| error.to_string())
@@ -422,11 +421,17 @@ impl KonaBessFlashBackend for FlashDeviceBackend<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct KonaBessTableEdit<'a> {
+    target_index: usize,
+    chip: &'a str,
+    table: &'a GpuTable,
+}
+
 fn execute_flash<B: KonaBessFlashBackend>(
     backend: &mut B,
     prepared: &KonaBessPrepared,
-    export_path: &Path,
-    target_index: usize,
+    edit: KonaBessTableEdit<'_>,
     phases: &PhaseReporter,
     ll: &LiveLabels,
     log: &mut Vec<String>,
@@ -435,8 +440,9 @@ fn execute_flash<B: KonaBessFlashBackend>(
     let output = backend.build_pair(
         &prepared.work_dir,
         &output_dir,
-        export_path,
-        target_index,
+        edit.target_index,
+        edit.chip,
+        edit.table,
         &mut |stage| {
             live!(
                 log,
@@ -484,21 +490,12 @@ fn execute_flash<B: KonaBessFlashBackend>(
 fn run_flash<B: KonaBessFlashBackend>(
     backend: &mut B,
     prepared: &KonaBessPrepared,
-    export_path: &Path,
-    target_index: usize,
+    edit: KonaBessTableEdit<'_>,
     phases: &PhaseReporter,
     ll: &LiveLabels,
     log: &mut Vec<String>,
 ) -> Result<(), String> {
-    match execute_flash(
-        backend,
-        prepared,
-        export_path,
-        target_index,
-        phases,
-        ll,
-        log,
-    ) {
+    match execute_flash(backend, prepared, edit, phases, ll, log) {
         Ok(()) => Ok(()),
         Err(error) if backend.writes_started() => {
             // Never reset a device that may contain only one member of the
@@ -517,9 +514,10 @@ fn run_flash<B: KonaBessFlashBackend>(
 
 pub(crate) fn konabess_flash_worker(
     loader: PathBuf,
-    export_path: PathBuf,
     prepared: KonaBessPrepared,
     target_index: usize,
+    chip: String,
+    table: GpuTable,
     ll: LiveLabels,
     phases: PhaseReporter,
 ) -> Result<Vec<String>, String> {
@@ -532,8 +530,11 @@ pub(crate) fn konabess_flash_worker(
     run_flash(
         &mut backend,
         &prepared,
-        &export_path,
-        target_index,
+        KonaBessTableEdit {
+            target_index,
+            chip: &chip,
+            table: &table,
+        },
         &phases,
         &ll,
         &mut log,
@@ -573,13 +574,13 @@ pub(crate) fn konabess_cancel_worker(loader: PathBuf) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ltbox_patch::konabess::{GpuTable, VendorBootDtbInfo};
+    use ltbox_patch::konabess::VendorBootDtbInfo;
 
     #[derive(Default)]
     struct FakeBackend {
         events: Vec<String>,
         gate_error: Option<String>,
-        candidate: Option<ClassifiedDtb>,
+        candidate: Option<VendorBootDtbInfo>,
         probable_dtb_index: Option<usize>,
     }
 
@@ -621,11 +622,10 @@ mod tests {
             self.gate_error.take().map_or(Ok(()), Err)
         }
 
-        fn classify(
+        fn inspect_gpu_candidates(
             &mut self,
             vendor_boot: &Path,
-            _export: &KonaBessExport,
-        ) -> Result<Vec<ClassifiedDtb>, String> {
+        ) -> Result<Vec<VendorBootDtbInfo>, String> {
             assert_eq!(
                 std::fs::read_to_string(vendor_boot).unwrap(),
                 "vendor_boot_b"
@@ -658,8 +658,9 @@ mod tests {
             &mut self,
             firmware_dir: &Path,
             output_dir: &Path,
-            _export_path: &Path,
             target_index: usize,
+            _chip: &str,
+            _table: &GpuTable,
             on_stage: &mut dyn FnMut(KonaBessBuildStage),
         ) -> Result<KonaBessAvbOutput, String> {
             self.events.push(format!("build:{target_index}"));
@@ -718,24 +719,17 @@ mod tests {
         }
     }
 
-    fn export() -> KonaBessExport {
-        KonaBessExport {
-            chip: "waipio".into(),
-            description: "test".into(),
-            table: GpuTable { groups: vec![] },
-        }
+    fn table() -> GpuTable {
+        GpuTable { groups: vec![] }
     }
 
-    fn candidate() -> ClassifiedDtb {
-        ClassifiedDtb {
-            info: VendorBootDtbInfo {
-                index: 2,
-                model: Some("test".into()),
-                chip: Some("waipio".into()),
-                gpu_shape: None,
-                table: None,
-            },
-            structurally_matches: true,
+    fn candidate() -> VendorBootDtbInfo {
+        VendorBootDtbInfo {
+            index: 2,
+            model: Some("test".into()),
+            chip: Some("waipio".into()),
+            gpu_shape: None,
+            table: Some(table()),
         }
     }
 
@@ -815,8 +809,7 @@ mod tests {
             ..FakeBackend::default()
         };
         let (prepared, candidates) =
-            execute_inspection(&mut backend, &export(), &paths, &phases(), &mut Vec::new())
-                .unwrap();
+            execute_inspection(&mut backend, &paths, &phases(), &mut Vec::new()).unwrap();
 
         assert_eq!(candidates, vec![candidate()]);
         assert_eq!(prepared.probable_dtb_index, None);
@@ -846,8 +839,7 @@ mod tests {
             ..FakeBackend::default()
         };
 
-        let result =
-            execute_inspection(&mut backend, &export(), &paths, &phases(), &mut Vec::new());
+        let result = execute_inspection(&mut backend, &paths, &phases(), &mut Vec::new());
 
         assert_eq!(result.unwrap_err(), "blocked");
         assert!(!paths.backup_dir.exists());
@@ -862,8 +854,11 @@ mod tests {
         run_flash(
             &mut backend,
             &prepared(root.path()),
-            Path::new("export.txt"),
-            9,
+            KonaBessTableEdit {
+                target_index: 9,
+                chip: "waipio",
+                table: &table(),
+            },
             &flash_phases(),
             &live_labels(),
             &mut Vec::new(),
@@ -901,8 +896,11 @@ mod tests {
         let error = run_flash(
             &mut backend,
             &prepared(root.path()),
-            Path::new("export.txt"),
-            3,
+            KonaBessTableEdit {
+                target_index: 3,
+                chip: "waipio",
+                table: &table(),
+            },
             &flash_phases(),
             &live_labels(),
             &mut Vec::new(),
@@ -925,8 +923,11 @@ mod tests {
         let error = run_flash(
             &mut backend,
             &prepared(root.path()),
-            Path::new("export.txt"),
-            5,
+            KonaBessTableEdit {
+                target_index: 5,
+                chip: "waipio",
+                table: &table(),
+            },
             &flash_phases(),
             &live_labels(),
             &mut Vec::new(),
@@ -962,8 +963,7 @@ mod tests {
         };
 
         let (prepared, _) =
-            execute_inspection(&mut backend, &export(), &paths, &phases(), &mut Vec::new())
-                .unwrap();
+            execute_inspection(&mut backend, &paths, &phases(), &mut Vec::new()).unwrap();
 
         assert_eq!(prepared.probable_dtb_index, Some(2));
         assert!(

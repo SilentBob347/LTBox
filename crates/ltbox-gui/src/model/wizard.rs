@@ -6,7 +6,7 @@ use crate::{
     AdvAction, Family, LOADER_PICKER_EXTS, NightlySource, Provider, RootMode, SkrootFlavor,
     VerChoice, is_loader_file,
 };
-use ltbox_patch::konabess::{ClassifiedDtb, KonaBessExport};
+use ltbox_patch::konabess::{GpuTable, KonaBessExport, VendorBootDtbInfo};
 
 // Internal steps: 0=Family, 1=Mode, 2=Provider, 3=Version,
 // 4=NightlySource, 5=Folder, 6=Confirm, 7=Flash, 8=APatch KPM.
@@ -1210,7 +1210,7 @@ impl Wizard for SimpleFlashWizard {
 
 pub(crate) const KONABESS_STEPS: &[&str] = &[
     "edl_loader_label",
-    "konabess_step_export",
+    "konabess_step_table",
     "konabess_step_confirm",
     "konabess_step_apply",
 ];
@@ -1235,52 +1235,64 @@ pub(crate) struct KonaBessWizard {
     pub(crate) step: usize,
     pub(crate) loader_path: Option<String>,
     pub(crate) loader_error: Option<String>,
-    pub(crate) export_path: Option<String>,
-    pub(crate) export_error: Option<String>,
-    pub(crate) export: Option<KonaBessExport>,
-    /// Chip-compatible DTBs from the dumped vendor_boot inspection.
-    pub(crate) candidates: Vec<ClassifiedDtb>,
+    pub(crate) import_path: Option<String>,
+    pub(crate) import_error: Option<String>,
+    /// Device table retained for comparison and one-click revert.
+    pub(crate) stock_table: Option<GpuTable>,
+    /// In-memory table that will be passed directly to the AVB build path.
+    pub(crate) edited_table: Option<GpuTable>,
+    pub(crate) edited_dirty: bool,
+    /// DTBs whose GPU table parsed from the dumped vendor_boot image.
+    pub(crate) candidates: Vec<VendorBootDtbInfo>,
     /// The one DTB index passed to the existing single-target patch API.
     pub(crate) selected_target_index: Option<usize>,
     /// Upstream KonaBess's probable target, when it is one of the candidates.
     pub(crate) probable_target_index: Option<usize>,
     /// Modal ownership stays with the wizard rather than parallel App flags.
     pub(crate) target_popup_open: bool,
+    /// Initial selection is part of the inspection pause; cancelling it abandons
+    /// the prepared device flow. Reopening the picker from the table does not.
+    pub(crate) target_popup_abandons_on_dismiss: bool,
     pub(crate) prepared: Option<KonaBessPrepared>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KonaBessImportError {
+    NoTarget,
+    TargetChipUnknown,
+    ChipMismatch { expected: String, actual: String },
 }
 
 impl KonaBessWizard {
     /// Accept an inspection result and open normal single-target selection.
-    /// Selection requires a loaded export and a known, matching candidate chip.
-    /// Structural matches remain informational, including the normal all-false case.
-    /// Returns whether the device hint identifies exactly one compatible candidate.
+    /// Candidates are driven solely by GPU tables parsed from the device image.
+    /// Returns whether the device hint identifies exactly one candidate.
     pub(crate) fn apply_inspection_result(
         &mut self,
-        inspected: Vec<ClassifiedDtb>,
+        inspected: Vec<VendorBootDtbInfo>,
         probable_dtb_index: Option<usize>,
     ) -> bool {
-        let export_chip = self.export.as_ref().map(|export| export.chip.as_str());
         self.candidates = inspected
             .into_iter()
-            .filter(|candidate| {
-                export_chip
-                    .zip(candidate.info.chip.as_deref())
-                    .is_some_and(|(export_chip, candidate_chip)| export_chip == candidate_chip)
-            })
+            .filter(|candidate| candidate.table.is_some())
             .collect();
         let probable_match_count = probable_dtb_index.map_or(0, |index| {
             self.candidates
                 .iter()
-                .filter(|candidate| candidate.info.index == index)
+                .filter(|candidate| candidate.index == index && candidate.chip.is_some())
                 .count()
         });
         self.probable_target_index = probable_dtb_index.filter(|index| {
             self.candidates
                 .iter()
-                .any(|candidate| candidate.info.index == *index)
+                .any(|candidate| candidate.index == *index)
         });
-        self.selected_target_index = self.probable_target_index;
-        self.target_popup_open = true;
+        self.clear_table_selection();
+        if let Some(index) = self.probable_target_index {
+            self.select_target(index);
+        }
+        self.target_popup_open = probable_match_count != 1;
+        self.target_popup_abandons_on_dismiss = self.target_popup_open;
         probable_match_count == 1
     }
 
@@ -1290,35 +1302,96 @@ impl KonaBessWizard {
 
     /// Select one candidate by its stable vendor_boot DTB index.
     pub(crate) fn select_target(&mut self, target_index: usize) -> bool {
-        if self
+        let Some(table) = self
             .candidates
             .iter()
-            .any(|candidate| candidate.info.index == target_index)
-        {
-            self.selected_target_index = Some(target_index);
-            true
-        } else {
-            false
-        }
+            .find(|candidate| candidate.index == target_index && candidate.chip.is_some())
+            .and_then(|candidate| candidate.table.clone())
+        else {
+            return false;
+        };
+        self.selected_target_index = Some(target_index);
+        self.edited_table = Some(table.clone());
+        self.stock_table = Some(table);
+        self.edited_dirty = false;
+        self.import_path = None;
+        self.import_error = None;
+        true
     }
 
     /// Confirm target selection. The popup remains open until one DTB is set.
     pub(crate) fn confirm_target(&mut self) -> Option<usize> {
         let selected = self.selected_target_index?;
+        self.stock_table.as_ref()?;
+        self.edited_table.as_ref()?;
         self.target_popup_open = false;
+        self.target_popup_abandons_on_dismiss = false;
         Some(selected)
     }
 
     /// Dismissal is a non-error state; a later Apply inspection can reopen it.
-    pub(crate) fn dismiss_target_popup(&mut self) {
+    pub(crate) fn dismiss_target_popup(&mut self) -> bool {
+        let abandons = self.target_popup_abandons_on_dismiss;
         self.target_popup_open = false;
+        self.target_popup_abandons_on_dismiss = false;
+        abandons
     }
 
-    pub(crate) fn structural_match_count(&self) -> usize {
+    pub(crate) fn open_target_popup(&mut self) {
+        self.target_popup_open = true;
+        self.target_popup_abandons_on_dismiss = false;
+    }
+
+    pub(crate) fn selected_target(&self) -> Option<&VendorBootDtbInfo> {
+        let index = self.selected_target_index?;
         self.candidates
             .iter()
-            .filter(|candidate| candidate.structurally_matches)
-            .count()
+            .find(|candidate| candidate.index == index)
+    }
+
+    pub(crate) fn selected_chip(&self) -> Option<&str> {
+        self.selected_target()?.chip.as_deref()
+    }
+
+    pub(crate) fn overwrite_edited_from_import(
+        &mut self,
+        export: KonaBessExport,
+    ) -> Result<(), KonaBessImportError> {
+        let Some(target) = self.selected_target() else {
+            return Err(KonaBessImportError::NoTarget);
+        };
+        let Some(expected) = target.chip.as_deref() else {
+            return Err(KonaBessImportError::TargetChipUnknown);
+        };
+        if export.chip != expected {
+            return Err(KonaBessImportError::ChipMismatch {
+                expected: expected.to_string(),
+                actual: export.chip,
+            });
+        }
+        self.edited_table = Some(export.table);
+        self.edited_dirty = self.edited_table != self.stock_table;
+        Ok(())
+    }
+
+    pub(crate) fn revert_edits(&mut self) -> bool {
+        let Some(stock) = self.stock_table.clone() else {
+            return false;
+        };
+        self.edited_table = Some(stock);
+        self.edited_dirty = false;
+        self.import_path = None;
+        self.import_error = None;
+        true
+    }
+
+    fn clear_table_selection(&mut self) {
+        self.selected_target_index = None;
+        self.stock_table = None;
+        self.edited_table = None;
+        self.edited_dirty = false;
+        self.import_path = None;
+        self.import_error = None;
     }
 
     /// Remove inspection scratch when the flow is closed or abandoned. Stock
@@ -1328,9 +1401,10 @@ impl KonaBessWizard {
             let _ = std::fs::remove_dir_all(prepared.work_dir);
         }
         self.candidates.clear();
-        self.selected_target_index = None;
         self.probable_target_index = None;
         self.target_popup_open = false;
+        self.target_popup_abandons_on_dismiss = false;
+        self.clear_table_selection();
     }
 }
 
@@ -1355,8 +1429,18 @@ impl Wizard for KonaBessWizard {
     fn can_next(&self) -> bool {
         match self.step {
             0 => self.loader_path.is_some() && self.loader_error.is_none(),
-            1 => self.export_path.is_some() && self.export.is_some() && self.export_error.is_none(),
-            2 => self.loader_path.is_some() && self.export.is_some(),
+            1 => {
+                self.prepared.is_some()
+                    && self.selected_chip().is_some()
+                    && self.stock_table.is_some()
+                    && self.edited_table.is_some()
+            }
+            2 => {
+                self.loader_path.is_some()
+                    && self.prepared.is_some()
+                    && self.selected_chip().is_some()
+                    && self.edited_table.is_some()
+            }
             3 => false,
             _ => false,
         }
@@ -1555,114 +1639,100 @@ impl AdvWizard {
 #[cfg(test)]
 mod konabess_tests {
     use super::*;
-    use ltbox_patch::konabess::{GpuGroupShape, GpuTable, GpuTableShape, VendorBootDtbInfo};
+    use ltbox_patch::konabess::{GpuGroup, GpuLevel, GpuProperty, GpuTable};
 
-    fn wizard() -> KonaBessWizard {
-        KonaBessWizard {
-            export: Some(KonaBessExport {
-                chip: "waipio".to_string(),
-                description: "test".to_string(),
-                table: GpuTable { groups: vec![] },
-            }),
-            ..KonaBessWizard::default()
-        }
-    }
-
-    fn candidate(index: usize, chip: &str, structurally_matches: bool) -> ClassifiedDtb {
-        ClassifiedDtb {
-            info: VendorBootDtbInfo {
-                index,
-                model: Some(format!("model-{index}")),
-                chip: Some(chip.to_string()),
-                gpu_shape: Some(GpuTableShape {
-                    groups: vec![GpuGroupShape {
-                        id: 0,
-                        level_count: index + 1,
+    fn table(frequency: u32) -> GpuTable {
+        GpuTable {
+            groups: vec![GpuGroup {
+                id: 0,
+                header_properties: vec![],
+                levels: vec![GpuLevel {
+                    id: 0,
+                    properties: vec![GpuProperty {
+                        name: "qcom,gpu-freq".into(),
+                        cells: vec![frequency],
                     }],
-                }),
-                table: None,
-            },
-            structurally_matches,
+                }],
+            }],
         }
     }
 
-    fn candidate_with_unknown_chip(index: usize, structurally_matches: bool) -> ClassifiedDtb {
-        let mut candidate = candidate(index, "", structurally_matches);
-        candidate.info.chip = None;
-        candidate
+    fn candidate(index: usize, chip: Option<&str>, frequency: Option<u32>) -> VendorBootDtbInfo {
+        VendorBootDtbInfo {
+            index,
+            model: Some(format!("model-{index}")),
+            chip: chip.map(str::to_owned),
+            gpu_shape: None,
+            table: frequency.map(table),
+        }
     }
 
     #[test]
-    fn inspection_without_export_offers_no_unknown_chip_candidate() {
+    fn inspection_without_export_offers_every_parsed_gpu_table() {
         let mut wizard = KonaBessWizard::default();
 
-        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)], None);
-
-        assert!(wizard.candidates.is_empty());
-    }
-
-    #[test]
-    fn inspection_with_export_does_not_offer_unknown_chip_candidate() {
-        let mut wizard = wizard();
-
-        wizard.apply_inspection_result(vec![candidate_with_unknown_chip(1, true)], None);
-
-        assert!(wizard.candidates.is_empty());
-    }
-
-    #[test]
-    fn inspection_with_export_offers_matching_chip_candidate() {
-        let mut wizard = wizard();
-
-        wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], None);
-
-        assert_eq!(wizard.candidates.len(), 1);
-        assert_eq!(wizard.candidates[0].info.index, 2);
-    }
-
-    #[test]
-    fn inspection_yields_only_chip_compatible_selectable_candidates() {
-        let mut wizard = wizard();
         wizard.apply_inspection_result(
             vec![
-                candidate(2, "waipio", true),
-                candidate(5, "taro", true),
-                candidate(7, "waipio", false),
+                candidate(1, None, Some(700_000_000)),
+                candidate(2, Some("sun"), None),
+                candidate(3, Some("sun"), Some(900_000_000)),
             ],
             None,
         );
 
-        assert!(wizard.target_popup_open);
         assert_eq!(
             wizard
                 .candidates
                 .iter()
-                .map(|candidate| candidate.info.index)
+                .map(|candidate| candidate.index)
                 .collect::<Vec<_>>(),
-            vec![2, 7]
+            vec![1, 3]
         );
     }
 
     #[test]
-    fn selecting_a_target_records_exactly_one_index() {
-        let mut wizard = wizard();
+    fn selecting_a_target_populates_stock_and_edited_tables() {
+        let mut wizard = KonaBessWizard::default();
         wizard.apply_inspection_result(
-            vec![candidate(2, "waipio", true), candidate(7, "waipio", false)],
+            vec![
+                candidate(2, Some("sun"), Some(700_000_000)),
+                candidate(7, Some("sun"), Some(900_000_000)),
+            ],
             None,
         );
 
         assert!(wizard.select_target(2));
         assert_eq!(wizard.selected_target_index, Some(2));
+        assert_eq!(wizard.stock_table, Some(table(700_000_000)));
+        assert_eq!(wizard.edited_table, wizard.stock_table);
+        assert!(!wizard.edited_dirty);
+
+        wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "sun".into(),
+                description: "import from first target".into(),
+                table: table(800_000_000),
+            })
+            .unwrap();
+        wizard.import_path = Some("first-target.txt".into());
+        wizard.import_error = Some("stale error".into());
+        assert!(wizard.edited_dirty);
+
         assert!(wizard.select_target(7));
         assert_eq!(wizard.selected_target_index, Some(7));
+        assert_eq!(wizard.stock_table, Some(table(900_000_000)));
+        assert_eq!(wizard.edited_table, Some(table(900_000_000)));
+        assert!(!wizard.edited_dirty);
+        assert!(wizard.import_path.is_none());
+        assert!(wizard.import_error.is_none());
         assert!(!wizard.select_target(99));
         assert_eq!(wizard.selected_target_index, Some(7));
     }
 
     #[test]
     fn confirming_requires_a_selected_target() {
-        let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![candidate(3, "waipio", true)], None);
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(3, Some("sun"), Some(700_000_000))], None);
 
         assert_eq!(wizard.confirm_target(), None);
         assert!(wizard.target_popup_open);
@@ -1672,62 +1742,115 @@ mod konabess_tests {
     }
 
     #[test]
-    fn dismissing_target_selection_is_not_an_error() {
-        let mut wizard = wizard();
-        wizard.apply_inspection_result(vec![candidate(1, "waipio", false)], None);
+    fn initial_picker_cancel_abandons_but_reopened_picker_cancel_does_not() {
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(3, Some("sun"), Some(700_000_000))], None);
+        assert!(wizard.select_target(3));
 
-        wizard.dismiss_target_popup();
-
-        assert!(!wizard.target_popup_open);
-        assert_eq!(wizard.selected_target_index, None);
-        assert_eq!(wizard.candidates.len(), 1);
+        assert!(wizard.dismiss_target_popup());
+        wizard.open_target_popup();
+        assert!(!wizard.dismiss_target_popup());
     }
 
     #[test]
-    fn zero_structural_matches_is_a_normal_inspection_result() {
-        let mut wizard = wizard();
-        wizard.apply_inspection_result(
-            vec![candidate(1, "waipio", false), candidate(4, "waipio", false)],
-            None,
+    fn import_overwrites_only_edited_table_and_tracks_dirty_state() {
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(1, Some("sun"), Some(700_000_000))], None);
+        assert!(wizard.select_target(1));
+        let stock = wizard.stock_table.clone();
+
+        wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "sun".into(),
+                description: "import".into(),
+                table: table(950_000_000),
+            })
+            .unwrap();
+
+        assert_eq!(wizard.stock_table, stock);
+        assert_eq!(wizard.edited_table, Some(table(950_000_000)));
+        assert!(wizard.edited_dirty);
+        assert!(wizard.revert_edits());
+        assert_eq!(wizard.edited_table, stock);
+        assert!(!wizard.edited_dirty);
+    }
+
+    #[test]
+    fn matching_import_that_does_not_change_values_stays_clean() {
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(1, Some("sun"), Some(700_000_000))], None);
+        assert!(wizard.select_target(1));
+
+        wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "sun".into(),
+                description: String::new(),
+                table: table(700_000_000),
+            })
+            .unwrap();
+
+        assert!(!wizard.edited_dirty);
+    }
+
+    #[test]
+    fn chip_mismatch_does_not_overwrite_the_working_copy() {
+        let mut wizard = KonaBessWizard::default();
+        wizard.apply_inspection_result(vec![candidate(1, Some("sun"), Some(700_000_000))], None);
+        assert!(wizard.select_target(1));
+        let edited = wizard.edited_table.clone();
+
+        let error = wizard
+            .overwrite_edited_from_import(KonaBessExport {
+                chip: "pineapple".into(),
+                description: String::new(),
+                table: table(900_000_000),
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            KonaBessImportError::ChipMismatch {
+                expected: "sun".into(),
+                actual: "pineapple".into(),
+            }
         );
-
-        assert_eq!(wizard.structural_match_count(), 0);
-        assert_eq!(wizard.candidates.len(), 2);
-        assert!(wizard.target_popup_open);
+        assert_eq!(wizard.edited_table, edited);
+        assert!(!wizard.edited_dirty);
     }
 
     #[test]
-    fn probable_dtb_match_is_marked_and_preselected() {
-        let mut wizard = wizard();
+    fn probable_dtb_match_is_preselected_with_its_table() {
+        let mut wizard = KonaBessWizard::default();
         let auto_confirm = wizard.apply_inspection_result(
-            vec![candidate(2, "waipio", false), candidate(7, "waipio", true)],
+            vec![
+                candidate(2, Some("sun"), Some(700_000_000)),
+                candidate(7, Some("sun"), Some(900_000_000)),
+            ],
             Some(7),
         );
 
         assert!(auto_confirm);
+        assert!(!wizard.target_popup_open);
         assert!(wizard.is_probable_target(7));
         assert_eq!(wizard.selected_target_index, Some(7));
-    }
+        assert_eq!(wizard.stock_table, Some(table(900_000_000)));
 
-    #[test]
-    fn ambiguous_probable_dtb_match_stays_in_manual_selection() {
-        let mut wizard = wizard();
-        let auto_confirm = wizard.apply_inspection_result(
-            vec![candidate(7, "waipio", false), candidate(7, "waipio", true)],
-            Some(7),
-        );
+        let mut unknown_chip_wizard = KonaBessWizard::default();
+        let auto_confirm = unknown_chip_wizard
+            .apply_inspection_result(vec![candidate(7, None, Some(900_000_000))], Some(7));
 
         assert!(!auto_confirm);
-        assert!(wizard.target_popup_open);
-        assert!(wizard.is_probable_target(7));
-        assert_eq!(wizard.selected_target_index, Some(7));
+        assert!(unknown_chip_wizard.target_popup_open);
+        assert!(unknown_chip_wizard.is_probable_target(7));
+        assert_eq!(unknown_chip_wizard.selected_target_index, None);
+        assert!(!unknown_chip_wizard.select_target(7));
     }
 
     #[test]
-    fn probable_dtb_no_match_marks_and_selects_nothing() {
-        let mut wizard = wizard();
-        let auto_confirm =
-            wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], Some(99));
+    fn unknown_probable_dtb_requires_manual_selection() {
+        let mut wizard = KonaBessWizard::default();
+        let auto_confirm = wizard
+            .apply_inspection_result(vec![candidate(2, Some("sun"), Some(700_000_000))], Some(99));
 
         assert!(!auto_confirm);
         assert!(wizard.target_popup_open);
@@ -1736,13 +1859,31 @@ mod konabess_tests {
     }
 
     #[test]
-    fn unknown_probable_dtb_marks_and_selects_nothing() {
-        let mut wizard = wizard();
-        let auto_confirm = wizard.apply_inspection_result(vec![candidate(2, "waipio", true)], None);
+    fn reset_removes_workspace_and_table_state() {
+        let root = tempfile::tempdir().unwrap();
+        let work_dir = root.path().join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let mut wizard = KonaBessWizard {
+            prepared: Some(KonaBessPrepared {
+                vendor_boot: work_dir.join("vendor_boot.img"),
+                vbmeta: work_dir.join("vbmeta.img"),
+                backup_dir: root.path().join("backup"),
+                slot_suffix: "_a".into(),
+                probable_dtb_index: None,
+                work_dir: work_dir.clone(),
+            }),
+            candidates: vec![candidate(2, Some("sun"), Some(700_000_000))],
+            ..KonaBessWizard::default()
+        };
+        assert!(wizard.select_target(2));
 
-        assert!(!auto_confirm);
-        assert!(wizard.target_popup_open);
-        assert_eq!(wizard.probable_target_index, None);
+        wizard.reset();
+
+        assert!(!work_dir.exists());
+        assert!(wizard.candidates.is_empty());
         assert_eq!(wizard.selected_target_index, None);
+        assert!(wizard.stock_table.is_none());
+        assert!(wizard.edited_table.is_none());
+        assert!(!wizard.edited_dirty);
     }
 }
