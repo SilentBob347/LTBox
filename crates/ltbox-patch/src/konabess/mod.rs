@@ -11,6 +11,7 @@
 
 mod export;
 mod fdt;
+mod regulator_levels;
 mod vendor_boot;
 
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ pub use fdt::{
     FdtGpuInfo, GpuTableNormalization, normalize_edited_gpu_table, parse_fdt_gpu_info,
     replace_fdt_gpu_table, replace_fdt_gpu_table_from_table,
 };
+pub use regulator_levels::{regulator_level_name, regulator_level_votes};
 pub use vendor_boot::{
     ClassifiedDtb, GpuGroupShape, GpuTableShape, VendorBootDtbInfo, classify_vendor_boot_dtbs,
     extract_vendor_boot_dtbs, inspect_vendor_boot_dtbs, inspect_vendor_boot_gpu_candidates,
