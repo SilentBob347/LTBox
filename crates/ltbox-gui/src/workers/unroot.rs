@@ -1,5 +1,6 @@
-//! Unroot worker: restore a stock root image + vbmeta from a backup
-//! folder over EDL. Extracted from the update_unroot handler.
+//! Unroot worker: restore a stock root image — plus vbmeta when the root run
+//! rebuilt it — from a backup folder over EDL. Extracted from the update_unroot
+//! handler.
 
 use crate::{
     ConnectionStatus, LiveLabels, PhaseReporter, UnrootType, find_edl_loader, open_edl_session,
@@ -7,7 +8,7 @@ use crate::{
 };
 use ltbox_core::{i18n::tr, live, tr_args};
 
-use super::root_backup::{ROOT_BACKUP_MANIFEST_NAME, resolve_backup_root_target};
+use super::root_backup::{ROOT_BACKUP_MANIFEST_NAME, resolve_backup_contents};
 
 pub(crate) fn unroot_worker(
     folder: String,
@@ -22,31 +23,38 @@ pub(crate) fn unroot_worker(
 
     live!(log, "[Unroot] {}", phases.marker(1));
 
-    let root_target = resolve_backup_root_target(dir, unroot_type).map_err(|error| {
+    let backup = resolve_backup_contents(dir, unroot_type).map_err(|error| {
         tr_args!(
             "err_unroot_backup_manifest_invalid",
             manifest = ROOT_BACKUP_MANIFEST_NAME,
             error = error
         )
     })?;
+    let root_target = backup.root_target;
     let root_image_name = root_target.filename();
     let base_part = root_target.partition_base();
     let root_image_path = dir.join(root_image_name);
-    let vbmeta_path = dir.join("vbmeta.img");
+    // A root run that left vbmeta untouched backed none up, and the stock
+    // vbmeta is still on the device — restoring the root image alone puts the
+    // pair back in sync.
+    let vbmeta_path = backup.restore_vbmeta.then(|| dir.join("vbmeta.img"));
     if !root_image_path.exists() {
         return Err(tr_args!(
             "err_unroot_image_missing",
             image = root_image_name
         ));
     }
-    if !vbmeta_path.exists() {
+    if vbmeta_path.as_ref().is_some_and(|path| !path.exists()) {
         return Err(tr("err_unroot_vbmeta_missing"));
     }
-    live!(
-        log,
-        "[Unroot] {}",
+    // Names the images this run will write, so the pre-flight line and the
+    // Phase 4 header agree with what actually gets flashed.
+    let restored_label = if vbmeta_path.is_some() {
         tr_args!("live_unroot_backup_pair", root_image = root_image_name)
-    );
+    } else {
+        root_image_name.to_string()
+    };
+    live!(log, "[Unroot] {}", restored_label);
 
     // Slot resolution must succeed —
     // unroot writes the manifest-resolved root target +
@@ -94,17 +102,29 @@ pub(crate) fn unroot_worker(
         .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = base_part))?;
     let vbm_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta")
         .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = "vbmeta"))?;
-    live!(
-        log,
-        "[Unroot] {}",
-        tr_args!(
-            "log_unroot_lun_resolved",
-            root_image_label = root_image_label,
-            root_image_lun = root_image_lun,
-            vbm_label = vbm_label,
-            vbm_lun = vbm_lun,
-        )
-    );
+    if vbmeta_path.is_some() {
+        live!(
+            log,
+            "[Unroot] {}",
+            tr_args!(
+                "log_unroot_lun_resolved",
+                root_image_label = root_image_label,
+                root_image_lun = root_image_lun,
+                vbm_label = vbm_label,
+                vbm_lun = vbm_lun,
+            )
+        );
+    } else {
+        live!(
+            log,
+            "[Unroot] {}",
+            tr_args!(
+                "log_unroot_lun_resolved_root_only",
+                root_image_label = root_image_label,
+                root_image_lun = root_image_lun,
+            )
+        );
+    }
 
     live!(log, "[Unroot] {}", phases.marker(2));
     transition_to_edl(conn, &ll, &mut log)?;
@@ -112,12 +132,7 @@ pub(crate) fn unroot_worker(
     live!(log, "[Unroot] {}", phases.marker(3));
     let mut session = open_edl_session(&loader, true, &mut log)?;
 
-    live!(
-        log,
-        "[Unroot] {} ({})",
-        phases.marker(4),
-        tr_args!("live_unroot_backup_pair", root_image = root_image_name)
-    );
+    live!(log, "[Unroot] {} ({restored_label})", phases.marker(4));
     session
         .flash_partition(
             &root_image_label,
@@ -133,9 +148,11 @@ pub(crate) fn unroot_worker(
                 error = e
             )
         })?;
-    session
-        .flash_partition(&vbm_label, &vbmeta_path, 0, vbm_lun, &mut log)
-        .map_err(|e| tr_args!("err_unroot_flash_failed", label = vbm_label, error = e))?;
+    if let Some(vbmeta_path) = &vbmeta_path {
+        session
+            .flash_partition(&vbm_label, vbmeta_path, 0, vbm_lun, &mut log)
+            .map_err(|e| tr_args!("err_unroot_flash_failed", label = vbm_label, error = e))?;
+    }
 
     println!();
     live!(log, "[Unroot] {}", phases.marker(5));

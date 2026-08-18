@@ -140,6 +140,29 @@ pub fn resolve_root_image_target(
     }
 }
 
+/// Whether the top-level `vbmeta` takes part in this root run — dumped,
+/// rebuilt, and flashed.
+///
+/// AVB binds a partition to vbmeta one of two ways. When vbmeta carries the
+/// partition's own **Hash descriptor**, the digest of the patched image has to
+/// be imported back into vbmeta and vbmeta re-signed, or the bootloader checks
+/// the patched image against the stock digest and rejects it. When vbmeta
+/// **chains** the partition, its footer is self-describing: vbmeta only pins
+/// the signing key, which re-signing with the same `KEY_MAP` key preserves, so
+/// vbmeta must be left alone.
+///
+/// Every supported model chains `boot` except TB320FC-equivalents, which hash
+/// it — their stock `boot.img` footer is `NONE`-signed precisely because vbmeta
+/// carries the digest. `init_boot` is always hashed. Root always runs with the
+/// model already detected over ADB or Fastboot, so this resolves before EDL and
+/// the dump step can skip vbmeta entirely when it plays no part.
+pub fn root_run_rebuilds_vbmeta(target: RootImageTarget, device_model: &str) -> bool {
+    match target {
+        RootImageTarget::InitBoot => true,
+        RootImageTarget::Boot => ltbox_core::model::is_tb320fc_model(device_model),
+    }
+}
+
 /// Root pipeline input from the GUI wizard.
 #[derive(Clone)]
 pub struct RootPipelineConfig {
@@ -148,6 +171,10 @@ pub struct RootPipelineConfig {
     pub version: RootVersion,
     /// Resolved once by the caller; all image and partition routing uses this.
     pub root_image_target: RootImageTarget,
+    /// Resolved once by the caller via [`root_run_rebuilds_vbmeta`]. `false`
+    /// means vbmeta chains the target, so the caller neither dumps nor flashes
+    /// it and this pipeline leaves it out of the artifacts.
+    pub rebuild_vbmeta: bool,
 
     /// APK extraction + root image patching workspace. Cleaned on entry.
     pub work_dir: PathBuf,
@@ -433,9 +460,11 @@ pub fn build_patched_artifacts(
             "work_dir is missing the stock {stock_filename} dump"
         )));
     }
-    // TB323FU GBL root flashes the repacked boot as-is — AVB / vbmeta are not
-    // touched — so the stock vbmeta dump isn't required.
-    if !skip_avb && !vbmeta_src.exists() {
+    // vbmeta is dumped only when it actually takes part: TB323FU GBL root
+    // flashes the repacked boot as-is, and a chained target is verified by its
+    // own footer. Both leave vbmeta out of the workspace.
+    let rebuild_vbmeta = !skip_avb && cfg.rebuild_vbmeta;
+    if rebuild_vbmeta && !vbmeta_src.exists() {
         return Err(LtboxError::Patch(
             "work_dir is missing the stock vbmeta.img dump".into(),
         ));
@@ -581,59 +610,88 @@ pub fn build_patched_artifacts(
             root_image_key.as_deref().unwrap_or("(unsigned)"),
         );
 
-        // Refresh vbmeta from the descriptor embedded in final_root_image. The
-        // vbmeta pubkey may differ from the root image pubkey, so verify it
-        // against KEY_MAP.
-        let stock_vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
-        let vbmeta_key = resolve_signing_key(
-            stock_vbmeta_info.public_key_sha1.as_deref(),
-            "vbmeta.img",
-            log,
-        )?;
-        let final_vbmeta = cfg.output_dir.join("vbmeta.img");
-        match vbmeta_key.as_deref() {
-            Some(key) => {
-                avb::rebuild_vbmeta_with_partition_descriptors(
-                    &final_vbmeta,
-                    &vbmeta_src,
-                    &[&final_root_image],
-                    key,
-                    None,
-                )?;
-                let footer_descriptor = root_hash_descriptor(
-                    &final_root_image,
-                    cfg.root_image_target.partition_base(),
-                )?;
-                let vbmeta_descriptor =
-                    root_hash_descriptor(&final_vbmeta, cfg.root_image_target.partition_base())?;
-                if footer_descriptor != vbmeta_descriptor {
-                    return Err(LtboxError::Avb(format!(
-                        "rebuilt vbmeta descriptor for {} does not match the root image footer",
-                        cfg.root_image_target.partition_base()
-                    )));
-                }
-                ltbox_core::live!(
-                    log,
-                    "[AVB] {} {} at {} (key={key})",
-                    tr("log_avb_rebuilt_vbmeta_from_partition_image"),
-                    stock_filename,
-                    final_vbmeta.display(),
-                );
-            }
-            None => {
-                // Unsigned vbmeta: copy stock through. A stale Hash/Hashtree
-                // descriptor is fine because NONE-algorithm bootloaders skip
-                // verification.
-                fs::copy(&vbmeta_src, &final_vbmeta)?;
-                ltbox_core::live!(
-                    log,
-                    "[AVB] {} {}",
-                    tr("log_avb_vbmeta_unsigned_copied"),
-                    final_vbmeta.display(),
-                );
-            }
+        // A chained target carries its own signature; that signature is the
+        // only thing vbmeta checks. An unsigned stock footer therefore means
+        // the chain assumption is wrong for this device, and re-signing would
+        // produce an image nothing verifies — abort before any write.
+        if !rebuild_vbmeta && root_image_key.is_none() {
+            return Err(LtboxError::Avb(format!(
+                "stock {stock_filename} is unsigned, so vbmeta cannot be chaining {}",
+                cfg.root_image_target.partition_base(),
+            )));
         }
-        (Some(final_vbmeta), Some(format!("vbmeta{suffix}")))
+
+        // vbmeta chains the target on every model but the TB320FC family, and
+        // a chain descriptor pins the signing key, not the digest — re-signing
+        // with the same key leaves it valid. Nothing to rebuild, and the caller
+        // never dumped vbmeta to rebuild from.
+        if !rebuild_vbmeta {
+            ltbox_core::live!(
+                log,
+                "[AVB] {}",
+                tr_args!(
+                    "log_avb_vbmeta_chained_untouched",
+                    partition = cfg.root_image_target.partition_base()
+                )
+            );
+            (None, None)
+        } else {
+            // Refresh vbmeta from the descriptor embedded in final_root_image. The
+            // vbmeta pubkey may differ from the root image pubkey, so verify it
+            // against KEY_MAP.
+            let stock_vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
+            let vbmeta_key = resolve_signing_key(
+                stock_vbmeta_info.public_key_sha1.as_deref(),
+                "vbmeta.img",
+                log,
+            )?;
+            let final_vbmeta = cfg.output_dir.join("vbmeta.img");
+            match vbmeta_key.as_deref() {
+                Some(key) => {
+                    avb::rebuild_vbmeta_with_partition_descriptors(
+                        &final_vbmeta,
+                        &vbmeta_src,
+                        &[&final_root_image],
+                        key,
+                        None,
+                    )?;
+                    let footer_descriptor = root_hash_descriptor(
+                        &final_root_image,
+                        cfg.root_image_target.partition_base(),
+                    )?;
+                    let vbmeta_descriptor = root_hash_descriptor(
+                        &final_vbmeta,
+                        cfg.root_image_target.partition_base(),
+                    )?;
+                    if footer_descriptor != vbmeta_descriptor {
+                        return Err(LtboxError::Avb(format!(
+                            "rebuilt vbmeta descriptor for {} does not match the root image footer",
+                            cfg.root_image_target.partition_base()
+                        )));
+                    }
+                    ltbox_core::live!(
+                        log,
+                        "[AVB] {} {} at {} (key={key})",
+                        tr("log_avb_rebuilt_vbmeta_from_partition_image"),
+                        stock_filename,
+                        final_vbmeta.display(),
+                    );
+                }
+                None => {
+                    // Unsigned vbmeta: copy stock through. A stale Hash/Hashtree
+                    // descriptor is fine because NONE-algorithm bootloaders skip
+                    // verification.
+                    fs::copy(&vbmeta_src, &final_vbmeta)?;
+                    ltbox_core::live!(
+                        log,
+                        "[AVB] {} {}",
+                        tr("log_avb_vbmeta_unsigned_copied"),
+                        final_vbmeta.display(),
+                    );
+                }
+            }
+            (Some(final_vbmeta), Some(format!("vbmeta{suffix}")))
+        }
     };
 
     Ok(PatchedArtifacts {
@@ -720,6 +778,23 @@ mod root_target_tests {
             resolve_root_image_target(RootFamily::Skroot, false, "TB321FU"),
             RootImageTarget::Boot
         );
+    }
+
+    #[test]
+    fn only_tb320fc_family_rebuilds_vbmeta_for_a_boot_target() {
+        for model in ["TB320FC", "LAVIETab9QHD1"] {
+            assert!(root_run_rebuilds_vbmeta(RootImageTarget::Boot, model));
+        }
+        for model in ["TB321FU", "TB322FC", "TB323FU", "TB520FU", "TB710FU"] {
+            assert!(!root_run_rebuilds_vbmeta(RootImageTarget::Boot, model));
+        }
+    }
+
+    #[test]
+    fn an_init_boot_target_always_rebuilds_vbmeta() {
+        for model in ["TB320FC", "TB321FU", "TB322FC", "TB710FU"] {
+            assert!(root_run_rebuilds_vbmeta(RootImageTarget::InitBoot, model));
+        }
     }
 
     #[test]

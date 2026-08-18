@@ -155,6 +155,8 @@ fn build_fixture_output(
         provider,
         version: RootVersion::Stable,
         root_image_target: RootImageTarget::Boot,
+        // TB320FC hashes boot in vbmeta rather than chaining it.
+        rebuild_vbmeta: true,
         work_dir: work,
         output_dir: output,
         loader: PathBuf::new(),
