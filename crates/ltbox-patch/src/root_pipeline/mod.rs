@@ -583,17 +583,8 @@ pub fn build_patched_artifacts(
         }
         let root_image_key =
             resolve_signing_key(stock_info.public_key_sha1.as_deref(), stock_filename, log)?;
-        // Erase any stale AVB footer before re-adding ours. A missing footer
-        // is the normal case for a freshly built image, so this is best-effort —
-        // but surface a real failure (I/O, corruption) in the log instead of
-        // swallowing it silently, since `add_hash_footer` then runs on this image.
-        if let Err(e) = avb::erase_footer(&final_root_image) {
-            ltbox_core::live!(
-                log,
-                "[AVB] {}",
-                tr_args!("log_avb_erase_footer_skipped", error = e.to_string())
-            );
-        }
+        // No separate footer erase: `add_hash_footer` truncates any existing
+        // footer itself, and a repacked image never carries one anyway.
         avb::add_hash_footer(
             &final_root_image,
             &stock_info,

@@ -213,13 +213,6 @@ pub fn resign_image(
     Ok(())
 }
 
-/// Erase AVB footer from an image.
-pub fn erase_footer(image_path: &Path) -> Result<()> {
-    avbtool_rs::footer::erase_footer(image_path, false)
-        .map_err(|e| LtboxError::Avb(format!("erase_footer failed: {e}")))?;
-    Ok(())
-}
-
 /// Maximum authenticated payload size that still leaves room for a hash
 /// footer in `partition_size`.
 pub fn max_hash_footer_image_size(partition_size: u64) -> Result<u64> {

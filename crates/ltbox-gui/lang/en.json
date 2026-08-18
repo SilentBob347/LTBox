@@ -676,7 +676,6 @@
   "log_apatch_patching_kernel": "Patching kernel (kpm_count={kpm_count}, superkey_len={superkey_len})",
   "log_apatch_repack_bootimg": "Repacking boot image: {boot} + {kernel} → {output}",
   "log_avb_bundled": "bundled",
-  "log_avb_erase_footer_skipped": "erase_footer skipped: {error}",
   "log_avb_hash_footer_added": "added AVB hash footer to",
   "log_avb_pubkey": "public key",
   "log_avb_rebuilt_vbmeta_from_partition_image": "rebuilt vbmeta with descriptors from",

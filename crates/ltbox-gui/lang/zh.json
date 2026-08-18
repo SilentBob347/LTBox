@@ -676,7 +676,6 @@
   "log_apatch_patching_kernel": "正在修补内核 (kpm_count={kpm_count}, superkey_len={superkey_len})",
   "log_apatch_repack_bootimg": "正在重新打包 boot 镜像: {boot} + {kernel} → {output}",
   "log_avb_bundled": "内置",
-  "log_avb_erase_footer_skipped": "已跳过 erase_footer: {error}",
   "log_avb_hash_footer_added": "已为以下镜像添加 AVB 哈希页脚：",
   "log_avb_pubkey": "公钥",
   "log_avb_rebuilt_vbmeta_from_partition_image": "使用以下分区镜像的描述符重建 vbmeta：",

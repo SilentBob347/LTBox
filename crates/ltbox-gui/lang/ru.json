@@ -676,7 +676,6 @@
   "log_apatch_patching_kernel": "Патч ядра (kpm_count={kpm_count}, superkey_len={superkey_len})",
   "log_apatch_repack_bootimg": "Переупаковка boot-образа: {boot} + {kernel} → {output}",
   "log_avb_bundled": "встроенный",
-  "log_avb_erase_footer_skipped": "erase_footer пропущен: {error}",
   "log_avb_hash_footer_added": "добавлен хеш-футер AVB к",
   "log_avb_pubkey": "публичный ключ",
   "log_avb_rebuilt_vbmeta_from_partition_image": "vbmeta пересобран с дескрипторами из",

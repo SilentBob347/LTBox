@@ -676,7 +676,6 @@
   "log_apatch_patching_kernel": "커널 패치 중 (kpm_count={kpm_count}, superkey_len={superkey_len})",
   "log_apatch_repack_bootimg": "boot 이미지 재패킹 중: {boot} + {kernel} → {output}",
   "log_avb_bundled": "내장 키",
-  "log_avb_erase_footer_skipped": "erase_footer 건너뜀: {error}",
   "log_avb_hash_footer_added": "다음 이미지에 AVB 해시 푸터 추가:",
   "log_avb_pubkey": "공개 키",
   "log_avb_rebuilt_vbmeta_from_partition_image": "다음 파티션 이미지의 디스크립터로 vbmeta 재빌드:",

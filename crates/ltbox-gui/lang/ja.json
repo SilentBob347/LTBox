@@ -676,7 +676,6 @@
   "log_apatch_patching_kernel": "カーネルにパッチを適用中 (kpm_count={kpm_count}, superkey_len={superkey_len})",
   "log_apatch_repack_bootimg": "boot イメージを再パック中: {boot} + {kernel} → {output}",
   "log_avb_bundled": "バンドル済み",
-  "log_avb_erase_footer_skipped": "erase_footer をスキップしました: {error}",
   "log_avb_hash_footer_added": "次のイメージに AVB ハッシュフッターを追加:",
   "log_avb_pubkey": "公開鍵",
   "log_avb_rebuilt_vbmeta_from_partition_image": "次のパーティションイメージの記述子で vbmeta を再構築:",
