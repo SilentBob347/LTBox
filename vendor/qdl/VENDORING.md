@@ -58,6 +58,16 @@ carrying the minimal patches we need.
   write. LTBox needs this for structured, cross-platform per-partition flash
   progress in the GUI without scraping terminal progress-bar text.
 
+- **Terminate every `pbr` progress bar with a newline** (`src/lib.rs`,
+  `src/sahara.rs`). `pbr` redraws its single row with `\r` and never emits a
+  trailing newline, so upstream leaves the finished 100% bar as an unterminated
+  line: the next log message lands on the same row. In the GUI that also broke
+  log dedup — the stdout tap flushed `<bar><our line>` as one entry while the
+  in-process live sink emitted `<our line>` alone, and the two no longer
+  compared equal. `firehose_program_storage_with_progress`,
+  `firehose_read_storage`, and `sahara_dump_region` now call
+  `pb.finish_println("")` when their transfer loop ends.
+
 ## Updating
 
 To re-sync with upstream: re-copy `src/` + `Cargo.toml` from the desired

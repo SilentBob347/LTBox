@@ -431,6 +431,10 @@ fn sahara_dump_region<T: QdlChan>(
         pb.set(bytes_read as u64);
         output.write_all(&buf[..n])?;
     }
+    // Close the bar with a newline. `pbr` only ever rewrites its single row
+    // with `\r`, so without this the final 100% state stays on the current
+    // line and the next log message is appended to it.
+    pb.finish_println("");
 
     Ok(())
 }

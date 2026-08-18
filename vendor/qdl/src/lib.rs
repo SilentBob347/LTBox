@@ -631,6 +631,10 @@ where
         pb.add(chunk_bytes);
         on_progress(completed_bytes, total_bytes);
     }
+    // Close the bar with a newline. `pbr` only ever rewrites its single row
+    // with `\r`, so without this the final 100% state stays on the current
+    // line and the next log message is appended to it.
+    pb.finish_println("");
 
     // The USB `Write` impl already terminates every transfer through
     // `EndpointWrite::submit_end()` — a ZLP when the payload is a multiple
@@ -729,6 +733,10 @@ pub fn firehose_read_storage(
         bytes_left -= n;
         pb.add(n as u64);
     }
+    // Close the bar with a newline. `pbr` only ever rewrites its single row
+    // with `\r`, so without this the final 100% state stays on the current
+    // line and the next log message is appended to it.
+    pb.finish_println("");
 
     if !last_read_was_zero_len && channel.fh_config().backend == QdlBackend::Usb {
         // Issue a dummy read to drain the queue

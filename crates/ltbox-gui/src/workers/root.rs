@@ -473,9 +473,6 @@ pub(crate) fn root_worker(
                 session
                     .reset_to_edl(&mut log)
                     .map_err(|e| tr_args!("err_root_reset_to_edl_failed", error = e))?;
-                // Terminate any dangling pbr `\r`-only
-                // line so the next message gets a fresh row.
-                println!();
                 live!(log, "[EDL] {}", ll.closing_dump);
                 // Drop session — serial port closes so
                 // the post-patch open gets a fresh handle.
@@ -547,7 +544,6 @@ pub(crate) fn root_worker(
                         )
                     })?;
             }
-            println!();
             // Surface the backup folder before the reset
             // so the user doesn't have to scroll.
             if backup_dir.exists() {

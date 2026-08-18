@@ -154,7 +154,6 @@ pub(crate) fn unroot_worker(
             .map_err(|e| tr_args!("err_unroot_flash_failed", label = vbm_label, error = e))?;
     }
 
-    println!();
     live!(log, "[Unroot] {}", phases.marker(5));
     session
         .reset(&mut log)
