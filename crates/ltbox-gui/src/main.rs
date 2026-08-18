@@ -262,10 +262,15 @@ fn main() -> iced::Result {
     // to ≥ `MIN_WINDOW_*` so corrupted / pre-min-size config files can
     // never launch a sub-floor window). Falls back to the default size
     // on first run.
-    let persisted_size = settings_store::load()
+    let persisted = settings_store::load();
+    let persisted_size = persisted
         .window_size
         .map(|(w, h)| iced::Size::new(w.max(MIN_WINDOW_WIDTH), h.max(MIN_WINDOW_HEIGHT)))
         .unwrap_or_else(|| iced::Size::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+    // Bind the UI face before the iced settings below read it. The saved
+    // language decides which of the three bundled Noto faces renders Han
+    // idiomatically; `App::default` reads the same value for its translations.
+    theme::set_font_family(theme::font_family_for_language(&persisted.language));
     let window_settings = iced::window::Settings {
         size: persisted_size,
         // Cursor-drag resize: `MIN_WINDOW_*` is the floor; anything
@@ -301,7 +306,7 @@ fn main() -> iced::Result {
         // keeps it future-proof against a renamed binary.
         .settings(iced::Settings {
             id: Some(APP_ID.to_string()),
-            default_font: iced::Font::with_name(theme::FONT_FAMILY),
+            default_font: iced::Font::with_name(theme::font_family()),
             ..iced::Settings::default()
         })
         .theme(App::theme)
