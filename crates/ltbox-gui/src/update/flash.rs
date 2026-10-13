@@ -246,24 +246,6 @@ impl App {
                 self.flash.reset_firmware_identity();
                 Task::none()
             }
-            FlashMsg::FlashSelectLoader => {
-                // The Change button always opens the picker: any remembered
-                // loader was already applied when the loader-less folder was
-                // selected, so pressing Change means picking a different one.
-                pickers::pick_file_for(self.model_loader_file_spec(), &self.recent_paths, |v| {
-                    Message::Flash(FlashMsg::FlashLoaderChosen(v))
-                })
-            }
-            FlashMsg::FlashLoaderChosen(path) => {
-                // Model-aware resolve: upgrades a `.melf` to a sibling Sahara
-                // manifest on TB323FU (and rejects a standalone `.melf` there),
-                // validates the extension, and records the recent.
-                self.apply_loader_pick(path, |app, loader, err| {
-                    app.flash.loader_override = loader;
-                    app.flash.loader_error = err;
-                });
-                Task::none()
-            }
             FlashMsg::FlashFirmwareIdentityInspected(folder, result) => {
                 if self.flash.firmware_folder.as_deref() != Some(folder.as_str()) {
                     return Task::none();

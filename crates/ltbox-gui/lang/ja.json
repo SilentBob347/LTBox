@@ -385,7 +385,7 @@
   "flash_key_lenovo": "Lenovo 鍵",
   "flash_key_testkey": "AOSP テスト鍵",
   "flash_key_unknown": "不明",
-  "flash_loader_missing_body": "続行するにはローダーを指定してください。",
+  "flash_loader_missing_body": "rawprogram XML ファイルと EDL ローダーが入っているファームウェアの image フォルダーを選択してください。",
   "flash_loader_missing_title": "このファームウェアフォルダーに EDL ローダーがありません。",
   "flash_parts_col_file": "ファイル",
   "flash_parts_col_label": "ラベル",

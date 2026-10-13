@@ -385,7 +385,7 @@
   "flash_key_lenovo": "Lenovo Key",
   "flash_key_testkey": "AOSP Test Key",
   "flash_key_unknown": "Unknown",
-  "flash_loader_missing_body": "Choose a loader to continue.",
+  "flash_loader_missing_body": "Select the firmware's image folder, which holds the rawprogram XML files and the EDL loader.",
   "flash_loader_missing_title": "This firmware folder has no EDL loader.",
   "flash_parts_col_file": "File",
   "flash_parts_col_label": "Label",

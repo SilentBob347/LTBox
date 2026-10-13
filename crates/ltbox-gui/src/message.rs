@@ -251,9 +251,6 @@ pub(crate) enum FlashMsg {
     FlashClearFolder,
     FlashFirmwareIdentityInspected(String, Result<FirmwareIdentity, String>),
     FlashFirmwareIdentityDialogAction,
-    /// Pick a standalone EDL loader when the firmware folder ships none.
-    FlashSelectLoader,
-    FlashLoaderChosen(Option<String>),
     FlashSelectBootloader,
     FlashBootloaderChosen(Option<String>),
     FlashBootloaderAnalysed(

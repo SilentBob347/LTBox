@@ -385,7 +385,7 @@
   "flash_key_lenovo": "Lenovo 密钥",
   "flash_key_testkey": "AOSP 测试密钥",
   "flash_key_unknown": "未知",
-  "flash_loader_missing_body": "请选择加载器以继续。",
+  "flash_loader_missing_body": "请选择包含 rawprogram XML 文件和 EDL 加载器的固件 image 文件夹。",
   "flash_loader_missing_title": "此固件文件夹中没有 EDL 加载器。",
   "flash_parts_col_file": "文件",
   "flash_parts_col_label": "标签",

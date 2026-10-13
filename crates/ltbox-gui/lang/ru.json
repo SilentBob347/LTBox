@@ -385,7 +385,7 @@
   "flash_key_lenovo": "Ключ Lenovo",
   "flash_key_testkey": "Тестовый ключ AOSP",
   "flash_key_unknown": "Неизвестно",
-  "flash_loader_missing_body": "Чтобы продолжить, выберите программатор.",
+  "flash_loader_missing_body": "Выберите папку image прошивки, в которой находятся файлы rawprogram XML и загрузчик EDL.",
   "flash_loader_missing_title": "В этой папке прошивки нет программатора EDL.",
   "flash_parts_col_file": "Файл",
   "flash_parts_col_label": "Метка",

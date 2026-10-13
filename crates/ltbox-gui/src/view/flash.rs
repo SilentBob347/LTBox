@@ -1,6 +1,6 @@
 //! Flash wizard view + steps (region, target, data, folder, confirm, exec). Extracted from `main.rs`.
 
-use super::components::{elide_path_middle, picker_action_button, picker_path_field};
+use super::components::elide_path_middle;
 use crate::focus_button::{self as button, button};
 use crate::*;
 use iced::widget::{Space, column, container, row, scrollable, text};
@@ -479,25 +479,13 @@ impl App {
             .width(Length::Fill)
             .align_x(iced::Alignment::Start);
 
-        // The picked firmware folder ships no EDL loader — keep the warning
-        // and its corrective action together as one shared message banner.
-        if selected_path.is_some() && self.flash.loader_required {
-            let loader_path_row = row![
-                picker_path_field(
-                    self.flash.loader_override.as_deref(),
-                    self.t("picker_no_file_selected").to_string(),
-                    true,
-                    self.picker_text_width(1),
-                ),
-                picker_action_button(
-                    self.t("btn_pick").to_string(),
-                    Some(Message::Flash(FlashMsg::FlashSelectLoader)),
-                    true,
-                ),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center)
-            .width(Length::Fill);
+        // The picked folder ships no EDL loader and none is remembered for
+        // this model: it is most likely the wrong folder, so ask for the
+        // firmware's image folder instead of offering a loader picker.
+        if selected_path.is_some()
+            && self.flash.loader_required
+            && self.flash.loader_override.is_none()
+        {
             let mut banner_body = column![
                 text(self.t("flash_loader_missing_body").to_string())
                     .size(theme::text_size::BODY_MEDIUM)
@@ -505,7 +493,6 @@ impl App {
                     .style(warning_container_text_style)
                     .width(Length::Fill)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                loader_path_row,
             ]
             .spacing(10)
             .width(Length::Fill);

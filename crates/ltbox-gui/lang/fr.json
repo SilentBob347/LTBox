@@ -385,7 +385,7 @@
   "flash_key_lenovo": "Clé Lenovo",
   "flash_key_testkey": "Clé de test AOSP",
   "flash_key_unknown": "Inconnu",
-  "flash_loader_missing_body": "Choisissez un loader pour continuer.",
+  "flash_loader_missing_body": "Sélectionnez le dossier image du firmware, qui contient les fichiers XML rawprogram et le chargeur EDL.",
   "flash_loader_missing_title": "Ce dossier de firmware ne contient pas de loader EDL.",
   "flash_parts_col_file": "Fichier",
   "flash_parts_col_label": "Libellé",
