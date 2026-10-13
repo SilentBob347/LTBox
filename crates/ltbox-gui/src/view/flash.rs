@@ -179,6 +179,8 @@ impl App {
             let is_start = current_step == FlashStep::Confirm;
             let label_owned = if is_start {
                 self.t("btn_start").to_string()
+            } else if current_step == FlashStep::Bootloader && self.flash.bootloader_skippable() {
+                self.t("btn_skip").to_string()
             } else {
                 self.t("btn_next").to_string()
             };
@@ -188,10 +190,18 @@ impl App {
                         && self.flash_serial_prompt.is_none()))
                 && !(self.operation.is_running() && is_start)
                 && (!is_start || self.device_reachable());
-            wizard_nav_generic(
+            let disabled_next_hint = if current_step == FlashStep::Bootloader {
+                self.flash
+                    .bootloader_block_reason()
+                    .map(|key| self.t(key).to_string())
+            } else {
+                None
+            };
+            wizard_nav_generic_with_disabled_next_tooltip(
                 self.flash.step > 0,
                 &label_owned,
                 can,
+                disabled_next_hint,
                 self.t("btn_back"),
                 Message::Flash(FlashMsg::FlashBack),
                 Message::Flash(FlashMsg::FlashNext),

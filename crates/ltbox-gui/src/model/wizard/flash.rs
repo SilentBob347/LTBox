@@ -301,16 +301,43 @@ impl FlashWizard {
         if self.uses_gbl() {
             match self.user_abl_path {
                 Some(_) => self.user_abl_efisp_load == ltbox_patch::efisp_load::EfispLoad::Yes,
-                None => self.firmware_identity.as_ref().is_some_and(|identity| {
-                    identity.efisp_load == ltbox_patch::efisp_load::EfispLoad::Yes
-                        || (identity.efisp_load == ltbox_patch::efisp_load::EfispLoad::No
-                            && identity.key_class != ltbox_patch::key_map::KeyClass::Testkey)
-                }),
+                None => self.firmware_abl_passes(),
             }
         } else {
             self.user_abl_path.is_none()
                 || self.user_abl_key_class == Some(ltbox_patch::key_map::KeyClass::Testkey)
         }
+    }
+
+    /// The firmware's own ABL lets the Bootloader step pass without a
+    /// user-picked one: it loads efisp, or it does not but is not testkey.
+    fn firmware_abl_passes(&self) -> bool {
+        self.firmware_identity.as_ref().is_some_and(|identity| {
+            identity.efisp_load == ltbox_patch::efisp_load::EfispLoad::Yes
+                || (identity.efisp_load == ltbox_patch::efisp_load::EfispLoad::No
+                    && identity.key_class != ltbox_patch::key_map::KeyClass::Testkey)
+        })
+    }
+
+    /// Locale key explaining why Next is disabled on the Bootloader step, or
+    /// `None` while analyzing or when the step can be passed.
+    pub(crate) fn bootloader_block_reason(&self) -> Option<&'static str> {
+        if self.user_abl_analyzing || self.bootloader_can_next() {
+            return None;
+        }
+        Some(if !self.uses_gbl() {
+            "flash_bootloader_hint_testkey_only"
+        } else if self.user_abl_path.is_some() && self.firmware_abl_passes() {
+            "flash_bootloader_hint_efisp_or_clear"
+        } else {
+            "flash_bootloader_hint_efisp_required"
+        })
+    }
+
+    /// The Bootloader step can be passed without choosing an ABL, so its
+    /// navigation button should read "Skip" rather than "Next".
+    pub(crate) fn bootloader_skippable(&self) -> bool {
+        self.user_abl_path.is_none() && self.bootloader_can_next()
     }
 
     pub(crate) fn record_bootloader_decision(&mut self) {
@@ -535,6 +562,136 @@ mod flash_tests {
             wizard.user_abl_key_class = Some(key);
             assert_eq!(wizard.bootloader_can_next(), key == KeyClass::Testkey);
         }
+    }
+
+    #[test]
+    fn bootloader_step_is_skippable_only_without_a_picked_abl() {
+        use ltbox_patch::efisp_load::EfispLoad::{No, Yes};
+
+        // Non-GBL firmware: nothing picked is skippable.
+        let mut wizard = FlashWizard {
+            firmware_identity: Some(identity(
+                KeyClass::Lenovo,
+                "qti/TB320FC/TB320FC:15/build:user/release-keys",
+            )),
+            ..Default::default()
+        };
+        assert!(!wizard.uses_gbl());
+        assert!(wizard.bootloader_skippable());
+
+        // A Lenovo-key ABL blocks Next and is not a skip.
+        wizard.user_abl_path = Some("abl.elf".into());
+        wizard.user_abl_key_class = Some(KeyClass::Lenovo);
+        assert!(!wizard.bootloader_can_next());
+        assert!(!wizard.bootloader_skippable());
+
+        // A testkey ABL passes Next but is a real selection, not a skip.
+        wizard.user_abl_key_class = Some(KeyClass::Testkey);
+        assert!(wizard.bootloader_can_next());
+        assert!(!wizard.bootloader_skippable());
+
+        // GBL firmware whose own ABL loads efisp: skippable.
+        let mut firmware = identity(
+            KeyClass::Unknown,
+            "qti/TB323FU/TB323FU:15/build:user/release-keys",
+        );
+        firmware.efisp_load = Yes;
+        let gbl = FlashWizard {
+            firmware_identity: Some(firmware),
+            ..Default::default()
+        };
+        assert!(gbl.uses_gbl());
+        assert!(gbl.bootloader_skippable());
+
+        // GBL testkey firmware whose ABL does not load efisp: a candidate is
+        // required, so there is nothing to skip.
+        let mut firmware = identity(
+            KeyClass::Testkey,
+            "qti/TB323FU/TB323FU:15/build:user/test-keys",
+        );
+        firmware.efisp_load = No;
+        let gbl_testkey = FlashWizard {
+            firmware_identity: Some(firmware),
+            ..Default::default()
+        };
+        assert!(gbl_testkey.uses_gbl());
+        assert!(!gbl_testkey.bootloader_can_next());
+        assert!(!gbl_testkey.bootloader_skippable());
+    }
+
+    #[test]
+    fn bootloader_block_reason_explains_each_disabled_next() {
+        use ltbox_patch::efisp_load::EfispLoad::{No, Undetermined, Yes};
+
+        // Non-GBL firmware with a non-testkey ABL picked.
+        let mut wizard = FlashWizard {
+            firmware_identity: Some(identity(
+                KeyClass::Lenovo,
+                "qti/TB320FC/TB320FC:15/build:user/release-keys",
+            )),
+            user_abl_path: Some("abl.elf".into()),
+            user_abl_key_class: Some(KeyClass::Lenovo),
+            ..Default::default()
+        };
+        assert_eq!(
+            wizard.bootloader_block_reason(),
+            Some("flash_bootloader_hint_testkey_only")
+        );
+        // Analyzing hides the hint.
+        wizard.user_abl_analyzing = true;
+        assert_eq!(wizard.bootloader_block_reason(), None);
+        // A passing testkey ABL has nothing to explain.
+        wizard.user_abl_analyzing = false;
+        wizard.user_abl_key_class = Some(KeyClass::Testkey);
+        assert_eq!(wizard.bootloader_block_reason(), None);
+        // Nothing picked is the skippable state.
+        wizard.clear_bootloader();
+        assert!(wizard.bootloader_skippable());
+        assert_eq!(wizard.bootloader_block_reason(), None);
+
+        // GBL firmware whose own ABL passes, with a picked ABL that does not
+        // load efisp: clear it or pick a better one.
+        let mut firmware = identity(
+            KeyClass::Unknown,
+            "qti/TB323FU/TB323FU:15/build:user/release-keys",
+        );
+        firmware.efisp_load = Yes;
+        let mut gbl = FlashWizard {
+            firmware_identity: Some(firmware),
+            user_abl_path: Some("abl.elf".into()),
+            user_abl_efisp_load: No,
+            ..Default::default()
+        };
+        assert_eq!(
+            gbl.bootloader_block_reason(),
+            Some("flash_bootloader_hint_efisp_or_clear")
+        );
+        gbl.user_abl_efisp_load = Yes;
+        assert_eq!(gbl.bootloader_block_reason(), None);
+        gbl.clear_bootloader();
+        assert_eq!(gbl.bootloader_block_reason(), None);
+
+        // GBL testkey firmware whose own ABL does not pass: an efisp ABL is
+        // required, whether or not a failing one is picked.
+        let mut firmware = identity(
+            KeyClass::Testkey,
+            "qti/TB323FU/TB323FU:15/build:user/test-keys",
+        );
+        firmware.efisp_load = No;
+        let mut required = FlashWizard {
+            firmware_identity: Some(firmware),
+            ..Default::default()
+        };
+        assert_eq!(
+            required.bootloader_block_reason(),
+            Some("flash_bootloader_hint_efisp_required")
+        );
+        required.user_abl_path = Some("abl.elf".into());
+        required.user_abl_efisp_load = Undetermined;
+        assert_eq!(
+            required.bootloader_block_reason(),
+            Some("flash_bootloader_hint_efisp_required")
+        );
     }
 
     #[test]
