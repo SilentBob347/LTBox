@@ -15,6 +15,8 @@ use ltbox_core::{LtboxError, Result, tr_args};
 
 use crate::{avb, gki, key_map};
 
+pub use crate::avb::VbmetaOwner;
+
 pub mod apatch;
 pub mod apk;
 pub mod ksu;
@@ -143,8 +145,7 @@ pub fn resolve_root_image_target(
     }
 }
 
-/// Whether the top-level `vbmeta` takes part in this root run — dumped,
-/// rebuilt, and flashed.
+/// Whether the root target is hash-verified by a parent that must be rebuilt.
 ///
 /// AVB binds a partition to vbmeta one of two ways. When vbmeta carries the
 /// partition's own **Hash descriptor**, the digest of the patched image has to
@@ -156,7 +157,8 @@ pub fn resolve_root_image_target(
 ///
 /// Every supported model chains `boot` except TB320FC-equivalents, which hash
 /// it — their stock `boot.img` footer is `NONE`-signed precisely because vbmeta
-/// carries the digest. `init_boot` is always hashed. Root always runs with the
+/// carries the digest. `init_boot` is always hashed by a parent; descriptor
+/// inspection determines whether vbmeta or vbmeta_system owns it. Root runs with the
 /// model already detected over ADB or Fastboot, so this resolves before EDL and
 /// the dump step can skip vbmeta entirely when it plays no part.
 pub fn root_run_rebuilds_vbmeta(target: RootImageTarget, device_model: &str) -> bool {
@@ -179,6 +181,8 @@ pub struct RootPipelineConfig {
     /// means vbmeta chains the target, so the caller neither dumps nor flashes
     /// it and this pipeline leaves it out of the artifacts.
     pub rebuild_vbmeta: bool,
+    /// Descriptor-detected hash owner. Required when rebuilding outside GBL.
+    pub vbmeta_owner: Option<VbmetaOwner>,
 
     /// APK extraction + root image patching workspace. Cleaned on entry.
     pub work_dir: PathBuf,
@@ -578,6 +582,7 @@ pub struct PatchedArtifacts {
     /// Target partition name (`init_boot_a`, `boot_a`, …).
     pub root_partition: String,
     pub vbmeta_partition: Option<String>,
+    pub vbmeta_owner: Option<VbmetaOwner>,
     /// SKRoot's generated key. It intentionally never enters the operation log.
     pub skroot_root_key: Option<String>,
 }
@@ -608,7 +613,17 @@ pub fn build_patched_artifacts(
 
     let stock_filename = cfg.root_image_target.filename();
     let stock_root_image_src = cfg.work_dir.join(stock_filename);
-    let vbmeta_src = cfg.work_dir.join("vbmeta.img");
+    let rebuild_vbmeta = !uses_gbl && cfg.rebuild_vbmeta;
+    let owner = if rebuild_vbmeta {
+        Some(
+            cfg.vbmeta_owner
+                .ok_or_else(|| LtboxError::Avb("Root hash owner has not been detected".into()))?,
+        )
+    } else {
+        None
+    };
+    let owner_name = owner.map_or("vbmeta.img", VbmetaOwner::filename);
+    let vbmeta_src = cfg.work_dir.join(owner_name);
     if !stock_root_image_src.exists() {
         return Err(LtboxError::Patch(format!(
             "work_dir is missing the stock {stock_filename} dump"
@@ -617,11 +632,10 @@ pub fn build_patched_artifacts(
     // vbmeta is dumped only when it actually takes part: TB323FU GBL root
     // flashes the repacked boot as-is, and a chained target is verified by its
     // own footer. Both leave vbmeta out of the workspace.
-    let rebuild_vbmeta = !uses_gbl && cfg.rebuild_vbmeta;
     if rebuild_vbmeta && !vbmeta_src.exists() {
-        return Err(LtboxError::Patch(
-            "work_dir is missing the stock vbmeta.img dump".into(),
-        ));
+        return Err(LtboxError::Patch(format!(
+            "work_dir is missing the stock {owner_name} dump"
+        )));
     }
     // Defensive: GUI Phase 2 prefetches the manager APK + payload
     // before EDL, but headless callers (and the stable test
@@ -824,39 +838,26 @@ pub fn build_patched_artifacts(
             let stock_vbmeta_info = avb::extract_image_avb_info(&vbmeta_src)?;
             let vbmeta_key = resolve_signing_key(
                 stock_vbmeta_info.public_key_sha1.as_deref(),
-                "vbmeta.img",
+                owner_name,
                 log,
             )?;
-            let final_vbmeta = cfg.output_dir.join("vbmeta.img");
+            let final_vbmeta = cfg.output_dir.join(owner_name);
             match vbmeta_key.as_deref() {
                 Some(key) => {
-                    avb::rebuild_vbmeta_with_partition_descriptors(
+                    avb::rebuild_root_vbmeta_owner(
                         &final_vbmeta,
                         &vbmeta_src,
-                        &[&final_root_image],
-                        key,
-                        None,
-                    )?;
-                    let footer_descriptor = avb::hash_descriptor(
                         &final_root_image,
                         cfg.root_image_target.partition_base(),
+                        key,
                     )?;
-                    let vbmeta_descriptor = avb::hash_descriptor(
-                        &final_vbmeta,
-                        cfg.root_image_target.partition_base(),
-                    )?;
-                    if footer_descriptor != vbmeta_descriptor {
-                        return Err(LtboxError::Avb(format!(
-                            "rebuilt vbmeta descriptor for {} does not match the root image footer",
-                            cfg.root_image_target.partition_base()
-                        )));
-                    }
                     ltbox_core::live!(
                         log,
                         "[AVB] {}",
                         tr_args!(
                             "log_avb_rebuilt_vbmeta_from_partition_image",
-                            image = stock_filename,
+                            image = owner_name,
+                            root_image = stock_filename,
                             path = final_vbmeta.display(),
                             key = key
                         ),
@@ -872,12 +873,21 @@ pub fn build_patched_artifacts(
                         "[AVB] {}",
                         tr_args!(
                             "log_avb_vbmeta_unsigned_copied",
+                            image = owner_name,
                             path = final_vbmeta.display()
                         ),
                     );
                 }
             }
-            (Some(final_vbmeta), Some(format!("vbmeta{suffix}")))
+            (
+                Some(final_vbmeta),
+                Some(format!(
+                    "{}{suffix}",
+                    owner
+                        .ok_or_else(|| LtboxError::Avb("Root hash owner missing".into()))?
+                        .partition_base()
+                )),
+            )
         }
     };
 
@@ -887,6 +897,7 @@ pub fn build_patched_artifacts(
         manager_apk: staged_manager_apk.exists().then_some(staged_manager_apk),
         root_partition: format!("{}{suffix}", cfg.root_image_target.partition_base()),
         vbmeta_partition,
+        vbmeta_owner: owner,
         skroot_root_key,
     })
 }
@@ -902,6 +913,7 @@ mod root_target_tests {
             version: RootVersion::Stable,
             root_image_target: RootImageTarget::Boot,
             rebuild_vbmeta: false,
+            vbmeta_owner: None,
             work_dir: work.into(),
             output_dir: work.join("out"),
             loader: PathBuf::new(),
@@ -1156,8 +1168,8 @@ mod root_target_tests {
     }
 
     #[test]
-    fn an_init_boot_target_always_rebuilds_vbmeta() {
-        for model in ["TB320FC", "TB321FU", "TB322FC", "TB710FU"] {
+    fn an_init_boot_target_always_rebuilds_its_hash_owner() {
+        for model in ["TB320FC", "TB321FU", "TB322FC", "TB520FU", "TB710FU"] {
             assert!(root_run_rebuilds_vbmeta(RootImageTarget::InitBoot, model));
         }
     }

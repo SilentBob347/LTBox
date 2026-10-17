@@ -158,6 +158,7 @@ fn build_fixture_output(
         root_image_target: RootImageTarget::Boot,
         // TB320FC hashes boot in vbmeta rather than chaining it.
         rebuild_vbmeta: true,
+        vbmeta_owner: Some(ltbox_patch::avb::VbmetaOwner::Vbmeta),
         work_dir: work,
         output_dir: output,
         loader: PathBuf::new(),

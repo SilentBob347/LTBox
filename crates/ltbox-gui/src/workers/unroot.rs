@@ -9,6 +9,8 @@ use ltbox_core::{i18n::tr, live, tr_args};
 
 use std::path::{Path, PathBuf};
 
+use ltbox_patch::avb::{self, VbmetaOwner};
+
 use super::root_backup::{BackupContents, BackupRootTarget, resolve_backup_contents};
 
 pub(crate) fn unroot_connection_ready(conn: ConnectionStatus) -> bool {
@@ -49,7 +51,7 @@ pub(crate) fn unroot_worker(
     // A root run that left vbmeta untouched backed none up, and the stock
     // vbmeta is still on the device — restoring the root image alone puts the
     // pair back in sync.
-    let vbmeta_path = backup.restore_vbmeta.then(|| dir.join("vbmeta.img"));
+    let vbmeta_path = backup.vbmeta_owner.map(|owner| dir.join(owner.filename()));
     if !root_image_path.exists() {
         return Err(tr_args!(
             "err_unroot_image_missing",
@@ -79,7 +81,14 @@ pub(crate) fn unroot_worker(
     // Names the images this run will write, so the pre-flight line and the
     // Phase 4 header agree with what actually gets flashed.
     let restored_label = if vbmeta_path.is_some() {
-        tr_args!("live_unroot_backup_pair", root_image = root_image_name)
+        tr_args!(
+            "live_unroot_backup_pair",
+            root_image = root_image_name,
+            image = backup
+                .vbmeta_owner
+                .ok_or_else(|| tr("err_unroot_vbmeta_missing"))?
+                .filename()
+        )
     } else {
         root_image_name.to_string()
     };
@@ -119,11 +128,17 @@ pub(crate) fn unroot_worker(
     // the loader's parent dir may not even
     // contain a firmware XML pair.
     let root_image_label = format!("{base_part}{slot}");
-    let vbm_label = format!("vbmeta{slot}");
+    let vbm_label = backup
+        .vbmeta_owner
+        .map(|owner| format!("{}{slot}", owner.partition_base()))
+        .unwrap_or_default();
     let root_image_lun = ltbox_core::partition_lun::lun_for_partition(base_part)
         .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = base_part))?;
-    let vbm_lun = ltbox_core::partition_lun::lun_for_partition("vbmeta")
-        .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = "vbmeta"))?;
+    let vbm_lun = backup
+        .vbmeta_owner
+        .map(VbmetaOwner::lun)
+        .transpose()
+        .map_err(|e| e.to_string())?;
     if vbmeta_path.is_some() {
         live!(
             log,
@@ -133,7 +148,7 @@ pub(crate) fn unroot_worker(
                 root_image_label = root_image_label,
                 root_image_lun = root_image_lun,
                 vbm_label = vbm_label,
-                vbm_lun = vbm_lun,
+                vbm_lun = vbm_lun.ok_or_else(|| tr("err_unroot_vbmeta_missing"))?,
             )
         );
     } else {
@@ -195,7 +210,7 @@ pub(crate) fn unroot_worker(
             label: &vbm_label,
             image: path,
             slot: 0,
-            lun: vbm_lun,
+            lun: vbm_lun.ok_or_else(|| tr("err_unroot_vbmeta_missing"))?,
         });
     }
     session
@@ -254,9 +269,8 @@ enum AbortReason {
 /// A user who restores from *some* folder of the same firmware version rather
 /// than their own backup gets images that never received this device's
 /// rollback-bypass treatment; flashing those unchanged is what bricks the
-/// device. Only `boot` and `vbmeta_system` carry a rollback index and unroot
-/// never writes the latter, so an `init_boot` restore has nothing to reconcile
-/// once the fingerprints agree.
+/// device. The payload retains its existing Boot-only reconciliation policy;
+/// the descriptor-detected owner is checked independently below.
 fn unroot_prep(
     target: BackupRootTarget,
     device_fingerprint: Option<&str>,
@@ -352,29 +366,81 @@ fn verify_against_device(
                     index = device_info.rollback_index.to_string()
                 )
             );
-            return Ok((
-                root_image_path.to_path_buf(),
-                vbmeta_path.map(Path::to_path_buf),
-            ));
+            None
         }
-        UnrootPrep::PatchRollback(index) => index,
+        UnrootPrep::PatchRollback(index) => Some(index),
     };
 
+    let patched_root = if let Some(target_index) = target_index {
+        patch_root_rollback(
+            root_image_path,
+            &image_info,
+            backup.root_target,
+            target_index,
+            &work_dir,
+            log,
+        )?
+    } else {
+        root_image_path.to_path_buf()
+    };
+    let Some(owner) = backup.vbmeta_owner else {
+        return Ok((patched_root, None));
+    };
+    let owner_src = vbmeta_path.ok_or_else(|| tr("err_unroot_vbmeta_missing"))?;
+    let owner_label = format!("{}{slot}", owner.partition_base());
+    live!(
+        log,
+        "[Unroot] {}",
+        tr_args!("live_unroot_verify_dump", label = owner_label)
+    );
+    let device_owner = super::flash::dump_avb_info(
+        session,
+        &owner_label,
+        owner.lun().map_err(|e| e.to_string())?,
+        &work_dir,
+        log,
+    )
+    .map_err(|error| {
+        live!(log, "[Unroot] {error}");
+        tr_args!("err_unroot_device_dump_failed", label = owner_label)
+    })?
+    .ok_or_else(|| tr_args!("err_unroot_device_dump_failed", label = owner_label))?;
+    let restored_owner = reconcile_owner(
+        owner,
+        owner_src,
+        &device_owner,
+        target_index.map(|_| patched_root.as_path()),
+        base,
+        &work_dir,
+        log,
+    )?;
+    Ok((patched_root, Some(restored_owner)))
+}
+
+fn patch_root_rollback(
+    root_image_path: &Path,
+    image_info: &avb::AvbImageInfo,
+    target: BackupRootTarget,
+    target_index: u64,
+    work_dir: &Path,
+    log: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    let base = target.partition_base();
     live!(
         log,
         "[Unroot] {}",
         tr_args!(
             "live_unroot_rollback_patch",
-            image = backup.root_target.filename(),
+            image = target.filename(),
             from = image_info.rollback_index.to_string(),
             to = target_index.to_string()
         )
     );
-    let patched = work_dir.join(backup.root_target.filename());
+    let patched = work_dir.join(target.filename());
     let patch_failed = |error: String| {
         tr_args!(
             "err_unroot_rollback_patch_failed",
-            image = backup.root_target.filename(),
+            image = target.filename(),
             error = error
         )
     };
@@ -388,7 +454,7 @@ fn verify_against_device(
     // A `NONE` footer is hashed by vbmeta rather than self-signed; re-adding the
     // footer rewrites only the metadata appended after the payload.
     if image_info.algorithm == "NONE" {
-        ltbox_patch::avb::add_hash_footer(&patched, &image_info, key, Some(target_index))
+        ltbox_patch::avb::add_hash_footer(&patched, image_info, key, Some(target_index))
             .map_err(|error| patch_failed(error.to_string()))?;
     } else if let Some(spec) = key {
         ltbox_patch::avb::resign_image(&patched, spec, &image_info.algorithm, Some(target_index))
@@ -397,54 +463,129 @@ fn verify_against_device(
         return Err(patch_failed("unsigned image".to_string()));
     }
 
-    // The root image just changed, so a vbmeta that hashes it (TB320FC family)
-    // has to adopt the new descriptor — the same rebuild the root run does after
-    // patching the ramdisk. A vbmeta that only chains the target pins the key
-    // rather than the digest and is never in the backup to begin with.
-    let Some(vbmeta_src) = vbmeta_path else {
-        return Ok((patched, None));
-    };
-    let vbmeta_info = ltbox_patch::avb::extract_image_avb_info(vbmeta_src).map_err(|error| {
+    Ok(patched)
+}
+
+/// Owners must never be restored below the device's rollback index. A newer
+/// backup is retained; payload Boot reconciliation intentionally stays exact.
+fn unroot_owner_prep(
+    device_fingerprint: Option<&str>,
+    image_fingerprint: Option<&str>,
+    device_index: u64,
+    image_index: u64,
+) -> UnrootPrep {
+    match unroot_prep(
+        BackupRootTarget::InitBoot,
+        device_fingerprint,
+        image_fingerprint,
+        device_index,
+        image_index,
+    ) {
+        UnrootPrep::FlashAsIs if device_index > image_index => {
+            UnrootPrep::PatchRollback(device_index)
+        }
+        result => result,
+    }
+}
+
+fn reconcile_owner(
+    owner: VbmetaOwner,
+    source: &Path,
+    device_info: &avb::AvbImageInfo,
+    patched_root: Option<&Path>,
+    base: &str,
+    work_dir: &Path,
+    log: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    let invalid = |error: String| {
         tr_args!(
             "err_unroot_image_avb_failed",
-            image = "vbmeta.img",
-            error = error.to_string()
+            image = owner.filename(),
+            error = error
         )
-    })?;
-    let vbmeta_out = work_dir.join("vbmeta.img");
-    let rebuild_failed =
-        |error: String| tr_args!("err_unroot_vbmeta_rebuild_failed", error = error);
-    match ltbox_patch::key_map::key_spec_for_signed_pubkey(vbmeta_info.public_key_sha1.as_deref())
-        .map_err(|sha1| ltbox_patch::key_map::unresolved_signing_key_error("vbmeta.img", &sha1))?
-    {
-        Some(key) => {
-            ltbox_patch::avb::rebuild_vbmeta_with_partition_descriptors(
-                &vbmeta_out,
-                vbmeta_src,
-                &[patched.as_path()],
-                key,
-                None,
-            )
-            .map_err(|error| rebuild_failed(error.to_string()))?;
-            let footer = ltbox_patch::avb::hash_descriptor(&patched, base)
-                .map_err(|error| rebuild_failed(error.to_string()))?;
-            let adopted = ltbox_patch::avb::hash_descriptor(&vbmeta_out, base)
-                .map_err(|error| rebuild_failed(error.to_string()))?;
-            if footer != adopted {
-                return Err(rebuild_failed(format!(
-                    "rebuilt vbmeta descriptor for {base} does not match the restored image"
-                )));
-            }
-            live!(log, "[Unroot] {}", tr("live_unroot_vbmeta_rebuilt"));
+    };
+    let info = avb::extract_image_avb_info(source).map_err(|e| invalid(e.to_string()))?;
+    let device_fp = avb::build_fingerprint(device_info);
+    let image_fp = avb::build_fingerprint(&info);
+    let index = match unroot_owner_prep(
+        device_fp.as_deref(),
+        image_fp.as_deref(),
+        device_info.rollback_index,
+        info.rollback_index,
+    ) {
+        UnrootPrep::Abort(AbortReason::FingerprintUnreadable) => {
+            return Err(tr("err_unroot_fingerprint_unreadable"));
         }
-        // Unsigned vbmeta: NONE-algorithm bootloaders skip verification, so the
-        // stock blob passes through exactly as the root pipeline sends it.
-        None => {
-            std::fs::copy(vbmeta_src, &vbmeta_out)
-                .map_err(|error| rebuild_failed(error.to_string()))?;
+        UnrootPrep::Abort(AbortReason::FingerprintMismatch) => {
+            return Err(tr_args!(
+                "err_unroot_fingerprint_mismatch",
+                device = device_fp.unwrap_or_default(),
+                image = image_fp.unwrap_or_default()
+            ));
         }
+        UnrootPrep::PatchRollback(index) => Some(index),
+        UnrootPrep::FlashAsIs => None,
+    };
+    if index.is_none() && patched_root.is_none() {
+        return Ok(source.to_path_buf());
     }
-    Ok((patched, Some(vbmeta_out)))
+    let output = work_dir.join(owner.filename());
+    let failed = |error: String| {
+        tr_args!(
+            "err_unroot_rollback_patch_failed",
+            image = owner.filename(),
+            error = error
+        )
+    };
+    let key = ltbox_patch::key_map::key_spec_for_signed_pubkey(info.public_key_sha1.as_deref())
+        .map_err(|sha1| {
+            ltbox_patch::key_map::unresolved_signing_key_error(owner.filename(), &sha1)
+        })?;
+    if let (Some(root), Some(key)) = (patched_root, key) {
+        avb::rebuild_root_vbmeta_owner(&output, source, root, base, key).map_err(|e| {
+            tr_args!(
+                "err_unroot_vbmeta_rebuild_failed",
+                image = owner.filename(),
+                error = e
+            )
+        })?;
+        live!(
+            log,
+            "[Unroot] {}",
+            tr_args!("live_unroot_vbmeta_rebuilt", image = owner.filename())
+        );
+    } else {
+        // Keep the unsigned-owner copy policy used by Root.
+        std::fs::copy(source, &output).map_err(|e| failed(e.to_string()))?;
+    }
+    if let Some(index) = index {
+        let key = key.ok_or_else(|| failed("unsigned image".into()))?;
+        live!(
+            log,
+            "[Unroot] {}",
+            tr_args!(
+                "live_unroot_rollback_patch",
+                image = owner.filename(),
+                from = info.rollback_index,
+                to = index
+            )
+        );
+        // Re-sign metadata in place: never add a hash footer to a mixed owner.
+        avb::resign_image(&output, key, &info.algorithm, Some(index))
+            .map_err(|e| failed(e.to_string()))?;
+    }
+    let final_info = avb::extract_image_avb_info(&output).map_err(|e| failed(e.to_string()))?;
+    if final_info.rollback_index < device_info.rollback_index
+        || final_info.rollback_index_location != info.rollback_index_location
+        || final_info.algorithm != info.algorithm
+        || final_info.flags != info.flags
+        || final_info.public_key_sha1 != info.public_key_sha1
+    {
+        return Err(failed(
+            "restored owner failed rollback or metadata postcondition".into(),
+        ));
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -452,6 +593,248 @@ mod tests {
     use super::*;
 
     const FP: &str = "qti/TB320FC/TB320FC:14/UP1A/S000123:user/release-keys";
+
+    #[test]
+    fn boot_owner_reconcile_rebuilds_then_resigns_for_a_higher_device_index() {
+        use avbtool_rs::builder::{PropertySpec, VbmetaImageArgs, make_vbmeta_image};
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let boot = temp.path().join("boot.img");
+        std::fs::write(&boot, vec![0x41; 4096]).unwrap();
+        avbtool_rs::footer::add_hash_footer(
+            &boot,
+            &avbtool_rs::footer::HashFooterArgs {
+                partition_size: Some(128 * 1024),
+                dynamic_partition_size: false,
+                partition_name: "boot".into(),
+                hash_algorithm: "sha256".into(),
+                salt: Some(vec![1, 2]),
+                chain_partitions: Vec::new(),
+                algorithm_name: "NONE".into(),
+                key_spec: None,
+                public_key_metadata: None,
+                rollback_index: 4,
+                flags: 0,
+                rollback_index_location: 3,
+                properties: Vec::new(),
+                kernel_cmdlines: Vec::new(),
+                include_descriptors_from_images: Vec::new(),
+                release_string: None,
+                append_to_release_string: None,
+                output_vbmeta_image: None,
+                do_not_append_vbmeta_image: false,
+                use_persistent_digest: false,
+                do_not_use_ab: false,
+            },
+        )
+        .unwrap();
+        let source = temp.path().join("vbmeta.img");
+        make_vbmeta_image(
+            &source,
+            &VbmetaImageArgs {
+                algorithm_name: "SHA512_RSA2048".into(),
+                key_spec: Some("testkey_rsa2048".into()),
+                public_key_metadata: None,
+                rollback_index: 4,
+                flags: 0,
+                rollback_index_location: 0,
+                properties: vec![PropertySpec {
+                    key: "com.android.build.system.fingerprint".into(),
+                    value: FP.as_bytes().to_vec(),
+                }],
+                kernel_cmdlines: Vec::new(),
+                extra_descriptors: Vec::new(),
+                include_descriptors_from_images: vec![boot.clone()],
+                chain_partitions: Vec::new(),
+                release_string: None,
+                append_to_release_string: None,
+                padding_size: 4096,
+            },
+        )
+        .unwrap();
+        let before = avb::extract_image_avb_info(&source).unwrap();
+        let mut device = before.clone();
+        device.rollback_index = 7;
+        let root_info = avb::extract_image_avb_info(&boot).unwrap();
+        let patched_root = work.join("boot.img");
+        // A different payload makes adopting the supplied hash observable;
+        // its unsigned Boot footer also carries the reconciled payload index.
+        std::fs::write(&patched_root, vec![0x42; 4096]).unwrap();
+        avb::add_hash_footer(&patched_root, &root_info, None, Some(9)).unwrap();
+        assert_eq!(
+            avb::extract_image_avb_info(&patched_root)
+                .unwrap()
+                .rollback_index,
+            9
+        );
+        let output = reconcile_owner(
+            VbmetaOwner::Vbmeta,
+            &source,
+            &device,
+            Some(&patched_root),
+            "boot",
+            &work,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            avb::hash_descriptor(&output, "boot").unwrap(),
+            avb::hash_descriptor(&patched_root, "boot").unwrap()
+        );
+        assert_ne!(
+            avb::hash_descriptor(&output, "boot").unwrap(),
+            avb::hash_descriptor(&source, "boot").unwrap()
+        );
+        let after = avb::extract_image_avb_info(&output).unwrap();
+        assert_eq!(after.rollback_index, device.rollback_index);
+        assert_eq!(after.algorithm, before.algorithm);
+        avbtool_rs::verify::verify_image(
+            &output,
+            &avbtool_rs::verify::VerifyImageOptions {
+                key_blob: Some(avbtool_rs::crypto::extract_public_key("testkey_rsa2048").unwrap()),
+                expected_chain_partitions: Vec::new(),
+                follow_chain_partitions: false,
+                accept_zeroed_hashtree: false,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn owner_rollback_policy_never_lowers_the_device_floor() {
+        assert_eq!(
+            unroot_owner_prep(Some(FP), Some(FP), 7, 4),
+            UnrootPrep::PatchRollback(7)
+        );
+        assert_eq!(
+            unroot_owner_prep(Some(FP), Some(FP), 4, 7),
+            UnrootPrep::FlashAsIs
+        );
+        assert_eq!(
+            unroot_owner_prep(Some(FP), Some(FP), 7, 7),
+            UnrootPrep::FlashAsIs
+        );
+        assert_eq!(
+            unroot_owner_prep(None, Some(FP), 7, 4),
+            UnrootPrep::Abort(AbortReason::FingerprintUnreadable)
+        );
+        assert_eq!(
+            unroot_owner_prep(Some(FP), Some("other"), 7, 4),
+            UnrootPrep::Abort(AbortReason::FingerprintMismatch)
+        );
+    }
+
+    #[test]
+    fn owner_rollback_reconcile_resigns_mixed_metadata_with_original_algorithm() {
+        use avbtool_rs::builder::{PropertySpec, VbmetaImageArgs, make_vbmeta_image};
+        for owner in [VbmetaOwner::Vbmeta, VbmetaOwner::VbmetaSystem] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(owner.filename());
+            let work = temp.path().join("work");
+            std::fs::create_dir(&work).unwrap();
+            make_vbmeta_image(
+                &source,
+                &VbmetaImageArgs {
+                    algorithm_name: "SHA512_RSA2048".into(),
+                    key_spec: Some("testkey_rsa2048".into()),
+                    public_key_metadata: None,
+                    rollback_index: 4,
+                    flags: 0,
+                    rollback_index_location: 0,
+                    properties: vec![PropertySpec {
+                        key: "com.android.build.system.fingerprint".into(),
+                        value: FP.as_bytes().to_vec(),
+                    }],
+                    kernel_cmdlines: Vec::new(),
+                    extra_descriptors: vec![avbtool_rs::info::DescriptorInfo::Hash {
+                        image_size: 4096,
+                        hash_algorithm: "sha256".into(),
+                        partition_name: "pvmfw".into(),
+                        salt: vec![1],
+                        digest: vec![2; 32],
+                        flags: 0,
+                    }],
+                    include_descriptors_from_images: Vec::new(),
+                    chain_partitions: Vec::new(),
+                    release_string: None,
+                    append_to_release_string: None,
+                    padding_size: 4096,
+                },
+            )
+            .unwrap();
+            let original = std::fs::read(&source).unwrap();
+            let before = avbtool_rs::image::inspect_avb_image(&source).unwrap();
+            let mut device = avb::extract_image_avb_info(&source).unwrap();
+            device.rollback_index = 7;
+            let output = reconcile_owner(
+                owner,
+                &source,
+                &device,
+                None,
+                "init_boot",
+                &work,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(output.file_name().unwrap(), owner.filename());
+            let after = avbtool_rs::image::inspect_avb_image(&output).unwrap();
+            assert_eq!(after.header.rollback_index, 7);
+            assert_eq!(
+                after.header.rollback_index_location,
+                before.header.rollback_index_location
+            );
+            assert_eq!(after.algorithm_name, before.algorithm_name);
+            assert_eq!(after.descriptors, before.descriptors);
+            assert_eq!(after.public_key_sha1, before.public_key_sha1);
+            assert_eq!(std::fs::read(&source).unwrap(), original);
+            let blob = avbtool_rs::image::load_vbmeta_blob(&output).unwrap();
+            let header = &after.header;
+            let aux = 256 + header.authentication_data_block_size as usize;
+            let mut signed = blob[..256].to_vec();
+            signed.extend_from_slice(&blob[aux..aux + header.auxiliary_data_block_size as usize]);
+            let sig = 256 + header.signature_offset as usize;
+            let key = avbtool_rs::crypto::AvbPublicKey::decode(
+                &avbtool_rs::crypto::extract_public_key("testkey_rsa2048").unwrap(),
+            )
+            .unwrap();
+            assert!(
+                key.verify(
+                    avbtool_rs::crypto::lookup_algorithm_by_name(&after.algorithm_name).unwrap(),
+                    &blob[sig..sig + header.signature_size as usize],
+                    &signed
+                )
+                .unwrap()
+            );
+            device.rollback_index = 3;
+            assert_eq!(
+                reconcile_owner(
+                    owner,
+                    &source,
+                    &device,
+                    None,
+                    "init_boot",
+                    &work,
+                    &mut Vec::new()
+                )
+                .unwrap(),
+                source
+            );
+            device.props.clear();
+            assert!(
+                reconcile_owner(
+                    owner,
+                    &source,
+                    &device,
+                    None,
+                    "init_boot",
+                    &work,
+                    &mut Vec::new()
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn unroot_requires_a_connection_that_can_resolve_the_active_slot() {

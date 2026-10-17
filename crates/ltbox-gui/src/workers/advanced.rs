@@ -469,7 +469,15 @@ pub(crate) fn advanced_file_worker(
                         ltbox_core::i18n::tr("live_avb_rebuild_warning")
                     );
                 }
-                let output = output_dir.join("vbmeta.rebuilt.img");
+                let stem = input.file_stem().ok_or_else(|| {
+                    tr_args!(
+                        "err_vbmeta_rebuild_failed",
+                        error = "input image has no filename"
+                    )
+                })?;
+                let mut filename = stem.to_os_string();
+                filename.push(".rebuilt.img");
+                let output = output_dir.join(filename);
                 let partition_image_refs: Vec<&std::path::Path> =
                     partition_images.iter().map(|p| p.as_path()).collect();
                 let partition_image_names = partition_images

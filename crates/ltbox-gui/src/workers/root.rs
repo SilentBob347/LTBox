@@ -317,13 +317,14 @@ pub(crate) fn root_worker(
         return Err(tr("err_ksu_lkm_kernel_version_required"));
     }
 
-    let manager_cfg = RootPipelineConfig {
+    let mut manager_cfg = RootPipelineConfig {
         local_ksu,
         family: pipe_family,
         provider: pipe_provider,
         version: pipe_version,
         root_image_target,
         rebuild_vbmeta,
+        vbmeta_owner: None,
         work_dir: work_dir.clone(),
         output_dir: output_dir.clone(),
         loader: loader.clone(),
@@ -418,29 +419,17 @@ pub(crate) fn root_worker(
             // it is guaranteed to be `_a` or `_b` here.
             let root_primary = format!("{base_name}{slot_suffix}");
             let vbmeta_primary = format!("vbmeta{slot_suffix}");
-            // Lenovo devices on Qualcomm UFS place
-            // boot / init_boot / vbmeta on LUN 4 (userdata
-            // LUN), same index used by the reference
-            // `qdl-rs --phys-part-idx 4` recipe.
-            const ROOT_PARTITIONS_LUN: u8 = 4;
-            // vbmeta only appears when it takes part; on a chained target it is
-            // never read or written, so naming it here would be misleading.
-            if rebuild_vbmeta {
-                live!(
-                    log,
-                    "[Root] {}",
-                    ll.root_resolved(
-                        &format!("{root_primary} / {vbmeta_primary}"),
-                        ROOT_PARTITIONS_LUN
-                    )
-                );
-            } else {
-                live!(
-                    log,
-                    "[Root] {}",
-                    ll.root_resolved(&root_primary, ROOT_PARTITIONS_LUN)
-                );
-            }
+            let root_lun = ltbox_core::partition_lun::lun_for_partition(base_name)
+                .ok_or_else(|| tr_args!("err_no_hardcoded_lun", partition = base_name))?;
+            let root_image_name = manager_cfg.root_image_target.filename();
+            let owner_unresolved = |details: String| {
+                tr_args!(
+                    "err_root_vbmeta_owner_unresolved",
+                    image = root_image_name,
+                    details = details
+                )
+            };
+            live!(log, "[Root] {}", ll.root_resolved(&root_primary, root_lun));
 
             // Phase 4/8 — Read stock AVB-protected root images.
             live!(log, "[Root] {}", phases.marker(4));
@@ -462,7 +451,6 @@ pub(crate) fn root_worker(
             let mut root_efisp_efi: Option<std::path::PathBuf> = None;
             {
                 let mut session = open_edl_session(&loader, &mut log)?;
-                let root_image_name = manager_cfg.root_image_target.filename();
                 let dumped_root_image = work_dir.join(root_image_name);
                 let dumped_vbmeta = work_dir.join("vbmeta.img");
                 // `dump_partition` scans the LUN's GPT for the
@@ -475,13 +463,7 @@ pub(crate) fn root_worker(
                 // cross-check below needs no separate vbmeta dump on devices
                 // that chain the target.
                 session
-                    .dump_partition(
-                        &root_primary,
-                        &dumped_root_image,
-                        0,
-                        ROOT_PARTITIONS_LUN,
-                        &mut log,
-                    )
+                    .dump_partition(&root_primary, &dumped_root_image, 0, root_lun, &mut log)
                     .map_err(|e| {
                         tr_args!(
                             "err_root_dump_partition_failed",
@@ -524,19 +506,16 @@ pub(crate) fn root_worker(
                 }
                 uses_gbl = dumped.uses_gbl;
 
-                // vbmeta is read only when the run rebuilds it: TB323FU takes
-                // the GBL route, and every other non-TB320FC model chains the
-                // boot target, which leaves vbmeta byte-identical either way.
+                // Read parents only when the root target needs a hash rebuild.
+                // GBL and chained boot routes retain their existing exclusions.
                 vbmeta_backed_up = rebuild_vbmeta && !uses_gbl;
                 if vbmeta_backed_up {
+                    let lun = ltbox_patch::avb::VbmetaOwner::Vbmeta
+                        .lun()
+                        .map_err(|e| owner_unresolved(e.to_string()))?;
+                    live!(log, "[Root] {}", ll.root_resolved(&vbmeta_primary, lun));
                     session
-                        .dump_partition(
-                            &vbmeta_primary,
-                            &dumped_vbmeta,
-                            0,
-                            ROOT_PARTITIONS_LUN,
-                            &mut log,
-                        )
+                        .dump_partition(&vbmeta_primary, &dumped_vbmeta, 0, lun, &mut log)
                         .map_err(|e| {
                             tr_args!(
                                 "err_root_dump_partition_failed",
@@ -544,6 +523,44 @@ pub(crate) fn root_worker(
                                 error = e
                             )
                         })?;
+                }
+
+                if vbmeta_backed_up {
+                    // Inspect every chained candidate, even on old firmware,
+                    // so a duplicate root hash in both parents cannot pass.
+                    let chains = ltbox_patch::avb::chain_partition_descriptors(&dumped_vbmeta)
+                        .map_err(|e| owner_unresolved(e.to_string()))?;
+                    if chains.iter().any(|chain| chain.name == "vbmeta_system") {
+                        let candidate = ltbox_patch::avb::VbmetaOwner::VbmetaSystem;
+                        let label = format!("{}{slot_suffix}", candidate.partition_base());
+                        let lun = candidate
+                            .lun()
+                            .map_err(|e| owner_unresolved(e.to_string()))?;
+                        live!(log, "[Root] {}", ll.root_resolved(&label, lun));
+                        session
+                            .dump_partition(
+                                &label,
+                                &work_dir.join(candidate.filename()),
+                                0,
+                                lun,
+                                &mut log,
+                            )
+                            .map_err(|e| {
+                                tr_args!(
+                                    "err_root_dump_partition_failed",
+                                    partition = label,
+                                    error = e
+                                )
+                            })?;
+                    }
+                    let owner = ltbox_patch::avb::detect_root_vbmeta_owner(&work_dir, base_name)
+                        .map_err(|e| owner_unresolved(e.to_string()))?;
+                    manager_cfg.vbmeta_owner = Some(owner);
+                    live!(
+                        log,
+                        "[Root] {}",
+                        tr_args!("live_root_vbmeta_owner", image = owner.filename())
+                    );
                 }
 
                 // TB323FU root needs provisioned efisp; once present, skip AVB
@@ -579,16 +596,18 @@ pub(crate) fn root_worker(
                             error = e
                         )
                     })?;
-                if vbmeta_backed_up {
-                    std::fs::copy(&dumped_vbmeta, actual_backup_dir.join("vbmeta.img")).map_err(
-                        |e| {
-                            tr_args!(
-                                "err_root_backup_copy_failed",
-                                image = "vbmeta.img",
-                                error = e
-                            )
-                        },
-                    )?;
+                if let Some(owner) = manager_cfg.vbmeta_owner {
+                    std::fs::copy(
+                        work_dir.join(owner.filename()),
+                        actual_backup_dir.join(owner.filename()),
+                    )
+                    .map_err(|e| {
+                        tr_args!(
+                            "err_root_backup_copy_failed",
+                            image = owner.filename(),
+                            error = e
+                        )
+                    })?;
                 }
                 // The manifest is descriptive metadata only. A failure to
                 // record it must not turn a valid stock-image backup into a
@@ -611,7 +630,15 @@ pub(crate) fn root_worker(
                         log,
                         "[Root] {}",
                         ll.root_backup_copy(
-                            &format!("{root_image_name} + vbmeta.img"),
+                            &format!(
+                                "{root_image_name} + {}",
+                                manager_cfg
+                                    .vbmeta_owner
+                                    .ok_or_else(|| owner_unresolved(
+                                        "Root hash owner missing".into()
+                                    ))?
+                                    .filename()
+                            ),
                             &actual_backup_dir
                         )
                     );
@@ -639,14 +666,7 @@ pub(crate) fn root_worker(
             // never touches the network, matching its "patching" label.
             live!(log, "[Root] {}", phases.marker(5));
 
-            // The patch phase reuses the same config the
-            // download phase built — none of the input
-            // locals mutate between Phase 2 and Phase 5
-            // (only `nightly_run_id` was hoisted out of
-            // `manager_cfg` for logging). Clone the cfg
-            // instead of re-cloning every field, which
-            // keeps the two phases in lockstep automatically
-            // if a future field gets added to the struct.
+            // Reuse the staged inputs and the owner detected from the dumps.
             let cfg = manager_cfg.clone();
             let artifacts = build_patched_artifacts(&cfg, uses_gbl, &mut log)
                 .map_err(|e| tr_args!("err_root_patch_failed", error = e))?;
@@ -678,14 +698,20 @@ pub(crate) fn root_worker(
                 label: &artifacts.root_partition,
                 image: &artifacts.patched_root_image,
                 slot: 0,
-                lun: ROOT_PARTITIONS_LUN,
+                lun: root_lun,
             });
             if let Some(vbpath) = &artifacts.patched_vbmeta {
                 requests.push(ltbox_device::edl::PartitionFlash {
-                    label: &vbmeta_primary,
+                    label: artifacts.vbmeta_partition.as_deref().ok_or_else(|| {
+                        owner_unresolved("Root hash owner partition missing".into())
+                    })?,
                     image: vbpath,
                     slot: 0,
-                    lun: ROOT_PARTITIONS_LUN,
+                    lun: artifacts
+                        .vbmeta_owner
+                        .ok_or_else(|| owner_unresolved("Root hash owner missing".into()))?
+                        .lun()
+                        .map_err(|e| owner_unresolved(e.to_string()))?,
                 });
             }
             session

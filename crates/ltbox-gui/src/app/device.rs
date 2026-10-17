@@ -101,9 +101,9 @@ impl App {
     ///
     /// What a root backup holds is decided by the root run, not by the wizard
     /// card the user picks here: the target follows the route and the model,
-    /// and vbmeta is only in the folder when the run had to rebuild it. Asking
+    /// and vbmeta or vbmeta_system is only in the folder when rebuilt. Asking
     /// the same two functions the root run asked keeps the picker from naming a
-    /// file that run never wrote — a chained `boot` target leaves no vbmeta.img
+    /// file that run never wrote — a chained `boot` target leaves no owner image
     /// at all, and only the TB320FC family roots to `boot` outside the GKI
     /// route.
     pub(crate) fn unroot_folder_desc(&self, unroot_type: UnrootType) -> &str {

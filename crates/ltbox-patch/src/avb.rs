@@ -6,6 +6,110 @@ use std::path::{Path, PathBuf};
 use ltbox_core::{LtboxError, Result};
 use tracing::info;
 
+/// Parent image carrying the root partition's Hash descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VbmetaOwner {
+    Vbmeta,
+    VbmetaSystem,
+}
+
+impl VbmetaOwner {
+    pub const fn partition_base(self) -> &'static str {
+        match self {
+            Self::Vbmeta => "vbmeta",
+            Self::VbmetaSystem => "vbmeta_system",
+        }
+    }
+
+    pub const fn filename(self) -> &'static str {
+        match self {
+            Self::Vbmeta => "vbmeta.img",
+            Self::VbmetaSystem => "vbmeta_system.img",
+        }
+    }
+
+    pub fn lun(self) -> Result<u8> {
+        ltbox_core::partition_lun::lun_for_partition(self.partition_base())
+            .ok_or_else(|| LtboxError::Avb(format!("No LUN for {}", self.partition_base())))
+    }
+}
+
+fn target_hash_count(descriptors: &[avbtool_rs::info::DescriptorInfo], target: &str) -> usize {
+    descriptors.iter().filter(|descriptor| matches!(descriptor,
+        avbtool_rs::info::DescriptorInfo::Hash { partition_name, .. } if partition_name == target
+    )).count()
+}
+
+/// Number of hashes for a root partition, retaining parse failures as errors.
+pub fn root_hash_descriptor_count(image: &Path, target: &str) -> Result<usize> {
+    let info = avbtool_rs::image::inspect_avb_image(image)
+        .map_err(|error| LtboxError::Avb(format!("inspect {}: {error}", image.display())))?;
+    Ok(target_hash_count(&info.descriptors, target))
+}
+
+/// Pure ownership policy. Every chained vbmeta_system must be inspected even
+/// when vbmeta already hashes the target, to rule out two owners.
+pub fn decide_root_vbmeta_owner(
+    target: &str,
+    vbmeta: &[avbtool_rs::info::DescriptorInfo],
+    vbmeta_system: Option<&[avbtool_rs::info::DescriptorInfo]>,
+) -> Result<VbmetaOwner> {
+    let chains: Vec<_> = vbmeta
+        .iter()
+        .filter_map(|descriptor| match descriptor {
+            avbtool_rs::info::DescriptorInfo::ChainPartition {
+                partition_name,
+                flags,
+                ..
+            } if partition_name == "vbmeta_system" => Some(*flags),
+            _ => None,
+        })
+        .collect();
+    if !chains.is_empty() && vbmeta_system.is_none() {
+        return Err(LtboxError::Avb(
+            "Chained vbmeta_system must be inspected for the root hash owner".into(),
+        ));
+    }
+    let top = target_hash_count(vbmeta, target);
+    let system = vbmeta_system.map_or(0, |descriptors| target_hash_count(descriptors, target));
+    if top == 1 && system == 0 {
+        return Ok(VbmetaOwner::Vbmeta);
+    }
+    if chains.len() > 1 || chains.first().is_some_and(|flags| *flags != 0) {
+        return Err(LtboxError::Avb(
+            "Ambiguous or non-A/B vbmeta_system chain".into(),
+        ));
+    }
+    match (top, system, chains.len()) {
+        (0, 1, 1) => Ok(VbmetaOwner::VbmetaSystem),
+        (0, 0, _) => Err(LtboxError::Avb(format!(
+            "Missing root hash owner for {target}"
+        ))),
+        _ => Err(LtboxError::Avb(format!(
+            "Ambiguous root hash owner for {target}: vbmeta={top}, vbmeta_system={system}"
+        ))),
+    }
+}
+
+/// Inspect the actual parent images; parse failures never become a fallback.
+pub fn detect_root_vbmeta_owner(work_dir: &Path, target: &str) -> Result<VbmetaOwner> {
+    let top = avbtool_rs::image::inspect_avb_image(&work_dir.join("vbmeta.img"))
+        .map_err(|error| LtboxError::Avb(format!("inspect vbmeta.img: {error}")))?;
+    let system = if top.descriptors.iter().any(|descriptor| matches!(descriptor,
+        avbtool_rs::info::DescriptorInfo::ChainPartition { partition_name, .. } if partition_name == "vbmeta_system"
+    )) {
+        Some(avbtool_rs::image::inspect_avb_image(&work_dir.join("vbmeta_system.img"))
+            .map_err(|error| LtboxError::Avb(format!("inspect vbmeta_system.img: {error}")))?)
+    } else {
+        None
+    };
+    decide_root_vbmeta_owner(
+        target,
+        &top.descriptors,
+        system.as_ref().map(|info| info.descriptors.as_slice()),
+    )
+}
+
 /// Parsed AVB image metadata.
 #[derive(Debug, Clone)]
 pub struct AvbImageInfo {
@@ -227,25 +331,30 @@ pub fn hash_descriptor(
     image: &Path,
     partition_name: &str,
 ) -> Result<avbtool_rs::info::DescriptorInfo> {
-    avbtool_rs::image::inspect_avb_image(image)
-        .map_err(|e| LtboxError::Avb(format!("inspect {}: {e}", image.display())))?
-        .descriptors
-        .into_iter()
-        .find(|descriptor| {
-            matches!(
-                descriptor,
-                avbtool_rs::info::DescriptorInfo::Hash {
-                    partition_name: name,
-                    ..
-                } if name == partition_name
-            )
-        })
-        .ok_or_else(|| {
-            LtboxError::Avb(format!(
-                "{} has no Hash descriptor for {partition_name}",
-                image.display()
-            ))
-        })
+    let info = avbtool_rs::image::inspect_avb_image(image)
+        .map_err(|e| LtboxError::Avb(format!("inspect {}: {e}", image.display())))?;
+    let mut matches = info.descriptors.into_iter().filter(|descriptor| {
+        matches!(
+            descriptor,
+            avbtool_rs::info::DescriptorInfo::Hash {
+                partition_name: name,
+                ..
+            } if name == partition_name
+        )
+    });
+    let descriptor = matches.next().ok_or_else(|| {
+        LtboxError::Avb(format!(
+            "{} has no Hash descriptor for {partition_name}",
+            image.display()
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(LtboxError::Avb(format!(
+            "{} has duplicate Hash descriptors for {partition_name}",
+            image.display()
+        )));
+    }
+    Ok(descriptor)
 }
 
 /// Verify the root payload against its own AVB hash and, when restored,
@@ -351,6 +460,75 @@ pub fn rebuild_vbmeta_with_partition_descriptors(
     )
     .map_err(|e| LtboxError::Avb(format!("rebuild_vbmeta_image: {e}")))?;
     preserve_original_vbmeta_size(output_path, original_vbmeta_path)?;
+    Ok(())
+}
+
+/// Compare descriptor values with multiplicity, independent of builder order.
+fn descriptor_values_match(
+    expected: &[avbtool_rs::info::DescriptorInfo],
+    actual: &[avbtool_rs::info::DescriptorInfo],
+) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+    // The builder sorts descriptors. Compare values and multiplicity, retaining
+    // duplicate properties and unknown descriptors rather than treating them
+    // as a set or requiring their original positions.
+    let mut remaining: Vec<_> = expected.iter().collect();
+    for descriptor in actual {
+        let Some(index) = remaining.iter().position(|value| *value == descriptor) else {
+            return false;
+        };
+        remaining.swap_remove(index);
+    }
+    remaining.is_empty()
+}
+
+/// Rebuild a root hash owner with its original signing algorithm, retaining
+/// every unrelated descriptor value and the owner's rollback metadata.
+pub fn rebuild_root_vbmeta_owner(
+    output: &Path,
+    original: &Path,
+    root_image: &Path,
+    partition: &str,
+    key: &str,
+) -> Result<()> {
+    let before = avbtool_rs::image::inspect_avb_image(original)
+        .map_err(|error| LtboxError::Avb(error.to_string()))?;
+    // Both sides must carry exactly one hash, not a first-match approximation.
+    hash_descriptor(original, partition)?;
+    let replacement = hash_descriptor(root_image, partition)?;
+    let mut expected = before.descriptors.clone();
+    for descriptor in &mut expected {
+        if matches!(descriptor, avbtool_rs::info::DescriptorInfo::Hash { partition_name, .. } if partition_name == partition)
+        {
+            *descriptor = replacement.clone();
+        }
+    }
+    rebuild_vbmeta_with_partition_descriptors(
+        output,
+        original,
+        &[root_image],
+        key,
+        Some(&before.algorithm_name),
+    )?;
+    let after = avbtool_rs::image::inspect_avb_image(output)
+        .map_err(|error| LtboxError::Avb(error.to_string()))?;
+    if !descriptor_values_match(&expected, &after.descriptors) {
+        return Err(LtboxError::Avb(
+            "Rebuilt root hash owner changed descriptor values".into(),
+        ));
+    }
+    if after.header.rollback_index != before.header.rollback_index
+        || after.header.rollback_index_location != before.header.rollback_index_location
+        || after.header.flags != before.header.flags
+        || after.algorithm_name != before.algorithm_name
+        || after.public_key_sha1 != before.public_key_sha1
+    {
+        return Err(LtboxError::Avb(
+            "Rebuilt root hash owner changed unrelated AVB metadata or signing key".into(),
+        ));
+    }
     Ok(())
 }
 
