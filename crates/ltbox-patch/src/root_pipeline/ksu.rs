@@ -506,8 +506,11 @@ fn download_ksu_ko_artifact(
             .map_err(|e| LtboxError::Patch(format!("{repo}: LKM artifact not a zip: {e}")))?;
         let member_name: String = archive
             .file_names()
+            .collect::<zip::result::ZipResult<Vec<_>>>()
+            .map_err(|e| LtboxError::Patch(format!("{repo}: LKM artifact not a zip: {e}")))?
+            .into_iter()
             .find(|n| n.to_lowercase().ends_with(".ko"))
-            .map(|s| s.to_string())
+            .map(|s| s.into_owned())
             .ok_or_else(|| {
                 LtboxError::Patch(format!("{repo} {ko_artifact}: no .ko entry in zip"))
             })?;
@@ -640,8 +643,11 @@ fn download_release_payload_zip(
         .map_err(|e| LtboxError::Patch(format!("Release payload ZIP: {e}")))?;
     let names: Vec<String> = archive
         .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()
+        .map_err(|e| LtboxError::Patch(format!("Release payload ZIP: {e}")))?
+        .into_iter()
         .filter(|name| !name.ends_with('/') && name.ends_with(suffix))
-        .map(str::to_owned)
+        .map(|name| name.into_owned())
         .collect();
     if names.len() != 1 {
         return Err(LtboxError::Patch(format!(
@@ -816,8 +822,11 @@ pub(super) fn download_ksu_release_payload(
         .map_err(|e| LtboxError::Patch(format!("ksuinit zip read: {e}")))?;
     let member_name: Option<String> = archive
         .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()
+        .map_err(|e| LtboxError::Patch(format!("ksuinit zip read: {e}")))?
+        .into_iter()
         .find(|n| n.ends_with("ksuinit") && !n.ends_with('/'))
-        .map(|s| s.to_string());
+        .map(|s| s.into_owned());
     let member_name = member_name.ok_or_else(|| {
         LtboxError::Patch(format!(
             "`ksuinit` entry missing from {ksuinit_artifact}.zip"
@@ -928,8 +937,11 @@ pub fn download_ksu_payload_nightly(
             .map_err(|e| LtboxError::Patch(format!("{repo}: ksuinit artifact not a zip: {e}")))?;
         let member_name: String = archive
             .file_names()
+            .collect::<zip::result::ZipResult<Vec<_>>>()
+            .map_err(|e| LtboxError::Patch(format!("{repo}: ksuinit artifact not a zip: {e}")))?
+            .into_iter()
             .find(|n| n.ends_with("ksuinit") && !n.ends_with('/'))
-            .map(|s| s.to_string())
+            .map(|s| s.into_owned())
             .ok_or_else(|| {
                 LtboxError::Patch(format!("{repo} {init_artifact}: no ksuinit entry in zip"))
             })?;

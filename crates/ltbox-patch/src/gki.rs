@@ -219,8 +219,11 @@ fn extract_kernel_from_zip(zip_path: &Path, dst: &Path, log: &mut Vec<String>) -
     // preferring the shortest path so root `Image` beats `subdir/Image`.
     let names: Vec<String> = archive
         .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()
+        .map_err(|e| LtboxError::Patch(format!("kernel zip read: {e}")))?
+        .into_iter()
         .filter(|n| !n.ends_with('/'))
-        .map(|s| s.to_string())
+        .map(|s| s.into_owned())
         .collect();
 
     let mut picked: Option<String> = None;

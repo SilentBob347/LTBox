@@ -750,7 +750,7 @@ mod tests {
                 archive
                     .by_index(index)
                     .ok()
-                    .is_some_and(|entry| entry.name().ends_with(".deb"))
+                    .is_some_and(|entry| entry.name().is_ok_and(|name| name.ends_with(".deb")))
             });
             if !has_deb {
                 return Err("selected QUD zip contains no .deb package".to_string());

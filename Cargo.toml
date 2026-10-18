@@ -41,7 +41,7 @@ getrandom = "0.4"
 ureq = { version = "3", features = ["json"] }
 
 # Zip (Qualcomm driver archive extraction)
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Release self-update archives use gzip-compressed tarballs on Linux/macOS.
 flate2 = "1"
 # Strict base64 decoding (KonaBess export URIs).

@@ -181,8 +181,16 @@ pub(super) fn extract_first_apk_from_zip(
     // APK, then the first APK at all.
     let member_names: Vec<String> = archive
         .file_names()
+        .collect::<zip::result::ZipResult<Vec<_>>>()
+        .map_err(|e| {
+            LtboxError::Patch(format!(
+                "{}: APK container not a zip: {e}",
+                archive_path.display()
+            ))
+        })?
+        .into_iter()
         .filter(|n| n.to_lowercase().ends_with(".apk") && !n.ends_with('/'))
-        .map(|s| s.to_string())
+        .map(|s| s.into_owned())
         .collect();
     let Some(member_name) = pick_preferred_apk_name(&member_names).cloned() else {
         return Ok(false);
