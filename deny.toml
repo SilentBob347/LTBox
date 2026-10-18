@@ -22,6 +22,15 @@ ignore = [
     # runs only on trusted GUI SVG/font assets, not untrusted input. Revisit
     # when iced/resvg/usvg migrate off rustybuzz (e.g. to harfrust).
     "RUSTSEC-2026-0206", # rustybuzz unmaintained (transitive via iced/resvg; no upgrade path)
+    # zbus 5's helper crates were folded into zbus 6 and are no longer
+    # published on their own. They arrive only through zbus 5, used by
+    # `dark-light` 3 (system theme) and iced's `mundy` (iced_winit); neither
+    # has a zbus 6 release yet, so there is no upgrade path ("No safe upgrade
+    # is available"). D-Bus is used only for desktop theme/settings queries.
+    # Revisit when dark-light and iced move to zbus 6.
+    "RUSTSEC-2026-0370", # zvariant unmaintained (transitive via zbus 5)
+    "RUSTSEC-2026-0371", # zbus_names unmaintained (transitive via zbus 5)
+    "RUSTSEC-2026-0372", # zvariant_derive unmaintained (transitive via zbus 5)
 ]
 
 [bans]
