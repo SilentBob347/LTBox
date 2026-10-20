@@ -387,22 +387,23 @@ fn select_ksu_nightly_ko_artifact(
     kver: &str,
     device_branch: Option<&str>,
 ) -> Option<String> {
-    // Accept legacy `_kernelsu.ko` and current `-{kver}-lkm` naming.
-    // Trailing `-`/EOS sentinel prevents `6.1` matching `6.10/6.11/6.12`.
+    // Accept legacy `_kernelsu.ko`, `-{kver}-lkm`, and `-{kver}-ksu-lkm` naming.
+    // The `-` after kver prevents `6.1` matching `6.10/6.11/6.12`.
     let want = kver.to_lowercase();
     let lkm_marker = format!("-{want}-lkm");
+    let ksu_lkm_marker = format!("-{want}-ksu-lkm");
     select_arch_safe_artifact(artifact_names, |n| {
         let lower = n.to_lowercase();
-        if branch_rejected(&lower, &want, device_branch) {
+        // Susfs modules require a susfs-patched kernel and are never safe here.
+        if lower.contains("-susfs-lkm") || branch_rejected(&lower, &want, device_branch) {
             return false;
         }
         // Legacy: "*-{kver}_kernelsu.ko"
         if lower.contains("_kernelsu.ko") && ksu_ko_kver_matches(&lower, &want) {
             return true;
         }
-        // Current: "android<api>-{kver}-lkm" (zip wrapper, real
-        // .ko inside).
-        lower.contains(&lkm_marker)
+        // ZIP wrappers carry the real .ko inside, with optional arch prefixes.
+        lower.contains(&lkm_marker) || lower.contains(&ksu_lkm_marker)
     })
 }
 
@@ -1154,6 +1155,71 @@ mod tests {
             select_ksu_nightly_ko_artifact(&artifacts, "4.14", None),
             None
         );
+    }
+
+    #[test]
+    fn ksu_next_nightly_artifact_selection_picks_plain_arm64_modules_in_any_order() {
+        for (branch, kver) in [
+            ("android12", "5.10"),
+            ("android13", "5.15"),
+            ("android14", "6.1"),
+            ("android15", "6.6"),
+        ] {
+            let expected = format!("aarch64-{branch}-{kver}-ksu-lkm");
+            let mut artifacts = vec![
+                format!("aarch64-{branch}-{kver}-susfs-lkm"),
+                format!("x86_64-{branch}-{kver}-ksu-lkm"),
+                format!("x86_64-{branch}-{kver}-susfs-lkm"),
+                expected.clone(),
+            ];
+            // Exercise every permutation of the four siblings.
+            for a in 0..4 {
+                artifacts.swap(0, a);
+                for b in 1..4 {
+                    artifacts.swap(1, b);
+                    for c in 2..4 {
+                        artifacts.swap(2, c);
+                        for device_branch in [None, Some(branch)] {
+                            assert_eq!(
+                                select_ksu_nightly_ko_artifact(&artifacts, kver, device_branch),
+                                Some(expected.clone()),
+                                "{artifacts:?}"
+                            );
+                        }
+                        artifacts.swap(2, c);
+                    }
+                    artifacts.swap(1, b);
+                }
+                artifacts.swap(0, a);
+            }
+        }
+    }
+
+    #[test]
+    fn ksu_next_nightly_artifact_selection_requires_exact_kernel_version() {
+        let artifacts = vec![
+            "aarch64-android16-6.12-ksu-lkm".to_string(),
+            "aarch64-android16-6.10-ksu-lkm".to_string(),
+        ];
+        assert_eq!(
+            select_ksu_nightly_ko_artifact(&artifacts, "6.1", None),
+            None
+        );
+    }
+
+    #[test]
+    fn ksu_next_nightly_artifact_selection_rejects_susfs_and_x86_only_modules() {
+        for artifact in [
+            "aarch64-android14-6.1-susfs-lkm",
+            "x86_64-android14-6.1-ksu-lkm",
+            // Even a legacy-looking name must not bypass the susfs exclusion.
+            "aarch64-android14-6.1_kernelsu.ko-susfs-lkm",
+        ] {
+            assert_eq!(
+                select_ksu_nightly_ko_artifact(&[artifact.to_string()], "6.1", None),
+                None
+            );
+        }
     }
 
     #[test]
