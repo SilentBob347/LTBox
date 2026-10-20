@@ -453,15 +453,29 @@ fn compare_artifact_digest(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactDigestPolicy {
+    Optional,
+    Required,
+}
+
 fn verify_nightly_artifact_zip(
     path: &Path,
     artifact_name: &str,
     reported_digest: Option<&str>,
+    digest_policy: ArtifactDigestPolicy,
     log: &mut Vec<String>,
 ) -> Result<()> {
     let actual = ltbox_core::crypto::sha256_file_hex(path)?;
     match compare_artifact_digest(reported_digest, &actual) {
         Ok(ArtifactDigestStatus::Verified) => Ok(()),
+        Ok(ArtifactDigestStatus::Skipped) if digest_policy == ArtifactDigestPolicy::Required => {
+            let _ = fs::remove_file(path);
+            Err(LtboxError::Download(tr_args!(
+                "err_ksu_artifact_hash_required",
+                artifact = artifact_name,
+            )))
+        }
         Ok(ArtifactDigestStatus::Skipped) => {
             ltbox_core::live!(
                 log,
@@ -494,13 +508,20 @@ fn download_ksu_ko_artifact(
     artifact_id: u64,
     ko_artifact: &str,
     reported_digest: Option<&str>,
+    digest_policy: ArtifactDigestPolicy,
     staging_dir: &Path,
     log: &mut Vec<String>,
 ) -> Result<()> {
     let ko_zip_path = staging_dir.join("ksu_lkm_artifact.zip");
     let ko_url = nightly_artifact_url(repo, artifact_id);
     download_to_file(&ko_url, &ko_zip_path, log)?;
-    verify_nightly_artifact_zip(&ko_zip_path, ko_artifact, reported_digest, log)?;
+    verify_nightly_artifact_zip(
+        &ko_zip_path,
+        ko_artifact,
+        reported_digest,
+        digest_policy,
+        log,
+    )?;
     {
         let f = fs::File::open(&ko_zip_path)?;
         let mut archive = zip::ZipArchive::new(f)
@@ -530,8 +551,31 @@ fn download_ksu_ko_artifact(
     Ok(())
 }
 
-/// The first successful run for `tag`, across the provider's release-tag
-/// workflows in order, whose artifacts supply what the release assets lack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TagRunConclusion {
+    Success,
+    Failure,
+}
+
+impl TagRunConclusion {
+    fn digest_policy(self) -> ArtifactDigestPolicy {
+        match self {
+            Self::Success => ArtifactDigestPolicy::Optional,
+            Self::Failure => ArtifactDigestPolicy::Required,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TagPayloadRun {
+    run_id: u64,
+    workflow: String,
+    artifacts: Vec<WorkflowArtifact>,
+    conclusion: TagRunConclusion,
+}
+
+/// The first tag run supplying what the release assets lack. All successful
+/// runs, across workflows in order, take precedence over any failed run.
 ///
 /// One tag push starts several runs (release, build, lint), so a run is
 /// chosen by what it carries rather than by list position: an artifact-less
@@ -545,36 +589,65 @@ fn resolve_tag_payload_run(
     device_branch: Option<&str>,
     need_module: bool,
     need_init: bool,
-) -> std::result::Result<(u64, Vec<WorkflowArtifact>), String> {
+) -> std::result::Result<TagPayloadRun, String> {
     let workflows = super::provider_release_workflows(provider);
     if workflows.is_empty() {
         return Err(format!("no release workflow is known for {provider:?}"));
     }
+    select_tag_payload_run(
+        workflows,
+        |workflow, conclusion| match conclusion {
+            TagRunConclusion::Success => client.workflow_runs_for_tag(workflow, tag),
+            TagRunConclusion::Failure => client.failed_workflow_runs_for_tag(workflow, tag),
+        },
+        |run_id| client.workflow_artifact_details(run_id),
+        |names| tag_run_supplies(names, kver, device_branch, need_module, need_init),
+    )
+}
+
+/// Injectable metadata loaders keep fallback ordering testable without GitHub.
+fn select_tag_payload_run(
+    workflows: &[&str],
+    mut runs_for_workflow: impl FnMut(&str, TagRunConclusion) -> Result<Vec<u64>>,
+    mut artifacts_for_run: impl FnMut(u64) -> Result<Vec<WorkflowArtifact>>,
+    supplies_payload: impl Fn(&[String]) -> bool,
+) -> std::result::Result<TagPayloadRun, String> {
     let mut tried = Vec::new();
-    for workflow in workflows {
-        let runs = match client.workflow_runs_for_tag(workflow, tag) {
-            Ok(runs) => runs,
-            Err(e) => {
-                tried.push(format!("{workflow}: {e}"));
-                continue;
-            }
+    for conclusion in [TagRunConclusion::Success, TagRunConclusion::Failure] {
+        let (qualifier, description) = match conclusion {
+            TagRunConclusion::Success => ("", "successful"),
+            TagRunConclusion::Failure => (" failed", "failed"),
         };
-        if runs.is_empty() {
-            tried.push(format!("{workflow}: no successful run"));
-        }
-        for run_id in runs {
-            let artifacts = match client.workflow_artifact_details(run_id) {
-                Ok(artifacts) => artifacts,
+        for workflow in workflows {
+            let runs = match runs_for_workflow(workflow, conclusion) {
+                Ok(runs) => runs,
                 Err(e) => {
-                    tried.push(format!("{workflow} run {run_id}: {e}"));
+                    tried.push(format!("{workflow}{qualifier}: {e}"));
                     continue;
                 }
             };
-            let names: Vec<String> = artifacts.iter().map(|a| a.name.clone()).collect();
-            if tag_run_supplies(&names, kver, device_branch, need_module, need_init) {
-                return Ok((run_id, artifacts));
+            if runs.is_empty() {
+                tried.push(format!("{workflow}: no {description} run"));
             }
-            tried.push(format!("{workflow} run {run_id}: {names:?}"));
+            for run_id in runs {
+                let artifacts = match artifacts_for_run(run_id) {
+                    Ok(artifacts) => artifacts,
+                    Err(e) => {
+                        tried.push(format!("{workflow}{qualifier} run {run_id}: {e}"));
+                        continue;
+                    }
+                };
+                let names: Vec<String> = artifacts.iter().map(|a| a.name.clone()).collect();
+                if supplies_payload(&names) {
+                    return Ok(TagPayloadRun {
+                        run_id,
+                        workflow: (*workflow).to_string(),
+                        artifacts,
+                        conclusion,
+                    });
+                }
+                tried.push(format!("{workflow}{qualifier} run {run_id}: {names:?}"));
+            }
         }
     }
     Err(tried.join("; "))
@@ -736,7 +809,12 @@ pub(super) fn download_ksu_release_payload(
 
     // Resolve the one tag run that supplies whatever the release omitted:
     // ksuinit, and the LKM when there is no release module asset.
-    let (run_id, artifacts) = resolve_tag_payload_run(
+    let TagPayloadRun {
+        run_id,
+        workflow,
+        artifacts,
+        conclusion,
+    } = resolve_tag_payload_run(
         &client,
         provider,
         &tag,
@@ -754,6 +832,19 @@ pub(super) fn download_ksu_release_payload(
             ))
         }
     })?;
+    if conclusion == TagRunConclusion::Failure {
+        ltbox_core::live!(
+            log,
+            "[KSU] WARNING: {}",
+            tr_args!(
+                "log_ksu_tag_run_failed_fallback",
+                workflow = workflow,
+                tag = tag,
+                run = run_id,
+            )
+        );
+    }
+    let digest_policy = conclusion.digest_policy();
     let artifact_names: Vec<String> = artifacts
         .iter()
         .map(|artifact| artifact.name.clone())
@@ -783,6 +874,7 @@ pub(super) fn download_ksu_release_payload(
                     artifact_id,
                     &ko_artifact,
                     artifact_digest(&artifacts, &ko_artifact),
+                    digest_policy,
                     staging_dir,
                     log,
                 )
@@ -814,6 +906,7 @@ pub(super) fn download_ksu_release_payload(
         &tmp_zip,
         &ksuinit_artifact,
         artifact_digest(&artifacts, &ksuinit_artifact),
+        digest_policy,
         log,
     )?;
 
@@ -905,6 +998,7 @@ pub fn download_ksu_payload_nightly(
         nightly_artifact_id(&artifacts, repo, run_id, &ko_artifact)?,
         &ko_artifact,
         artifact_digest(&artifacts, &ko_artifact),
+        ArtifactDigestPolicy::Optional,
         staging_dir,
         log,
     )?;
@@ -930,6 +1024,7 @@ pub fn download_ksu_payload_nightly(
         &init_zip_path,
         &init_artifact,
         artifact_digest(&artifacts, &init_artifact),
+        ArtifactDigestPolicy::Optional,
         log,
     )?;
     {
@@ -965,13 +1060,15 @@ pub fn download_ksu_payload_nightly(
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactDigestMismatch, ArtifactDigestStatus, RootProvider, compare_artifact_digest,
-        download_ksu_manager_apk_nightly, download_ksu_manager_apk_release, download_ksu_payload,
-        download_ksu_payload_nightly, ksu_gki_branch, ksu_ko_kver_matches,
-        normalize_ksu_kernel_version, select_ksu_nightly_ko_artifact, select_ksu_release_ko_asset,
-        select_ksuinit_artifact, select_skroot_manager_asset, stable_lkm_sources_exhausted,
-        tag_run_supplies,
+        ArtifactDigestMismatch, ArtifactDigestStatus, RootProvider, TagRunConclusion,
+        compare_artifact_digest, download_ksu_manager_apk_nightly,
+        download_ksu_manager_apk_release, download_ksu_payload, download_ksu_payload_nightly,
+        ksu_gki_branch, ksu_ko_kver_matches, normalize_ksu_kernel_version,
+        select_ksu_nightly_ko_artifact, select_ksu_release_ko_asset, select_ksuinit_artifact,
+        select_skroot_manager_asset, select_tag_payload_run, stable_lkm_sources_exhausted,
+        tag_run_supplies, verify_nightly_artifact_zip,
     };
+    use ltbox_core::github::WorkflowArtifact;
 
     const SHA256_LOWER: &str = "df471282e461086739bebb088aa07c7226158ffc7a8f5495c86d2e10dba37e83";
 
@@ -1036,6 +1133,54 @@ mod tests {
             compare_artifact_digest(Some(&reported), SHA256_LOWER),
             Ok(ArtifactDigestStatus::Verified)
         );
+    }
+
+    #[test]
+    fn failed_tag_artifacts_require_a_matching_reported_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("artifact.zip");
+        let bytes = b"downloaded artifact bytes";
+        std::fs::write(&path, bytes).unwrap();
+        let actual = ltbox_core::crypto::sha256_file_hex(&path).unwrap();
+        let matching = format!("sha256:{actual}");
+        let mismatching = format!("sha256:{}", "0".repeat(64));
+        for artifact in ["aarch64-android14-6.1-lkm", "ksuinit-aarch64"] {
+            for (reported, should_pass) in [
+                (None, false),
+                (Some(""), false),
+                (Some(mismatching.as_str()), false),
+                (Some(matching.as_str()), true),
+            ] {
+                std::fs::write(&path, bytes).unwrap();
+                let mut log = Vec::new();
+                let result = verify_nightly_artifact_zip(
+                    &path,
+                    artifact,
+                    reported,
+                    TagRunConclusion::Failure.digest_policy(),
+                    &mut log,
+                );
+                assert_eq!(result.is_ok(), should_pass, "{artifact}: {reported:?}");
+                assert_eq!(path.exists(), should_pass);
+                assert!(
+                    log.is_empty(),
+                    "failed-run verification must never be skipped"
+                );
+            }
+        }
+        // Successful tag runs retain the existing optional-digest behavior.
+        std::fs::write(&path, bytes).unwrap();
+        let mut log = Vec::new();
+        verify_nightly_artifact_zip(
+            &path,
+            "ksuinit-aarch64",
+            None,
+            TagRunConclusion::Success.digest_policy(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(path.exists());
+        assert_eq!(log.len(), 1);
     }
 
     #[test]
@@ -1348,6 +1493,131 @@ mod tests {
         assert!(error.contains("v3.3.0"));
         assert!(error.contains("6.1"));
         assert!(error.contains("90 days"));
+    }
+
+    fn tag_artifacts(names: &[&str]) -> Vec<WorkflowArtifact> {
+        names
+            .iter()
+            .map(|name| WorkflowArtifact {
+                id: 1,
+                name: (*name).to_string(),
+                digest: None,
+                expired: false,
+                created_at: String::new(),
+                expires_at: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn successful_tag_payload_in_later_workflow_wins_before_any_failed_run() {
+        let mut requests = Vec::new();
+        let selected = select_tag_payload_run(
+            &["release.yml", "build-manager.yml"],
+            |workflow, conclusion| {
+                requests.push((workflow.to_string(), conclusion));
+                assert_eq!(conclusion, TagRunConclusion::Success);
+                Ok(if workflow == "release.yml" {
+                    vec![1]
+                } else {
+                    vec![2]
+                })
+            },
+            |run_id| {
+                Ok(if run_id == 1 {
+                    tag_artifacts(&["ksuinit-aarch64"])
+                } else {
+                    tag_artifacts(&["aarch64-android14-6.1-lkm", "ksuinit-aarch64"])
+                })
+            },
+            |names| tag_run_supplies(names, "6.1", Some("android14"), true, true),
+        )
+        .unwrap();
+        assert_eq!(selected.run_id, 2);
+        assert_eq!(selected.workflow, "build-manager.yml");
+        assert_eq!(selected.conclusion, TagRunConclusion::Success);
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn failed_tag_payload_is_used_only_after_all_successful_workflows_are_exhausted() {
+        let mut requests = Vec::new();
+        let selected = select_tag_payload_run(
+            &["release.yml", "build-manager.yml"],
+            |workflow, conclusion| {
+                requests.push((workflow.to_string(), conclusion));
+                Ok(match conclusion {
+                    TagRunConclusion::Success => vec![1],
+                    TagRunConclusion::Failure => vec![3],
+                })
+            },
+            |run_id| {
+                Ok(if run_id == 1 {
+                    tag_artifacts(&["ksuinit-aarch64"])
+                } else {
+                    tag_artifacts(&["aarch64-android14-6.1-lkm", "ksuinit-aarch64"])
+                })
+            },
+            |names| tag_run_supplies(names, "6.1", Some("android14"), true, true),
+        )
+        .unwrap();
+        assert_eq!(selected.run_id, 3);
+        assert_eq!(selected.workflow, "release.yml");
+        assert_eq!(selected.conclusion, TagRunConclusion::Failure);
+        assert_eq!(
+            requests,
+            [
+                ("release.yml".to_string(), TagRunConclusion::Success),
+                ("build-manager.yml".to_string(), TagRunConclusion::Success),
+                ("release.yml".to_string(), TagRunConclusion::Failure),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_tag_run_without_required_lkm_is_skipped() {
+        let mut loaded_runs = Vec::new();
+        let selected = select_tag_payload_run(
+            &["release.yml", "build-manager.yml"],
+            |workflow, conclusion| match conclusion {
+                TagRunConclusion::Success => Ok(Vec::new()),
+                TagRunConclusion::Failure => {
+                    assert_eq!(workflow, "release.yml");
+                    Ok(vec![10, 9])
+                }
+            },
+            |run_id| {
+                loaded_runs.push(run_id);
+                Ok(if run_id == 10 {
+                    tag_artifacts(&["ksuinit-aarch64"])
+                } else {
+                    tag_artifacts(&["aarch64-android14-6.1-lkm", "ksuinit-aarch64"])
+                })
+            },
+            |names| tag_run_supplies(names, "6.1", Some("android14"), true, true),
+        )
+        .unwrap();
+        assert_eq!(selected.run_id, 9);
+        assert_eq!(selected.conclusion, TagRunConclusion::Failure);
+        assert_eq!(loaded_runs, [10, 9]);
+    }
+
+    #[test]
+    fn exhausted_tag_payload_details_include_successful_and_failed_attempts() {
+        let error = select_tag_payload_run(
+            &["release.yml"],
+            |_, conclusion| {
+                Ok(match conclusion {
+                    TagRunConclusion::Success => Vec::new(),
+                    TagRunConclusion::Failure => vec![38704356559],
+                })
+            },
+            |_| Ok(tag_artifacts(&["ksuinit-aarch64"])),
+            |names| tag_run_supplies(names, "6.1", Some("android14"), true, true),
+        )
+        .unwrap_err();
+        assert!(error.contains("release.yml: no successful run"));
+        assert!(error.contains("release.yml failed run 38704356559:"));
     }
 
     #[test]

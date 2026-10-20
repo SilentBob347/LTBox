@@ -371,6 +371,25 @@ impl GitHubClient {
         Ok(successful_tag_runs(resp.workflow_runs, tag))
     }
 
+    /// Completed, failed same-repository push runs for `tag`, newest first.
+    /// These are last-resort payload sources, never successful-run substitutes.
+    pub fn failed_workflow_runs_for_tag(&self, workflow_file: &str, tag: &str) -> Result<Vec<u64>> {
+        let encoded = percent_encode(tag);
+        let resp: WorkflowRunsResponse = self.get_json(&format!(
+            "/actions/workflows/{workflow_file}/runs?per_page=30&status=failure&branch={encoded}"
+        ))?;
+        let runs = failed_tag_runs(resp.workflow_runs, tag);
+        if !runs.is_empty() {
+            return Ok(runs);
+        }
+        // Run search can omit tag builds; apply the same strict filter to the
+        // unfiltered listing before concluding that no failed run is available.
+        let resp: WorkflowRunsResponse = self.get_json(&format!(
+            "/actions/workflows/{workflow_file}/runs?per_page=100"
+        ))?;
+        Ok(failed_tag_runs(resp.workflow_runs, tag))
+    }
+
     pub fn workflow_artifacts(&self, run_id: u64) -> Result<Vec<String>> {
         Ok(self
             .workflow_artifact_details(run_id)?
@@ -573,6 +592,23 @@ fn successful_tag_runs(runs: Vec<WorkflowRun>, tag: &str) -> Vec<u64> {
         .collect()
 }
 
+/// Failed tag builds must be completed pushes from the workflow's own repo.
+fn failed_tag_runs(runs: Vec<WorkflowRun>, tag: &str) -> Vec<u64> {
+    runs.into_iter()
+        .filter(|run| {
+            run.status.as_deref() == Some("completed")
+                && run.conclusion.as_deref() == Some("failure")
+                && run.event.as_deref() == Some("push")
+                && run.head_branch.as_deref() == Some(tag)
+                && matches!(
+                    (&run.head_repository, &run.repository),
+                    (Some(head), Some(base)) if head.full_name == base.full_name
+                )
+        })
+        .map(|run| run.id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +681,59 @@ mod tests {
         );
         let runs: WorkflowRunsResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(successful_tag_runs(runs.workflow_runs, "v3.4.0"), [3, 1]);
+    }
+
+    #[test]
+    fn failed_tag_filter_requires_completed_same_repo_push_failure_of_exact_tag() {
+        let failed = |id| {
+            let mut run = run("v4.2.1", Some("failure"), Some("o/r"));
+            run.id = id;
+            run.status = Some("completed".into());
+            run.event = Some("push".into());
+            run
+        };
+        let mut rejected = Vec::new();
+        let mut fork = failed(20);
+        fork.head_repository.as_mut().unwrap().full_name = "fork/r".into();
+        rejected.push(fork);
+        for event in [None, Some("pull_request"), Some("workflow_dispatch")] {
+            let mut run = failed(19);
+            run.event = event.map(Into::into);
+            rejected.push(run);
+        }
+        for conclusion in [
+            None,
+            Some("cancelled"),
+            Some("timed_out"),
+            Some("startup_failure"),
+            Some("skipped"),
+            Some("success"),
+        ] {
+            let mut run = failed(18);
+            run.conclusion = conclusion.map(Into::into);
+            rejected.push(run);
+        }
+        for status in [None, Some("queued"), Some("in_progress")] {
+            let mut run = failed(17);
+            run.status = status.map(Into::into);
+            rejected.push(run);
+        }
+        let mut wrong_tag = failed(16);
+        wrong_tag.head_branch = Some("v4.2.10".into());
+        rejected.push(wrong_tag);
+        let mut no_tag = failed(15);
+        no_tag.head_branch = None;
+        rejected.push(no_tag);
+        let mut no_head = failed(14);
+        no_head.head_repository = None;
+        rejected.push(no_head);
+        let mut no_base = failed(13);
+        no_base.repository = None;
+        rejected.push(no_base);
+        assert!(failed_tag_runs(rejected.clone(), "v4.2.1").is_empty());
+        rejected.insert(0, failed(30));
+        rejected.push(failed(1));
+        assert_eq!(failed_tag_runs(rejected, "v4.2.1"), [30, 1]);
     }
 
     #[test]
