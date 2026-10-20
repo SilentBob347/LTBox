@@ -1,6 +1,6 @@
 //! GitHub API client — releases, workflow runs, artifacts.
 //!
-//! Blocking ureq, no auth. Process-wide 5-minute response cache keyed on URL,
+//! Blocking ureq, optional CI token. Process-wide 5-minute response cache keyed on URL,
 //! storing raw JSON bodies so each caller reparses into its own type.
 
 use std::sync::Arc;
@@ -273,6 +273,12 @@ impl GitHubClient {
             }
         }
         Ok(best.map(|(_, r)| r))
+    }
+
+    /// Latest ten release records, deserialized into the caller's release type.
+    /// Includes drafts and prereleases; callers apply their own selection rules.
+    pub fn releases<T: serde::de::DeserializeOwned>(&self) -> Result<Vec<T>> {
+        self.get_json("/releases?per_page=10")
     }
 
     /// Latest release: `(tag, [(asset_name, browser_download_url)])`.

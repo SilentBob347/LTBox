@@ -9,6 +9,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ltbox_core::github::GitHubClient;
 use ltbox_core::i18n::tr;
 use ltbox_core::{live, tr_args};
 
@@ -141,7 +142,7 @@ fn rdn_value_end(value: &str) -> usize {
 
 #[derive(Clone, Copy)]
 struct WindowsDriverSpec {
-    releases_api: &'static str,
+    owner_repo: &'static str,
     required_infs: &'static [&'static str],
     version_inf: &'static str,
     /// Add/Remove Programs `DisplayName` of the installed package. When set,
@@ -156,7 +157,7 @@ struct WindowsDriverSpec {
 }
 
 const USERSPACE_SPEC: WindowsDriverSpec = WindowsDriverSpec {
-    releases_api: "https://api.github.com/repos/qualcomm/qcom-usb-userspace-drivers/releases?per_page=10",
+    owner_repo: "qualcomm/qcom-usb-userspace-drivers",
     required_infs: &["qcserlib.inf"],
     version_inf: "qcserlib.inf",
     // The userspace package can advance independently of `qcserlib.inf`
@@ -169,7 +170,7 @@ const USERSPACE_SPEC: WindowsDriverSpec = WindowsDriverSpec {
 };
 
 const KERNEL_SPEC: WindowsDriverSpec = WindowsDriverSpec {
-    releases_api: "https://api.github.com/repos/qualcomm/qcom-usb-kernel-drivers/releases?per_page=10",
+    owner_repo: "qualcomm/qcom-usb-kernel-drivers",
     required_infs: &["qcwdfser.inf"],
     version_inf: "qcwdfser.inf",
     // The kernel `qcwdfser.inf` DriverVer (e.g. "1.0.3.6") is a different
@@ -190,7 +191,7 @@ fn driver_spec(mode: QcomDriverMode) -> WindowsDriverSpec {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct GithubRelease {
     #[serde(default)]
     tag_name: String,
@@ -206,7 +207,7 @@ struct GithubRelease {
     published_at: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct GithubAsset {
     name: String,
     browser_download_url: String,
@@ -287,19 +288,18 @@ fn driver_present_via_driver_store(inf_name: &str) -> bool {
     false
 }
 
+fn fetch_win_releases(spec: WindowsDriverSpec) -> Result<Vec<GithubRelease>> {
+    GitHubClient::new(spec.owner_repo)
+        .and_then(|client| client.releases())
+        .map_err(|error| DriverError::Http(error.to_string()))
+}
+
 /// Fetch the latest Windows release that ships the host-arch installer,
 /// excluding drafts and prereleases, returning `(tag_name, asset_download_url)`.
 /// Shared by the installer and the update check so both resolve to the same release.
 fn fetch_latest_win_release() -> Result<(String, String)> {
     let spec = driver_spec(qcom_driver_mode());
-    let meta_agent = ltbox_core::downloader::build_agent();
-
-    let releases: Vec<GithubRelease> = meta_agent
-        .get(spec.releases_api)
-        .call()?
-        .body_mut()
-        .read_json()
-        .map_err(|e| DriverError::Parse(e.to_string()))?;
+    let releases = fetch_win_releases(spec)?;
 
     let asset_name = arch_installer_asset(spec);
     let release = select_latest_win_release(releases, asset_name).ok_or(DriverError::NoAsset)?;
@@ -792,17 +792,12 @@ mod tests {
     fn weekly_fetch_windows_driver_installers_all_arches() {
         let mut failures = Vec::new();
         for spec in [USERSPACE_SPEC, KERNEL_SPEC] {
+            let releases = fetch_win_releases(spec);
             for asset_name in [spec.asset_x64, spec.asset_arm64, spec.asset_x86] {
                 let result = (|| -> std::result::Result<(), String> {
-                    let releases: Vec<GithubRelease> = ltbox_core::downloader::build_agent()
-                        .get(spec.releases_api)
-                        .call()
-                        .map_err(|error| error.to_string())?
-                        .body_mut()
-                        .read_json()
-                        .map_err(|error| error.to_string())?;
-                    let release =
-                        select_latest_win_release(releases, asset_name).ok_or_else(|| {
+                    let releases = releases.as_ref().map_err(|error| error.to_string())?;
+                    let release = select_latest_win_release(releases.clone(), asset_name)
+                        .ok_or_else(|| {
                             "production release selector found no matching asset".to_string()
                         })?;
                     let url = release
